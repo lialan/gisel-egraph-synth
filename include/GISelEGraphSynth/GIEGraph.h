@@ -297,7 +297,9 @@ struct OpProperties {
   /// The second operand is a shift amount (poison if out of range).
   bool IsShift = false;
 
-  /// a op b == b op a
+  /// a op b == b op a. Not a rewrite rule: e-nodes of commutative operators
+  /// are canonicalized by sorting their operand classes, and the matcher
+  /// tries both operand orders.
   bool Commutative = false;
   /// (a op b) op c == a op (b op c)
   bool Associative = false;
@@ -334,11 +336,16 @@ const OpProperties *getOpProperties(unsigned Opcode);
 
 /// Append the rules implied by \p Props (see OpProperties) to \p Rules.
 /// Rules of one kind are emitted together for all operators, in table order:
-/// commutativity, associativity, identities, absorbing elements,
+/// associativity, identities, absorbing elements,
 /// self-application, then (via addFactoringRulesFromProperties) factoring,
 /// and (via addFoldingRulesFromProperties) constant folding.
 void addAlgebraRulesFromProperties(ArrayRef<OpProperties> Props,
                                    std::vector<RewriteRule> &Rules);
+/// Identities that hold by \p Props but are enforced by canonicalization
+/// instead of rewriting (currently commutativity). They are never applied;
+/// they exist so that the properties can be checked offline like the rules
+/// (-gisel-egraph-print-rules, verify_rules.py).
+std::vector<RewriteRule> getImplicitPropertyRules(ArrayRef<OpProperties> Props);
 void addFactoringRulesFromProperties(ArrayRef<OpProperties> Props,
                                      std::vector<RewriteRule> &Rules);
 void addFoldingRulesFromProperties(ArrayRef<OpProperties> Props,

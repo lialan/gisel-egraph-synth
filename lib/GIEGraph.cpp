@@ -261,6 +261,16 @@ ENode EGraph::canonicalize(const ENode &N) const {
   ENode C = N;
   for (EClassId &Op : C.Ops)
     Op = find(Op);
+  // Commutativity is part of the canonical form rather than a rewrite rule:
+  // the operands of a commutative operation are ordered by class id, so
+  // a op b and b op a hash-cons to the same e-node immediately. rebuild()
+  // re-canonicalizes after merges, which re-sorts operands whose ids changed.
+  // The matcher compensates by trying both operand orders.
+  if (C.isOperation() && C.Ops.size() == 2 && C.Ops[0] > C.Ops[1]) {
+    const OpProperties *P = getOpProperties(C.Opcode);
+    if (P && P->Commutative)
+      std::swap(C.Ops[0], C.Ops[1]);
+  }
   return C;
 }
 
@@ -863,7 +873,14 @@ private:
         bool Saved = Cur.ViaRefinement;
         if (N.Flags)
           Cur.ViaRefinement = true;
-        matchChildren(PN, N, 0, K);
+        matchChildren(PN, N, 0, /*Swap=*/false, K);
+        // Commutative operations are stored in one canonical operand order
+        // (see EGraph::canonicalize), so also match the other order.
+        if (N.Ops.size() == 2 && N.Ops[0] != N.Ops[1]) {
+          const OpProperties *P = getOpProperties(N.Opcode);
+          if (P && P->Commutative)
+            matchChildren(PN, N, 0, /*Swap=*/true, K);
+        }
         Cur.ViaRefinement = Saved;
       }
       return;
@@ -871,14 +888,15 @@ private:
     }
   }
 
-  void matchChildren(const PatNode &PN, const ENode &N, unsigned I,
+  void matchChildren(const PatNode &PN, const ENode &N, unsigned I, bool Swap,
                      function_ref<void()> K) {
     if (I == PN.Children.size()) {
       K();
       return;
     }
-    matchAt(PN.Children[I], N.Ops[I], /*AllowRefine=*/true,
-            [&] { matchChildren(PN, N, I + 1, K); });
+    EClassId Op = N.Ops[Swap ? N.Ops.size() - 1 - I : I];
+    matchAt(PN.Children[I], Op, /*AllowRefine=*/true,
+            [&] { matchChildren(PN, N, I + 1, Swap, K); });
   }
 
   const EGraph &G;

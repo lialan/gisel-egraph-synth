@@ -93,9 +93,8 @@ void llvm::egraph::addAlgebraRulesFromProperties(
                  const std::string &R) {
     Rules.emplace_back((Twine(P.ShortName) + "-" + Suffix).str(), L, R);
   };
-  for (const OpProperties &P : Props)
-    if (P.Commutative)
-      Add(P, "comm", bin(P, "?a", "?b"), bin(P, "?b", "?a"));
+  // Commutativity is not a rule: it is enforced by canonicalization (see
+  // EGraph::canonicalize and getImplicitPropertyRules).
   for (const OpProperties &P : Props) {
     if (!P.Associative)
       continue;
@@ -123,6 +122,16 @@ void llvm::egraph::addAlgebraRulesFromProperties(
     else if (P.SelfValue)
       Add(P, "self", bin(P, "?a", "?a"), std::to_string(*P.SelfValue));
   }
+}
+
+std::vector<RewriteRule>
+llvm::egraph::getImplicitPropertyRules(ArrayRef<OpProperties> Props) {
+  std::vector<RewriteRule> Rules;
+  for (const OpProperties &P : Props)
+    if (P.Commutative)
+      Rules.emplace_back((Twine(P.ShortName) + "-comm").str(),
+                         bin(P, "?a", "?b"), bin(P, "?b", "?a"));
+  return Rules;
 }
 
 void llvm::egraph::addFactoringRulesFromProperties(

@@ -81,9 +81,11 @@ TEST_F(GIEGraphTest, HashConsing) {
   EClassId X = add(A, B);
   EClassId Y = add(A, B);
   EXPECT_EQ(X, Y);
-  EXPECT_NE(add(B, A), X); // No commutativity without rules.
+  // Commutative operands are canonicalized (sorted), so this is the same node.
+  EXPECT_EQ(add(B, A), X);
+  EXPECT_NE(sub(B, A), sub(A, B));
   EXPECT_EQ(cst(7), cst(7));
-  EXPECT_EQ(G.getNumNodes(), 5u);
+  EXPECT_EQ(G.getNumNodes(), 6u);
 }
 
 TEST_F(GIEGraphTest, InputsAreDistinct) {
@@ -145,11 +147,36 @@ TEST_F(GIEGraphTest, RebuildDeduplicatesNodes) {
 //===----------------------------------------------------------------------===//
 
 TEST_F(GIEGraphTest, Commutativity) {
+  // Commutativity is canonicalization, not a rule: both orders hash-cons to
+  // the same e-node without any saturation.
   EClassId A = in(), B = in();
   EClassId X = add(A, B), Y = add(B, A);
-  SaturationStats S = run(rules({"add-comm"}));
+  EXPECT_EQ(X, Y);
+  EXPECT_EQ(G.getNumNodes(), 3u);
+  // Non-commutative operators keep their operand order.
+  EXPECT_NE(sub(A, B), sub(B, A));
+}
+
+TEST_F(GIEGraphTest, CommutedPatternMatch) {
+  // The constant gets the smaller class id, so the canonical node is
+  // add(0, a); the pattern (G_ADD ?a 0) must still match it.
+  EClassId Zero = cst(0);
+  EClassId A = in();
+  EClassId X = add(A, Zero);
+  EXPECT_EQ(G.getClass(X).Nodes[0].Ops[0], Zero);
+  run(rules({"add-zero"}));
+  EXPECT_TRUE(G.equivalent(X, A));
+}
+
+TEST_F(GIEGraphTest, CommutativeCanonicalFormAfterMerge) {
+  // add(a, b) and add(b, c) become congruent once a == c, although their
+  // operands are in different orders; rebuild() re-sorts them.
+  EClassId A = in(), B = in(), C = in();
+  EClassId X = add(A, B), Y = add(B, C);
+  EXPECT_FALSE(G.equivalent(X, Y));
+  G.merge(A, C);
+  G.rebuild();
   EXPECT_TRUE(G.equivalent(X, Y));
-  EXPECT_TRUE(S.Saturated);
 }
 
 TEST_F(GIEGraphTest, Associativity) {
@@ -167,11 +194,13 @@ TEST_F(GIEGraphTest, FlaggedNodesAreOnlyRefined) {
   EClassId Y = op(TargetOpcode::G_ADD, B, A, MachineInstr::NoSWrap);
   EClassId Z = add(A, B);
   runAll();
-  EXPECT_FALSE(G.equivalent(X, Y));
+  // Commuting does not change the flags' meaning (nsw is symmetric), so the
+  // two flagged adds are the same canonical e-node.
+  EXPECT_TRUE(G.equivalent(X, Y));
   EXPECT_FALSE(G.equivalent(X, Z));
-  // Dropping the flag is a refinement, so the commuted unflagged add refines
-  // the flagged one, but not the other way around.
-  EXPECT_TRUE(G.refinesTo(X, Z));
+  // Dropping a flag is only ever a refinement, never the other way around.
+  // (No rule rewrites a + b to itself, so there is no X ~> Z edge here; the
+  // flagged match below shows the refinement direction.)
   EXPECT_FALSE(G.refinesTo(Z, X));
   EXPECT_FALSE(G.refinesTo(Z, Y));
   // add nsw (a, 0) is refined by a, but not equal to it.

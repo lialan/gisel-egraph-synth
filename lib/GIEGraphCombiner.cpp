@@ -447,8 +447,16 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       Res = B.buildConstant(N->Ty, N->Imm).getReg(0);
       break;
     case ENodeKind::Operation: {
+      SmallVector<EClassId, 2> Ops(N->Ops.begin(), N->Ops.end());
+      // Operands of commutative nodes are ordered by class id; emit them in
+      // GlobalISel's canonical form instead (constant on the right).
+      const OpProperties *P = getOpProperties(N->Opcode);
+      if (P && P->Commutative && Ops.size() == 2 &&
+          E.getChosenNode(Ops[0])->isConstant() &&
+          !E.getChosenNode(Ops[1])->isConstant())
+        std::swap(Ops[0], Ops[1]);
       SmallVector<SrcOp, 2> Srcs;
-      for (EClassId Op : N->Ops)
+      for (EClassId Op : Ops)
         Srcs.push_back(Materialize(Op));
       Res = B.buildInstr(N->Opcode, {N->Ty}, Srcs, N->Flags).getReg(0);
       break;
@@ -538,6 +546,12 @@ bool GIEGraphCombiner::runOnMachineFunction(MachineFunction &MF) {
     static bool Printed = false;
     if (!Printed) {
       for (const RewriteRule &R : getRules()) {
+        R.print(errs());
+        errs() << "\n";
+      }
+      errs() << "# Enforced by canonicalization, not applied as rules:\n";
+      for (const RewriteRule &R :
+           getImplicitPropertyRules(getAllOpProperties())) {
         R.print(errs());
         errs() << "\n";
       }

@@ -52,7 +52,7 @@ operations that are not legal), but shadow mode works anywhere.
 | File | Contents |
 |------|----------|
 | `include/llvm/CodeGen/GlobalISel/GIEGraph.h`, `lib/CodeGen/GlobalISel/GIEGraph.cpp` | Target-independent e-graph: e-nodes, e-classes, hash-consing, union-find, congruence closure, analyses, refinement edges, pattern parser and matcher, saturation, extraction, cost model. Depends only on `Support` and `LLT`. |
-| `lib/CodeGen/GlobalISel/GIEGraphRules.cpp` | The default rule library (60 rules). |
+| `lib/CodeGen/GlobalISel/GIEGraphRules.cpp` | The rule library: rules generated from operator properties plus the hand-written cross-operator rules (58 rules). |
 | `include/llvm/CodeGen/GlobalISel/GIEGraphCombiner.h`, `lib/CodeGen/GlobalISel/GIEGraphCombiner.cpp` | The `MachineFunctionPass`: region discovery, MIR -> e-graph, shadow report, MIR re-emission, statistics, timers. |
 | `lib/Target/AMDGPU/AMDGPUTargetMachine.cpp` | `-amdgpu-gisel-egraph` pipeline hook. |
 | `unittests/CodeGen/GlobalISel/GIEGraphTest.cpp` | Unit tests of the engine and of coverage of existing combines. |
@@ -103,6 +103,16 @@ struct EClass {
 * `add()` canonicalizes operands with `find()` and hash-conses through an
   `unordered_map<ENode, EClassId>`; inserting an existing node returns its
   class.
+* **Commutativity is canonicalization, not a rule.** `canonicalize()` orders
+  the two operand classes of a commutative operator by id, so `a + b` and
+  `b + a` are the same e-node as soon as they are inserted, with no
+  saturation step. `rebuild()` re-canonicalizes after merges, which re-sorts
+  operands whose ids changed (so `a + b` and `b + c` become congruent once
+  `a == c`). Since only one order is stored, the matcher tries both operand
+  orders of a commutative node. Flags stay on the node: `nsw`, `nuw` and
+  `disjoint` are symmetric in the operands, so a flagged commutative node
+  can be reordered too. Emission puts a constant operand on the right
+  (GlobalISel's canonical form) instead of following the id order.
 * `merge()` is union-by-size with deterministic tie breaking; it joins the
   analyses and marks the graph dirty.
 * `rebuild()` restores the congruence invariant: it re-canonicalizes every
@@ -222,12 +232,54 @@ refinements; with frozen inputs they become equivalences (see the
 
 ## Rewrite rules
 
-Rules are C++ objects built from S-expression patterns, so a future TableGen
-front end can generate the same objects:
+### Operator properties
+
+The generic part of the library is not written rule by rule. Each supported
+operator has an `OpProperties` entry (`getAllOpProperties()` in
+`GIEGraph.cpp`), and `GIEGraphRules.cpp` derives the rules from it:
+
+| Property | Meaning | Generated rules |
+|----------|---------|-----------------|
+| `Commutative` | `a op b == b op a` | none; enforced by canonicalization (above) |
+| `Associative` | `(a op b) op c == a op (b op c)` | `op-assoc-r`, `op-assoc-l` |
+| `RightIdentity` `e` | `a op e == a` | `op-zero`, `op-one`, `op-ones` |
+| `RightAbsorbing` `z` | `a op z == z` | `mul-zero`, `and-zero`, `or-ones` |
+| `Idempotent` | `a op a == a` | `and-self`, `or-self` |
+| `SelfValue` `c` | `a op a == c` | `sub-self`, `xor-self` |
+| `DistributesOver` `I` | `a op (b I c) == (a op b) I (a op c)` | `factor-op-I` (factoring direction only); with an identity `e` also `factor-op-I-id`: `(a op b) I a => a op (b I e)`, plus `-id-l` if `I` is not commutative |
+| `RightDistributesOverConst` `I` | `(a I b) op #k == (a op #k) I (b op #k)` | `factor-shl-add` (the shared amount must be a constant) |
+| `Fold` | constant evaluation (returns no value for poison) | `fold-op` |
+| `IsShift` | second operand is a shift amount | matcher/analysis restrictions |
+
+The current table:
+
+| Operator | Comm. | Assoc. | Identity | Absorbing | Self | Distributes over |
+|----------|:-----:|:------:|---------:|----------:|------|------------------|
+| `G_ADD` | yes | yes | 0 | | | |
+| `G_SUB` | | | 0 | | `a - a == 0` | |
+| `G_MUL` | yes | yes | 1 | 0 | | `G_ADD` |
+| `G_AND` | yes | yes | -1 | 0 | idempotent | `G_OR`, `G_XOR` |
+| `G_OR` | yes | yes | 0 | -1 | idempotent | `G_AND` |
+| `G_XOR` | yes | yes | 0 | | `a ^ a == 0` | |
+| `G_SHL` | | | 0 | | | `G_ADD` (shared constant amount) |
+| `G_LSHR`, `G_ASHR` | | | 0 | | | |
+
+Being in the table is also what makes an operator supported (the pass's
+region discovery, the poison analysis, the pattern parser). Supporting a new
+operator, or recording a new fact about an existing one, is therefore one
+table entry. The entry is checked like any rule:
+`-gisel-egraph-print-rules` prints every generated rule and every property
+that is enforced implicitly (commutativity), and `verify_rules.py` proves
+all of them with Z3 using its own, independent operator semantics. A wrong
+property such as "`G_SUB` is commutative" fails there.
+
+### Hand-written rules
+
+Rules that relate *different* operators stay hand-written in
+`GIEGraphRules.cpp`, for example:
 
 ```cpp
-Add("factor-mul", "(G_ADD (G_MUL ?a ?b) (G_MUL ?a ?c))",
-                  "(G_MUL ?a (G_ADD ?b ?c))");
+Add("add-self", "(G_ADD ?a ?a)", "(G_MUL ?a 2)");
 Add("mul-pow2-to-shl", "(G_MUL ?a #c)", "(G_SHL ?a $0)",
     [](const EGraph &G, const RuleMatch &M, Computed &Out) {
       ... precondition on #c, compute $0 = log2(#c) ...
@@ -243,20 +295,19 @@ refinement is *derived*, not declared.
 
 | Group | Rules | Typical classification |
 |-------|-------|------------------------|
-| Commutativity | `add/mul/and/or/xor-comm` | equivalence |
-| Associativity (both directions) | `*-assoc-l`, `*-assoc-r` | equivalence |
-| Identities | `add-zero sub-zero mul-one and-ones or-zero xor-zero shl-zero lshr-zero ashr-zero` | equivalence |
-| Absorbing | `mul-zero and-zero or-ones` | refinement unless operand not poison |
-| Idempotence / cancellation | `and-self or-self sub-self xor-self` | refinement unless defined |
+| Associativity (both directions) | `*-assoc-l`, `*-assoc-r` (generated) | equivalence |
+| Identities | `add-zero sub-zero mul-one and-ones or-zero xor-zero shl-zero lshr-zero ashr-zero` (generated) | equivalence |
+| Absorbing | `mul-zero and-zero or-ones` (generated) | refinement unless operand not poison |
+| Idempotence / cancellation | `sub-self and-self or-self xor-self` (generated) | refinement unless defined |
 | Negation | `sub-to-add-neg add-neg-to-sub neg-neg neg-sub neg-add add-negs neg-mul mul-neg mul-negconst add-negconst` | equivalence |
 | Bitwise not | `xor-ones-to-sub` (`~a == -1 - a`) | equivalence |
-| Factoring (one direction only) | `factor-mul factor-mul-one add-self factor-and-or factor-or-and factor-and-xor factor-shl-add` | refinement unless the shared operand is not undef (`factor-shl-add` is exact) |
+| Factoring (one direction only) | `factor-mul-add factor-mul-add-id factor-and-or factor-and-or-id factor-and-xor factor-and-xor-id factor-or-and factor-or-and-id factor-shl-add` (generated), `add-self` | refinement unless the shared operand is not undef (`factor-shl-add` is exact) |
 | Strength reduction | `mul-pow2-to-shl shl-to-mul` | equivalence |
-| Constant folding | `fold-{add,sub,mul,and,or,xor,shl,lshr,ashr}` | equivalence |
+| Constant folding | `fold-{add,sub,mul,and,or,xor,shl,lshr,ashr}` (generated) | equivalence |
 
 Distributivity is never applied in the expanding direction, which keeps
-growth under control; associativity and commutativity are bidirectional and
-are the main source of growth (bounded by the limits below).
+growth under control; associativity is bidirectional and, together with the
+commuted matching, the main source of growth (bounded by the limits below).
 
 ## Saturation
 
