@@ -1,0 +1,248 @@
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-mode=rewrite -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=amdgpu-prelegalizer-combiner -verify-machineinstrs %s -o - | FileCheck --check-prefix=BASELINE %s
+
+# Rewrite mode of the experimental e-graph combiner. The BASELINE prefix shows
+# what the existing AMDGPU pre-legalizer combiner does with the same input.
+
+---
+# (a + b) * c + (b + a) * d  ==>  (a + b) * (c + d)
+# Needs commutativity (to identify a+b and b+a) and factoring.
+name: factor_with_commute
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2, $vgpr3
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %c:_(s32) = COPY $vgpr2
+    %d:_(s32) = COPY $vgpr3
+    %ab:_(s32) = G_ADD %a, %b
+    %ba:_(s32) = G_ADD %b, %a
+    %m1:_(s32) = G_MUL %ab, %c
+    %m2:_(s32) = G_MUL %ba, %d
+    %r:_(s32) = G_ADD %m1, %m2
+    $vgpr0 = COPY %r
+    SI_RETURN implicit $vgpr0
+...
+---
+# Same with 64-bit values.
+name: factor_with_commute_s64
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0_vgpr1, $vgpr2_vgpr3, $vgpr4_vgpr5, $vgpr6_vgpr7
+    %a:_(s64) = COPY $vgpr0_vgpr1
+    %b:_(s64) = COPY $vgpr2_vgpr3
+    %c:_(s64) = COPY $vgpr4_vgpr5
+    %d:_(s64) = COPY $vgpr6_vgpr7
+    %ab:_(s64) = G_ADD %a, %b
+    %ba:_(s64) = G_ADD %b, %a
+    %m1:_(s64) = G_MUL %ab, %c
+    %m2:_(s64) = G_MUL %ba, %d
+    %r:_(s64) = G_ADD %m1, %m2
+    $vgpr0_vgpr1 = COPY %r
+    SI_RETURN implicit $vgpr0_vgpr1
+...
+---
+# a * 3 + a * 5 ==> a * 8 ==> a << 3
+name: factor_constants_to_shift
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0
+    %a:_(s32) = COPY $vgpr0
+    %c3:_(s32) = G_CONSTANT i32 3
+    %c5:_(s32) = G_CONSTANT i32 5
+    %m1:_(s32) = G_MUL %a, %c3
+    %m2:_(s32) = G_MUL %a, %c5
+    %r:_(s32) = G_ADD %m1, %m2
+    $vgpr0 = COPY %r
+    SI_RETURN implicit $vgpr0
+...
+---
+# ((a - b) + (c - a)) ==> c - b   (AMinusBPlusCMinusA in Combine.td)
+name: a_minus_b_plus_c_minus_a
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %c:_(s32) = COPY $vgpr2
+    %s1:_(s32) = G_SUB %a, %b
+    %s2:_(s32) = G_SUB %c, %a
+    %r:_(s32) = G_ADD %s1, %s2
+    $vgpr0 = COPY %r
+    SI_RETURN implicit $vgpr0
+...
+---
+# (a - b) + (b - c) + (c - a) ==> 0
+# Each pairwise combine in Combine.td only sees two subtractions at a time.
+name: telescoping_sum
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %c:_(s32) = COPY $vgpr2
+    %s1:_(s32) = G_SUB %a, %b
+    %s2:_(s32) = G_SUB %b, %c
+    %s3:_(s32) = G_SUB %c, %a
+    %t:_(s32) = G_ADD %s1, %s2
+    %r:_(s32) = G_ADD %t, %s3
+    $vgpr0 = COPY %r
+    SI_RETURN implicit $vgpr0
+...
+---
+# ((a + 10) - 3) - b + 7 ==> (a - b) + 14
+name: constant_reassociation
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %c10:_(s32) = G_CONSTANT i32 10
+    %c3:_(s32) = G_CONSTANT i32 3
+    %c7:_(s32) = G_CONSTANT i32 7
+    %t0:_(s32) = G_ADD %a, %c10
+    %t1:_(s32) = G_SUB %t0, %c3
+    %t2:_(s32) = G_SUB %t1, %b
+    %r:_(s32) = G_ADD %t2, %c7
+    $vgpr0 = COPY %r
+    SI_RETURN implicit $vgpr0
+...
+---
+# (a & b) | (a & c) ==> a & (b | c)
+name: factor_and_or
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %c:_(s32) = COPY $vgpr2
+    %x:_(s32) = G_AND %a, %b
+    %y:_(s32) = G_AND %c, %a
+    %r:_(s32) = G_OR %x, %y
+    $vgpr0 = COPY %r
+    SI_RETURN implicit $vgpr0
+...
+---
+# A value shared by two external users. %t = a + 0 is not used outside the
+# region, so the region has two roots (%u and %v), which both simplify.
+name: multi_root
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+    %a:_(s32) = COPY $vgpr0
+    %c:_(s32) = COPY $vgpr1
+    %d:_(s32) = COPY $vgpr2
+    %zero:_(s32) = G_CONSTANT i32 0
+    %t:_(s32) = G_ADD %a, %zero
+    %u:_(s32) = G_MUL %t, %c
+    %v:_(s32) = G_XOR %t, %d
+    $vgpr0 = COPY %u
+    $vgpr1 = COPY %v
+    SI_RETURN implicit $vgpr0, implicit $vgpr1
+...
+---
+# %ab is used outside the region, so it must stay available; the second root
+# simplifies to %b.
+name: shared_value_kept
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %ab:_(s32) = G_ADD %a, %b
+    %r:_(s32) = G_SUB %ab, %a
+    $vgpr0 = COPY %ab
+    $vgpr1 = COPY %r
+    SI_RETURN implicit $vgpr0, implicit $vgpr1
+...
+---
+# Nothing to gain: the region is left untouched.
+name: not_profitable
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %c:_(s32) = COPY $vgpr2
+    %x:_(s32) = G_ADD %a, %b
+    %r:_(s32) = G_MUL %x, %c
+    $vgpr0 = COPY %r
+    SI_RETURN implicit $vgpr0
+...
+---
+# Flags are preserved on the instructions that are re-emitted; the flagged
+# add is only replaced because dropping nsw is a refinement.
+name: flags
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %c:_(s32) = COPY $vgpr2
+    %x:_(s32) = nsw G_ADD %a, %b
+    %y:_(s32) = G_SUB %x, %b
+    %z:_(s32) = nuw G_MUL %y, %c
+    $vgpr0 = COPY %z
+    SI_RETURN implicit $vgpr0
+...
+---
+# Shifts by an out-of-range amount are poison and are never rewritten or
+# folded.
+name: shift_out_of_range
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0
+    %a:_(s32) = COPY $vgpr0
+    %c40:_(s32) = G_CONSTANT i32 40
+    %c0:_(s32) = G_CONSTANT i32 0
+    %x:_(s32) = G_SHL %a, %c40
+    %r:_(s32) = G_ADD %x, %c0
+    $vgpr0 = COPY %r
+    SI_RETURN implicit $vgpr0
+...
+---
+# x - x with an undef x: replacing it with 0 is a refinement, which is allowed
+# when rewriting (but would not be allowed to merge e-classes).
+name: undef_self_sub
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0
+    %a:_(s32) = COPY $vgpr0
+    %u:_(s32) = G_IMPLICIT_DEF
+    %x:_(s32) = G_SUB %u, %u
+    %r:_(s32) = G_ADD %x, %a
+    $vgpr0 = COPY %r
+    SI_RETURN implicit $vgpr0
+...
+---
+# Multi-block: regions never cross block boundaries; the value computed in
+# bb.0 is an opaque input in bb.1.
+name: multi_block
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $vgpr0, $vgpr1
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %x:_(s32) = G_ADD %a, %b
+    G_BR %bb.1
+
+  bb.1:
+    %r:_(s32) = G_SUB %x, %b
+    $vgpr0 = COPY %r
+    SI_RETURN implicit $vgpr0
+...

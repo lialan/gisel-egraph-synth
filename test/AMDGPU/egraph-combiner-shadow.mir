@@ -1,0 +1,67 @@
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-report -verify-machineinstrs %s -o %t.mir 2>&1 | FileCheck --check-prefix=REPORT %s
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=none -verify-machineinstrs %s -o %t.orig.mir
+# RUN: diff %t.orig.mir %t.mir
+
+# Shadow mode (the default) reports opportunities but never changes the MIR:
+# the output is identical to the output of a no-op pass pipeline.
+
+# REPORT: GIEGraph: factor: %bb.0: instrs=5 roots=1 inputs=4 nodes={{[0-9]+}}->{{[0-9]+}} classes={{[0-9]+}} iters={{[0-9]+}} saturated merges={{[0-9]+}} refinements={{[0-9]+}} unsafe={{[0-9]+}} cost=7->4 profitable (refinement) shadow
+# REPORT-NEXT: root %{{[0-9]+}} = (G_MUL (G_ADD %{{[0-9]+}} %{{[0-9]+}}) (G_ADD %{{[0-9]+}} %{{[0-9]+}}))
+# REPORT-NEXT: rules: {{.*}}add-comm={{[0-9]+}}{{.*}}factor-mul={{[0-9]+}}
+# REPORT: GIEGraph: frozen: %bb.0: {{.*}} cost=7->4 profitable (equivalence) shadow
+# REPORT: GIEGraph: nothing: %bb.0: {{.*}} cost=3->3 not-profitable
+# REPORT-NOT: GIEGraph: nothing
+
+---
+name: factor
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2, $vgpr3
+    %0:_(s32) = COPY $vgpr0
+    %1:_(s32) = COPY $vgpr1
+    %2:_(s32) = COPY $vgpr2
+    %3:_(s32) = COPY $vgpr3
+    %4:_(s32) = G_ADD %0, %1
+    %5:_(s32) = G_ADD %1, %0
+    %6:_(s32) = G_MUL %4, %2
+    %7:_(s32) = G_MUL %5, %3
+    %8:_(s32) = G_ADD %6, %7
+    $vgpr0 = COPY %8
+    SI_RETURN implicit $vgpr0
+...
+---
+# With frozen inputs the factoring is a true equivalence.
+name: frozen
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2, $vgpr3
+    %0:_(s32) = COPY $vgpr0
+    %1:_(s32) = COPY $vgpr1
+    %2:_(s32) = COPY $vgpr2
+    %3:_(s32) = COPY $vgpr3
+    %f0:_(s32) = G_FREEZE %0
+    %f1:_(s32) = G_FREEZE %1
+    %4:_(s32) = G_ADD %f0, %f1
+    %5:_(s32) = G_ADD %f1, %f0
+    %6:_(s32) = G_MUL %4, %2
+    %7:_(s32) = G_MUL %5, %3
+    %8:_(s32) = G_ADD %6, %7
+    $vgpr0 = COPY %8
+    SI_RETURN implicit $vgpr0
+...
+---
+name: nothing
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+    %0:_(s32) = COPY $vgpr0
+    %1:_(s32) = COPY $vgpr1
+    %2:_(s32) = COPY $vgpr2
+    %3:_(s32) = G_ADD %0, %1
+    %4:_(s32) = G_MUL %3, %2
+    $vgpr0 = COPY %4
+    SI_RETURN implicit $vgpr0
+...
