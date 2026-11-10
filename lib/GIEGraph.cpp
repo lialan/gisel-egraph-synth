@@ -256,6 +256,9 @@ bool EGraph::addRefinement(EClassId From, EClassId To) {
 SmallVector<EClassId, 4> EGraph::getRefinementClosure(EClassId Id) const {
   SmallVector<EClassId, 4> Result;
   Id = find(Id);
+  // Fast path: most classes have no refinement edges.
+  if (Classes[Id].RefinesTo.empty())
+    return Result;
   SmallDenseSet<EClassId, 8> Seen;
   Seen.insert(Id);
   std::deque<EClassId> Work;
@@ -734,7 +737,8 @@ private:
     case PatNode::Literal: {
       if (!Cls.Const)
         return;
-      APInt Lit(Cls.Const->getBitWidth(), PN.Value, /*isSigned=*/true);
+      APInt Lit(Cls.Const->getBitWidth(), PN.Value, /*isSigned=*/true,
+                /*implicitTrunc=*/true);
       if (*Cls.Const == Lit)
         K();
       return;
@@ -836,7 +840,8 @@ public:
       return C;
     }
     case PatNode::Literal:
-      return G.addConstant(Ty, APInt(Width, PN.Value, /*isSigned=*/true));
+      return G.addConstant(Ty, APInt(Width, PN.Value, /*isSigned=*/true,
+                                     /*implicitTrunc=*/true));
     case PatNode::Computed:
       if (PN.Index >= Computed.size() ||
           Computed[PN.Index].getBitWidth() != Width)

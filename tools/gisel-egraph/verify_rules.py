@@ -27,7 +27,7 @@ import sys
 
 import z3
 
-WIDTHS = [8, 16, 32, 64]
+WIDTHS = [1, 2, 3, 8, 16, 32, 64]
 OPS = ["G_ADD", "G_MUL", "G_AND", "G_OR", "G_XOR"]
 
 

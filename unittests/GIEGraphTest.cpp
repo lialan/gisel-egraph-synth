@@ -29,7 +29,8 @@ protected:
   }
   EClassId in(bool Defined = false) { return in(S32, Defined); }
   EClassId cst(int64_t V, LLT Ty) {
-    return G.addConstant(Ty, APInt(Ty.getSizeInBits(), V, /*isSigned=*/true));
+    return G.addConstant(Ty, APInt(Ty.getSizeInBits(), V, /*isSigned=*/true,
+                                   /*implicitTrunc=*/true));
   }
   EClassId cst(int64_t V) { return cst(V, S32); }
   EClassId op(unsigned Opc, EClassId A, EClassId B, uint32_t Flags = 0) {
@@ -357,6 +358,24 @@ TEST_F(GIEGraphTest, BackoffBansExplosiveRules) {
   EXPECT_GT(Backoff.Bans, 0u);
   EXPECT_FALSE(Backoff.Saturated);
   EXPECT_LT(G.getNumNodes(), NodesNoBackoff);
+}
+
+TEST_F(GIEGraphTest, OneBitLiterals) {
+  // Pattern literals are truncated to the type width: for s1, the literal 1
+  // of mul-one and the literal -1 of and-ones are both the value 1. This
+  // used to assert in the APInt constructor.
+  LLT S1 = LLT::scalar(1);
+  EClassId A = in(S1), B = in(S1);
+  EClassId One = cst(1, S1);
+  EClassId M = mul(A, One);
+  EClassId X = op(TargetOpcode::G_AND, B, One);
+  EClassId Y = add(A, A);
+  runAll();
+  EXPECT_TRUE(G.equivalent(M, A));
+  EXPECT_TRUE(G.equivalent(X, B));
+  // a + a == a * 2 == 0 in s1 (2 truncates to 0); a may be undef, so this is
+  // only a refinement.
+  EXPECT_TRUE(G.refinesTo(Y, cst(0, S1)));
 }
 
 TEST_F(GIEGraphTest, SaturationTerminatesWithIterationLimit) {

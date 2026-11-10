@@ -52,7 +52,7 @@ operations that are not legal), but shadow mode works anywhere.
 | File | Contents |
 |------|----------|
 | `include/llvm/CodeGen/GlobalISel/GIEGraph.h`, `lib/CodeGen/GlobalISel/GIEGraph.cpp` | Target-independent e-graph: e-nodes, e-classes, hash-consing, union-find, congruence closure, analyses, refinement edges, pattern parser and matcher, saturation, extraction, cost model. Depends only on `Support` and `LLT`. |
-| `lib/CodeGen/GlobalISel/GIEGraphRules.cpp` | The default rule library (58 rules). |
+| `lib/CodeGen/GlobalISel/GIEGraphRules.cpp` | The default rule library (60 rules). |
 | `include/llvm/CodeGen/GlobalISel/GIEGraphCombiner.h`, `lib/CodeGen/GlobalISel/GIEGraphCombiner.cpp` | The `MachineFunctionPass`: region discovery, MIR -> e-graph, shadow report, MIR re-emission, statistics, timers. |
 | `lib/Target/AMDGPU/AMDGPUTargetMachine.cpp` | `-amdgpu-gisel-egraph` pipeline hook. |
 | `unittests/CodeGen/GlobalISel/GIEGraphTest.cpp` | Unit tests of the engine and of coverage of existing combines. |
@@ -112,6 +112,13 @@ struct EClass {
   incremental parent-list repair; it is O(nodes) per round and adequate for
   regions bounded at 5000 nodes. After congruence it canonicalizes refinement
   edges and recomputes the analyses to a fixpoint.
+* After the analyses, classes with a known constant are *pruned* to their
+  constant leaf (as egg's constant-folding analysis does). The removed nodes
+  stay in the hash-cons memo and still take part in congruence closure, so
+  re-deriving one is a no-op rather than a new class. Without pruning, once
+  `a == a + 0` the class of `0` collects `0 + 0`, `0 * 2`, `0 << 1`, ... and
+  the factoring and folding rules keep minting new constants; three-instruction
+  regions then exhausted the 5000-node budget.
 * The graph is never mutated during matching (read phase), only during the
   write phase, followed by one `rebuild()` per iteration (egg-style deferred
   rebuilding).
@@ -142,7 +149,7 @@ refinements to equivalences when inputs are known to be defined.
 ### Which matches are equivalences?
 
 A rule is a bitvector identity `L(v1..vn) == R(v1..vn)` that holds for all
-assignments (proved with Z3 for widths 8/16/32/64, see
+assignments (proved with Z3 for widths 1/2/3/8/16/32/64, see
 `utils/gisel-egraph/verify_rules.py`). All pattern operators are the
 *unflagged* `G_ADD/SUB/MUL/AND/OR/XOR` and `G_SHL/LSHR/ASHR` with a constant
 in-range amount. These operators produce poison iff an operand is poison and
@@ -228,7 +235,9 @@ Add("mul-pow2-to-shl", "(G_MUL ?a #c)", "(G_SHL ?a $0)",
 ```
 
 `?x` binds an e-class, `#c` binds a known constant, integer literals are
-sign-extended/truncated to the width (`-1` is all-ones), `$n` is a constant
+sign-extended or truncated to the width (`-1` is all-ones; at `s1` the
+literal `1` is also all-ones and `2` is `0`, which is sound because every rule
+is a ring or bitwise identity), `$n` is a constant
 computed by the optional hook. Whether a match is an equivalence or a
 refinement is *derived*, not declared.
 
@@ -239,7 +248,8 @@ refinement is *derived*, not declared.
 | Identities | `add-zero sub-zero mul-one and-ones or-zero xor-zero shl-zero lshr-zero ashr-zero` | equivalence |
 | Absorbing | `mul-zero and-zero or-ones` | refinement unless operand not poison |
 | Idempotence / cancellation | `and-self or-self sub-self xor-self` | refinement unless defined |
-| Negation | `sub-to-add-neg add-neg-to-sub neg-neg neg-sub neg-add add-negs neg-mul mul-neg mul-negconst` | equivalence |
+| Negation | `sub-to-add-neg add-neg-to-sub neg-neg neg-sub neg-add add-negs neg-mul mul-neg mul-negconst add-negconst` | equivalence |
+| Bitwise not | `xor-ones-to-sub` (`~a == -1 - a`) | equivalence |
 | Factoring (one direction only) | `factor-mul factor-mul-one add-self factor-and-or factor-or-and factor-and-xor factor-shl-add` | refinement unless the shared operand is not undef (`factor-shl-add` is exact) |
 | Strength reduction | `mul-pow2-to-shl shl-to-mul` | equivalence |
 | Constant folding | `fold-{add,sub,mul,and,or,xor,shl,lshr,ashr}` | equivalence |
@@ -253,7 +263,15 @@ are the main source of growth (bounded by the limits below).
 `saturate()` alternates a read phase (collect all matches of all rules, in
 rule order and increasing class id) and a write phase (apply matches in that
 order), then rebuilds. It stops when an iteration changes nothing (no new
-node, class, merge or refinement edge) or a limit is hit:
+node, class, merge or refinement edge) or a limit is hit.
+
+A backoff scheduler (as in egg) bans a rule that produces more than
+`RuleMatchLimit << n` matches in one iteration (default 1000; `n` is the
+number of earlier bans) for `RuleBanLength << n` iterations (default 2) and
+drops its matches. A graph with banned rules is never reported as saturated.
+In practice this throttles associativity and commutativity: on
+`~(a + -1)` it cut the graph from 4599 to 290 nodes with the same result.
+
 
 | Option | Default | Meaning |
 |--------|---------|---------|
@@ -261,6 +279,10 @@ node, class, merge or refinement edge) or a limit is hit:
 | `-gisel-egraph-max-nodes` | 5000 | stop applying matches when reached |
 | `-gisel-egraph-max-iterations` | 10 | saturation iterations |
 | `-gisel-egraph-max-matches` | 20000 | matches collected per iteration |
+
+The budget trades compile time for depth; see
+`GIEGraphCombiner-Evaluation.md` for measurements. Cancellation chains such
+as `(a - b) + (b - c) + (c - a)` need about 9 iterations and about 900 nodes.
 
 Everything is deterministic: classes are visited in id order, nodes in
 insertion order, hash maps are only used for lookup, never iterated.
@@ -353,7 +375,9 @@ applied rewrites and estimated cost saved. `-time-passes` adds
   instructions; larger connected components are split by the cap.
 * Inputs are almost never provably defined in real code, so most profitable
   candidates are refinements. They are still sound to apply.
-* Congruence closure rebuilds from scratch each iteration.
+* Congruence closure rebuilds from scratch each iteration, and every rule is
+  matched against every class in every iteration (no incremental matching).
+  Saturation is 98-99% of the pass time.
 * Tree-cost extraction, DAG-cost profitability; no ILP or global sharing
   optimization, no critical-path or register-pressure awareness.
 * The cost model is generic; legality is not consulted (rewrites are only
@@ -362,8 +386,13 @@ applied rewrites and estimated cost saved. `-time-passes` adds
 * Emitted instructions are not re-visited, and the pass does not run the
   existing combiner afterwards; e.g. `x * 8` is extracted as `x << 3` only
   because `shl` is cheaper in the cost model.
-* AC rules make the graph grow quickly on long chains (> ~8 operands); those
-  regions hit the node budget and only get the rewrites found so far.
+* AC rules make the graph grow quickly on long chains (> ~8 operands); the
+  backoff scheduler and the node budget bound this, and such regions only get
+  the rewrites found so far.
+* Pruned constant classes cannot be matched structurally, so a rule that
+  needs the negation of a constant must have a constant form (this is why
+  `add-negconst` exists next to `add-neg-to-sub`).
+* Missing rules found in the evaluation: `x | ~x -> -1`, `x & ~x -> 0`.
 
 ## Future work
 
@@ -386,8 +415,8 @@ applied rewrites and estimated cost saved. `-time-passes` adds
 * **Target cost models** (AMDGPU: quarter-rate multiplies, 64-bit expansion,
   inline constants, SGPR vs. VGPR) and legality-aware extraction for running
   after the legalizer.
-* **Incremental rebuild** (egg parent lists) and rule scheduling (backoff) for
-  compile time.
+* **Incremental rebuild and matching** (egg parent lists, matching only
+  classes touched since the last iteration) for compile time.
 * **Better definedness**: use known-bits / `!noundef` information carried
   from IR, so more candidates become exact equivalences.
 * **Automatic rule discovery** à la Ruler/Souper: enumerate small terms over
