@@ -99,7 +99,7 @@ def computed_constants(name, ctx):
     """Mirror of the ApplyFn hooks: returns (precondition, [$0, $1, ...])."""
     w = ctx.w
     a, b = ctx.var("#a"), ctx.var("#b")
-    if name == "mul-negconst":
+    if name in ("mul-negconst", "add-negconst"):
         c = ctx.var("#c")
         return z3.And(c < 0, c != ctx.lit(1 << (w - 1))), [-c]
     if name == "mul-pow2-to-shl":

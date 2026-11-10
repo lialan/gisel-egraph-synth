@@ -314,6 +314,51 @@ TEST_F(GIEGraphTest, SaturationTerminatesWithNodeLimit) {
   EXPECT_LT(G.getNumNodes(), 520u);
 }
 
+TEST_F(GIEGraphTest, AdditiveIdentitySaturates) {
+  // Once a == a + 0, every class can be re-expressed through itself. Without
+  // pruning of constant classes, the class of 0 accumulates 0 + 0, 0 * 2,
+  // 0 << 1, ... and the factoring/folding rules keep producing fresh
+  // constants, so this tiny region used to hit the node limit.
+  EClassId A = in(), C = in(), D = in();
+  EClassId T = add(A, cst(0));
+  EClassId U = mul(T, C);
+  EClassId V = op(TargetOpcode::G_XOR, T, D);
+  SaturationStats S = runAll();
+  EXPECT_TRUE(S.Saturated);
+  EXPECT_LT(G.getNumNodes(), 50u);
+  EXPECT_TRUE(G.equivalent(T, A));
+  Extractor E(G, DefaultCostModel());
+  EXPECT_EQ(E.getDagCost({U, V}), 3u);
+  // The constant class keeps only its constant leaf.
+  EXPECT_EQ(G.getClass(cst(0)).Nodes.size(), 1u);
+}
+
+TEST_F(GIEGraphTest, BackoffBansExplosiveRules) {
+  // With a low per-rule match limit, the AC rules on a long sum get banned
+  // instead of flooding the graph, and the graph stays much smaller.
+  auto Build = [&] {
+    EClassId Acc = in();
+    for (int I = 0; I < 8; ++I)
+      Acc = add(Acc, in());
+  };
+  SaturationLimits L;
+  L.MaxIterations = 6;
+  L.MaxNodes = 1000000;
+  L.RuleMatchLimit = 0; // No backoff.
+  Build();
+  SaturationStats NoBackoff = runAll(L);
+  unsigned NodesNoBackoff = G.getNumNodes();
+  EXPECT_EQ(NoBackoff.Bans, 0u);
+
+  G = EGraph();
+  L.RuleMatchLimit = 16;
+  Build();
+  SaturationStats Backoff = runAll(L);
+  EXPECT_GT(Backoff.Bans, 0u);
+  EXPECT_FALSE(Backoff.Saturated);
+  EXPECT_LT(G.getNumNodes(), NodesNoBackoff);
+}
+
 TEST_F(GIEGraphTest, SaturationTerminatesWithIterationLimit) {
   EClassId Acc = in();
   for (int I = 0; I < 6; ++I)
@@ -334,10 +379,9 @@ static std::string buildAndExtract() {
   auto Op = [&](unsigned Opc, EClassId X, EClassId Y) {
     return G.addOp(Opc, S32, {X, Y});
   };
-  EClassId Root =
-      Op(TargetOpcode::G_ADD,
-         Op(TargetOpcode::G_MUL, Op(TargetOpcode::G_ADD, A, B), C),
-         Op(TargetOpcode::G_MUL, Op(TargetOpcode::G_ADD, B, A), D));
+  EClassId Root = Op(TargetOpcode::G_ADD,
+                     Op(TargetOpcode::G_MUL, Op(TargetOpcode::G_ADD, A, B), C),
+                     Op(TargetOpcode::G_MUL, Op(TargetOpcode::G_ADD, B, A), D));
   std::vector<RewriteRule> Rules = getDefaultIntegerRules();
   SaturationStats S = saturate(G, Rules, SaturationLimits());
   Extractor E(G, DefaultCostModel());
@@ -444,6 +488,18 @@ public:
   }
 };
 
+TEST_F(GIEGraphCoverageTest, APlusBMinusCMinusB) {
+  // ((A + (B - C)) - B) -> A - C
+  EClassId A = in(), B = in(), C = in();
+  check(sub(add(A, sub(B, C)), B), [&] { return sub(A, C); }, 1);
+}
+
+TEST_F(GIEGraphCoverageTest, AMinusBMinusCMinusC) {
+  // ((A - (B - C)) - C) -> A - B
+  EClassId A = in(), B = in(), C = in();
+  check(sub(sub(A, sub(B, C)), C), [&] { return sub(A, B); }, 1);
+}
+
 TEST_F(GIEGraphCoverageTest, ZeroMinusAPlusB) {
   // ((0 - A) + B) -> B - A
   EClassId A = in(), B = in();
@@ -484,6 +540,32 @@ TEST_F(GIEGraphCoverageTest, APlusBMinusAPlusC) {
   // (A + (B - (A + C))) -> B - C
   EClassId A = in(), B = in(), C = in();
   check(add(A, sub(B, add(A, C))), [&] { return sub(B, C); }, 1);
+}
+
+TEST_F(GIEGraphCoverageTest, AMinusBMinusC) {
+  // (A - (B - C)) -> A + (C - B). Same cost; checks reachability only.
+  EClassId A = in(), B = in(), C = in();
+  check(sub(A, sub(B, C)), [&] { return add(A, sub(C, B)); }, 2);
+}
+
+TEST_F(GIEGraphCoverageTest, AMinusZeroMinusB) {
+  // (A - (0 - B)) -> A + B
+  EClassId A = in(), B = in();
+  check(sub(A, sub(cst(0), B)), [&] { return add(A, B); }, 1);
+}
+
+TEST_F(GIEGraphCoverageTest, AMinusAMinusB) {
+  // AMinusBMinusA: A - (A - B) -> B
+  EClassId A = in(), B = in();
+  check(sub(A, sub(A, B)), [&] { return B; }, 0);
+}
+
+TEST_F(GIEGraphCoverageTest, NotAPlusNegOne) {
+  // (not (A + -1)) -> 0 - A
+  EClassId A = in();
+  check(
+      op(TargetOpcode::G_XOR, add(A, cst(-1)), cst(-1)),
+      [&] { return sub(cst(0), A); }, 1);
 }
 
 TEST_F(GIEGraphCoverageTest, APlusBMinusCPlusA) {

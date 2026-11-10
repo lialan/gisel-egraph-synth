@@ -74,10 +74,10 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
   // Associativity (both directions).
   for (StringRef Op : {"G_ADD", "G_MUL", "G_AND", "G_OR", "G_XOR"}) {
     std::string O = Op.str();
-    Add((Op.lower() + "-assoc-r").substr(2),
-        "(" + O + " (" + O + " ?a ?b) ?c)", "(" + O + " ?a (" + O + " ?b ?c))");
-    Add((Op.lower() + "-assoc-l").substr(2),
-        "(" + O + " ?a (" + O + " ?b ?c))", "(" + O + " (" + O + " ?a ?b) ?c)");
+    Add((Op.lower() + "-assoc-r").substr(2), "(" + O + " (" + O + " ?a ?b) ?c)",
+        "(" + O + " ?a (" + O + " ?b ?c))");
+    Add((Op.lower() + "-assoc-l").substr(2), "(" + O + " ?a (" + O + " ?b ?c))",
+        "(" + O + " (" + O + " ?a ?b) ?c)");
   }
 
   // Identities: x op e == x.
@@ -119,6 +119,23 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
   Add("neg-mul", "(G_SUB 0 (G_MUL ?a ?b))", "(G_MUL ?a (G_SUB 0 ?b))");
   Add("mul-neg", "(G_MUL ?a (G_SUB 0 ?b))", "(G_SUB 0 (G_MUL ?a ?b))");
   Add("mul-negconst", "(G_MUL ?a #c)", "(G_SUB 0 (G_MUL ?a $0))",
+      [](const EGraph &G, const RuleMatch &M, Computed &Out) {
+        const APInt &C = *M.Consts[0];
+        if (!C.isNegative() || C.isMinSignedValue())
+          return false;
+        Out.push_back(-C);
+        return true;
+      });
+
+  // Bitwise not as arithmetic: ~a == -1 - a. Connects xor-based patterns
+  // (e.g. NotAPlusNegOne in Combine.td) to the additive rules.
+  Add("xor-ones-to-sub", "(G_XOR ?a -1)", "(G_SUB -1 ?a)");
+
+  // a + c with a negative constant c is a - (-c). Classes with a known
+  // constant only keep the constant leaf (see EGraph::pruneConstantClasses),
+  // so the negation of a constant cannot be matched structurally as
+  // (G_SUB 0 ?b) and needs this dedicated form.
+  Add("add-negconst", "(G_ADD ?a #c)", "(G_SUB ?a $0)",
       [](const EGraph &G, const RuleMatch &M, Computed &Out) {
         const APInt &C = *M.Consts[0];
         if (!C.isNegative() || C.isMinSignedValue())

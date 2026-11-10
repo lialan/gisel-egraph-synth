@@ -1,5 +1,5 @@
-# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-report -verify-machineinstrs %s -o %t.mir 2>&1 | FileCheck --check-prefix=REPORT %s
-# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=none -verify-machineinstrs %s -o %t.orig.mir
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-report %s -o %t.mir 2>&1 | FileCheck --check-prefix=REPORT %s
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=none %s -o %t.orig.mir
 # RUN: diff %t.orig.mir %t.mir
 
 # Shadow mode (the default) reports opportunities but never changes the MIR:

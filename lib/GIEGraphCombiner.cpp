@@ -25,6 +25,7 @@
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/PassTimingInfo.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
@@ -82,9 +83,9 @@ static cl::opt<unsigned> MaxMatches(
 static cl::opt<unsigned>
     ConstantCost("gisel-egraph-constant-cost", cl::Hidden, cl::init(0),
                  cl::desc("Extraction cost of a G_CONSTANT"));
-static cl::opt<unsigned>
-    MulCost("gisel-egraph-mul-cost", cl::Hidden, cl::init(2),
-            cl::desc("Extraction cost of a 32-bit G_MUL"));
+static cl::opt<unsigned> MulCost("gisel-egraph-mul-cost", cl::Hidden,
+                                 cl::init(2),
+                                 cl::desc("Extraction cost of a 32-bit G_MUL"));
 static cl::opt<bool>
     Report("gisel-egraph-report", cl::Hidden, cl::init(false),
            cl::desc("Print a per-region report of the e-graph combiner"));
@@ -229,9 +230,9 @@ Region EGraphCombinerImpl::formRegion(MachineInstr &Seed) {
   });
   for (MachineInstr *MI : R.Instrs) {
     Visited.insert(MI);
-    bool External = any_of(
-        MRI.use_nodbg_instructions(MI->getOperand(0).getReg()),
-        [&](MachineInstr &U) { return !In.contains(&U); });
+    bool External =
+        any_of(MRI.use_nodbg_instructions(MI->getOperand(0).getReg()),
+               [&](MachineInstr &U) { return !In.contains(&U); });
     if (External)
       R.Roots.push_back(MI);
   }
@@ -252,8 +253,8 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
   SmallSetVector<MachineInstr *, 4> ConstDefs;
   uint64_t OldCost = 0;
   {
-    NamedRegionTimer T("build", "Build e-graph", TimerGroupName,
-                       TimerGroupDesc, TimePassesIsEnabled);
+    NamedRegionTimer T("build", "Build e-graph", TimerGroupName, TimerGroupDesc,
+                       TimePassesIsEnabled);
     for (MachineInstr *MI : R.Instrs) {
       SmallVector<EClassId, 2> Ops;
       for (unsigned I = 1; I < 3; ++I) {
@@ -385,19 +386,19 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
        << " inputs=" << InputRegs.size() << " nodes=" << OrigNodes << "->"
        << G.getNumNodes() << " classes=" << G.getNumClasses()
        << " iters=" << S.Iterations << " "
-       << (S.Saturated           ? "saturated"
-           : S.HitNodeLimit      ? "node-limit"
-           : S.HitMatchLimit     ? "match-limit"
-                                 : "iteration-limit")
+       << (S.Saturated       ? "saturated"
+           : S.HitNodeLimit  ? "node-limit"
+           : S.HitMatchLimit ? "match-limit"
+                             : "iteration-limit")
        << " merges=" << S.Merges << " refinements=" << S.Refinements
        << " unsafe=" << S.RejectedUnsafe << " cost=" << OldCost << "->"
        << NewCost << (Profitable ? " profitable" : " not-profitable");
     if (Profitable)
       OS << (UsesRefinement ? " (refinement)" : " (equivalence)");
     if (Profitable)
-      OS << (DoRewrite        ? " rewritten"
-             : !CanRewrite    ? " shadow"
-                              : (" blocked:" + Blocker).str().c_str());
+      OS << (DoRewrite     ? " rewritten"
+             : !CanRewrite ? " shadow"
+                           : (" blocked:" + Blocker).str().c_str());
     OS << "\n";
     if (Profitable) {
       auto PrintInput = [&](raw_ostream &OS, unsigned Idx) {
@@ -464,8 +465,11 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
     if (!Order.count(&MI))
       Visited.insert(&MI);
 
+  // Redirect the uses of each root (but not its definition, which is erased
+  // below) to the new value. replaceRegWith() would also rewrite the def.
   for (auto [Old, New] : Replacements)
-    MRI.replaceRegWith(Old, New);
+    for (MachineOperand &MO : make_early_inc_range(MRI.use_operands(Old)))
+      MO.setReg(New);
 
   // 6. Erase the old region (users before definitions).
   for (MachineInstr *MI : reverse(R.Instrs)) {

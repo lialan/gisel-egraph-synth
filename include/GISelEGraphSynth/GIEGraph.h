@@ -180,6 +180,7 @@ private:
     size_t operator()(const ENode &N) const { return hash_value(N); }
   };
   void recomputeAnalyses();
+  void pruneConstantClasses();
   bool computeNodeNotUndef(const ENode &N) const;
   bool computeNodeNotPoison(const ENode &N) const;
 
@@ -187,6 +188,11 @@ private:
   mutable std::vector<EClassId> Parent;
   std::vector<InputInfo> Inputs;
   std::unordered_map<ENode, EClassId, ENodeHash> Memo;
+  /// Non-constant nodes removed from classes with a known constant value.
+  /// They are invisible to matching and extraction but stay in the hash-cons
+  /// memo, so re-deriving them is a no-op instead of a new class, and they
+  /// still take part in congruence closure.
+  std::vector<std::pair<ENode, EClassId>> Pruned;
   unsigned NumNodes = 0;
   unsigned NumClasses = 0;
   bool Dirty = false;
@@ -275,13 +281,20 @@ enum class ApplyResult { NoChange, Merged, Refined, Rejected, Unsafe };
 
 /// Apply one match: merges if exact, adds a refinement edge if only a
 /// refinement, and does nothing if neither can be justified.
-ApplyResult applyMatch(EGraph &G, const RewriteRule &Rule,
-                       const RuleMatch &M);
+ApplyResult applyMatch(EGraph &G, const RewriteRule &Rule, const RuleMatch &M);
 
 struct SaturationLimits {
   unsigned MaxIterations = 10;
   unsigned MaxNodes = 5000;
   unsigned MaxMatchesPerIteration = 20000;
+  /// Backoff scheduling (as in egg's BackoffScheduler): a rule that matches
+  /// more than RuleMatchLimit << N times in one iteration, where N is the
+  /// number of times it was banned before, is banned for RuleBanLength << N
+  /// iterations and its matches are dropped. This keeps explosive rules
+  /// (mostly associativity/commutativity) from starving the others. Zero
+  /// disables backoff.
+  unsigned RuleMatchLimit = 1000;
+  unsigned RuleBanLength = 2;
 };
 
 struct SaturationStats {
@@ -294,6 +307,8 @@ struct SaturationStats {
   bool HitNodeLimit = false;
   bool HitIterationLimit = false;
   bool HitMatchLimit = false;
+  /// Number of times a rule was banned by the backoff scheduler.
+  unsigned Bans = 0;
   /// Number of matches applied per rule name (in rule order).
   SmallVector<unsigned, 32> RuleApplications;
 };
@@ -346,18 +361,21 @@ public:
   /// Sum of node costs of the distinct classes needed to compute \p Roots.
   uint64_t getDagCost(ArrayRef<EClassId> Roots) const;
   /// Print the chosen expression as an S-expression.
-  void printExpr(raw_ostream &OS, EClassId Id,
-                 function_ref<void(raw_ostream &, unsigned)> PrintInput =
-                     nullptr) const;
+  void printExpr(
+      raw_ostream &OS, EClassId Id,
+      function_ref<void(raw_ostream &, unsigned)> PrintInput = nullptr) const;
   std::string getExprString(EClassId Id) const;
 
 private:
   const EGraph &G;
-  const CostModel &CM;
+  // The cost model is only used during construction; the local cost of each
+  // chosen node is cached so that the extractor does not keep a reference to
+  // the (possibly temporary) cost model.
   struct Choice {
     uint64_t Cost = Infinite;
-    int NodeIdx = -1;        // index into class nodes
-    EClassId RefTarget = 0;  // valid if NodeIdx == -1 and Cost finite
+    uint64_t LocalCost = 0; // cost of the chosen node without operands
+    int NodeIdx = -1;       // index into class nodes
+    EClassId RefTarget = 0; // valid if NodeIdx == -1 and Cost finite
   };
   std::vector<Choice> Choices; // indexed by canonical class id
 };

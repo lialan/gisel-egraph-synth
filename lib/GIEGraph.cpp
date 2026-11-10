@@ -385,6 +385,13 @@ void EGraph::rebuild() {
       }
       C.Nodes = std::move(NewNodes);
     }
+    for (auto &[N, Id] : Pruned) {
+      N = canonicalize(N);
+      Id = find(Id);
+      auto [It, Inserted] = Memo.try_emplace(N, Id);
+      if (!Inserted && find(It->second) != Id)
+        Pending.push_back({It->second, Id});
+    }
     bool Merged = false;
     for (auto [A, B] : Pending)
       Merged |= merge(A, B);
@@ -404,7 +411,30 @@ void EGraph::rebuild() {
     C.RefinesTo = std::move(NewRefs);
   }
   recomputeAnalyses();
+  pruneConstantClasses();
   Dirty = false;
+}
+
+void EGraph::pruneConstantClasses() {
+  // A class with a known constant value is best represented by the constant
+  // itself. Keeping its other nodes only feeds the rules with ever-larger
+  // constant expressions (e.g. once `a == a + 0`, the class of 0 collects
+  // 0 + 0, 0 * 2, 0 << 1, ...), so saturation would not terminate within the
+  // budget. This mirrors the usual constant-folding analysis in egg.
+  for (EClassId Id : getClassIds()) {
+    EClass &C = Classes[Id];
+    if (!C.Const || C.Nodes.size() == 1)
+      continue;
+    SmallVector<ENode, 2> Keep;
+    for (ENode &N : C.Nodes) {
+      if (N.isConstant())
+        Keep.push_back(std::move(N));
+      else
+        Pruned.push_back({std::move(N), Id});
+    }
+    assert(!Keep.empty() && "constant class without a constant node");
+    C.Nodes = std::move(Keep);
+  }
 }
 
 void EGraph::print(raw_ostream &OS) const {
@@ -542,7 +572,8 @@ private:
 };
 } // namespace
 
-static void countVarOccurrences(const Pattern &P, SmallVectorImpl<unsigned> &Occ) {
+static void countVarOccurrences(const Pattern &P,
+                                SmallVectorImpl<unsigned> &Occ) {
   for (const PatNode &N : P.Nodes)
     if (N.Kind == PatNode::Var)
       ++Occ[N.Index];
@@ -879,14 +910,34 @@ SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
   SaturationStats Stats;
   Stats.RuleApplications.assign(Rules.size(), 0);
   G.rebuild();
+  SmallVector<unsigned, 32> TimesBanned(Rules.size(), 0);
+  SmallVector<unsigned, 32> BannedUntil(Rules.size(), 0);
   for (unsigned Iter = 0; Iter < Limits.MaxIterations; ++Iter) {
     ++Stats.Iterations;
     // Read phase: collect matches for all rules on the current graph.
     SmallVector<std::pair<unsigned, RuleMatch>, 64> All;
     unsigned Budget = Limits.MaxMatchesPerIteration;
+    bool AnyBanned = false;
     for (unsigned RI = 0, RE = Rules.size(); RI != RE && Budget; ++RI) {
+      if (Iter < BannedUntil[RI]) {
+        AnyBanned = true;
+        continue;
+      }
+      unsigned Threshold = ~0u;
+      if (Limits.RuleMatchLimit)
+        Threshold = Limits.RuleMatchLimit << std::min(TimesBanned[RI], 16u);
       SmallVector<RuleMatch, 16> Ms;
-      matchRule(G, Rules[RI], Ms, Budget);
+      // Ask for one match more than the threshold to detect an overflow.
+      matchRule(G, Rules[RI], Ms,
+                Threshold == ~0u ? Budget : std::min(Budget, Threshold + 1));
+      if (Ms.size() > Threshold) {
+        BannedUntil[RI] =
+            Iter + (Limits.RuleBanLength << std::min(TimesBanned[RI], 16u));
+        ++TimesBanned[RI];
+        ++Stats.Bans;
+        AnyBanned = true;
+        continue;
+      }
       Budget -= Ms.size();
       for (RuleMatch &M : Ms)
         All.push_back({RI, std::move(M)});
@@ -927,7 +978,9 @@ SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
       Changed = true;
     if (Stats.HitNodeLimit)
       break;
-    if (!Changed) {
+    // With banned rules the graph is not saturated yet: keep going (within
+    // the iteration limit) until the bans expire.
+    if (!Changed && !AnyBanned) {
       Stats.Saturated = true;
       break;
     }
@@ -970,16 +1023,20 @@ static uint64_t addCost(uint64_t A, uint64_t B) {
   return S < A ? Extractor::Infinite : S;
 }
 
-Extractor::Extractor(const EGraph &G, const CostModel &CM) : G(G), CM(CM) {
+Extractor::Extractor(const EGraph &G, const CostModel &CM) : G(G) {
   assert(G.isClean() && "rebuild() the e-graph before extraction");
   SmallVector<EClassId, 32> Ids = G.getClassIds();
   EClassId MaxId = Ids.empty() ? 0 : Ids.back();
   Choices.assign(MaxId + 1, Choice());
 
-  auto NodeCost = [&](const ENode &N) -> uint64_t {
+  auto LocalCost = [&](const ENode &N) -> uint64_t {
     uint64_t C = CM.getNodeCost(N);
     if (N.isOperation())
       C = std::max<uint64_t>(C, 1); // Guarantees acyclic choices.
+    return C;
+  };
+  auto NodeCost = [&](const ENode &N) -> uint64_t {
+    uint64_t C = LocalCost(N);
     for (EClassId Op : N.Ops)
       C = addCost(C, Choices[G.find(Op)].Cost);
     return C;
@@ -998,6 +1055,7 @@ Extractor::Extractor(const EGraph &G, const CostModel &CM) : G(G), CM(CM) {
         uint64_t Cost = NodeCost(C.Nodes[NI]);
         if (Cost < Cur.Cost) {
           Cur.Cost = Cost;
+          Cur.LocalCost = LocalCost(C.Nodes[NI]);
           Cur.NodeIdx = NI;
           Changed = true;
         }
@@ -1006,6 +1064,7 @@ Extractor::Extractor(const EGraph &G, const CostModel &CM) : G(G), CM(CM) {
         uint64_t Cost = Choices[G.find(R)].Cost;
         if (Cost < Cur.Cost) {
           Cur.Cost = Cost;
+          Cur.LocalCost = 0;
           Cur.NodeIdx = -1;
           Cur.RefTarget = G.find(R);
           Changed = true;
@@ -1051,10 +1110,7 @@ uint64_t Extractor::getDagCost(ArrayRef<EClassId> Roots) const {
     const ENode *N = getChosenNode(Id);
     if (!N)
       return Infinite;
-    uint64_t C = CM.getNodeCost(*N);
-    if (N->isOperation())
-      C = std::max<uint64_t>(C, 1);
-    Total = addCost(Total, C);
+    Total = addCost(Total, Choices[Id].LocalCost);
     for (EClassId Op : N->Ops)
       Work.push_back(resolve(Op));
   }
@@ -1077,7 +1133,7 @@ void Extractor::printExpr(
       OS << "%in" << N->InputIdx;
     return;
   case ENodeKind::Constant:
-    OS << N->Imm.getSExtValue();
+    N->Imm.print(OS, /*isSigned=*/true);
     return;
   case ENodeKind::Operation:
     OS << "(" << getOpcodeName(N->Opcode);
