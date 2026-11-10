@@ -44,6 +44,7 @@ STATISTIC(NumSaturatedNodes, "Number of e-nodes after saturation");
 STATISTIC(NumEClasses, "Number of e-classes after saturation");
 STATISTIC(NumMatches, "Number of rewrite matches");
 STATISTIC(NumMerges, "Number of e-class merges from rewrites");
+STATISTIC(NumACMerges, "Number of e-class merges from AC canonicalization");
 STATISTIC(NumRefinements, "Number of refinement edges from rewrites");
 STATISTIC(NumUnsafe, "Number of matches rejected as unsound");
 STATISTIC(NumIterations, "Number of saturation iterations");
@@ -80,6 +81,14 @@ static cl::opt<unsigned>
 static cl::opt<unsigned> MaxMatches(
     "gisel-egraph-max-matches", cl::Hidden, cl::init(20000),
     cl::desc("Maximum number of rewrite matches per saturation iteration"));
+static cl::opt<unsigned> MaxACLeaves(
+    "gisel-egraph-max-ac-leaves", cl::Hidden, cl::init(8),
+    cl::desc("Maximum number of leaves of a flattened associative and "
+             "commutative term"));
+static cl::opt<unsigned>
+    MaxACViews("gisel-egraph-max-ac-views", cl::Hidden, cl::init(8),
+               cl::desc("Maximum number of flattened views of an e-class per "
+                        "associative and commutative operator"));
 static cl::opt<unsigned>
     ConstantCost("gisel-egraph-constant-cost", cl::Hidden, cl::init(0),
                  cl::desc("Extraction cost of a G_CONSTANT"));
@@ -295,6 +304,8 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
   Limits.MaxIterations = MaxIterations;
   Limits.MaxNodes = MaxNodes;
   Limits.MaxMatchesPerIteration = MaxMatches;
+  Limits.MaxACLeaves = MaxACLeaves;
+  Limits.MaxACViews = MaxACViews;
   SaturationStats S;
   {
     NamedRegionTimer T("saturate", "Saturate e-graph", TimerGroupName,
@@ -305,6 +316,7 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
   NumEClasses += G.getNumClasses();
   NumMatches += S.Matches;
   NumMerges += S.Merges;
+  NumACMerges += S.ACMerges;
   NumRefinements += S.Refinements;
   NumUnsafe += S.RejectedUnsafe;
   NumIterations += S.Iterations;
@@ -395,9 +407,10 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
            : S.HitNodeLimit  ? "node-limit"
            : S.HitMatchLimit ? "match-limit"
                              : "iteration-limit")
-       << " merges=" << S.Merges << " refinements=" << S.Refinements
-       << " unsafe=" << S.RejectedUnsafe << " cost=" << OldCost << "->"
-       << NewCost << (Profitable ? " profitable" : " not-profitable");
+       << " merges=" << S.Merges << " ac-merges=" << S.ACMerges
+       << " refinements=" << S.Refinements << " unsafe=" << S.RejectedUnsafe
+       << " cost=" << OldCost << "->" << NewCost
+       << (Profitable ? " profitable" : " not-profitable");
     if (Profitable)
       OS << (UsesRefinement ? " (refinement)" : " (equivalence)");
     if (Profitable)

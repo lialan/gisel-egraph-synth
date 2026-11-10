@@ -93,10 +93,11 @@ void llvm::egraph::addAlgebraRulesFromProperties(
                  const std::string &R) {
     Rules.emplace_back((Twine(P.ShortName) + "-" + Suffix).str(), L, R);
   };
-  // Commutativity is not a rule: it is enforced by canonicalization (see
-  // EGraph::canonicalize and getImplicitPropertyRules).
+  // Commutativity, and associativity of commutative operators, are not
+  // rules: they are enforced by canonicalization (EGraph::canonicalize,
+  // EGraph::canonicalizeAC, AC matching; see getImplicitPropertyRules).
   for (const OpProperties &P : Props) {
-    if (!P.Associative)
+    if (!P.Associative || P.Commutative)
       continue;
     Add(P, "assoc-r", bin(P, bin(P, "?a", "?b"), "?c"),
         bin(P, "?a", bin(P, "?b", "?c")));
@@ -131,6 +132,11 @@ llvm::egraph::getImplicitPropertyRules(ArrayRef<OpProperties> Props) {
     if (P.Commutative)
       Rules.emplace_back((Twine(P.ShortName) + "-comm").str(),
                          bin(P, "?a", "?b"), bin(P, "?b", "?a"));
+  for (const OpProperties &P : Props)
+    if (P.Associative && P.Commutative)
+      Rules.emplace_back((Twine(P.ShortName) + "-assoc").str(),
+                         bin(P, bin(P, "?a", "?b"), "?c"),
+                         bin(P, "?a", bin(P, "?b", "?c")));
   return Rules;
 }
 
@@ -190,6 +196,8 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
   Add("sub-to-add-neg", "(G_SUB ?a ?b)", "(G_ADD ?a (G_SUB 0 ?b))",
       [](const EGraph &G, const RuleMatch &M, Computed &) {
         // Do not rewrite a negation (0 - b) itself.
+        if (M.isSumBound(0))
+          return true;
         std::optional<APInt> A = G.getConstant(M.Vars[0]);
         return !(A && A->isZero());
       });

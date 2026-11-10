@@ -42,6 +42,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/CodeGenTypes/LowLevelType.h"
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -119,6 +120,31 @@ struct EClass {
   bool NotPoison = false;
 };
 
+/// A term of an associative and commutative (AC) operator, represented by
+/// the multiset of its leaf classes: Opcode(Leaves[0], Leaves[1], ...).
+/// Leaves are canonical class ids in increasing order.
+struct ACTerm {
+  unsigned Opcode = 0;
+  SmallVector<EClassId, 4> Leaves;
+  bool empty() const { return Leaves.empty(); }
+  bool operator==(const ACTerm &O) const {
+    return Opcode == O.Opcode && Leaves == O.Leaves;
+  }
+};
+
+/// One way to see a class as an AC term: the leaves obtained by flattening
+/// nested nodes of the same AC operator. ViaRefinement is set if a flagged
+/// node was flattened (such a view only justifies refinements).
+struct ACView {
+  SmallVector<EClassId, 8> Leaves;
+  bool ViaRefinement = false;
+};
+
+/// True if \p Opcode is associative and commutative. Such operators are not
+/// rewritten by associativity/commutativity rules; the graph keeps their
+/// terms in a canonical form and the matcher works modulo AC.
+bool isACOperator(unsigned Opcode);
+
 /// A typed e-graph over gMIR operators.
 class EGraph {
 public:
@@ -173,6 +199,40 @@ public:
   /// Canonicalize the operands of \p N.
   ENode canonicalize(const ENode &N) const;
 
+  /// Hash-consing lookup without insertion. Requires a clean graph.
+  std::optional<EClassId> lookup(const ENode &N) const;
+
+  /// The canonical form of the AC term Opc(Leaves...): the leaves sorted by
+  /// class id and combined left to right, ((l0 op l1) op l2) op ... A single
+  /// leaf is returned as is.
+  EClassId addACTerm(unsigned Opc, LLT Ty, ArrayRef<EClassId> Leaves);
+  /// Like addACTerm, but only looks the canonical form up.
+  std::optional<EClassId> lookupACTerm(unsigned Opc, LLT Ty,
+                                       ArrayRef<EClassId> Leaves) const;
+
+  /// The AC views of class \p C for operator \p Opc (see ACView): for each
+  /// node of \p C, its operands, its full flattening and its flattening up
+  /// to classes that also contain other kinds of nodes. At most \p MaxViews
+  /// views with at most \p MaxLeaves leaves each, in a deterministic order.
+  void getACViews(EClassId C, unsigned Opc, SmallVectorImpl<ACView> &Out,
+                  unsigned MaxLeaves, unsigned MaxViews) const;
+
+  /// Associativity (with commutativity) as canonicalization: merge every
+  /// class containing an unflagged AC node with the canonical form of the
+  /// node's flattening (see addACTerm), so that terms that are equal modulo
+  /// AC end up in the same class. Requires a clean graph; returns the number
+  /// of merges. Stops adding nodes once the graph has \p MaxNodes nodes.
+  unsigned canonicalizeAC(unsigned MaxLeaves, unsigned MaxNodes);
+
+  /// Flatten the AC node \p N of class \p Root into \p Leaves (see the
+  /// implementation for the choices made). Returns false if the term has
+  /// more than \p MaxLeaves leaves.
+  /// If \p UsedFlagged is non-null, flagged nodes are flattened too and
+  /// *UsedFlagged tells whether one was (the result is then a refinement).
+  bool flattenAC(EClassId Root, const ENode &N, bool StopAtMixed,
+                 unsigned MaxLeaves, SmallVectorImpl<EClassId> &Leaves,
+                 bool *UsedFlagged = nullptr) const;
+
   void print(raw_ostream &OS) const;
 
 private:
@@ -222,13 +282,27 @@ struct Pattern {
 
 /// A single match of a rule's left-hand side.
 struct RuleMatch {
+  /// Marks Vars[V] of a variable bound to VarSums[V] instead of a class.
+  static constexpr EClassId SumBound = ~0u - 1;
+
   EClassId Root = 0;
   SmallVector<EClassId, 4> Vars;
+  /// For variables matched against several leaves of an AC term for which
+  /// no class exists yet: the AC term (materialized when the rule fires).
+  SmallVector<ACTerm, 0> VarSums;
+  /// AC matching with extension: the root is `LHS op Rest`, where LHS is
+  /// the matched pattern and Rest the remaining leaves of the root's view.
+  /// The rule then relates the root to `RHS op Rest`.
+  ACTerm Rest;
   SmallVector<std::optional<APInt>, 2> Consts;
   /// True if some structural part of the match was found by following a
   /// refinement edge. Such a match only justifies a refinement.
   bool ViaRefinement = false;
+
+  bool isSumBound(unsigned V) const { return Vars[V] == SumBound; }
 };
+
+class ACViewCache;
 
 class RewriteRule {
 public:
@@ -301,7 +375,10 @@ struct OpProperties {
   /// are canonicalized by sorting their operand classes, and the matcher
   /// tries both operand orders.
   bool Commutative = false;
-  /// (a op b) op c == a op (b op c)
+  /// (a op b) op c == a op (b op c). If the operator is also commutative,
+  /// this is not a rewrite rule either: AC terms are canonicalized
+  /// (EGraph::canonicalizeAC) and patterns are matched modulo AC. Otherwise
+  /// the two associativity rules are generated.
   bool Associative = false;
   /// a op a == a
   bool Idempotent = false;
@@ -342,8 +419,9 @@ const OpProperties *getOpProperties(unsigned Opcode);
 void addAlgebraRulesFromProperties(ArrayRef<OpProperties> Props,
                                    std::vector<RewriteRule> &Rules);
 /// Identities that hold by \p Props but are enforced by canonicalization
-/// instead of rewriting (currently commutativity). They are never applied;
-/// they exist so that the properties can be checked offline like the rules
+/// instead of rewriting (commutativity, and associativity of AC operators).
+/// They are never applied; they exist so that the properties can be checked
+/// offline like the rules
 /// (-gisel-egraph-print-rules, verify_rules.py).
 std::vector<RewriteRule> getImplicitPropertyRules(ArrayRef<OpProperties> Props);
 void addFactoringRulesFromProperties(ArrayRef<OpProperties> Props,
@@ -356,9 +434,12 @@ void addFoldingRulesFromProperties(ArrayRef<OpProperties> Props,
 /// relate different operators (negation, strength reduction, ...).
 std::vector<RewriteRule> getDefaultIntegerRules();
 
-/// Collect all matches of \p Rule's LHS (up to \p Limit).
+/// Collect all matches of \p Rule's LHS (up to \p Limit). Patterns rooted
+/// at an AC operator are matched modulo AC using the views in \p Cache (a
+/// cache with default limits is used if it is null).
 void matchRule(const EGraph &G, const RewriteRule &Rule,
-               SmallVectorImpl<RuleMatch> &Matches, unsigned Limit = ~0u);
+               SmallVectorImpl<RuleMatch> &Matches, unsigned Limit = ~0u,
+               ACViewCache *Cache = nullptr);
 
 /// Result of applying one match.
 enum class ApplyResult { NoChange, Merged, Refined, Rejected, Unsafe };
@@ -379,12 +460,38 @@ struct SaturationLimits {
   /// disables backoff.
   unsigned RuleMatchLimit = 1000;
   unsigned RuleBanLength = 2;
+  /// AC terms: maximum number of leaves of a flattened term and maximum
+  /// number of views per class and operator.
+  unsigned MaxACLeaves = 8;
+  unsigned MaxACViews = 8;
+};
+
+/// Memoized AC views of a clean graph (valid until the graph changes).
+class ACViewCache {
+public:
+  ACViewCache(const EGraph &G, unsigned MaxLeaves, unsigned MaxViews)
+      : G(G), MaxLeaves(MaxLeaves), MaxViews(MaxViews) {}
+  ArrayRef<ACView> get(EClassId C, unsigned Opc);
+  /// Memoized EGraph::lookupACTerm.
+  std::optional<EClassId> lookup(unsigned Opc, LLT Ty,
+                                 ArrayRef<EClassId> Leaves);
+  const EGraph &getGraph() const { return G; }
+
+private:
+  const EGraph &G;
+  unsigned MaxLeaves, MaxViews;
+  // std::map: references to cached views stay valid while new entries are
+  // added (matching is recursive).
+  std::map<std::pair<EClassId, unsigned>, SmallVector<ACView, 4>> Views;
+  std::map<std::vector<EClassId>, std::optional<EClassId>> Terms;
 };
 
 struct SaturationStats {
   unsigned Iterations = 0;
   unsigned Matches = 0;
   unsigned Merges = 0;
+  /// Merges made by AC canonicalization.
+  unsigned ACMerges = 0;
   unsigned Refinements = 0;
   unsigned RejectedUnsafe = 0;
   bool Saturated = false;

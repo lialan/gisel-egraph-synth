@@ -19,6 +19,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include <deque>
+#include <set>
 
 using namespace llvm;
 using namespace llvm::egraph;
@@ -149,6 +150,11 @@ static StringRef getOpcodeName(unsigned Opc) {
   return "G_<unknown>";
 }
 
+bool llvm::egraph::isACOperator(unsigned Opc) {
+  const OpProperties *P = getOpProperties(Opc);
+  return P && P->Associative && P->Commutative;
+}
+
 static bool isShift(unsigned Opc) {
   const OpProperties *P = getOpProperties(Opc);
   return P && P->IsShift;
@@ -272,6 +278,161 @@ ENode EGraph::canonicalize(const ENode &N) const {
       std::swap(C.Ops[0], C.Ops[1]);
   }
   return C;
+}
+
+std::optional<EClassId> EGraph::lookup(const ENode &N) const {
+  auto It = Memo.find(canonicalize(N));
+  if (It == Memo.end())
+    return std::nullopt;
+  return find(It->second);
+}
+
+EClassId EGraph::addACTerm(unsigned Opc, LLT Ty, ArrayRef<EClassId> Leaves) {
+  assert(!Leaves.empty() && "empty AC term");
+  SmallVector<EClassId, 8> L;
+  for (EClassId X : Leaves)
+    L.push_back(find(X));
+  llvm::sort(L);
+  EClassId Acc = L[0];
+  for (unsigned I = 1, E = L.size(); I != E; ++I)
+    Acc = addOp(Opc, Ty, {Acc, L[I]});
+  return Acc;
+}
+
+std::optional<EClassId> EGraph::lookupACTerm(unsigned Opc, LLT Ty,
+                                             ArrayRef<EClassId> Leaves) const {
+  assert(!Leaves.empty() && "empty AC term");
+  SmallVector<EClassId, 8> L;
+  for (EClassId X : Leaves)
+    L.push_back(find(X));
+  llvm::sort(L);
+  EClassId Acc = L[0];
+  for (unsigned I = 1, E = L.size(); I != E; ++I) {
+    std::optional<EClassId> Next = lookup(ENode::makeOp(Opc, Ty, {Acc, L[I]}));
+    if (!Next)
+      return std::nullopt;
+    Acc = *Next;
+  }
+  return Acc;
+}
+
+bool EGraph::flattenAC(EClassId Root, const ENode &N, bool StopAtMixed,
+                       unsigned MaxLeaves, SmallVectorImpl<EClassId> &Leaves,
+                       bool *UsedFlagged) const {
+  // Flatten through the first unflagged node of the same operator in each
+  // operand class (deterministic), never through a class on the current
+  // path. Flagged nodes are leaves unless UsedFlagged is given: flattening
+  // them drops their flags, which is only a refinement, so the caller is
+  // told whether that happened. With StopAtMixed, classes that also contain
+  // another kind of node (e.g. a G_MUL in a class of sums) stay leaves, so
+  // that patterns can match that other node.
+  Leaves.clear();
+  if (UsedFlagged)
+    *UsedFlagged = false;
+  SmallVector<EClassId, 8> Path = {find(Root)};
+  bool TooBig = false;
+  std::function<void(EClassId)> Flatten = [&](EClassId L) {
+    L = find(L);
+    if (TooBig)
+      return;
+    const ENode *Inner = nullptr, *FlaggedInner = nullptr;
+    bool Mixed = false;
+    if (!is_contained(Path, L)) {
+      for (const ENode &M : Classes[L].Nodes) {
+        if (M.isOperation() && M.Opcode == N.Opcode && M.Ty == N.Ty) {
+          if (!M.Flags && !Inner)
+            Inner = &M;
+          else if (M.Flags && !FlaggedInner)
+            FlaggedInner = &M;
+        } else {
+          Mixed = true;
+        }
+      }
+    }
+    if (!Inner && UsedFlagged && FlaggedInner) {
+      Inner = FlaggedInner;
+      *UsedFlagged = true;
+    }
+    if (!Inner || (StopAtMixed && Mixed)) {
+      Leaves.push_back(L);
+      TooBig = Leaves.size() > MaxLeaves;
+      return;
+    }
+    Path.push_back(L);
+    SmallVector<EClassId, 2> Ops(Inner->Ops.begin(), Inner->Ops.end());
+    for (EClassId Op : Ops)
+      Flatten(Op);
+    Path.pop_back();
+  };
+  for (EClassId Op : N.Ops)
+    Flatten(Op);
+  return !TooBig;
+}
+
+void EGraph::getACViews(EClassId C, unsigned Opc, SmallVectorImpl<ACView> &Out,
+                        unsigned MaxLeaves, unsigned MaxViews) const {
+  C = find(C);
+  LLT Ty = Classes[C].Ty;
+  // Per AC node of the class: its operands, its full flattening, and its
+  // flattening that stops at mixed classes (see flattenAC). Classes in the
+  // canonical form already contain the full flattening of their terms, so
+  // this covers the groupings that matter without enumerating all of them.
+  SmallVector<EClassId, 8> Leaves;
+  auto Push = [&](ArrayRef<EClassId> L, bool ViaRefinement) {
+    if (Out.size() >= MaxViews)
+      return;
+    ACView V;
+    V.Leaves.assign(L.begin(), L.end());
+    llvm::sort(V.Leaves);
+    V.ViaRefinement = ViaRefinement;
+    for (const ACView &O : Out)
+      if (O.Leaves == V.Leaves && (!O.ViaRefinement || ViaRefinement))
+        return;
+    Out.push_back(std::move(V));
+  };
+  for (const ENode &N : Classes[C].Nodes) {
+    if (!N.isOperation() || N.Opcode != Opc || N.Ty != Ty)
+      continue;
+    SmallVector<EClassId, 2> Ops;
+    for (EClassId Op : N.Ops)
+      Ops.push_back(find(Op));
+    Push(Ops, N.Flags != 0);
+    if (N.Flags)
+      continue;
+    for (bool StopAtMixed : {false, true})
+      if (flattenAC(C, N, StopAtMixed, MaxLeaves, Leaves) && Leaves.size() > 2)
+        Push(Leaves, false);
+    // Also look through flagged nodes; such a view only justifies
+    // refinements.
+    bool UsedFlagged;
+    if (flattenAC(C, N, /*StopAtMixed=*/false, MaxLeaves, Leaves,
+                  &UsedFlagged) &&
+        UsedFlagged)
+      Push(Leaves, true);
+  }
+}
+
+unsigned EGraph::canonicalizeAC(unsigned MaxLeaves, unsigned MaxNodes) {
+  assert(!Dirty && "rebuild() the e-graph before canonicalizing");
+  unsigned Merges = 0;
+  SmallVector<EClassId, 8> Leaves;
+  for (EClassId Id : getClassIds()) {
+    // Copy: adding nodes may reallocate the class vector.
+    SmallVector<ENode, 2> Nodes = Classes[find(Id)].Nodes;
+    for (const ENode &N : Nodes) {
+      if (NumNodes >= MaxNodes)
+        return Merges;
+      if (!N.isOperation() || N.Flags || !isACOperator(N.Opcode))
+        continue;
+      // Two leaves: the node is its own canonical form.
+      if (!flattenAC(Id, N, /*StopAtMixed=*/false, MaxLeaves, Leaves) ||
+          Leaves.size() < 3)
+        continue;
+      EClassId K = addACTerm(N.Opcode, N.Ty, Leaves);
+      Merges += merge(Id, K);
+    }
+  }
+  return Merges;
 }
 
 EClassId EGraph::add(ENode N) {
@@ -701,9 +862,41 @@ RewriteRule::RewriteRule(StringRef Name, StringRef LHSText, StringRef RHSText,
 //    value. If a variable occurs exactly once on each side, the sets of
 //    possible results coincide. If it occurs several times on a side, the
 //    identity is only guaranteed on the "diagonal" (all occurrences equal).
+namespace {
+/// Definedness of a variable's binding. An AC term bound to a variable is
+/// built from unflagged operators, so it is not undef (not poison) if all
+/// of its leaves are.
+struct BindingFacts {
+  bool NotUndef = true;
+  bool NotPoison = true;
+};
+} // namespace
+
+static BindingFacts getBindingFacts(const EGraph &G, const RuleMatch &M,
+                                    unsigned V) {
+  BindingFacts F;
+  auto Add = [&](EClassId C) {
+    const EClass &Cls = G.getClass(C);
+    F.NotUndef &= Cls.NotUndef;
+    F.NotPoison &= Cls.NotPoison;
+  };
+  if (M.isSumBound(V))
+    for (EClassId L : M.VarSums[V].Leaves)
+      Add(L);
+  else
+    Add(M.Vars[V]);
+  return F;
+}
+
+// Matching modulo AC (views, extension, AC terms bound to variables) only
+// regroups and reorders the operands of unflagged associative and
+// commutative operators, which is exact: every leaf occurs once on each
+// side. Leaves kept aside by extension (RuleMatch::Rest) also occur once on
+// each side, and `x op Rest` preserves refinement of x, so the
+// classification below only depends on the rule's variables.
 bool RewriteRule::isExactFor(const EGraph &G, const RuleMatch &M) const {
   for (unsigned V = 0, E = VarNames.size(); V != E; ++V) {
-    const EClass &C = G.getClass(M.Vars[V]);
+    BindingFacts C = getBindingFacts(G, M, V);
     unsigned L = OccL[V], R = OccR[V];
     if (R == 0) {
       // The variable is dropped: LHS is poison when it is, RHS is not.
@@ -723,7 +916,7 @@ bool RewriteRule::isRefinementFor(const EGraph &G, const RuleMatch &M) const {
   // poison. Using a variable at most once on the RHS picks one point of the
   // diagonal of the LHS' possible values.
   for (unsigned V = 0, E = VarNames.size(); V != E; ++V)
-    if (OccR[V] > 1 && !G.getClass(M.Vars[V]).NotUndef)
+    if (OccR[V] > 1 && !getBindingFacts(G, M, V).NotUndef)
       return false;
   return true;
 }
@@ -767,29 +960,119 @@ void RewriteRule::print(raw_ostream &OS) const {
 // Matching
 //===----------------------------------------------------------------------===//
 
+ArrayRef<ACView> ACViewCache::get(EClassId C, unsigned Opc) {
+  C = G.find(C);
+  auto [It, Inserted] = Views.try_emplace({C, Opc});
+  if (Inserted)
+    G.getACViews(C, Opc, It->second, MaxLeaves, MaxViews);
+  return It->second;
+}
+
+std::optional<EClassId> ACViewCache::lookup(unsigned Opc, LLT Ty,
+                                            ArrayRef<EClassId> Leaves) {
+  std::vector<EClassId> Key(Leaves.begin(), Leaves.end());
+  Key.push_back(Opc);
+  auto [It, Inserted] = Terms.try_emplace(std::move(Key));
+  if (Inserted)
+    It->second = G.lookupACTerm(Opc, Ty, Leaves);
+  return It->second;
+}
+
 namespace {
 static constexpr EClassId Unbound = ~0u;
 
+/// Matches a rule's LHS. Patterns of AC operators are matched modulo AC:
+/// against every view of a class (ACView), a binary pattern (op P1 P2)
+/// matches if one child matches a single leaf and the other the remaining
+/// leaves. At the root, two single leaves may also be chosen and the
+/// remaining leaves become RuleMatch::Rest ("matching with extension").
+/// Several leaves match a variable as an AC term (a class if one exists,
+/// otherwise RuleMatch::VarSums), and a structural pattern only if a class
+/// for their canonical form exists.
 class Matcher {
 public:
   Matcher(const EGraph &G, const RewriteRule &R,
-          SmallVectorImpl<RuleMatch> &Out, unsigned Limit)
-      : G(G), R(R), Out(Out), Limit(Limit) {}
+          SmallVectorImpl<RuleMatch> &Out, unsigned Limit, ACViewCache &Cache)
+      : G(G), R(R), Out(Out), Limit(Limit), Cache(Cache) {}
 
   void run(EClassId Root) {
     Cur.Root = Root;
     Cur.Vars.assign(R.getNumVars(), Unbound);
+    Cur.VarSums.assign(R.getNumVars(), ACTerm());
     Cur.Consts.assign(R.getNumConstVars(), std::nullopt);
+    Cur.Rest = ACTerm();
     Cur.ViaRefinement = false;
+    Seen.clear();
     const Pattern &P = R.getLHS();
     matchAt(P.Root, Root, /*AllowRefine=*/false, [&] {
-      if (Out.size() < Limit)
+      // Different views often yield the same match; keep one copy.
+      if (Out.size() < Limit && Seen.insert(key(Cur)).second)
         Out.push_back(Cur);
     });
   }
 
 private:
   bool full() const { return Out.size() >= Limit; }
+
+  static std::vector<uint64_t> key(const RuleMatch &M) {
+    std::vector<uint64_t> K;
+    K.push_back(M.ViaRefinement);
+    for (unsigned V = 0, E = M.Vars.size(); V != E; ++V) {
+      K.push_back(M.Vars[V]);
+      if (M.isSumBound(V)) {
+        K.push_back(M.VarSums[V].Opcode);
+        K.insert(K.end(), M.VarSums[V].Leaves.begin(),
+                 M.VarSums[V].Leaves.end());
+        K.push_back(~0ull);
+      }
+    }
+    for (const std::optional<APInt> &C : M.Consts)
+      K.push_back(C ? uint64_t(hash_value(*C)) : ~uint64_t(0));
+    K.push_back(M.Rest.Opcode);
+    K.insert(K.end(), M.Rest.Leaves.begin(), M.Rest.Leaves.end());
+    return K;
+  }
+
+  void bindClass(unsigned V, EClassId C, function_ref<void()> K) {
+    EClassId &Slot = Cur.Vars[V];
+    if (Slot == Unbound) {
+      Slot = C;
+      K();
+      Slot = Unbound;
+    } else if (Slot == RuleMatch::SumBound) {
+      const ACTerm &T = Cur.VarSums[V];
+      std::optional<EClassId> S =
+          Cache.lookup(T.Opcode, G.getType(C), T.Leaves);
+      if (S && *S == G.find(C))
+        K();
+    } else if (G.find(Slot) == G.find(C)) {
+      K();
+    }
+  }
+
+  /// Bind variable \p V to the AC term Opc(Leaves...). The term is kept as
+  /// is (no lookup) unless it has to be compared with a class.
+  void bindSum(unsigned V, unsigned Opc, LLT Ty, ArrayRef<EClassId> Leaves,
+               function_ref<void()> K) {
+    EClassId &Slot = Cur.Vars[V];
+    if (Slot != Unbound && Slot != RuleMatch::SumBound) {
+      std::optional<EClassId> S = Cache.lookup(Opc, Ty, Leaves);
+      if (S && *S == G.find(Slot))
+        K();
+      return;
+    }
+    if (Slot == Unbound) {
+      Slot = RuleMatch::SumBound;
+      Cur.VarSums[V].Opcode = Opc;
+      Cur.VarSums[V].Leaves.assign(Leaves.begin(), Leaves.end());
+      K();
+      Cur.VarSums[V] = ACTerm();
+      Slot = Unbound;
+    } else if (Slot == RuleMatch::SumBound && Cur.VarSums[V].Opcode == Opc &&
+               ArrayRef<EClassId>(Cur.VarSums[V].Leaves) == Leaves) {
+      K();
+    }
+  }
 
   void matchAt(unsigned PIdx, EClassId C, bool AllowRefine,
                function_ref<void()> K) {
@@ -798,19 +1081,13 @@ private:
     const PatNode &PN = R.getLHS().Nodes[PIdx];
     C = G.find(C);
     if (PN.Kind == PatNode::Var) {
-      EClassId &Slot = Cur.Vars[PN.Index];
-      if (Slot == Unbound) {
-        Slot = C;
-        K();
-        Slot = Unbound;
-      } else if (G.find(Slot) == C) {
-        K();
-      }
+      bindClass(PN.Index, C, K);
       return;
     }
+    bool IsRoot = PIdx == R.getLHS().Root;
     // Structural patterns: try the class itself, then (if allowed) the
     // classes it refines to.
-    matchStructural(PN, C, K);
+    matchStructural(PN, C, IsRoot, K);
     if (!AllowRefine)
       return;
     SmallVector<EClassId, 4> Closure = G.getRefinementClosure(C);
@@ -819,11 +1096,127 @@ private:
     bool Saved = Cur.ViaRefinement;
     Cur.ViaRefinement = true;
     for (EClassId D : Closure)
-      matchStructural(PN, D, K);
+      matchStructural(PN, D, /*IsRoot=*/false, K);
     Cur.ViaRefinement = Saved;
   }
 
-  void matchStructural(const PatNode &PN, EClassId C, function_ref<void()> K) {
+  /// Cheap necessary condition for pattern \p PIdx to match class \p C.
+  bool mayMatch(unsigned PIdx, EClassId C) const {
+    const PatNode &PN = R.getLHS().Nodes[PIdx];
+    const EClass &Cls = G.getClass(C);
+    switch (PN.Kind) {
+    case PatNode::Var:
+      return true;
+    case PatNode::Literal:
+    case PatNode::ConstVar:
+      return Cls.Const.has_value() || !Cls.RefinesTo.empty();
+    case PatNode::Op:
+      if (!Cls.RefinesTo.empty())
+        return true;
+      return any_of(Cls.Nodes, [&](const ENode &N) {
+        return N.isOperation() && N.Opcode == PN.Opcode;
+      });
+    case PatNode::Computed:
+      break;
+    }
+    return false;
+  }
+
+  /// Match pattern \p PIdx against the AC term Opc(Leaves...) (sorted).
+  void matchLeaves(unsigned PIdx, unsigned Opc, LLT Ty,
+                   ArrayRef<EClassId> Leaves, function_ref<void()> K) {
+    if (Leaves.size() == 1) {
+      if (mayMatch(PIdx, Leaves[0]))
+        matchAt(PIdx, Leaves[0], /*AllowRefine=*/true, K);
+      return;
+    }
+    const PatNode &PN = R.getLHS().Nodes[PIdx];
+    if (PN.Kind == PatNode::Var) {
+      bindSum(PN.Index, Opc, Ty, Leaves, K);
+      return;
+    }
+    // A structural pattern can only match a class that already exists. The
+    // canonical form of the leaves is an Opc node, so only a pattern of the
+    // same operator (or a class merged with something else) can match.
+    if (std::optional<EClassId> C = Cache.lookup(Opc, Ty, Leaves))
+      if (mayMatch(PIdx, *C))
+        matchAt(PIdx, *C, /*AllowRefine=*/true, K);
+  }
+
+  /// For (op ?a <constant>) with ?a used once in the LHS, extension only
+  /// produces regroupings of what the complete split (?a takes all other
+  /// leaves) already yields: the constant interacts with ?a as a whole.
+  bool extensionIsRedundant(const PatNode &PN) const {
+    const Pattern &P = R.getLHS();
+    auto IsConst = [&](unsigned I) {
+      PatNode::KindTy K = P.Nodes[I].Kind;
+      return K == PatNode::Literal || K == PatNode::ConstVar;
+    };
+    auto IsLinearVar = [&](unsigned I) {
+      return P.Nodes[I].Kind == PatNode::Var &&
+             R.getLHSOccurrences(P.Nodes[I].Index) == 1;
+    };
+    unsigned A = PN.Children[0], B = PN.Children[1];
+    return (IsLinearVar(A) && IsConst(B)) || (IsConst(A) && IsLinearVar(B));
+  }
+
+  void matchAC(const PatNode &PN, EClassId C, bool AllowExtension,
+               function_ref<void()> K) {
+    LLT Ty = G.getType(C);
+    unsigned P0 = PN.Children[0], P1 = PN.Children[1];
+    SmallVector<EClassId, 8> Others;
+    auto Without = [&](ArrayRef<EClassId> L, unsigned I, unsigned J) {
+      Others.clear();
+      for (unsigned X = 0, E = L.size(); X != E; ++X)
+        if (X != I && X != J)
+          Others.push_back(L[X]);
+      return SmallVector<EClassId, 8>(Others);
+    };
+    for (const ACView &V : Cache.get(C, PN.Opcode)) {
+      if (full())
+        return;
+      bool Saved = Cur.ViaRefinement;
+      Cur.ViaRefinement |= V.ViaRefinement;
+      ArrayRef<EClassId> L = V.Leaves;
+      unsigned N = L.size();
+      // One child matches a single leaf, the other child all other leaves.
+      for (unsigned I = 0; I != N; ++I) {
+        if (I && L[I] == L[I - 1])
+          continue;
+        SmallVector<EClassId, 8> Rest = Without(L, I, I);
+        ArrayRef<EClassId> One = L.slice(I, 1);
+        matchLeaves(P0, PN.Opcode, Ty, One,
+                    [&] { matchLeaves(P1, PN.Opcode, Ty, Rest, K); });
+        if (N > 2)
+          matchLeaves(P0, PN.Opcode, Ty, Rest,
+                      [&] { matchLeaves(P1, PN.Opcode, Ty, One, K); });
+      }
+      // Extension: two single leaves; the others are kept aside.
+      if (AllowExtension && N >= 3 && !extensionIsRedundant(PN)) {
+        for (unsigned I = 0; I != N; ++I) {
+          if (I && L[I] == L[I - 1])
+            continue;
+          for (unsigned J = I + 1; J != N; ++J) {
+            if (J > I + 1 && L[J] == L[J - 1])
+              continue;
+            Cur.Rest.Opcode = PN.Opcode;
+            Cur.Rest.Leaves = Without(L, I, J);
+            ArrayRef<EClassId> A = L.slice(I, 1), B = L.slice(J, 1);
+            matchLeaves(P0, PN.Opcode, Ty, A,
+                        [&] { matchLeaves(P1, PN.Opcode, Ty, B, K); });
+            if (L[I] != L[J])
+              matchLeaves(P0, PN.Opcode, Ty, B,
+                          [&] { matchLeaves(P1, PN.Opcode, Ty, A, K); });
+            Cur.Rest = ACTerm();
+          }
+        }
+      }
+      Cur.ViaRefinement = Saved;
+    }
+  }
+
+  void matchStructural(const PatNode &PN, EClassId C, bool IsRoot,
+                       function_ref<void()> K) {
     const EClass &Cls = G.getClass(C);
     switch (PN.Kind) {
     case PatNode::Var:
@@ -853,7 +1246,10 @@ private:
       return;
     }
     case PatNode::Op: {
-      // Copy the node list: K() never mutates the graph, but be robust.
+      if (isACOperator(PN.Opcode) && PN.Children.size() == 2) {
+        matchAC(PN, C, /*AllowExtension=*/IsRoot, K);
+        return;
+      }
       for (const ENode &N : Cls.Nodes) {
         if (full())
           return;
@@ -903,15 +1299,24 @@ private:
   const RewriteRule &R;
   SmallVectorImpl<RuleMatch> &Out;
   unsigned Limit;
+  ACViewCache &Cache;
   RuleMatch Cur;
+  std::set<std::vector<uint64_t>> Seen;
 };
 } // namespace
 
 void llvm::egraph::matchRule(const EGraph &G, const RewriteRule &Rule,
                              SmallVectorImpl<RuleMatch> &Matches,
-                             unsigned Limit) {
+                             unsigned Limit, ACViewCache *Cache) {
   assert(G.isClean() && "rebuild() the e-graph before matching");
-  Matcher M(G, Rule, Matches, Limit);
+  std::optional<ACViewCache> LocalCache;
+  if (!Cache) {
+    SaturationLimits Defaults;
+    LocalCache.emplace(G, Defaults.MaxACLeaves, Defaults.MaxACViews);
+    Cache = &*LocalCache;
+  }
+  assert(&Cache->getGraph() == &G && "view cache of another graph");
+  Matcher M(G, Rule, Matches, Limit, *Cache);
   for (EClassId Id : G.getClassIds()) {
     if (Matches.size() >= Limit)
       return;
@@ -937,6 +1342,12 @@ public:
     unsigned Width = Ty.getSizeInBits();
     switch (PN.Kind) {
     case PatNode::Var: {
+      if (M.isSumBound(PN.Index)) {
+        const ACTerm &T = M.VarSums[PN.Index];
+        if (G.getType(T.Leaves[0]) != Ty)
+          return std::nullopt;
+        return G.addACTerm(T.Opcode, Ty, T.Leaves);
+      }
       EClassId C = M.Vars[PN.Index];
       if (!IsShiftAmount && G.getType(C) != Ty)
         return std::nullopt;
@@ -1007,6 +1418,12 @@ ApplyResult llvm::egraph::applyMatch(EGraph &G, const RewriteRule &Rule,
           .build(Rule.getRHS().Root, /*IsShiftAmount=*/false);
   if (!New)
     return ApplyResult::Rejected;
+  if (!M.Rest.empty()) {
+    // The root is LHS op Rest, so it is related to RHS op Rest.
+    SmallVector<EClassId, 8> Leaves(M.Rest.Leaves.begin(), M.Rest.Leaves.end());
+    Leaves.push_back(*New);
+    New = G.addACTerm(M.Rest.Opcode, G.getType(M.Root), Leaves);
+  }
   if (Exact)
     return G.merge(M.Root, *New) ? ApplyResult::Merged : ApplyResult::NoChange;
   return G.addRefinement(M.Root, *New) ? ApplyResult::Refined
@@ -1018,12 +1435,21 @@ SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
   SaturationStats Stats;
   Stats.RuleApplications.assign(Rules.size(), 0);
   G.rebuild();
+  // Associativity and commutativity are not rules but a canonical form.
+  auto CanonicalizeAC = [&] {
+    if (unsigned N = G.canonicalizeAC(Limits.MaxACLeaves, Limits.MaxNodes)) {
+      Stats.ACMerges += N;
+      G.rebuild();
+    }
+  };
+  CanonicalizeAC();
   SmallVector<unsigned, 32> TimesBanned(Rules.size(), 0);
   SmallVector<unsigned, 32> BannedUntil(Rules.size(), 0);
   for (unsigned Iter = 0; Iter < Limits.MaxIterations; ++Iter) {
     ++Stats.Iterations;
     // Read phase: collect matches for all rules on the current graph.
     SmallVector<std::pair<unsigned, RuleMatch>, 64> All;
+    ACViewCache Views(G, Limits.MaxACLeaves, Limits.MaxACViews);
     unsigned Budget = Limits.MaxMatchesPerIteration;
     bool AnyBanned = false;
     for (unsigned RI = 0, RE = Rules.size(); RI != RE && Budget; ++RI) {
@@ -1037,7 +1463,8 @@ SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
       SmallVector<RuleMatch, 16> Ms;
       // Ask for one match more than the threshold to detect an overflow.
       matchRule(G, Rules[RI], Ms,
-                Threshold == ~0u ? Budget : std::min(Budget, Threshold + 1));
+                Threshold == ~0u ? Budget : std::min(Budget, Threshold + 1),
+                &Views);
       if (Ms.size() > Threshold) {
         BannedUntil[RI] =
             Iter + (Limits.RuleBanLength << std::min(TimesBanned[RI], 16u));
@@ -1082,6 +1509,7 @@ SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
       }
     }
     G.rebuild();
+    CanonicalizeAC();
     if (G.getNumClasses() + G.getNumNodes() != ClassesBefore)
       Changed = true;
     if (Stats.HitNodeLimit)

@@ -9,6 +9,7 @@
 #include "llvm/CodeGen/GlobalISel/GIEGraph.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
+#include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
 using namespace llvm;
@@ -62,6 +63,15 @@ protected:
   SaturationStats runAll(SaturationLimits Limits = SaturationLimits()) {
     std::vector<RewriteRule> All = getDefaultIntegerRules();
     return saturate(G, All, Limits);
+  }
+
+  /// (x0 - y0) + (x1 - y1) + ... with K terms. The negation rules keep
+  /// producing new terms for this shape, so it exercises the budgets.
+  EClassId sumOfDifferences(int K) {
+    EClassId Acc = sub(in(), in());
+    for (int I = 1; I < K; ++I)
+      Acc = add(Acc, sub(in(), in()));
+    return Acc;
   }
 
   /// Look up (or create) a class after saturation and rebuild.
@@ -180,10 +190,72 @@ TEST_F(GIEGraphTest, CommutativeCanonicalFormAfterMerge) {
 }
 
 TEST_F(GIEGraphTest, Associativity) {
+  // Associativity of AC operators is canonicalization, not a rule: both
+  // groupings flatten to the same canonical form without any rule.
   EClassId A = in(), B = in(), C = in();
   EClassId X = add(add(A, B), C), Y = add(A, add(B, C));
-  run(rules({"add-assoc-r"}));
+  EClassId Z = add(add(C, A), B);
+  run({});
   EXPECT_TRUE(G.equivalent(X, Y));
+  EXPECT_TRUE(G.equivalent(X, Z));
+  // Different operators and different leaves stay apart.
+  EClassId M = mul(mul(A, B), C);
+  EClassId W = add(add(A, B), A);
+  run({});
+  EXPECT_FALSE(G.equivalent(X, M));
+  EXPECT_FALSE(G.equivalent(X, W));
+}
+
+TEST_F(GIEGraphTest, ACMatchingWithExtension) {
+  // (a + 10) + 3: fold-add matches the two constant leaves of the flattened
+  // sum {a, 10, 3}; the leaf a is kept aside and re-added.
+  EClassId A = in();
+  EClassId X = add(add(A, cst(10)), cst(3));
+  run(rules({"fold-add"}));
+  EXPECT_TRUE(G.equivalent(X, lookup([&] { return add(A, cst(13)); })));
+}
+
+TEST_F(GIEGraphTest, ACVariableBindsSeveralLeaves) {
+  // (a * b * d) + (a * c): in factor-mul-add, ?b matches the two leaves
+  // {b, d} of the product, for which no class exists yet; it is built when
+  // the rule fires.
+  EClassId A = in(true), B = in(), C = in(), D = in();
+  EClassId X = add(mul(mul(A, B), D), mul(A, C));
+  run(rules({"factor-mul-add"}));
+  EXPECT_TRUE(
+      G.equivalent(X, lookup([&] { return mul(A, add(mul(B, D), C)); })));
+}
+
+TEST_F(GIEGraphTest, ACCancellationInsideASum) {
+  // (a + b) + (0 - a) == b: add-neg-to-sub pairs a with -a, sub-self turns
+  // a - a into 0 and add-zero drops it from 0 + b.
+  EClassId A = in(true), B = in();
+  EClassId X = add(add(A, B), sub(cst(0), A));
+  run(rules({"add-neg-to-sub", "sub-self", "add-zero"}));
+  EXPECT_TRUE(G.equivalent(X, B));
+  // Without knowing that a is defined, this is only a refinement.
+  EClassId U = in(), V = in();
+  EClassId Y = add(add(U, V), sub(cst(0), U));
+  run(rules({"add-neg-to-sub", "sub-self", "add-zero"}));
+  EXPECT_FALSE(G.equivalent(Y, V));
+  EXPECT_TRUE(G.refinesTo(Y, V));
+}
+
+TEST_F(GIEGraphTest, ACFlaggedNodesAreNotRegrouped) {
+  // Reassociation does not preserve nsw, so flagged nodes are never
+  // flattened into the canonical form (the flagged sum is not equal to any
+  // regrouping, flagged or not).
+  const uint32_t NSW = MachineInstr::NoSWrap;
+  EClassId A = in(), B = in(), C = in();
+  EClassId X =
+      op(TargetOpcode::G_ADD, op(TargetOpcode::G_ADD, A, B, NSW), C, NSW);
+  EClassId Y =
+      op(TargetOpcode::G_ADD, A, op(TargetOpcode::G_ADD, B, C, NSW), NSW);
+  EClassId Z = add(A, add(B, C));
+  runAll();
+  EXPECT_FALSE(G.equivalent(X, Y));
+  EXPECT_FALSE(G.equivalent(X, Z));
+  EXPECT_FALSE(G.equivalent(Y, Z));
 }
 
 TEST_F(GIEGraphTest, FlaggedNodesAreOnlyRefined) {
@@ -329,19 +401,30 @@ TEST_F(GIEGraphTest, RefinementDoesNotLeakIntoEquality) {
 // Saturation limits and determinism
 //===----------------------------------------------------------------------===//
 
-TEST_F(GIEGraphTest, SaturationTerminatesWithNodeLimit) {
-  // A long chain of additions blows up under AC rules.
+TEST_F(GIEGraphTest, LongSumSaturatesImmediately) {
+  // With associativity and commutativity as rules, a sum of 13 inputs used to
+  // hit the node limit. As a canonical form it needs a single iteration: the
+  // only new nodes are the canonical chain.
   EClassId Acc = in();
   for (int I = 0; I < 12; ++I)
     Acc = add(Acc, in());
+  SaturationStats S = runAll();
+  EXPECT_TRUE(S.Saturated);
+  EXPECT_EQ(S.Iterations, 1u);
+  EXPECT_LT(G.getNumNodes(), 40u);
+}
+
+TEST_F(GIEGraphTest, SaturationTerminatesWithNodeLimit) {
+  sumOfDifferences(3);
   SaturationLimits L;
-  L.MaxNodes = 500;
+  L.MaxNodes = 200;
   L.MaxIterations = 50;
   SaturationStats S = runAll(L);
   EXPECT_TRUE(S.HitNodeLimit);
   EXPECT_FALSE(S.Saturated);
-  // Each iteration may overshoot by at most the nodes of a single RHS.
-  EXPECT_LT(G.getNumNodes(), 520u);
+  // Each iteration may overshoot by at most the nodes of a single RHS (an
+  // AC term is built with at most MaxACLeaves nodes).
+  EXPECT_LT(G.getNumNodes(), 220u);
 }
 
 TEST_F(GIEGraphTest, AdditiveIdentitySaturates) {
@@ -364,13 +447,9 @@ TEST_F(GIEGraphTest, AdditiveIdentitySaturates) {
 }
 
 TEST_F(GIEGraphTest, BackoffBansExplosiveRules) {
-  // With a low per-rule match limit, the AC rules on a long sum get banned
+  // With a low per-rule match limit, the rules that keep matching get banned
   // instead of flooding the graph, and the graph stays much smaller.
-  auto Build = [&] {
-    EClassId Acc = in();
-    for (int I = 0; I < 8; ++I)
-      Acc = add(Acc, in());
-  };
+  auto Build = [&] { sumOfDifferences(4); };
   SaturationLimits L;
   L.MaxIterations = 6;
   L.MaxNodes = 1000000;
@@ -408,9 +487,7 @@ TEST_F(GIEGraphTest, OneBitLiterals) {
 }
 
 TEST_F(GIEGraphTest, SaturationTerminatesWithIterationLimit) {
-  EClassId Acc = in();
-  for (int I = 0; I < 6; ++I)
-    Acc = add(Acc, in());
+  sumOfDifferences(4);
   SaturationLimits L;
   L.MaxIterations = 2;
   L.MaxNodes = 1000000;

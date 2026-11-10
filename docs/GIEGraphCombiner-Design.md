@@ -52,7 +52,7 @@ operations that are not legal), but shadow mode works anywhere.
 | File | Contents |
 |------|----------|
 | `include/llvm/CodeGen/GlobalISel/GIEGraph.h`, `lib/CodeGen/GlobalISel/GIEGraph.cpp` | Target-independent e-graph: e-nodes, e-classes, hash-consing, union-find, congruence closure, analyses, refinement edges, pattern parser and matcher, saturation, extraction, cost model. Depends only on `Support` and `LLT`. |
-| `lib/CodeGen/GlobalISel/GIEGraphRules.cpp` | The rule library: rules generated from operator properties plus the hand-written cross-operator rules (58 rules). |
+| `lib/CodeGen/GlobalISel/GIEGraphRules.cpp` | The rule library: rules generated from operator properties plus the hand-written cross-operator rules (48 rules applied; commutativity and associativity are implicit). |
 | `include/llvm/CodeGen/GlobalISel/GIEGraphCombiner.h`, `lib/CodeGen/GlobalISel/GIEGraphCombiner.cpp` | The `MachineFunctionPass`: region discovery, MIR -> e-graph, shadow report, MIR re-emission, statistics, timers. |
 | `lib/Target/AMDGPU/AMDGPUTargetMachine.cpp` | `-amdgpu-gisel-egraph` pipeline hook. |
 | `unittests/CodeGen/GlobalISel/GIEGraphTest.cpp` | Unit tests of the engine and of coverage of existing combines. |
@@ -113,6 +113,9 @@ struct EClass {
   `disjoint` are symmetric in the operands, so a flagged commutative node
   can be reordered too. Emission puts a constant operand on the right
   (GlobalISel's canonical form) instead of following the id order.
+* **Associativity is canonicalization too** (for operators that are both
+  associative and commutative, "AC": `G_ADD G_MUL G_AND G_OR G_XOR`). See
+  [AC terms](#ac-terms) below.
 * `merge()` is union-by-size with deterministic tie breaking; it joins the
   analyses and marks the graph dirty.
 * `rebuild()` restores the congruence invariant: it re-canonicalizes every
@@ -241,7 +244,7 @@ operator has an `OpProperties` entry (`getAllOpProperties()` in
 | Property | Meaning | Generated rules |
 |----------|---------|-----------------|
 | `Commutative` | `a op b == b op a` | none; enforced by canonicalization (above) |
-| `Associative` | `(a op b) op c == a op (b op c)` | `op-assoc-r`, `op-assoc-l` |
+| `Associative` | `(a op b) op c == a op (b op c)` | none if also commutative (AC canonical form and AC matching, see [AC terms](#ac-terms)); otherwise `op-assoc-r`, `op-assoc-l` |
 | `RightIdentity` `e` | `a op e == a` | `op-zero`, `op-one`, `op-ones` |
 | `RightAbsorbing` `z` | `a op z == z` | `mul-zero`, `and-zero`, `or-ones` |
 | `Idempotent` | `a op a == a` | `and-self`, `or-self` |
@@ -295,7 +298,6 @@ refinement is *derived*, not declared.
 
 | Group | Rules | Typical classification |
 |-------|-------|------------------------|
-| Associativity (both directions) | `*-assoc-l`, `*-assoc-r` (generated) | equivalence |
 | Identities | `add-zero sub-zero mul-one and-ones or-zero xor-zero shl-zero lshr-zero ashr-zero` (generated) | equivalence |
 | Absorbing | `mul-zero and-zero or-ones` (generated) | refinement unless operand not poison |
 | Idempotence / cancellation | `sub-self and-self or-self xor-self` (generated) | refinement unless defined |
@@ -306,8 +308,61 @@ refinement is *derived*, not declared.
 | Constant folding | `fold-{add,sub,mul,and,or,xor,shl,lshr,ashr}` (generated) | equivalence |
 
 Distributivity is never applied in the expanding direction, which keeps
-growth under control; associativity is bidirectional and, together with the
-commuted matching, the main source of growth (bounded by the limits below).
+growth under control. With associativity and commutativity as a canonical
+form, the remaining growth comes from the negation and factoring rules
+(bounded by the limits below).
+
+## AC terms
+
+There are no associativity rules. An AC term is identified by its
+*flattening*: the multiset of leaf classes under nested nodes of the same
+operator. Two pieces make the graph and the matcher work modulo AC:
+
+* **Canonical form.** `EGraph::canonicalizeAC()` (run by `saturate()` before
+  the first iteration and after every rebuild) flattens every unflagged AC
+  node with three or more leaves and merges its class with the *canonical
+  form* of the flattening: leaves sorted by class id, combined left to
+  right, `((l0 op l1) op l2) op ...` (`addACTerm()`). Terms that are equal
+  modulo AC therefore end up in the same class without any rule, and the
+  canonical form of any multiset can be looked up (`lookupACTerm()`).
+  Flattening goes through the first unflagged node of each operand class.
+  Flagged nodes are leaves, because regrouping `add nsw` does not preserve
+  `nsw`.
+* **AC matching.** A binary pattern of an AC operator, `(op P1 P2)`, matches
+  a class against its *views* (`getACViews()`). Each AC node of the class
+  gives up to four views: its operands; its full flattening; its flattening
+  that stops at "mixed" classes, i.e. classes that also contain another
+  kind of node, such as a `G_MUL` merged into a class of sums; and its
+  flattening through flagged nodes, which only justifies refinements. For a
+  view with leaves `L`:
+  * one child matches a single leaf and the other child the remaining
+    leaves, in both orders;
+  * at the rule root only (*matching with extension*), each child matches a
+    single leaf and the leaves left over become `RuleMatch::Rest`. The rule
+    then relates the root to `RHS op Rest` instead of `RHS`. This is how
+    `fold-add` finds `10 + 3` in `(a + 10) + 3`, and how `add-neg-to-sub`
+    pairs `b` with `0 - b` inside a longer sum.
+
+  Several leaves matched by a variable become an AC term binding
+  (`RuleMatch::VarSums`), materialized as a canonical form only when the
+  rule fires. Several leaves matched by a structural pattern need an
+  existing class (looked up). Extension is skipped for `(op ?a <constant>)`
+  with `?a` used once, where it only regroups the complete split.
+
+Soundness: views, extension and AC term bindings only regroup and reorder
+operands of unflagged AC operators, and every leaf occurs once on each side,
+so this is exact even for undef leaves. `x op Rest` preserves refinement of
+`x`, so a refinement match stays a refinement. The rule's own
+classification (`isExactFor`) is unchanged; an AC term binding counts as
+not undef (not poison) if all of its leaves are.
+
+Bounds: `-gisel-egraph-max-ac-leaves` (8) leaves per flattening and
+`-gisel-egraph-max-ac-views` (8) views per class and operator. Terms with
+more leaves are not flattened, so they are only matched node by node.
+`assoc` identities are still printed by `-gisel-egraph-print-rules` as
+implicit rules and proved by `verify_rules.py`. Associative operators that
+are not commutative would still get the two associativity rules (there are
+none today).
 
 ## Saturation
 
@@ -320,8 +375,9 @@ A backoff scheduler (as in egg) bans a rule that produces more than
 `RuleMatchLimit << n` matches in one iteration (default 1000; `n` is the
 number of earlier bans) for `RuleBanLength << n` iterations (default 2) and
 drops its matches. A graph with banned rules is never reported as saturated.
-In practice this throttles associativity and commutativity: on
-`~(a + -1)` it cut the graph from 4599 to 290 nodes with the same result.
+It was introduced to throttle the former associativity and commutativity
+rules (on `~(a + -1)` it cut the graph from 4599 to 290 nodes); it now
+mostly limits the negation rules on long sums of differences.
 
 
 | Option | Default | Meaning |
@@ -437,9 +493,11 @@ applied rewrites and estimated cost saved. `-time-passes` adds
 * Emitted instructions are not re-visited, and the pass does not run the
   existing combiner afterwards; e.g. `x * 8` is extracted as `x << 3` only
   because `shl` is cheaper in the cost model.
-* AC rules make the graph grow quickly on long chains (> ~8 operands); the
-  backoff scheduler and the node budget bound this, and such regions only get
-  the rewrites found so far.
+* AC terms with more than 8 leaves are not flattened; such terms are only
+  matched node by node. AC matching costs more per class than plain
+  matching (views times leaf pairs), so the pass is 1.5-4.4x slower than
+  with associativity rules on arithmetic-heavy synthetic inputs (see the
+  evaluation); on real code the difference is not measurable.
 * Pruned constant classes cannot be matched structurally, so a rule that
   needs the negation of a constant must have a constant form (this is why
   `add-negconst` exists next to `add-neg-to-sub`).
