@@ -269,7 +269,84 @@ private:
   ApplyFn Fn;
 };
 
-/// The default library of algebraic rules for scalar integer gMIR.
+//===----------------------------------------------------------------------===//
+// Operator properties
+//===----------------------------------------------------------------------===//
+
+/// Algebraic properties of a supported generic operator. The generic part of
+/// the rule library (commutativity, associativity, identities, absorbing
+/// elements, self-application, distributivity/factoring and constant
+/// folding) is derived from these properties by addRulesFromProperties(), so
+/// supporting a new operator, or a new fact about an existing one, is a table
+/// entry rather than a set of hand-written rules.
+///
+/// Every operator in the table must be a binary scalar operation that,
+/// without flags, is poison exactly when an operand is poison (for shifts:
+/// when the amount is a constant in range) and never produces undef from
+/// defined operands. The soundness classification of rule matches
+/// (RewriteRule::isExactFor) relies on this.
+///
+/// Constants are integer literals sign-extended or truncated to the type
+/// width, so -1 is all-ones.
+struct OpProperties {
+  unsigned Opcode = 0;
+  /// TargetOpcode name used in patterns, e.g. "G_ADD".
+  const char *Name = nullptr;
+  /// Short name used in generated rule names, e.g. "add".
+  const char *ShortName = nullptr;
+  /// The second operand is a shift amount (poison if out of range).
+  bool IsShift = false;
+
+  /// a op b == b op a
+  bool Commutative = false;
+  /// (a op b) op c == a op (b op c)
+  bool Associative = false;
+  /// a op a == a
+  bool Idempotent = false;
+  /// a op e == a. For a commutative operator this is also a left identity.
+  std::optional<int64_t> RightIdentity;
+  /// a op z == z (z is absorbing / an annihilator).
+  std::optional<int64_t> RightAbsorbing;
+  /// a op a == c (e.g. a - a == 0, a ^ a == 0).
+  std::optional<int64_t> SelfValue;
+  /// Left distributivity over each listed operator I:
+  ///   a op (b I c) == (a op b) I (a op c)
+  /// Only the factoring direction is generated, never the expansion:
+  ///   (a op b) I (a op c)  =>  a op (b I c)
+  /// and, if op has a right identity e (so a == a op e):
+  ///   (a op b) I a  =>  a op (b I e)
+  ///   a I (a op b)  =>  a op (e I b)    (only if I is not commutative)
+  SmallVector<unsigned, 2> DistributesOver;
+  /// Right distributivity over each listed operator I with a shared constant
+  /// right operand (used for shifts, whose amount must stay a constant):
+  ///   (a op #k) I (b op #k)  =>  (a I b) op #k
+  SmallVector<unsigned, 4> RightDistributesOverConst;
+  /// Constant folding; returns std::nullopt if the result is poison (e.g. an
+  /// out-of-range shift). The result must have the width of the first
+  /// operand.
+  std::optional<APInt> (*Fold)(const APInt &, const APInt &) = nullptr;
+};
+
+/// The properties of all supported operators, in a fixed order.
+ArrayRef<OpProperties> getAllOpProperties();
+/// The properties of \p Opcode, or null if the operator is not supported.
+const OpProperties *getOpProperties(unsigned Opcode);
+
+/// Append the rules implied by \p Props (see OpProperties) to \p Rules.
+/// Rules of one kind are emitted together for all operators, in table order:
+/// commutativity, associativity, identities, absorbing elements,
+/// self-application, then (via addFactoringRulesFromProperties) factoring,
+/// and (via addFoldingRulesFromProperties) constant folding.
+void addAlgebraRulesFromProperties(ArrayRef<OpProperties> Props,
+                                   std::vector<RewriteRule> &Rules);
+void addFactoringRulesFromProperties(ArrayRef<OpProperties> Props,
+                                     std::vector<RewriteRule> &Rules);
+void addFoldingRulesFromProperties(ArrayRef<OpProperties> Props,
+                                   std::vector<RewriteRule> &Rules);
+
+/// The default library of algebraic rules for scalar integer gMIR: the rules
+/// derived from getAllOpProperties() plus a few hand-written rules that
+/// relate different operators (negation, strength reduction, ...).
 std::vector<RewriteRule> getDefaultIntegerRules();
 
 /// Collect all matches of \p Rule's LHS (up to \p Limit).

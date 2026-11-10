@@ -97,6 +97,11 @@ static constexpr uint32_t SemanticFlags =
     MachineInstr::NoUWrap | MachineInstr::NoSWrap | MachineInstr::IsExact |
     MachineInstr::Disjoint;
 
+static cl::opt<bool> PrintRules(
+    "gisel-egraph-print-rules", cl::Hidden, cl::init(false),
+    cl::desc("Print the rewrite rules of the e-graph combiner (one per line, "
+             "'name: LHS => RHS') to stderr when the pass first runs"));
+
 static const char *TimerGroupName = "gisel-egraph";
 static const char *TimerGroupDesc = "GlobalISel e-graph combiner";
 
@@ -529,6 +534,16 @@ bool GIEGraphCombiner::runOnMachineFunction(MachineFunction &MF) {
   const MachineFunctionProperties &Props = MF.getProperties();
   if (Props.hasProperty(MachineFunctionProperties::Property::FailedISel))
     return false;
+  if (PrintRules) {
+    static bool Printed = false;
+    if (!Printed) {
+      for (const RewriteRule &R : getRules()) {
+        R.print(errs());
+        errs() << "\n";
+      }
+      Printed = true;
+    }
+  }
   if (skipFunction(MF.getFunction()))
     return false;
   // Rewriting is only done before legalization: the extracted expression may

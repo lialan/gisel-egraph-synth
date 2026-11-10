@@ -27,54 +27,139 @@ using namespace llvm::egraph;
 // Opcode helpers
 //===----------------------------------------------------------------------===//
 
-static const struct {
-  const char *Name;
-  unsigned Opcode;
-} OpcodeTable[] = {
-    {"G_ADD", TargetOpcode::G_ADD},   {"G_SUB", TargetOpcode::G_SUB},
-    {"G_MUL", TargetOpcode::G_MUL},   {"G_AND", TargetOpcode::G_AND},
-    {"G_OR", TargetOpcode::G_OR},     {"G_XOR", TargetOpcode::G_XOR},
-    {"G_SHL", TargetOpcode::G_SHL},   {"G_LSHR", TargetOpcode::G_LSHR},
-    {"G_ASHR", TargetOpcode::G_ASHR},
-};
+static std::optional<APInt> shiftAmount(const APInt &Val, const APInt &Amt) {
+  if (Amt.uge(Val.getBitWidth()))
+    return std::nullopt;
+  return Amt.zextOrTrunc(Val.getBitWidth());
+}
+
+static std::vector<OpProperties> buildOpProperties() {
+  using namespace TargetOpcode;
+  std::vector<OpProperties> T;
+  auto Op = [&](unsigned Opc, const char *Name, const char *Short) {
+    T.emplace_back();
+    OpProperties &P = T.back();
+    P.Opcode = Opc;
+    P.Name = Name;
+    P.ShortName = Short;
+    return &P;
+  };
+
+  OpProperties *P = Op(G_ADD, "G_ADD", "add");
+  P->Commutative = P->Associative = true;
+  P->RightIdentity = 0;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return A + B;
+  };
+
+  P = Op(G_SUB, "G_SUB", "sub");
+  P->RightIdentity = 0;
+  P->SelfValue = 0;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return A - B;
+  };
+
+  P = Op(G_MUL, "G_MUL", "mul");
+  P->Commutative = P->Associative = true;
+  P->RightIdentity = 1;
+  P->RightAbsorbing = 0;
+  P->DistributesOver = {G_ADD};
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return A * B;
+  };
+
+  P = Op(G_AND, "G_AND", "and");
+  P->Commutative = P->Associative = P->Idempotent = true;
+  P->RightIdentity = -1;
+  P->RightAbsorbing = 0;
+  P->DistributesOver = {G_OR, G_XOR};
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return A & B;
+  };
+
+  P = Op(G_OR, "G_OR", "or");
+  P->Commutative = P->Associative = P->Idempotent = true;
+  P->RightIdentity = 0;
+  P->RightAbsorbing = -1;
+  P->DistributesOver = {G_AND};
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return A | B;
+  };
+
+  P = Op(G_XOR, "G_XOR", "xor");
+  P->Commutative = P->Associative = true;
+  P->RightIdentity = 0;
+  P->SelfValue = 0;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return A ^ B;
+  };
+
+  P = Op(G_SHL, "G_SHL", "shl");
+  P->IsShift = true;
+  P->RightIdentity = 0;
+  P->RightDistributesOverConst = {G_ADD};
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    if (auto Amt = shiftAmount(A, B))
+      return A.shl(*Amt);
+    return std::nullopt;
+  };
+
+  P = Op(G_LSHR, "G_LSHR", "lshr");
+  P->IsShift = true;
+  P->RightIdentity = 0;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    if (auto Amt = shiftAmount(A, B))
+      return A.lshr(*Amt);
+    return std::nullopt;
+  };
+
+  P = Op(G_ASHR, "G_ASHR", "ashr");
+  P->IsShift = true;
+  P->RightIdentity = 0;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    if (auto Amt = shiftAmount(A, B))
+      return A.ashr(*Amt);
+    return std::nullopt;
+  };
+  return T;
+}
+
+ArrayRef<OpProperties> llvm::egraph::getAllOpProperties() {
+  static const std::vector<OpProperties> Table = buildOpProperties();
+  return Table;
+}
+
+const OpProperties *llvm::egraph::getOpProperties(unsigned Opcode) {
+  for (const OpProperties &P : getAllOpProperties())
+    if (P.Opcode == Opcode)
+      return &P;
+  return nullptr;
+}
 
 static std::optional<unsigned> getOpcodeByName(StringRef Name) {
-  for (const auto &E : OpcodeTable)
-    if (Name == E.Name)
-      return E.Opcode;
+  for (const OpProperties &P : getAllOpProperties())
+    if (Name == P.Name)
+      return P.Opcode;
   return std::nullopt;
 }
 
 static StringRef getOpcodeName(unsigned Opc) {
-  for (const auto &E : OpcodeTable)
-    if (Opc == E.Opcode)
-      return E.Name;
+  if (const OpProperties *P = getOpProperties(Opc))
+    return P->Name;
   return "G_<unknown>";
 }
 
 static bool isShift(unsigned Opc) {
-  return Opc == TargetOpcode::G_SHL || Opc == TargetOpcode::G_LSHR ||
-         Opc == TargetOpcode::G_ASHR;
+  const OpProperties *P = getOpProperties(Opc);
+  return P && P->IsShift;
 }
 
-/// Opcodes for which an unflagged operation is poison iff an operand is
-/// poison (for shifts: provided the amount is a constant in range), and which
-/// never produce undef from defined operands.
+/// Every operator in the property table is, without flags, poison iff an
+/// operand is poison (for shifts: provided the amount is a constant in
+/// range), and never produces undef from defined operands (see
+/// OpProperties).
 static bool isPoisonPropagatingOnly(unsigned Opc) {
-  switch (Opc) {
-  case TargetOpcode::G_ADD:
-  case TargetOpcode::G_SUB:
-  case TargetOpcode::G_MUL:
-  case TargetOpcode::G_AND:
-  case TargetOpcode::G_OR:
-  case TargetOpcode::G_XOR:
-  case TargetOpcode::G_SHL:
-  case TargetOpcode::G_LSHR:
-  case TargetOpcode::G_ASHR:
-    return true;
-  default:
-    return false;
-  }
+  return getOpProperties(Opc) != nullptr;
 }
 
 //===----------------------------------------------------------------------===//

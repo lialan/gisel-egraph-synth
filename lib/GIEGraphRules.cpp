@@ -6,8 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 /// \file
-/// The default library of generic algebraic rewrite rules for scalar integer
-/// gMIR.
+/// The default library of algebraic rewrite rules for scalar integer gMIR.
+///
+/// Most rules are generated from the operator properties in
+/// getAllOpProperties() (GIEGraph.cpp): commutativity, associativity,
+/// identities, absorbing elements, self-application, distributivity
+/// (factoring direction only) and constant folding. The hand-written rules
+/// below relate *different* operators (negation through G_SUB, ~a as
+/// -1 - a, multiplication by powers of two as shifts, ...).
 ///
 /// Every rule is a fixed-width bitvector identity LHS == RHS that holds for
 /// *all* assignments of the pattern variables. Whether a particular match is
@@ -24,7 +30,10 @@
 /// (nuw/nsw/exact/disjoint) only matches as a refinement.
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/Twine.h"
 #include "llvm/CodeGen/GlobalISel/GIEGraph.h"
+#include "llvm/Support/ErrorHandling.h"
+#include <string>
 
 using namespace llvm;
 using namespace llvm::egraph;
@@ -36,13 +45,13 @@ unsigned rootWidth(const EGraph &G, const RuleMatch &M) {
   return G.getType(M.Root).getSizeInBits();
 }
 
-/// Fold a binary operation on two constants. Shifts by an out-of-range amount
-/// are poison and are never folded.
-template <typename FnT> RewriteRule::ApplyFn foldWith(FnT Fn) {
+/// Fold a binary operation on two constants with \p Fn. Folds that would
+/// produce poison (e.g. out-of-range shifts) return std::nullopt and are not
+/// applied.
+RewriteRule::ApplyFn foldWith(std::optional<APInt> (*Fn)(const APInt &,
+                                                         const APInt &)) {
   return [Fn](const EGraph &G, const RuleMatch &M, Computed &Out) {
-    const APInt &A = *M.Consts[0];
-    const APInt &B = *M.Consts[1];
-    std::optional<APInt> R = Fn(A, B);
+    std::optional<APInt> R = Fn(*M.Consts[0], *M.Consts[1]);
     if (!R || R->getBitWidth() != rootWidth(G, M))
       return false;
     Out.push_back(*R);
@@ -50,12 +59,113 @@ template <typename FnT> RewriteRule::ApplyFn foldWith(FnT Fn) {
   };
 }
 
-std::optional<APInt> shiftAmount(const APInt &Val, const APInt &Amt) {
-  if (Amt.uge(Val.getBitWidth()))
-    return std::nullopt;
-  return Amt.zextOrTrunc(Val.getBitWidth());
+/// Name fragment for a literal in generated rule names: add-zero, mul-one,
+/// and-ones, ...
+std::string literalName(int64_t V) {
+  switch (V) {
+  case 0:
+    return "zero";
+  case 1:
+    return "one";
+  case -1:
+    return "ones";
+  default:
+    return "c" + std::to_string(V);
+  }
+}
+
+const OpProperties &propsOf(unsigned Opcode) {
+  const OpProperties *P = getOpProperties(Opcode);
+  if (!P)
+    report_fatal_error("GIEGraph: operator property refers to an "
+                       "unsupported opcode");
+  return *P;
+}
+
+std::string bin(const OpProperties &P, StringRef A, StringRef B) {
+  return ("(" + Twine(P.Name) + " " + A + " " + B + ")").str();
 }
 } // namespace
+
+void llvm::egraph::addAlgebraRulesFromProperties(
+    ArrayRef<OpProperties> Props, std::vector<RewriteRule> &Rules) {
+  auto Add = [&](const OpProperties &P, StringRef Suffix, const std::string &L,
+                 const std::string &R) {
+    Rules.emplace_back((Twine(P.ShortName) + "-" + Suffix).str(), L, R);
+  };
+  for (const OpProperties &P : Props)
+    if (P.Commutative)
+      Add(P, "comm", bin(P, "?a", "?b"), bin(P, "?b", "?a"));
+  for (const OpProperties &P : Props) {
+    if (!P.Associative)
+      continue;
+    Add(P, "assoc-r", bin(P, bin(P, "?a", "?b"), "?c"),
+        bin(P, "?a", bin(P, "?b", "?c")));
+    Add(P, "assoc-l", bin(P, "?a", bin(P, "?b", "?c")),
+        bin(P, bin(P, "?a", "?b"), "?c"));
+  }
+  // Identities: a op e == a.
+  for (const OpProperties &P : Props)
+    if (P.RightIdentity)
+      Add(P, literalName(*P.RightIdentity),
+          bin(P, "?a", std::to_string(*P.RightIdentity)), "?a");
+  // Absorbing elements: a op z == z (drops ?a, so a refinement unless ?a is
+  // not poison).
+  for (const OpProperties &P : Props)
+    if (P.RightAbsorbing)
+      Add(P, literalName(*P.RightAbsorbing),
+          bin(P, "?a", std::to_string(*P.RightAbsorbing)),
+          std::to_string(*P.RightAbsorbing));
+  // Self-application: idempotence (a op a == a) and a op a == c.
+  for (const OpProperties &P : Props) {
+    if (P.Idempotent)
+      Add(P, "self", bin(P, "?a", "?a"), "?a");
+    else if (P.SelfValue)
+      Add(P, "self", bin(P, "?a", "?a"), std::to_string(*P.SelfValue));
+  }
+}
+
+void llvm::egraph::addFactoringRulesFromProperties(
+    ArrayRef<OpProperties> Props, std::vector<RewriteRule> &Rules) {
+  // Factoring reduces the number of uses of the shared operand, so these
+  // rules are refinements unless that operand is known not to be undef.
+  for (const OpProperties &O : Props) {
+    for (unsigned IOpc : O.DistributesOver) {
+      const OpProperties &I = propsOf(IOpc);
+      std::string Name =
+          (Twine("factor-") + O.ShortName + "-" + I.ShortName).str();
+      // (a O b) I (a O c)  =>  a O (b I c)
+      Rules.emplace_back(Name, bin(I, bin(O, "?a", "?b"), bin(O, "?a", "?c")),
+                         bin(O, "?a", bin(I, "?b", "?c")));
+      if (!O.RightIdentity)
+        continue;
+      // With a == a O e:  (a O b) I a  =>  a O (b I e).
+      std::string E = std::to_string(*O.RightIdentity);
+      Rules.emplace_back(Name + "-id", bin(I, bin(O, "?a", "?b"), "?a"),
+                         bin(O, "?a", bin(I, "?b", E)));
+      // a I (a O b)  =>  a O (e I b); covered by commutativity otherwise.
+      if (!I.Commutative)
+        Rules.emplace_back(Name + "-id-l", bin(I, "?a", bin(O, "?a", "?b")),
+                           bin(O, "?a", bin(I, E, "?b")));
+    }
+    for (unsigned IOpc : O.RightDistributesOverConst) {
+      const OpProperties &I = propsOf(IOpc);
+      // (a O #k) I (b O #k)  =>  (a I b) O #k
+      Rules.emplace_back(
+          (Twine("factor-") + O.ShortName + "-" + I.ShortName).str(),
+          bin(I, bin(O, "?a", "#k"), bin(O, "?b", "#k")),
+          bin(O, bin(I, "?a", "?b"), "#k"));
+    }
+  }
+}
+
+void llvm::egraph::addFoldingRulesFromProperties(
+    ArrayRef<OpProperties> Props, std::vector<RewriteRule> &Rules) {
+  for (const OpProperties &P : Props)
+    if (P.Fold)
+      Rules.emplace_back((Twine("fold-") + P.ShortName).str(),
+                         bin(P, "#a", "#b"), "$0", foldWith(P.Fold));
+}
 
 std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
   std::vector<RewriteRule> R;
@@ -64,43 +174,8 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
     R.emplace_back(Name, L, Rhs, std::move(Fn));
   };
 
-  // Commutativity.
-  for (StringRef Op : {"G_ADD", "G_MUL", "G_AND", "G_OR", "G_XOR"}) {
-    std::string O = Op.str();
-    Add((Op.lower() + "-comm").substr(2), "(" + O + " ?a ?b)",
-        "(" + O + " ?b ?a)");
-  }
-
-  // Associativity (both directions).
-  for (StringRef Op : {"G_ADD", "G_MUL", "G_AND", "G_OR", "G_XOR"}) {
-    std::string O = Op.str();
-    Add((Op.lower() + "-assoc-r").substr(2), "(" + O + " (" + O + " ?a ?b) ?c)",
-        "(" + O + " ?a (" + O + " ?b ?c))");
-    Add((Op.lower() + "-assoc-l").substr(2), "(" + O + " ?a (" + O + " ?b ?c))",
-        "(" + O + " (" + O + " ?a ?b) ?c)");
-  }
-
-  // Identities: x op e == x.
-  Add("add-zero", "(G_ADD ?a 0)", "?a");
-  Add("sub-zero", "(G_SUB ?a 0)", "?a");
-  Add("mul-one", "(G_MUL ?a 1)", "?a");
-  Add("and-ones", "(G_AND ?a -1)", "?a");
-  Add("or-zero", "(G_OR ?a 0)", "?a");
-  Add("xor-zero", "(G_XOR ?a 0)", "?a");
-  Add("shl-zero", "(G_SHL ?a 0)", "?a");
-  Add("lshr-zero", "(G_LSHR ?a 0)", "?a");
-  Add("ashr-zero", "(G_ASHR ?a 0)", "?a");
-
-  // Absorbing elements (drop ?a: refinement unless ?a is not poison).
-  Add("mul-zero", "(G_MUL ?a 0)", "0");
-  Add("and-zero", "(G_AND ?a 0)", "0");
-  Add("or-ones", "(G_OR ?a -1)", "-1");
-
-  // Idempotence / self-cancellation.
-  Add("and-self", "(G_AND ?a ?a)", "?a");
-  Add("or-self", "(G_OR ?a ?a)", "?a");
-  Add("sub-self", "(G_SUB ?a ?a)", "0");
-  Add("xor-self", "(G_XOR ?a ?a)", "0");
+  ArrayRef<OpProperties> Props = getAllOpProperties();
+  addAlgebraRulesFromProperties(Props, R);
 
   // Negation / subtraction.
   Add("sub-to-add-neg", "(G_SUB ?a ?b)", "(G_ADD ?a (G_SUB 0 ?b))",
@@ -144,20 +219,10 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
         return true;
       });
 
-  // Factoring (one direction only: never expand). These reduce the number of
-  // uses of ?a, so they are refinements unless ?a is known not undef.
-  Add("factor-mul", "(G_ADD (G_MUL ?a ?b) (G_MUL ?a ?c))",
-      "(G_MUL ?a (G_ADD ?b ?c))");
-  Add("factor-mul-one", "(G_ADD (G_MUL ?a ?b) ?a)", "(G_MUL ?a (G_ADD ?b 1))");
+  addFactoringRulesFromProperties(Props, R);
+  // a + a == a * 2 relates two operators, so it is not a property of either.
+  // It reduces the uses of ?a (a refinement unless ?a is not undef).
   Add("add-self", "(G_ADD ?a ?a)", "(G_MUL ?a 2)");
-  Add("factor-and-or", "(G_OR (G_AND ?a ?b) (G_AND ?a ?c))",
-      "(G_AND ?a (G_OR ?b ?c))");
-  Add("factor-or-and", "(G_AND (G_OR ?a ?b) (G_OR ?a ?c))",
-      "(G_OR ?a (G_AND ?b ?c))");
-  Add("factor-and-xor", "(G_XOR (G_AND ?a ?b) (G_AND ?a ?c))",
-      "(G_AND ?a (G_XOR ?b ?c))");
-  Add("factor-shl-add", "(G_ADD (G_SHL ?a #k) (G_SHL ?b #k))",
-      "(G_SHL (G_ADD ?a ?b) #k)");
 
   // Strength reduction / its inverse (exact: one use of ?a on each side).
   Add("mul-pow2-to-shl", "(G_MUL ?a #c)", "(G_SHL ?a $0)",
@@ -178,48 +243,13 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
         return true;
       });
 
-  // Constant folding.
-  Add("fold-add", "(G_ADD #a #b)", "$0",
-      foldWith([](const APInt &A, const APInt &B) -> std::optional<APInt> {
-        return A + B;
-      }));
-  Add("fold-sub", "(G_SUB #a #b)", "$0",
-      foldWith([](const APInt &A, const APInt &B) -> std::optional<APInt> {
-        return A - B;
-      }));
-  Add("fold-mul", "(G_MUL #a #b)", "$0",
-      foldWith([](const APInt &A, const APInt &B) -> std::optional<APInt> {
-        return A * B;
-      }));
-  Add("fold-and", "(G_AND #a #b)", "$0",
-      foldWith([](const APInt &A, const APInt &B) -> std::optional<APInt> {
-        return A & B;
-      }));
-  Add("fold-or", "(G_OR #a #b)", "$0",
-      foldWith([](const APInt &A, const APInt &B) -> std::optional<APInt> {
-        return A | B;
-      }));
-  Add("fold-xor", "(G_XOR #a #b)", "$0",
-      foldWith([](const APInt &A, const APInt &B) -> std::optional<APInt> {
-        return A ^ B;
-      }));
-  Add("fold-shl", "(G_SHL #a #b)", "$0",
-      foldWith([](const APInt &A, const APInt &B) -> std::optional<APInt> {
-        if (auto Amt = shiftAmount(A, B))
-          return A.shl(*Amt);
-        return std::nullopt;
-      }));
-  Add("fold-lshr", "(G_LSHR #a #b)", "$0",
-      foldWith([](const APInt &A, const APInt &B) -> std::optional<APInt> {
-        if (auto Amt = shiftAmount(A, B))
-          return A.lshr(*Amt);
-        return std::nullopt;
-      }));
-  Add("fold-ashr", "(G_ASHR #a #b)", "$0",
-      foldWith([](const APInt &A, const APInt &B) -> std::optional<APInt> {
-        if (auto Amt = shiftAmount(A, B))
-          return A.ashr(*Amt);
-        return std::nullopt;
-      }));
+  addFoldingRulesFromProperties(Props, R);
+
+  // Rule names must be unique: statistics, reports and tests refer to them.
+  for (unsigned I = 0, E = R.size(); I != E; ++I)
+    for (unsigned J = 0; J != I; ++J)
+      if (R[I].getName() == R[J].getName())
+        report_fatal_error(Twine("GIEGraph: duplicate rule name '") +
+                           R[I].getName() + "'");
   return R;
 }

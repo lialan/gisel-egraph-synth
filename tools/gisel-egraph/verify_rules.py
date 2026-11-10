@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Offline SMT verification of the GlobalISel e-graph rewrite rules.
 
-Extracts the rules from llvm/lib/CodeGen/GlobalISel/GIEGraphRules.cpp and,
-for each rule and each bit width in WIDTHS, proves with Z3 that
+Reads the rules as the compiler builds them (most are generated from operator
+properties, see OpProperties in GIEGraph.h), by running
+`llc -gisel-egraph-print-rules`, and, for each rule and each bit width in
+WIDTHS, proves with Z3 that
 
     precondition(consts) /\\ shift amounts in range  ==>  LHS == RHS
 
@@ -17,18 +19,25 @@ occurrence counts and the not-undef/not-poison analyses (see
 RewriteRule::isExactFor / isRefinementFor and the design document). This
 script provides the bitvector half of that argument.
 
-Usage: verify_rules.py [path/to/GIEGraphRules.cpp]
+The operator semantics below (to_z3) are written independently of the C++
+property table on purpose: a wrong property (e.g. a non-distributive operator
+marked distributive) produces a rule that fails here.
+
+Usage: verify_rules.py <path/to/llc>
+       verify_rules.py --dump <file>   (output of -gisel-egraph-print-rules)
 Requires the z3-solver Python package. Not used during compilation.
 """
 
-import os
 import re
+import subprocess
 import sys
 
 import z3
 
 WIDTHS = [1, 2, 3, 8, 16, 32, 64]
-OPS = ["G_ADD", "G_MUL", "G_AND", "G_OR", "G_XOR"]
+
+# Smallest MIR input that makes llc run the pass (and print the rules).
+EMPTY_MIR = "---\nname: f\nbody: |\n  bb.0:\n...\n"
 
 
 def tokenize(s):
@@ -56,28 +65,23 @@ def leaves(p, prefix):
     return {p} if p.startswith(prefix) else set()
 
 
-def extract_rules(path):
-    src = open(path).read()
+def parse_dump(text):
+    """Parse 'name: LHS => RHS' lines."""
     rules = []
-    # Loop-generated rules (commutativity / associativity).
-    for op in OPS:
-        n = op.lower()[2:]
-        rules.append((n + "-comm", "(%s ?a ?b)" % op, "(%s ?b ?a)" % op))
-        rules.append(
-            (n + "-assoc-r", "(%s (%s ?a ?b) ?c)" % (op, op),
-             "(%s ?a (%s ?b ?c))" % (op, op)))
-        rules.append(
-            (n + "-assoc-l", "(%s ?a (%s ?b ?c))" % (op, op),
-             "(%s (%s ?a ?b) ?c)" % (op, op)))
-    # Literal Add("name", "lhs", "rhs" ...) calls; string literals may be
-    # split across lines.
-    call = re.compile(
-        r'Add\(\s*"([^"]+)"\s*,\s*((?:"[^"]*"\s*)+),\s*((?:"[^"]*"\s*)+)[,)]',
-        re.S)
-    for m in call.finditer(src):
-        join = lambda lits: "".join(re.findall(r'"([^"]*)"', lits))
-        rules.append((m.group(1), join(m.group(2)), join(m.group(3))))
+    for line in text.splitlines():
+        m = re.match(r"^([A-Za-z0-9_.-]+): (.*) => (.*)$", line.strip())
+        if m:
+            rules.append((m.group(1), m.group(2), m.group(3)))
     return rules
+
+
+def rules_from_llc(llc):
+    res = subprocess.run(
+        [llc, "-mtriple=amdgcn-amd-amdhsa", "-x", "mir",
+         "-run-pass=gisel-egraph-combiner", "-gisel-egraph-print-rules",
+         "-o", "/dev/null", "-"],
+        input=EMPTY_MIR, capture_output=True, text=True, check=True)
+    return parse_dump(res.stderr)
 
 
 class Ctx:
@@ -156,6 +160,11 @@ def to_z3(p, ctx, computed):
 def check_rule(name, lhs_s, rhs_s):
     lhs, rhs = parse(tokenize(lhs_s)), parse(tokenize(rhs_s))
     errors = []
+    needed = leaves(rhs, "$")
+    probe_ctx = Ctx(8)
+    if needed and len(computed_constants(name, probe_ctx)[1]) < len(needed):
+        return ["RHS uses computed constants but verify_rules.py has no "
+                "model for rule '%s' (add it to computed_constants)" % name]
     if not isinstance(lhs, tuple):
         errors.append("LHS root is not an operation")
     if not leaves(rhs, "?") <= leaves(lhs, "?"):
@@ -184,15 +193,21 @@ def check_rule(name, lhs_s, rhs_s):
 
 
 def main():
-    here = os.path.dirname(os.path.abspath(__file__))
-    path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
-        here, "..", "..", "lib", "CodeGen", "GlobalISel", "GIEGraphRules.cpp")
-    rules = extract_rules(path)
+    if len(sys.argv) == 3 and sys.argv[1] == "--dump":
+        rules = parse_dump(open(sys.argv[2]).read())
+    elif len(sys.argv) == 2:
+        rules = rules_from_llc(sys.argv[1])
+    else:
+        print(__doc__)
+        return 2
+    if not rules:
+        print("no rules found")
+        return 1
     failed = 0
     for name, l, r in rules:
         errors = check_rule(name, l, r)
         status = "FAIL" if errors else "ok"
-        print("%-16s %-4s %s => %s" % (name, status, l, r))
+        print("%-20s %-4s %s => %s" % (name, status, l, r))
         for e in errors:
             print("    " + e)
         failed += bool(errors)
