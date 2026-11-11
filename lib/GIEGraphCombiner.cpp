@@ -37,6 +37,7 @@
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
 #include <map>
+#include <set>
 
 #define DEBUG_TYPE "gisel-egraph"
 
@@ -66,7 +67,19 @@ STATISTIC(ShadowCostSaved, "Estimated cost saved by profitable candidates");
 
 namespace {
 enum class EGraphMode { Shadow, Rewrite };
+enum class EGraphStages { Both, PreLegalizer, PostLegalizer };
 } // namespace
+
+static cl::opt<EGraphStages> Stages(
+    "gisel-egraph-stages", cl::Hidden, cl::init(EGraphStages::Both),
+    cl::desc("The positions at which the experimental GlobalISel e-graph "
+             "combiner runs, if the target schedules it at both"),
+    cl::values(clEnumValN(EGraphStages::Both, "both",
+                          "Before and after the legalizer"),
+               clEnumValN(EGraphStages::PreLegalizer, "pre-legalizer",
+                          "Only before the legalizer"),
+               clEnumValN(EGraphStages::PostLegalizer, "post-legalizer",
+                          "Only after the legalizer")));
 
 static cl::opt<EGraphMode> Mode(
     "gisel-egraph-mode", cl::Hidden, cl::init(EGraphMode::Shadow),
@@ -296,24 +309,77 @@ SmallVector<LLT, 2> getInstrResultTypes(const EGraph &G, const ENode &N) {
   return Tys;
 }
 
-/// The cost model of the pass: the default costs, and only operations that
-/// the target implements directly. A rule can introduce an operator that
-/// the region does not contain (a minimum for a select of a comparison);
-/// if the legalizer expands it again, the cost of one node is wrong.
+/// The cost model of the pass: the default costs, and only the operations
+/// that the target accepts at the position of the pass.
+///
+/// Before the legalizer, a rule can introduce an operator that the region
+/// does not contain (a minimum for a select of a comparison). If the
+/// legalizer expands it again, the cost of one node is wrong, so only
+/// operations that the target implements directly are extracted. That finds
+/// the rewrites that are good for every target.
+///
+/// After the legalizer, every instruction and constant that the pass
+/// creates must be legal. The search then works on the operations that the
+/// legalizer made for this target, and its result is specific to the target.
 class TargetCostModel : public DefaultCostModel {
 public:
   const LegalizerInfo *LI = nullptr;
   const TargetInstrInfo *TII = nullptr;
-  /// The operations of the region, which are always allowed.
-  DenseSet<std::pair<unsigned, LLT>> Original;
+  /// True after the legalizer.
+  bool RequireLegal = false;
+
+  /// Record the operation \p N of the region; it is always allowed.
+  void addOriginal(const EGraph &G, const ENode &N) {
+    SmallVector<LLT, 4> Types;
+    unsigned Opc = getQuery(G, N, Types);
+    Original.insert(getKey(Opc, Types));
+  }
 
   bool isAllowed(const EGraph &G, const ENode &N) const override {
+    if (N.isOperation()) {
+      const OpProperties *P = getOpProperties(N.Opcode);
+      if (!P->hasResult() || P->Shape == OpShape::Phi)
+        return true;
+    }
+    if (!LI)
+      return true;
+    // A constant is an instruction of its own after the legalizer only.
+    if (N.isConstant() && !RequireLegal)
+      return true;
+    SmallVector<LLT, 4> Types;
+    unsigned Opc = getQuery(G, N, Types);
+    if (Original.count(getKey(Opc, Types)))
+      return true;
+    switch (LI->getAction({Opc, Types}).Action) {
+    case LegalizeActions::Legal:
+      return true;
+    case LegalizeActions::Custom:
+    case LegalizeActions::NarrowScalar:
+    case LegalizeActions::WidenScalar:
+      return !RequireLegal;
+    default:
+      return false;
+    }
+  }
+
+private:
+  static std::vector<uint64_t> getKey(unsigned Opc, ArrayRef<LLT> Types) {
+    std::vector<uint64_t> Key = {Opc};
+    for (LLT Ty : Types)
+      Key.push_back(getTypeKey(Ty));
+    return Key;
+  }
+
+  /// Return the opcode of the instruction that implements \p N, and set
+  /// \p Types to the types of its legality query.
+  unsigned getQuery(const EGraph &G, const ENode &N,
+                    SmallVectorImpl<LLT> &Types) const {
+    if (N.isConstant()) {
+      Types.push_back(N.Ty);
+      return TargetOpcode::G_CONSTANT;
+    }
     const OpProperties *P = getOpProperties(N.Opcode);
-    if (!LI || !P->hasResult() || P->Shape == OpShape::Phi)
-      return true;
     unsigned Opc = getInstrOpcode(N);
-    if (Original.contains({Opc, N.Ty}))
-      return true;
     // The types of the register operands, in the order of the instruction.
     SmallVector<LLT, 6> OperandTys;
     if (P->Shape == OpShape::Unmerge)
@@ -322,7 +388,6 @@ public:
       append_range(OperandTys, getInstrResultTypes(G, N));
     for (EClassId Op : N.Ops)
       OperandTys.push_back(G.getType(Op));
-    SmallVector<LLT, 4> Types;
     SmallBitVector Seen(8);
     const MCInstrDesc &Desc = TII->get(Opc);
     ArrayRef<MCOperandInfo> Info = Desc.operands();
@@ -333,28 +398,26 @@ public:
       if (Seen[Idx])
         continue;
       Seen.set(Idx);
-      Types.push_back(OperandTys[I]);
+      if (Types.size() <= Idx)
+        Types.resize(Idx + 1);
+      Types[Idx] = OperandTys[I];
     }
-    switch (LI->getAction({Opc, Types}).Action) {
-    case LegalizeActions::Legal:
-    case LegalizeActions::Custom:
-    case LegalizeActions::NarrowScalar:
-    case LegalizeActions::WidenScalar:
-      return true;
-    default:
-      return false;
-    }
+    return Opc;
   }
+
+  std::set<std::vector<uint64_t>> Original;
 };
 
 class EGraphCombinerImpl {
 public:
-  EGraphCombinerImpl(MachineFunction &MF, bool CanRewrite)
-      : MF(MF), MRI(MF.getRegInfo()), CanRewrite(CanRewrite) {
+  EGraphCombinerImpl(MachineFunction &MF, bool CanRewrite, bool IsLegalized)
+      : MF(MF), MRI(MF.getRegInfo()), CanRewrite(CanRewrite),
+        IsLegalized(IsLegalized) {
     CM.ConstantCost = ConstantCost;
     CM.MulCost = MulCost;
     CM.LI = MF.getSubtarget().getLegalizerInfo();
     CM.TII = MF.getSubtarget().getInstrInfo();
+    CM.RequireLegal = IsLegalized;
   }
 
   bool run();
@@ -374,6 +437,7 @@ private:
   MachineFunction &MF;
   MachineRegisterInfo &MRI;
   bool CanRewrite;
+  bool IsLegalized;
   TargetCostModel CM;
   std::optional<MachineDominatorTree> MDT;
   DenseMap<const MachineInstr *, unsigned> Order;
@@ -476,6 +540,17 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
   SmallVector<MachineInstr *, 4> Sites;
   std::map<std::vector<EClassId>, unsigned> PhiSites;
   SmallSetVector<MachineInstr *, 4> ConstDefs;
+  // The definitions of the region: the class, the instruction and the index
+  // of the result (a G_CONSTANT has index 0). The emission uses an
+  // instruction again if the extracted expression contains it unchanged.
+  struct OrigDef {
+    EClassId Class;
+    MachineInstr *MI;
+    unsigned DefIdx;
+  };
+  SmallVector<OrigDef, 32> OrigDefs;
+  // The flags of the node of each instruction of the region.
+  DenseMap<const MachineInstr *, uint32_t> OrigFlags;
   uint64_t OldCost = 0;
 
   auto GetOperandClass = [&](Register Reg, bool IsPhiOperand) {
@@ -499,6 +574,9 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
     if (C) {
       Id = G.addConstant(Ty, *C);
       ConstDefs.insert(Def);
+      if (Def->getOpcode() == TargetOpcode::G_CONSTANT)
+        OrigDefs.push_back({Id, Def, 0});
+      CM.addOriginal(G, ENode::makeConstant(Ty, *C));
     } else {
       Id = G.addInput(getInputInfo(Reg, MRI));
       if (!Carried)
@@ -583,9 +661,13 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
                                 P->hasProjections() ? I : Attr);
         if (I == 0)
           OldCost += std::max(1u, CM.getNodeCost(N));
-        CM.Original.insert({MI->getOpcode(), Ty});
-        RegClass[Def] = G.add(std::move(N));
+        CM.addOriginal(G, N);
+        EClassId Id = G.add(std::move(N));
+        RegClass[Def] = Id;
+        if (P->Shape != OpShape::Phi)
+          OrigDefs.push_back({Id, MI, I});
       }
+      OrigFlags[MI] = Flags;
     }
   }
   unsigned OrigNodes = G.getNumNodes();
@@ -702,10 +784,10 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
     raw_ostream &OS = errs();
     const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
     OS << "GIEGraph: " << MF.getName() << ": " << printMBBReference(MBB)
-       << ": instrs=" << R.Instrs.size() << " roots=" << R.Roots.size()
-       << " inputs=" << InputRegs.size() << " nodes=" << OrigNodes << "->"
-       << G.getNumNodes() << " classes=" << G.getNumClasses()
-       << " iters=" << S.Iterations << " "
+       << (IsLegalized ? ": legalized" : ":") << " instrs=" << R.Instrs.size()
+       << " roots=" << R.Roots.size() << " inputs=" << InputRegs.size()
+       << " nodes=" << OrigNodes << "->" << G.getNumNodes()
+       << " classes=" << G.getNumClasses() << " iters=" << S.Iterations << " "
        << (S.Saturated       ? "saturated"
            : S.HitNodeLimit  ? "node-limit"
            : S.HitMatchLimit ? "match-limit"
@@ -751,6 +833,39 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
   // and a terminator is updated in place.
   MachineIRBuilder B(MF);
   DenseMap<EClassId, Register> Mat;
+  // The instructions of the region by class. An instruction that the new
+  // code contains unchanged is not emitted again: later passes can depend on
+  // the sequence and on the operand sequence of the instructions.
+  DenseMap<EClassId, SmallVector<std::pair<MachineInstr *, unsigned>, 2>>
+      ClassDefs;
+  for (const OrigDef &D : OrigDefs)
+    ClassDefs[G.find(D.Class)].push_back({D.MI, D.DefIdx});
+  // Twice the position of the root that is emitted, and the positions of
+  // the instructions that were moved (twice the position of that root,
+  // minus one).
+  int64_t CurPos = 0;
+  DenseMap<const MachineInstr *, int64_t> MovedPos;
+  // Make sure that \p MI, an instruction that is used again, is before the
+  // insertion point. Its operands are available there.
+  auto MoveBeforeInsertPt = [&](MachineInstr *MI) {
+    if (MI->getParent() != &MBB)
+      return;
+    auto It = MovedPos.find(MI);
+    int64_t Pos =
+        It != MovedPos.end() ? It->second : 2 * int64_t(Order.lookup(MI));
+    if (Pos <= CurPos)
+      return;
+    if (B.getInsertPt() != MI->getIterator())
+      MBB.splice(B.getInsertPt(), &MBB, MI->getIterator());
+    MovedPos[MI] = CurPos - 1;
+  };
+  // Return true if \p MI, an instruction of another block, is available in
+  // this block.
+  auto IsAvailable = [&](const MachineInstr *MI) {
+    const MachineBasicBlock *DefMBB = MI->getParent();
+    return DefMBB == &MBB || DefMBB == &MF.front() ||
+           getDomTree().dominates(DefMBB, &MBB);
+  };
   // The results of the emitted instructions with several results, by
   // opcode, flags and operand classes.
   std::map<std::vector<uint64_t>, SmallVector<Register, 2>> MultiDefs;
@@ -766,9 +881,20 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
     case ENodeKind::Input:
       Res = InputRegs[N->InputIdx];
       break;
-    case ENodeKind::Constant:
-      Res = B.buildConstant(N->Ty, N->Imm).getReg(0);
+    case ENodeKind::Constant: {
+      for (auto [MI, DefIdx] : ClassDefs.lookup(Rc)) {
+        Register Def = MI->getOperand(0).getReg();
+        if (MI->getOpcode() != TargetOpcode::G_CONSTANT ||
+            MRI.getType(Def) != N->Ty || !IsAvailable(MI))
+          continue;
+        MoveBeforeInsertPt(MI);
+        Res = Def;
+        break;
+      }
+      if (!Res)
+        Res = B.buildConstant(N->Ty, N->Imm).getReg(0);
       break;
+    }
     case ENodeKind::Operation: {
       const OpProperties *P = getOpProperties(N->Opcode);
       assert(P->hasResult() && "terminator used as a value");
@@ -801,10 +927,75 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
         Materialize(Ops[2]);
       }
       SmallVector<SrcOp, 4> Srcs;
-      for (EClassId Op : Ops)
-        Srcs.push_back(Materialize(Op));
+      SmallVector<Register, 4> SrcRegs;
+      for (EClassId Op : Ops) {
+        SrcRegs.push_back(Materialize(Op));
+        Srcs.push_back(SrcRegs.back());
+      }
       unsigned Opc = getInstrOpcode(*N);
       uint32_t Flags = N->Flags & ~PoisonVariantFlag;
+      // The key of an instruction with several results. The type of the
+      // parts is part of the key of an unmerge: a value can be divided in
+      // more than one way.
+      std::vector<uint64_t> Key;
+      if (P->hasProjections()) {
+        Key = {Opc, Flags};
+        if (P->Shape == OpShape::Unmerge)
+          Key.push_back(getTypeKey(N->Ty));
+        for (EClassId Op : N->Ops)
+          Key.push_back(E.resolve(Op));
+      }
+      // Use an instruction of the region again if it computes this node
+      // from the same registers.
+      if (!P->hasProjections() || !MultiDefs.count(Key)) {
+        MachineInstr *Old = nullptr;
+        unsigned OldIdx = 0;
+        for (auto [MI, DefIdx] : ClassDefs.lookup(Rc)) {
+          if (MI->getOpcode() != Opc || OrigFlags.lookup(MI) != N->Flags ||
+              MRI.getType(MI->getOperand(DefIdx).getReg()) != N->Ty ||
+              (P->hasProjections() && DefIdx != N->Attr) ||
+              (P->StopsPoison && Sites[N->Attr] != MI))
+            continue;
+          SmallVector<Register, 4> UseRegs;
+          uint64_t OldAttr = 0;
+          for (const MachineOperand &MO : MI->operands()) {
+            if (MO.isReg() && MO.isUse())
+              UseRegs.push_back(MO.getReg());
+            else if (MO.isPredicate())
+              OldAttr = MO.getPredicate();
+            else if (MO.isImm())
+              OldAttr = MO.getImm();
+          }
+          bool Same = UseRegs == SrcRegs;
+          bool Swapped = UseRegs.size() == 2 && UseRegs[0] == SrcRegs[1] &&
+                         UseRegs[1] == SrcRegs[0];
+          bool Match;
+          if (P->Shape == OpShape::Compare)
+            Match = (Same && OldAttr == Attr) ||
+                    (Swapped &&
+                     OldAttr == CmpInst::getSwappedPredicate(
+                                    static_cast<CmpInst::Predicate>(Attr)));
+          else
+            Match = (!P->ImmAttr || OldAttr == Attr) &&
+                    (Same || (Swapped && P->Commutative));
+          if (Match) {
+            Old = MI;
+            OldIdx = DefIdx;
+            break;
+          }
+        }
+        if (Old) {
+          MoveBeforeInsertPt(Old);
+          Kept.insert(Old);
+          if (P->hasProjections()) {
+            SmallVector<Register, 2> &Defs = MultiDefs[Key];
+            for (unsigned I = 0, End = Old->getNumExplicitDefs(); I != End; ++I)
+              Defs.push_back(Old->getOperand(I).getReg());
+          }
+          Res = Old->getOperand(OldIdx).getReg();
+          break;
+        }
+      }
       if (P->Shape == OpShape::Compare) {
         Res = B.buildICmp(static_cast<CmpInst::Predicate>(Attr), N->Ty, Srcs[0],
                           Srcs[1], Flags)
@@ -813,9 +1004,6 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       }
       if (P->hasProjections()) {
         // One instruction computes all the results.
-        std::vector<uint64_t> Key = {Opc, Flags};
-        for (EClassId Op : N->Ops)
-          Key.push_back(E.resolve(Op));
         SmallVector<Register, 2> &Defs = MultiDefs[Key];
         if (Defs.empty()) {
           SmallVector<DstOp, 2> Dsts;
@@ -847,6 +1035,7 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       // unconditional branch.
       const ENode *N = E.getChosenNode(RootClasses[I]);
       B.setInstrAndDebugLoc(*Root);
+      CurPos = 2 * int64_t(Order.lookup(Root));
       unsigned OpIdx = 0;
       for (MachineOperand &MO : Root->operands())
         if (MO.isReg())
@@ -866,6 +1055,7 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
     } else {
       B.setInstrAndDebugLoc(*Root);
     }
+    CurPos = 2 * int64_t(Order.lookup(Root));
     Replacements.push_back({R.Roots[I].getReg(), Materialize(RootClasses[I])});
   }
   // Mark everything we emitted as visited so it is not re-processed.
@@ -962,11 +1152,17 @@ bool GIEGraphCombiner::runOnMachineFunction(MachineFunction &MF) {
   }
   if (skipFunction(MF.getFunction()))
     return false;
-  // Rewriting is only done before legalization: the extracted expression may
-  // use operations that are not legal for the target.
+  // The pass has two positions. Before the legalizer it can use every
+  // operation that the target implements. After the legalizer it only
+  // creates legal operations and constants (see TargetCostModel). It does
+  // not rewrite once registers have a register bank.
+  bool IsLegalized =
+      Props.hasProperty(MachineFunctionProperties::Property::Legalized);
+  if (Stages ==
+      (IsLegalized ? EGraphStages::PreLegalizer : EGraphStages::PostLegalizer))
+    return false;
   bool CanRewrite =
       Mode == EGraphMode::Rewrite &&
-      !Props.hasProperty(MachineFunctionProperties::Property::Legalized) &&
       !Props.hasProperty(MachineFunctionProperties::Property::RegBankSelected);
-  return EGraphCombinerImpl(MF, CanRewrite).run();
+  return EGraphCombinerImpl(MF, CanRewrite, IsLegalized).run();
 }

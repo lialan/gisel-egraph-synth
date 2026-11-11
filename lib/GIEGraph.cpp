@@ -737,8 +737,9 @@ static std::vector<OpProperties> buildOpProperties() {
     return valueOrFlag(R, Ov, Index);
   };
   P = Typed(G_SMULO, "G_SMULO", "smulo", {Main, Main}, {Main, Bool});
-  // Not 1: in a 1-bit type the literal 1 is -1, and -1 * -1 overflows.
-  P->NoOverflowWith = {0};
+  // See SignedLiterals: a * 1 does not overflow in a type that has a 1.
+  P->NoOverflowWith = {0, 1};
+  P->SignedLiterals = true;
   P->Commutative = true;
   P->ProjectionOps = {G_MUL, 0};
   P->FoldN = [](ArrayRef<APInt> O, uint64_t Index, unsigned) {
@@ -874,7 +875,9 @@ LLT llvm::egraph::getTypedResultType(const OpProperties &P, unsigned Index,
   case TypeKind::Main:
     return MainTy;
   case TypeKind::Bool:
-    return LLT::scalar(1);
+    // Use the kind of the main type (a plain scalar or an integer).
+    return MainTy.isValid() && MainTy.isAnyScalar() ? LLT::scalar(1)
+                                                    : LLT::integer(1);
   case TypeKind::Free:
     break;
   }
@@ -991,9 +994,18 @@ bool ENode::operator==(const ENode &O) const {
   llvm_unreachable("bad kind");
 }
 
+uint64_t llvm::egraph::getTypeKey(LLT Ty) {
+  // Two scalar types of the same size can be equal although their kinds are
+  // different (a plain scalar is equal to an integer). The key must be the
+  // same for equal types.
+  if (Ty.isValid() && Ty.isScalar())
+    return Ty.getSizeInBits().getFixedValue();
+  return hash_combine(1, Ty.getUniqueRAWLLTData());
+}
+
 hash_code llvm::egraph::hash_value(const ENode &N) {
   hash_code H = hash_combine(static_cast<unsigned>(N.Kind), N.Opcode, N.Flags,
-                             N.Ty.getUniqueRAWLLTData(), N.Attr);
+                             getTypeKey(N.Ty), N.Attr);
   switch (N.Kind) {
   case ENodeKind::Input:
     return hash_combine(H, N.InputIdx);
@@ -2397,7 +2409,7 @@ private:
   std::optional<EClassId> buildConstant(const APInt &V, LLT Expected,
                                         bool MayResize) {
     if (!Expected.isValid())
-      return G.addConstant(LLT::scalar(V.getBitWidth()), V);
+      return G.addConstant(LLT::integer(V.getBitWidth()), V);
     if (!Expected.isScalar())
       return std::nullopt;
     unsigned Width = Expected.getSizeInBits();
@@ -2422,11 +2434,11 @@ private:
     case PatNode::Computed:
       if (PN.Index >= Computed.size())
         return LLT();
-      return LLT::scalar(Computed[PN.Index].getBitWidth());
+      return LLT::integer(Computed[PN.Index].getBitWidth());
     case PatNode::ConstVar:
       if (!M.Consts[PN.Index])
         return LLT();
-      return LLT::scalar(M.Consts[PN.Index]->getBitWidth());
+      return LLT::integer(M.Consts[PN.Index]->getBitWidth());
     case PatNode::Op:
       break;
     }
@@ -2440,7 +2452,7 @@ private:
     case OpShape::PtrAdd:
       return inferType(PN.Children[0]);
     case OpShape::Compare:
-      return LLT::scalar(1);
+      return LLT::integer(1);
     case OpShape::Select: {
       LLT Ty = inferType(PN.Children[1]);
       return Ty.isValid() ? Ty : inferType(PN.Children[2]);
@@ -2580,7 +2592,7 @@ private:
             return std::nullopt;
           break;
         case TypeKind::Bool:
-          if (!Operand(I, LLT::scalar(1)))
+          if (!Operand(I, LLT::integer(1)))
             return std::nullopt;
           break;
         case TypeKind::Free:
@@ -2609,7 +2621,7 @@ private:
       if (!Ty.isValid() || !Ty.isScalar() || NumParts < 2 ||
           Ty.getSizeInBits() % NumParts != 0)
         return std::nullopt;
-      LLT PartTy = LLT::scalar(Ty.getSizeInBits() / NumParts);
+      LLT PartTy = LLT::integer(Ty.getSizeInBits() / NumParts);
       for (unsigned I = 0; I != NumParts; ++I)
         if (!Operand(I, PartTy))
           return std::nullopt;
@@ -2626,7 +2638,7 @@ private:
       break;
     }
     case OpShape::Compare: {
-      if (Ty != LLT::scalar(1))
+      if (Ty != LLT::integer(1))
         return std::nullopt;
       LLT OpTy = inferType(PN.Children[0]);
       if (!OpTy.isValid())
@@ -2636,7 +2648,7 @@ private:
       break;
     }
     case OpShape::Select:
-      if (!Ty.isValid() || !Operand(0, LLT::scalar(1)) || !Operand(1, Ty) ||
+      if (!Ty.isValid() || !Operand(0, LLT::integer(1)) || !Operand(1, Ty) ||
           !Operand(2, Ty))
         return std::nullopt;
       break;
@@ -2645,7 +2657,7 @@ private:
         return std::nullopt;
       LLT OffsetTy = inferType(PN.Children[1]);
       if (!OffsetTy.isValid())
-        OffsetTy = LLT::scalar(Ty.getSizeInBits());
+        OffsetTy = LLT::integer(Ty.getSizeInBits());
       if (!OffsetTy.isScalar() || !Operand(1, OffsetTy))
         return std::nullopt;
       break;
@@ -2904,7 +2916,7 @@ Extractor::Extractor(const EGraph &G, const CostModel &CM) : G(G) {
     return C;
   };
   auto NodeCost = [&](const ENode &N) -> uint64_t {
-    if (N.isOperation() && !CM.isAllowed(G, N))
+    if (!N.isInput() && !CM.isAllowed(G, N))
       return Infinite;
     uint64_t C = LocalCost(N);
     for (EClassId Op : N.Ops)

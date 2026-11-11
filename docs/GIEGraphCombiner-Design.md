@@ -11,10 +11,11 @@ pipeline. It is reachable only through
 
 * `llc -run-pass=gisel-egraph-combiner` (any target, MIR tests), or
 * `llc -global-isel -amdgpu-gisel-egraph` (AMDGPU, after the pre-legalizer
-  combiner),
+  combiner and again after the post-legalizer combiner),
 
 and it runs in *shadow* mode (analysis only) unless
-`-gisel-egraph-mode=rewrite` is given.
+`-gisel-egraph-mode=rewrite` is given. `-gisel-egraph-stages` selects the
+position: `both` (default), `pre-legalizer` or `post-legalizer`.
 
 ## Goal
 
@@ -38,21 +39,36 @@ IRTranslator -> AMDGPUPreLegalizerCombiner -> Localizer -> Legalizer
   -> InstructionSelect
 ```
 
-With `-amdgpu-gisel-egraph` the e-graph combiner is inserted right after
-`AMDGPUPreLegalizerCombiner` (`GCNPassConfig::addPreLegalizeMachineIR`). At
-that point generic integer expressions are still intact (no legalization
-splitting of `s64`, no register banks), and the existing combiner has already
-done its work, so anything the e-graph pass finds is something the greedy
-combiner did not. The pass refuses to *rewrite* functions that are already
-`Legalized` or `RegBankSelected` (the extracted expression could use
-operations that are not legal), but shadow mode works anywhere.
+With `-amdgpu-gisel-egraph` the e-graph combiner has two positions. The
+pass reads the `Legalized` property of the function to know where it is.
+
+1. **Before the legalizer**, right after `AMDGPUPreLegalizerCombiner`
+   (`GCNPassConfig::addPreLegalizeMachineIR`). Generic integer expressions
+   are still intact (no legalization splitting of `s64`, no register banks),
+   and the existing combiner has already done its work, so anything the
+   e-graph pass finds is something the greedy combiner did not. This position
+   finds the rewrites that are good for every target.
+2. **After the legalizer**, right after `AMDGPUPostLegalizerCombiner`
+   (`GCNPassConfig::addPreRegBankSelect`). The search works on the operations
+   that the legalizer made for this target (split 64-bit arithmetic, carry
+   chains, merges and unmerges), so its result is specific to the target.
+
+What the pass can create is different in the two positions (see
+[Legality](#legality)). The pass refuses to *rewrite* functions that are
+`RegBankSelected` (its values have no register bank), but shadow mode works
+anywhere.
+
+On the AMDGPU test corpus (files with the same SelectionDAG fallbacks with
+and without the pass), the first position removes 95 instructions from the
+held-out files and 51 from the training files; the two positions together
+remove 196 and 183.
 
 ## Source layout
 
 | File | Contents |
 |------|----------|
 | `include/llvm/CodeGen/GlobalISel/GIEGraph.h`, `lib/CodeGen/GlobalISel/GIEGraph.cpp` | Target-independent e-graph: e-nodes, e-classes, hash-consing, union-find, congruence closure, analyses, refinement edges, pattern parser and matcher, saturation, extraction, cost model. Depends only on `Support` and `LLT`. |
-| `lib/CodeGen/GlobalISel/GIEGraphRules.cpp` | The rule library: rules generated from operator properties plus the hand-written cross-operator rules (48 rules applied; commutativity and associativity are implicit). |
+| `lib/CodeGen/GlobalISel/GIEGraphRules.cpp` | The rule library: rules generated from operator properties plus the hand-written cross-operator rules (529 rules applied; commutativity and associativity are implicit). |
 | `include/llvm/CodeGen/GlobalISel/GIEGraphCombiner.h`, `lib/CodeGen/GlobalISel/GIEGraphCombiner.cpp` | The `MachineFunctionPass`: region discovery, MIR -> e-graph, shadow report, MIR re-emission, statistics, timers. |
 | `lib/Target/AMDGPU/AMDGPUTargetMachine.cpp` | `-amdgpu-gisel-egraph` pipeline hook. |
 | `unittests/CodeGen/GlobalISel/GIEGraphTest.cpp` | Unit tests of the engine and of coverage of existing combines. |
@@ -71,6 +87,7 @@ struct ENode {
   LLT Ty;             // result type
   unsigned InputIdx;  // for inputs
   APInt Imm;          // for constants, width == Ty.getSizeInBits()
+  uint64_t Attr;      // predicate, immediate operand, result index or site
   SmallVector<EClassId, 2> Ops;
 };
 ```
@@ -78,7 +95,15 @@ struct ENode {
 * Opcodes are the real `G_*` opcodes; there is no parallel enumeration.
 * Types are real `LLT`s. Merging two classes of different types, or
   instantiating a rule whose variables do not have the required types, is
-  rejected.
+  rejected. Some targets (AMDGPU, AArch64) use the extended `LLT` kinds, in
+  which an integer scalar (`i32`) and a plain scalar (`s32`) of one size
+  compare equal but have different raw data. The hash of a node therefore
+  uses `getTypeKey()`, which is the size for a scalar; a type that a rule
+  creates is an integer (`LLT::integer`).
+* `Attr` holds what an operator has besides its register operands: the
+  predicate of a comparison, an immediate operand (`G_SEXT_INREG`), the index
+  of the result of an operator with several results, or the instruction that
+  a PHI, a `G_FREEZE` or a terminator node stands for.
 * Flags are part of the node identity, so `add nsw a, b` and `add a, b` are
   different operators and never hash-cons together.
 * An *input* is an opaque, typed symbolic value with an index. The pass maps
@@ -267,6 +292,35 @@ The current table:
 | `G_SHL` | | | 0 | | | `G_ADD` (shared constant amount) |
 | `G_LSHR`, `G_ASHR` | | | 0 | | | |
 
+That table shows the binary operators of one type, with which the PoC
+started. The property table now has 91 generic opcodes (and the
+`*_ZERO_POISON` forms of `G_CTLZ` and `G_CTTZ` as flagged variants of the
+same operator). Each entry has an `OpShape`, which gives the typing rule and
+the poison rule of the operator:
+
+| Shape | Operators |
+|-------|-----------|
+| `Binary` | arithmetic, bitwise, shifts, rotates, division and remainder, min/max, saturating arithmetic, `G_UMULH`/`G_SMULH`, averages, absolute differences, `G_CLMUL` |
+| `Unary` | `G_ABS`, `G_BSWAP`, `G_BITREVERSE`, `G_FREEZE` |
+| `Cast` | `G_TRUNC`, `G_ZEXT`, `G_SEXT`, `G_ANYEXT`, saturating truncations, `G_PTRTOINT`, `G_INTTOPTR` |
+| `BitCount` | `G_CTPOP`, `G_CTLZ`, `G_CTTZ`, `G_CTLS` |
+| `Compare`, `Select` | `G_ICMP` (predicate in `Attr`), `G_SELECT` |
+| `PtrAdd` | `G_PTR_ADD`, `G_PTRMASK` |
+| `Typed` | operators with several operand types or several results: overflow and carry arithmetic (`G_UADDO`, `G_UADDE`, ...), `G_SDIVREM`/`G_UDIVREM`, `G_SCMP`/`G_UCMP`, funnel shifts, fixed-point multiplication, `G_SEXT_INREG`, `G_SBFX`/`G_UBFX`. Each result is an e-node of its own |
+| `Merge`, `Unmerge` | `G_MERGE_VALUES`, `G_UNMERGE_VALUES` of scalars |
+| `Phi` | `G_PHI`: kept or replaced by a value, never created |
+| `Effect` | `G_BRCOND`, `G_BR`: no result; a branch on a negated condition exchanges its targets, the CFG does not change |
+
+Three more properties control what a rule can do. `MayTrap` (division and
+remainder): the operator is never introduced unless the region has it with
+the same operands. `PoisonVariant`: the `*_ZERO_POISON` opcode of a bit
+count, selected by a flag of the node. `StopsPoison` (`G_FREEZE`): the node
+is tied to its instruction, so two freezes of one value are not merged.
+
+Deliberately not in the table: `G_ASSERT_ZEXT`, `G_ASSERT_SEXT`,
+`G_ASSERT_ALIGN` (hints, not operations), `G_CONSTANT_FOLD_BARRIER`, `G_BRJT`
+and `G_BRINDIRECT`.
+
 Being in the table is also what makes an operator supported (the pass's
 region discovery, the poison analysis, the pattern parser). Supporting a new
 operator, or recording a new fact about an existing one, is therefore one
@@ -291,8 +345,11 @@ Add("mul-pow2-to-shl", "(G_MUL ?a #c)", "(G_SHL ?a $0)",
 
 `?x` binds an e-class, `#c` binds a known constant, integer literals are
 sign-extended or truncated to the width (`-1` is all-ones; at `s1` the
-literal `1` is also all-ones and `2` is `0`, which is sound because every rule
-is a ring or bitwise identity), `$n` is a constant
+literal `1` is also all-ones and `2` is `0`). That is sound for a ring or
+bitwise identity, but not for every rule: `(G_SMULO:1 ?a 1) => 0` is false
+at `s1`, where the literal `1` is `-1`. Such a rule has a guard on the width
+of the type (`umulo-overflow-one`, `smulo-overflow-one`: 2 bits or more), and
+`verify_rules.py` proves every rule at width 1 too. `$n` is a constant
 computed by the optional hook. Whether a match is an equivalence or a
 refinement is *derived*, not declared.
 
@@ -419,6 +476,26 @@ which shares classes but is not a global optimum.
 | `G_MUL` | `-gisel-egraph-mul-cost` (2) |
 | width scaling | x ceil(width / 32) |
 
+### Legality
+
+The pass uses `TargetCostModel`, which adds one question to the default
+costs: is the target able to implement this node at this position?
+`CostModel::isAllowed()` answers it, and the extractor gives a node that is
+not allowed an infinite cost. The operations and constants of the original
+region are always allowed (by opcode and types). For every other node the
+model asks `LegalizerInfo::getAction()`:
+
+| Position | Allowed actions | Constants |
+|----------|-----------------|-----------|
+| before the legalizer | `Legal`, `Custom`, `NarrowScalar`, `WidenScalar` | always allowed |
+| after the legalizer | `Legal` only | `G_CONSTANT` of that type must be `Legal` |
+
+Before the legalizer the purpose is a correct cost: a rule can introduce an
+operator that the region does not have (`G_ABDU` for a select of two
+subtractions), and if the legalizer expands it again (`Lower`), the cost of
+one node was wrong. After the legalizer the purpose is correctness: every
+instruction and constant that the pass creates must be legal.
+
 These are crude instruction-count proxies, not AMDGPU latencies. On AMDGPU a
 32-bit `v_mul_lo_u32` is a quarter-rate instruction and a 64-bit multiply
 expands to several instructions; constants are free if they are inline
@@ -429,9 +506,12 @@ banks, VOP2/VOP3 encodings and legalization expansion.
 
 ### Region discovery
 
-Per basic block, in instruction order, a *candidate* is a supported opcode
-with exactly three virtual register operands, a scalar type of at most 128
-bits and no flags other than nuw/nsw/exact/disjoint. A region is a connected
+Per basic block, in instruction order, a *candidate* is an instruction
+whose opcode is in the property table, whose operands and results have the
+types that the shape of the operator permits (scalars of at most 128 bits,
+and pointers where the operator has them), and which has no flags other
+than nuw/nsw/exact/disjoint/nneg/samesign. The PHIs of the block and its
+conditional branch are candidates too. A region is a connected
 component (through def-use edges between candidates of the same block) grown
 by worklist up to the size cap. Operand registers defined by `G_CONSTANT`
 become constant nodes; all other non-region operands become inputs.
@@ -454,10 +534,26 @@ In rewrite mode, a region is re-emitted iff
 
 Emission happens only after all checks pass (all-or-nothing). Each root's
 expression is emitted with `MachineIRBuilder` immediately before the original
-root instruction, reusing classes already materialized for earlier roots and
-re-materializing constants locally. Then every root register is replaced with
-`MRI.replaceRegWith`, and the old region instructions are erased in reverse
-order (debug users are salvaged or marked undef). Constants that become dead
+root instruction, reusing classes already materialized for earlier roots.
+
+An instruction or a `G_CONSTANT` of the region that the extracted expression
+contains unchanged is **not emitted again**: if the chosen node of a class
+has the opcode, flags, attribute and (materialized) operand registers of an
+original instruction of that class, the original instruction stays, and it is
+moved up to the insertion point only if it is below it. Without this, a
+saving of one node rewrote the complete region in a different instruction
+order and operand order, and later passes selected worse code for the
+unchanged part; that matters most after the legalizer, where a region is a
+long carry chain. The arms of a select are emitted before its condition, so
+that the comparison stays next to the select. An instruction with several
+results is emitted once for all the results that are used; the key of an
+unmerge includes the type of the parts, because one value can be divided in
+more than one way.
+
+Then the uses of every root register are redirected to the new value
+(operand by operand; `MRI.replaceRegWith` would also rewrite the old
+definition), and the old region instructions that were not kept are erased
+in reverse order (debug users are salvaged or marked undef). Constants that become dead
 are erased; other dead inputs are left to later dead-code elimination. If any
 check fails, the MIR is not touched.
 
@@ -478,8 +574,9 @@ applied rewrites and estimated cost saved. `-time-passes` adds
 
 ## Known limitations
 
-* Regions are single-block, scalar-integer only, and capped at 32
-  instructions; larger connected components are split by the cap.
+* Regions are single-block, scalar only (integers, and pointers for the
+  pointer operators), and capped at 32 instructions; larger connected
+  components are split by the cap.
 * Inputs are almost never provably defined in real code, so most profitable
   candidates are refinements. They are still sound to apply.
 * Congruence closure rebuilds from scratch each iteration, and every rule is
@@ -487,9 +584,14 @@ applied rewrites and estimated cost saved. `-time-passes` adds
   Saturation is 98-99% of the pass time.
 * Tree-cost extraction, DAG-cost profitability; no ILP or global sharing
   optimization, no critical-path or register-pressure awareness.
-* The cost model is generic; legality is not consulted (rewrites are only
-  done pre-legalization, where the AMDGPU legalizer accepts all supported
-  scalar operations).
+* The cost model counts nodes. Legality is consulted (see
+  [Legality](#legality)), but not the cost of a legal operation: on AMDGPU a
+  64-bit `G_AND` is two instructions, so a rewrite that saves a node can add
+  an instruction. With both positions, 11 of 1402 held-out files and 12 of
+  1370 training files get more instructions for this reason.
+* Rules for compositions of the newer operators are incomplete. Found so
+  far: `G_SEXT_INREG` of `G_SEXT_INREG`, and `G_UNMERGE_VALUES` of
+  `G_UNMERGE_VALUES` as one unmerge into smaller parts.
 * Emitted instructions are not re-visited, and the pass does not run the
   existing combiner afterwards; e.g. `x * 8` is extracted as `x << 3` only
   because `shl` is cheaper in the cost model.
@@ -522,13 +624,18 @@ applied rewrites and estimated cost saved. `-time-passes` adds
   author only states the identity and constant preconditions; the emitter
   could also emit the Z3 obligation.
 * **Target cost models** (AMDGPU: quarter-rate multiplies, 64-bit expansion,
-  inline constants, SGPR vs. VGPR) and legality-aware extraction for running
-  after the legalizer.
+  inline constants, SGPR vs. VGPR). Extraction is aware of legality, not of
+  the cost of a legal operation.
 * **Incremental rebuild and matching** (egg parent lists, matching only
   classes touched since the last iteration) for compile time.
 * **Better definedness**: use known-bits / `!noundef` information carried
   from IR, so more candidates become exact equivalences.
 * **Automatic rule discovery** à la Ruler/Souper: enumerate small terms over
   the `G_*` operators, cluster by fingerprinting, prove candidates with Z3
-  offline (the existing `verify_rules.py` is the checking half), and add the
-  verified rules to the library. Compilation itself never needs a solver.
+  offline, and add the verified rules to a library. `llvm/utils/gisel-rule-synth`
+  does this for the static combiner (it emits `GICombineRule` records), and
+  it uses this pass as an oracle: a region that the e-graph improves and the
+  synthesized rules do not shows what the rules still miss. Its grammar is
+  smaller than the property table here (no comparison, select, min/max,
+  pointer arithmetic or new constants), and most of what the e-graph finds
+  beyond the rules is outside that grammar.

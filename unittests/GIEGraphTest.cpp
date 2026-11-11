@@ -1488,6 +1488,19 @@ TEST_F(GIEGraphIntegerOpsTest, OverflowResults) {
   EXPECT_FALSE(G.getConstant(Carry).has_value());
 }
 
+TEST_F(GIEGraphIntegerOpsTest, SignedLiteralNeedsAWideEnoughType) {
+  // a * 1 does not overflow, but in a 1-bit type the literal 1 is -1, and
+  // -1 * -1 == 1 is not a signed 1-bit number.
+  EClassId A = in(S32, /*Defined=*/true), B = in(S1, /*Defined=*/true);
+  EClassId Wide = typed(T::G_SMULO, S1, {A, cst(1)}, 1);
+  EClassId Narrow = typed(T::G_SMULO, S1, {B, cst(1, S1)}, 1);
+  EClassId Unsigned = typed(T::G_UMULO, S1, {B, cst(1, S1)}, 1);
+  runAll();
+  EXPECT_EQ(G.getConstant(Wide), APInt(1, 0));
+  EXPECT_FALSE(G.getConstant(Narrow).has_value());
+  EXPECT_EQ(G.getConstant(Unsigned), APInt(1, 0));
+}
+
 TEST_F(GIEGraphIntegerOpsTest, QuotientAndRemainderOfOneDivision) {
   EClassId A = in(), B = in();
   EClassId Quot = typed(T::G_SDIVREM, S32, {A, B}, 0);

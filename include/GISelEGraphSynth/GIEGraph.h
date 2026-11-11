@@ -108,6 +108,9 @@ struct ENode {
 
 hash_code hash_value(const ENode &N);
 
+/// A key for \p Ty that is the same for types that compare equal.
+uint64_t getTypeKey(LLT Ty);
+
 /// Definedness facts about a symbolic input.
 struct InputInfo {
   LLT Ty;
@@ -564,6 +567,11 @@ struct OpProperties {
   /// Arithmetic with an overflow bit (result 1): the bit is 0 if the second
   /// operand is one of these constants.
   SmallVector<int64_t, 2> NoOverflowWith;
+  /// The operator takes its operands as signed numbers, so a literal of a
+  /// property is a signed number too. A rule with the literal c is only
+  /// applied to types that can represent c: in a 1-bit type the literal 1
+  /// is the value -1, and -1 * -1 overflows.
+  bool SignedLiterals = false;
   /// The overflow bit of op(a, a) is 0.
   bool NoOverflowSelf = false;
   /// The overflow bit is the comparison of the operands with this
@@ -854,8 +862,9 @@ public:
   /// Cost of a single node, not including operands. Operations must cost at
   /// least 1 so that extraction is cycle-free.
   virtual unsigned getNodeCost(const ENode &N) const;
-  /// False if \p N must not be extracted, e.g. because the target cannot
-  /// legalize it. The nodes of the original program must be allowed.
+  /// False if the operation or constant \p N must not be extracted, e.g.
+  /// because it is not legal for the target. The nodes of the original
+  /// program must be allowed.
   virtual bool isAllowed(const EGraph &G, const ENode &N) const { return true; }
 };
 

@@ -710,6 +710,11 @@ def computed_constants(name, t, lhs, left, lhs_value):
     # and are covered by the unit tests, not by this script.
     if re.match(r"^fold-", name):
         return z3.And(*left.defined, True), [lhs_value]
+    if name == "smulo-overflow-one":
+        # OpProperties::SignedLiterals: the type must have a signed 1.
+        if t.vars["?a"] < 2:
+            raise IllTyped("the literal 1 is not a signed number of this type")
+        return true, []
     if name == "sext-of-trunc-to-sextinreg":
         if t.vars["?a"] != t.root:
             raise IllTyped("source and result widths differ")

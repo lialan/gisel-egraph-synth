@@ -130,6 +130,18 @@ std::string operandList(char Prefix, unsigned N) {
   return S;
 }
 
+/// The guard of a rule of \p P that contains the literal \p C and the
+/// variable ?a of the same type: see OpProperties::SignedLiterals. Null if
+/// every type can represent \p C.
+RewriteRule::ApplyFn signedLiteralGuard(const OpProperties &P, int64_t C) {
+  unsigned Bits = APInt(64, C, /*isSigned=*/true).getSignificantBits();
+  if (!P.SignedLiterals || Bits <= 1)
+    return nullptr;
+  return [Bits](const EGraph &G, const RuleMatch &M, Computed &) {
+    return !M.isSumBound(0) && G.getType(M.Vars[0]).getSizeInBits() >= Bits;
+  };
+}
+
 /// True for an operator that the rules generated for all binary operators
 /// can use: T = op(T, T) without an immediate.
 bool isPlainBinary(const OpProperties &P) {
@@ -192,8 +204,9 @@ RewriteRule::ApplyFn foldArmsWith(std::optional<APInt> (*Fn)(const APInt &,
 void llvm::egraph::addAlgebraRulesFromProperties(
     ArrayRef<OpProperties> Props, std::vector<RewriteRule> &Rules) {
   auto Add = [&](const OpProperties &P, StringRef Suffix, const std::string &L,
-                 const std::string &R) {
-    Rules.emplace_back((Twine(P.ShortName) + "-" + Suffix).str(), L, R);
+                 const std::string &R, RewriteRule::ApplyFn Fn = nullptr) {
+    Rules.emplace_back((Twine(P.ShortName) + "-" + Suffix).str(), L, R,
+                       std::move(Fn));
   };
   // Commutativity, and associativity of commutative operators, are not
   // rules: they are enforced by canonicalization (EGraph::canonicalize,
@@ -299,7 +312,8 @@ void llvm::egraph::addAlgebraRulesFromProperties(
   // The overflow bit of arithmetic with an overflow result.
   for (const OpProperties &P : Props) {
     for (int64_t C : P.NoOverflowWith)
-      Add(P, "overflow-" + literalName(C), opAttr(P, "1", {"?a", lit(C)}), "0");
+      Add(P, "overflow-" + literalName(C), opAttr(P, "1", {"?a", lit(C)}), "0",
+          signedLiteralGuard(P, C));
     if (P.NoOverflowSelf)
       Add(P, "overflow-self", opAttr(P, "1", {"?a", "?a"}), "0");
     if (P.OverflowPredicate)

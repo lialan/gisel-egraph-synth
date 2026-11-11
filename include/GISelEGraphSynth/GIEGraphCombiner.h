@@ -22,6 +22,12 @@
 /// shadow mode (the default) the MIR is never modified; opportunities are
 /// only counted and optionally reported.
 ///
+/// The pass has two positions (see -gisel-egraph-stages). Before the
+/// legalizer, it finds the rewrites that are good for every target: it
+/// extracts only operations that the target implements directly. After the
+/// legalizer, it works on the operations that the legalizer made for the
+/// target: every instruction and constant that it creates is legal.
+///
 /// The pass is not part of any default pipeline.
 //===----------------------------------------------------------------------===//
 
