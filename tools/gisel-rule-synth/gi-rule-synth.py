@@ -345,7 +345,9 @@ def _record_emission(rules):
     from girs import emit
     out = {}
     for r in rules:
-        r['emission'] = emit.why_not_emittable(r) or 'yes'
+        r['emission'] = 'unproved final guard' if \
+            r['semantic_status']['kind'] != 'verified_refinement' else \
+            (emit.why_not_emittable(r) or 'yes')
         src = '+'.join(r['provenance']['sources'])
         by = out.setdefault(src, {})
         by[r['emission']] = by.get(r['emission'], 0) + 1

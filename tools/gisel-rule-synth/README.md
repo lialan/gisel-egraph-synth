@@ -31,6 +31,95 @@ engine or e-graph runs inside LLVM.
 describe it in `girs/targets.py`, include the group in its pre-legalizer
 combiner behind a flag, and run `select`.
 
+## Searching beyond cheap local identities
+
+`mine` can discover from `opt -O2` output: set `discovery_pipelines` to
+`["opt-O2"]`. This searches opportunities remaining after the IR pipeline;
+it does not establish that a rule is absent from InstCombine. Keep both
+`direct` and `opt-O2` in `pipelines` to measure the two workloads separately.
+Failed `opt` inputs are counted by the prepare stage and excluded from the
+optimized workload, not silently replaced with their unoptimized input.
+
+Three opt-in search budgets let target measurement choose among more forms:
+
+* `cost_slack`: `-1` requires a cheaper RHS, `0` permits equal Generic cost,
+  and `1` permits one extra unit of Generic cost. The default `null` keeps
+  the earlier policy: equal cost for one-operation sources, cheaper otherwise.
+* `max_rhs_cost`: an absolute RHS cost ceiling (`0` means no extra ceiling).
+  It is independent of the source extraction depth. A depth-4 binary tree
+  can contain more than four operations.
+* `semantic_variants`: the number of instruction forms retained for one
+  sampled function (`1` by default). Higher values retain different root
+  operators, operand type signatures or costs. This is bounded diversity,
+  not exhaustive retention of all structurally different equivalent terms.
+
+The same options are `synth --cost-slack`, `--max-rhs-cost`, and
+`--semantic-variants`. With nonnegative cost slack, verified rules are
+marked `target_cost_candidate`; Generic-cost dominance does not remove
+them and the emitter admits them for measurement. `increases_cost` is a
+separate rule class. A candidate is not a selected optimization: final
+selection still needs measured benefit, unchanged fallback, successful
+compilation and the requested no-regression checks. Alternative combines
+can form cycles, including with existing combines; timeout/failure and
+final-set checks remain necessary. This mode changes no maintained profile.
+
+The search still uses registry semantics and SMT proofs, with linear RHS
+inputs and the existing poison/undef restrictions. No sample rewrite or
+known answer is added. `grammar=registry` admits all eligible RHS operators;
+`grammar=auto` progressively widens to that set. Neither setting guarantees
+complete search when a term, evaluation, proof or time budget is exhausted.
+
+For controlled discovery comparisons, from the repository root:
+
+```sh
+python3 llvm/utils/gisel-rule-synth/eval/search_matrix.py \
+  --run-dir /tmp/girs-search-matrix --llc build/bin/llc \
+  --opt build/bin/opt --build-dir build --limit-files 128
+```
+
+The driver uses identical, hash-selected real-test manifests and budgets
+for eight arms: direct/source, optimized/source, optimized/registry,
+additional semantic forms, equal cost, bounded growth, and growth with
+depth 3 and 4. Every arm uses 64 trees per root. Omit `--limit-files` for
+the full manifests. `--arms` selects arms; rerunning resumes their stages.
+`search-comparison.json` records candidate/family counts, frozen-library
+overlap, extracted depths and operation counts, budgets and search stops.
+It explicitly reports discovery only. Use each generated config with
+`mine` to continue through build, selection and held-out evaluation.
+
+For a larger candidate set, an independent screen can avoid running all
+alternative spellings together initially. Build with `mine --until build`,
+then run:
+
+```sh
+python3 llvm/utils/gisel-rule-synth/eval/measure_candidates.py \
+  --run-dir /tmp/girs-search-matrix/o2-equal-d2 \
+  --llc /tmp/girs-search-matrix/o2-equal-d2/build/llc
+python3 llvm/utils/gisel-rule-synth/eval/validate_screen.py \
+  --run-dir /tmp/girs-search-matrix/o2-equal-d2 --top-per-class 2
+```
+
+The screen uses up to two actual discovery files per candidate, disables
+all other synthesized rules, and records firings, instruction deltas,
+compilation failures and fallback changes. These are separate observations,
+not additive gains. The bounded validator ranks candidates from those
+observations, tests additions on the entire discovery and validation
+manifests, and requires both a better joint total and no per-file regression
+against baseline. It freezes the chosen set before one held-out evaluation.
+It writes evidence under `screen-validation/` and never updates a maintained
+profile. Baseline failures and timeouts remain explicit in the records.
+
+If the final combined guard proof is `unknown`, the rule is recorded as
+`unknown_refinement` and is ineligible for emission. A refuting final proof
+still raises an error: it contradicts the individual branch proofs and
+requires investigation. Search count, verified count and measured gain are
+different quantities.
+
+Changing the extractor depth, compiler or prepared input invalidates its
+generated stage cache. Unchanged inputs retain resumability. A new family
+relative to the frozen library, or a residual after `opt -O2`, is not by
+itself evidence of LLVM-wide novelty or a machine-code improvement.
+
 ## The complete run: `mine`
 
 ```sh

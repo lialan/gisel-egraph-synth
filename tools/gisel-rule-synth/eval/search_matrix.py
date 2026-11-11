@@ -66,10 +66,13 @@ def summarize(directory):
         rows.append({
             'run': name, 'state': 'discovery complete',
             'rules': len(db['rules']), 'families': len(families),
+            'semantic_status': dict(collections.Counter(
+                r['semantic_status']['kind'] for r in db['rules'])),
             'families_in_frozen': len(families & old),
             'families_outside_frozen': len(families - old),
-            'measurement_candidates': len(emit.candidates(
-                db, targets.get('AMDGPU'))),
+            'candidate_forms': len(emit.candidates(db, targets.get('AMDGPU'))),
+            'measurement_candidates': sum(emit.emittable(r) for r in
+                emit.candidates(db, targets.get('AMDGPU'))),
             'classes': st['rules_by_class'],
             'discovery': st['discovery'], 'seconds': st['seconds'],
             'peak_rss_mb': st['peak_rss_mb'],
