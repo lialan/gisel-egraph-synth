@@ -11,8 +11,8 @@ filter. There is no table of rewrite rules anywhere in the search.
 The enumeration is split in two so that most of it is shared:
 
 * A ``Bank`` holds the terms of one *signature* (the width class of every
-  variable plus the number of width classes) and one grammar (the base
-  operators plus the operators that ``Limits.grammar`` adds). It is built once, bottom-up by
+  variable plus the types, see ``signature``) and one grammar (a set of
+  operator keys of the registry, see ``grammar_stages``). It is built once, bottom-up by
   cost, and pruned by observational equivalence on unconstrained samples (as
   in Ruler / enumerative superoptimizers): of two terms that agree on every
   sample only the first, cheapest one is kept. Because the samples are
@@ -30,37 +30,45 @@ an already proved, no more expensive candidate refines on the samples is
 dropped without a solver call.
 """
 
+import itertools
 import random
 import time
 
 import numpy as np
 import z3
 
+from . import fp
 from . import ir
+from . import kernels
 from . import ops
 from . import smt
 
 U64 = np.uint64
 
-# Canonical widths a bank is built at, by number of width classes. A bank is
-# evaluated at the instance's own widths; the canonical widths only decide
-# which terms are observationally distinct, so they are the widest ones.
-CANON_WIDTHS = {1: (64,), 2: (32, 64), 3: (16, 32, 64), 4: (8, 16, 32, 64)}
-
 
 class Limits:
     def __init__(self, samples=48, max_terms=50000, max_candidates=6,
                  equal_cost_max=1, max_proofs=48, seed=0, bank_samples=64,
-                 max_cex_samples=16, grammar='source'):
+                 max_cex_samples=16, grammar='source', max_evals=40000000,
+                 capability=None, namespaces=('generic',)):
         self.samples = samples
-        # The operators of a term bank next to the base grammar
-        # (ops.ENUMERATED): 'base' for none, 'source' for the operators of
-        # the instance (so a bank of an instance of the base grammar does
-        # not change), 'all' for every operator with a sample kernel
-        # (ops.ENUMERATED_EXTRA).
-        assert grammar in ('base', 'source', 'all')
+        # The operator namespaces of the registry that a grammar takes
+        # operators from (the generic table and the tables of a target).
+        self.namespaces = tuple(namespaces)
+        # The operators of a term bank (see grammar_stages): 'base' for
+        # the base grammar (ops.ENUMERATED), 'source' for that and the
+        # operators of the instance, 'all' for the base grammar and
+        # ops.ENUMERATED_EXTRA, 'registry' for every operator that a rule
+        # can create, 'auto' for a grammar that grows in steps.
+        assert grammar in GRAMMARS
         self.grammar = grammar
+        # What the target can do with an operator at a type
+        # (targets.Capability), or None. Only 'auto' reads it.
+        self.capability = capability
         self.max_terms = max_terms          # per bank
+        # Candidate terms that a bank evaluates on its samples, per cost
+        # level (a term without a kernel counts Bank.GENERIC_WEIGHT).
+        self.max_evals = max_evals
         self.max_candidates = max_candidates  # proved candidates per instance
         self.max_proofs = max_proofs  # concrete SMT checks per instance
         # Also search replacements of *equal* cost when cost(S) <= this
@@ -71,36 +79,78 @@ class Limits:
         self.max_cex_samples = max_cex_samples
 
 
+    def identity(self):
+        """The limits as plain values: the key of a cache and the record
+        of a run."""
+        d = dict(vars(self))
+        cap = d.pop('capability')
+        d['capability'] = None if cap is None else cap.digest
+        d['namespaces'] = list(d['namespaces'])
+        return d
+
+
 def _special(w):
     m = ir.mask(w)
     return [0, 1, 2, 3, m, m >> 1, (m >> 1) + 1, 0x55555555 & m,
             0xaaaaaaaa & m, w - 1 if w > 1 else 0, w // 2]
 
 
-def _draw(w, rng):
-    """One sample value. The kind is drawn per value, so the kinds of
+def _draw(w, rng, kind='i'):
+    """One sample value. The sort is drawn per value, so the sorts of
     different variables are independent: a shift needs a small amount next
-    to an arbitrary value."""
-    kind = rng.random()
-    if kind < 0.4:
+    to an arbitrary value. A floating-point value (``kind`` 'f') is its
+    bit pattern: any pattern, an integer of any size, or a special
+    value."""
+    sort = rng.random()
+    if kind == 'f':
+        if sort < 0.35:
+            return rng.getrandbits(w)
+        if sort < 0.8:
+            v = rng.getrandbits(rng.randrange(1, 66))
+            return fp.from_int(-v if rng.random() < 0.5 else v, w)
+        sp = [0, 1 << (w - 1), fp.inf(w), fp.inf(w, 1), fp.qnan(w),
+              fp.from_int(1, w), fp.from_int(-1, w), 1, ir.mask(w)]
+        return sp[rng.randrange(len(sp))] & ir.mask(w)
+    if sort < 0.4:
         return rng.getrandbits(w)
-    if kind < 0.75:
+    if sort < 0.75:
         return rng.randrange(0, 2 * w + 2) & ir.mask(w)
     sp = _special(w)
-    return sp[rng.randrange(len(sp))]
+    return sp[rng.randrange(len(sp))] & ir.mask(w)
+
+
+def draw_envs(types, n, rng):
+    """``n`` input assignments for variables of the given types. In one
+    of four assignments a variable is related to an earlier variable of
+    its type (equal, next to it, its complement): independent values of a
+    wide type are never equal, and the samples must tell `x ugt y` from
+    `x uge y`."""
+    envs = []
+    for j in range(n):
+        env = []
+        for i, (w, kind) in enumerate(types):
+            v = _draw(w, rng, kind)
+            before = [k for k in range(i) if types[k] == (w, kind)]
+            if before and j % 4 == 3:
+                o = env[before[rng.randrange(len(before))]]
+                how = rng.randrange(4)
+                v = (o, o + 1, o - 1, ~o)[how] & ir.mask(w)
+            env.append(v)
+        envs.append(tuple(env))
+    return envs
 
 
 def sample_envs(inst, n, rng):
     envs = []
-    for _ in range(n):
-        env = []
+    for env in draw_envs(list(zip(inst.vw, inst.vk)), n, rng):
+        out = []
         for i, w in enumerate(inst.vw):
             z, o = inst.facts[i][:2]
             if inst.consts[i] is not None:
-                env.append(inst.consts[i])
+                out.append(inst.consts[i])
                 continue
-            env.append(((_draw(w, rng) & ~z) | o) & ir.mask(w))
-        envs.append(tuple(env))
+            out.append(((env[i] & ~z) | o) & ir.mask(w))
+        envs.append(tuple(out))
     return envs
 
 
@@ -113,254 +163,176 @@ def consistent(env, inst):
     return True
 
 
-# ------------------------------------------------------- vector kernel ---
-
-def _m(w):
-    return U64(ir.mask(w))
-
-
-def _signed(v, w):
-    """The signed value of a w-bit pattern, as int64."""
-    s = U64(1 << (w - 1))
-    return ((v ^ s) - s).astype(np.int64)
+# The grammars of a search. 'base', 'source' and 'all' are fixed sets for
+# experiments; 'registry' is every operator that a rule can create;
+# 'auto' widens the grammar in steps (grammar_stages).
+GRAMMARS = ('base', 'source', 'all', 'registry', 'auto')
 
 
-def _ashr(v, amt, w):
-    sign = (v >> U64(w - 1)) & U64(1)
-    m = _m(w)
-    return (v >> amt) | (sign * (m ^ (m >> amt)))
+def source_operators(inst):
+    return {ops.base(n[0]) for n in ir.nodes(inst.expr)}
 
 
-def _popcount(x):
-    x = x - ((x >> U64(1)) & U64(0x5555555555555555))
-    x = (x & U64(0x3333333333333333)) + \
-        ((x >> U64(2)) & U64(0x3333333333333333))
-    x = (x + (x >> U64(4))) & U64(0x0f0f0f0f0f0f0f0f)
-    return (x * U64(0x0101010101010101)) >> U64(56)
+def _ordered(names):
+    """Operator names in the order of a grammar: the base grammar first
+    (a bank of the base grammar then has the same terms as before the
+    registry had more operators), then the order of the registry, with
+    the operators that have more than one result last. Of two terms of
+    one cost that agree on the samples a bank keeps the first: an
+    instruction with a result that the term does not use is the last
+    choice (`x ult y` before the borrow of usubo)."""
+    names = set(names)
+    reg = [n for n in ops.REGISTRY if n in names and n not in ops.ENUMERATED]
+    reg.sort(key=lambda n: (ops.REGISTRY[n].results or 1) > 1)
+    return tuple(n for n in ir.CASTS + ir.BINOPS if n in names) + tuple(reg)
 
 
-def _bit_length(x):
-    for k in (1, 2, 4, 8, 16, 32):
-        x = x | (x >> U64(k))
-    return _popcount(x)
+def grammar_stages(inst, limits, types=None):
+    """[(label, operator names)]: the grammars that the search of ``inst``
+    tries, each one a superset of the one before it. Only 'auto' has more
+    than one. No stage depends on what the source computes: a stage is a
+    function of the operators and the types of the source, of the
+    registry and of the capability of the target."""
+    rhs = {n for ns in limits.namespaces for n in ops.rhs_operators(ns)}
+    base = set(ops.ENUMERATED)
+    src = base | (source_operators(inst) & rhs)
+    g = limits.grammar
+    if g == 'base':
+        return [('base', _ordered(base))]
+    if g == 'source':
+        return [('source', _ordered(src))]
+    if g == 'all':
+        return [('all', _ordered(base | set(ops.ENUMERATED_EXTRA)))]
+    if g == 'registry':
+        return [('registry', _ordered(rhs))]
+    stages = [('source', _ordered(src))]
+    cap = limits.capability
+    if cap is not None and types is not None:
+        typed = src | {n for n in rhs if cap.capable(n, types)}
+        if typed != src:
+            stages.append(('target', _ordered(typed)))
+    if set(stages[-1][1]) != rhs:
+        stages.append(('registry', _ordered(rhs)))
+    return stages
 
 
-def _swap64(x, masks):
-    """Swaps the adjacent groups of k bits for each (k, mask)."""
-    for k, mk in masks:
-        x = ((x >> U64(k)) & U64(mk)) | ((x & U64(mk)) << U64(k))
-    return x
+def grammar_keys(names, inst=None):
+    """The operator keys of a grammar: one for each value of an attribute
+    and each result. An immediate attribute also has the values of the
+    source."""
+    imms = {}
+    if inst is not None:
+        for n in ir.nodes(inst.expr):
+            info, attr, _ = ops.parse(n[0])
+            if info.attr == 'imm':
+                imms.setdefault(info.name, set()).add(attr)
+    return tuple(k for n in names
+                 for k in ops.search_keys(n, imms.get(n, ())))
 
 
-_BYTES = ((8, 0x00ff00ff00ff00ff), (16, 0x0000ffff0000ffff),
-          (32, 0x00000000ffffffff))
-_BITS = ((1, 0x5555555555555555), (2, 0x3333333333333333),
-         (4, 0x0f0f0f0f0f0f0f0f)) + _BYTES
+# Canonical widths of the integer types of a bank that are wider than one
+# bit, by their number. A bank is evaluated at the types of the instance;
+# the canonical widths only decide which terms are observationally
+# distinct, so they are the widest ones. A 1-bit integer (a condition, a
+# carry) and a floating-point type keep their width: their operators have
+# a meaning only at that width.
+CANON_INT = {0: (), 1: (64,), 2: (32, 64), 3: (16, 32, 64),
+             4: (8, 16, 32, 64)}
+MAX_CLASSES = 6
 
 
-def _mulhu(a, b, w):
-    """The high w bits of the 2w-bit product."""
-    if w <= 32:
-        return (a * b) >> U64(w)
-    # (a * b) >> w is the high half of the 128-bit product (a << (64 - w))
-    # * b.
-    a = a << U64(64 - w)
-    lo = U64(0xffffffff)
-    s = U64(32)
-    al, ah, bl, bh = a & lo, a >> s, b & lo, b >> s
-    lh, hl = al * bh, ah * bl
-    mid = ((al * bl) >> s) + (lh & lo) + (hl & lo)
-    return ah * bh + (lh >> s) + (hl >> s) + (mid >> s)
+def canonical_types(types):
+    """The types of a bank for an instance with the sorted ``types``
+    ((width, kind) each), or None if a bank does not support them."""
+    ints = [t for t in types if t[1] == 'i' and t[0] > 1]
+    if len(types) > MAX_CLASSES or len(ints) not in CANON_INT or \
+            max(w for w, _ in types) > 64:
+        return None
+    cw = iter(CANON_INT[len(ints)])
+    return tuple(t if t[1] != 'i' or t[0] == 1 else (next(cw), 'i')
+                 for t in types)
 
 
-def _sat_signed(r, neg, ovf, w):
-    return np.where(ovf, np.where(neg, U64(1 << (w - 1)),
-                                  U64((1 << (w - 1)) - 1)), r)
-
-
-def _k_count(op, w, wa, va):
-    if op == 'G_CTPOP':
-        n = _popcount(va)
-    elif op.startswith('G_CTLZ'):
-        n = U64(wa) - _bit_length(va)
-    elif op.startswith('G_CTTZ'):
-        # The bits below the lowest set bit; all wa bits for 0.
-        n = _popcount(((va & (U64(0) - va)) - U64(1)) & _m(wa))
-    else:  # G_CTLS
-        if wa == 1:
-            n = np.zeros_like(va)
-        else:
-            neg = (va >> U64(wa - 1)) & U64(1)
-            n = U64(wa - 1) - _bit_length(va ^ (neg * _m(wa)))
-    bad = (va == U64(0)) if op.endswith('_ZERO_POISON') else None
-    return n & _m(w), bad
-
-
-def _k_extra(op, w, wa, va, vb):
-    """The operators of ops.ENUMERATED_EXTRA. ``ops.EVAL`` is the reference
-    (tests/test_synth.py compares the two)."""
-    m = _m(w)
-    if op in ops.ENUMERATED_COUNT:
-        return _k_count(op, w, wa, va)
-    if op == 'G_TRUNC_USAT_U':
-        return np.minimum(va, m), None
-    if op == 'G_TRUNC_SSAT_U':
-        return np.where(_signed(va, wa) < 0, U64(0), np.minimum(va, m)), None
-    if op == 'G_TRUNC_SSAT_S':
-        lo, hi = -(1 << (w - 1)), (1 << (w - 1)) - 1
-        return np.clip(_signed(va, wa), lo, hi).astype(U64) & m, None
-    if op == 'G_ABS':
-        return np.where(_signed(va, w) < 0, (U64(0) - va) & m, va), None
-    if op == 'G_BSWAP':
-        return _swap64(va, _BYTES) >> U64(64 - w), None
-    if op == 'G_BITREVERSE':
-        return _swap64(va, _BITS) >> U64(64 - w), None
-    if op == 'G_UMIN':
-        return np.minimum(va, vb), None
-    if op == 'G_UMAX':
-        return np.maximum(va, vb), None
-    if op == 'G_ABDU':
-        return np.where(va > vb, va - vb, vb - va), None
-    if op == 'G_UADDSAT':
-        r = (va + vb) & m
-        return np.where(r < va, m, r), None
-    if op == 'G_USUBSAT':
-        return np.where(va > vb, va - vb, U64(0)), None
-    if op == 'G_UMULH':
-        return _mulhu(va, vb, w), None
-    if op == 'G_UAVGFLOOR':
-        return (va & vb) + ((va ^ vb) >> U64(1)), None
-    if op == 'G_UAVGCEIL':
-        return (va | vb) - ((va ^ vb) >> U64(1)), None
-    if op == 'G_SAVGFLOOR':
-        return ((va & vb) + _ashr(va ^ vb, U64(1), w)) & m, None
-    if op == 'G_SAVGCEIL':
-        return ((va | vb) - _ashr(va ^ vb, U64(1), w)) & m, None
-    if op in ('G_ROTL', 'G_ROTR'):
-        n = vb % U64(w)
-        if op == 'G_ROTR':
-            n = (U64(w) - n) % U64(w)
-        return ((va << n) | (va >> ((U64(w) - n) % U64(w)))) & m, None
-    if op in ('G_USHLSAT', 'G_SSHLSAT'):
-        bad = vb >= U64(w)
-        amt = np.where(bad, U64(0), vb)
-        r = (va << amt) & m
-        if op == 'G_USHLSAT':
-            return np.where((r >> amt) == va, r, m), bad
-        neg = _signed(va, w) < 0
-        return _sat_signed(r, neg, _ashr(r, amt, w) != va, w), bad
-    sa, sb = _signed(va, w), _signed(vb, w)
-    if op == 'G_SMIN':
-        return np.where(sa < sb, va, vb), None
-    if op == 'G_SMAX':
-        return np.where(sa > sb, va, vb), None
-    if op == 'G_ABDS':
-        return np.where(sa > sb, va - vb, vb - va) & m, None
-    if op == 'G_SMULH':
-        h = _mulhu(va, vb, w)
-        h = h - np.where(sa < 0, vb, U64(0)) - np.where(sb < 0, va, U64(0))
-        return h & m, None
-    na, nb = sa < 0, sb < 0
-    if op == 'G_SADDSAT':
-        r = (va + vb) & m
-        ovf = (na == nb) & ((_signed(r, w) < 0) != na)
-        return _sat_signed(r, na, ovf, w), None
-    assert op == 'G_SSUBSAT', op
-    r = (va - vb) & m
-    ovf = (na != nb) & ((_signed(r, w) < 0) != na)
-    return _sat_signed(r, na, ovf, w), None
-
-
-def kernel(op, w, wa, va, vb):
-    """Vectorized generic MIR semantics on uint64 arrays (widths <= 64).
-    Returns (values, poison) where poison is None or a bool array. ``wa``
-    is the width of the first operand."""
-    m = _m(w)
-    if op in ops.ENUMERATED_EXTRA:
-        return _k_extra(op, w, wa, va, vb)
-    if op == 'G_TRUNC':
-        return va & m, None
-    if op == 'G_ZEXT':
-        return va, None
-    if op == 'G_SEXT':
-        sign = (va >> U64(wa - 1)) & U64(1)
-        return va | (sign * (m ^ _m(wa))), None
-    if op == 'G_ADD':
-        return (va + vb) & m, None
-    if op == 'G_SUB':
-        return (va - vb) & m, None
-    if op == 'G_MUL':
-        return (va * vb) & m, None
-    if op == 'G_AND':
-        return va & vb, None
-    if op == 'G_OR':
-        return va | vb, None
-    if op == 'G_XOR':
-        return va ^ vb, None
-    bad = vb >= U64(w)
-    amt = np.where(bad, U64(0), vb)
-    if op == 'G_SHL':
-        return (va << amt) & m, bad
-    if op == 'G_LSHR':
-        return va >> amt, bad
-    sign = (va >> U64(w - 1)) & U64(1)
-    return (va >> amt) | (sign * (m ^ (m >> amt))), bad
-
-
-def grammar_extras(inst, limits):
-    """The operators of the term bank of ``inst`` next to the base grammar,
-    in the order of ops.ENUMERATED_EXTRA."""
-    if limits.grammar == 'base':
-        return ()
-    if limits.grammar == 'all':
-        return ops.ENUMERATED_EXTRA
-    used = {ops.base(n[0]) for n in ir.nodes(inst.expr)}
-    return tuple(o for o in ops.ENUMERATED_EXTRA if o in used)
+class _Full(Exception):
+    """A budget of the bank ended inside a cost level."""
 
 
 class Bank:
-    """Terms of one signature, stored structurally with width classes."""
+    """Terms of one signature and one grammar, stored structurally with
+    type classes. A class is one type of the instance: (width, kind).
+
+    The bank knows no operator: the registry gives the operand count, the
+    type rule (ops.signature_ok), the attribute values, the cost and the
+    commutativity of each operator key, and kernels.apply evaluates it."""
 
     CHUNK = 1 << 17
+    FAIR_CHUNK = 1 << 11
+    # The weight of one term evaluated with the evaluator of the registry
+    # (an operator without a kernel) in the evaluation budget.
+    GENERIC_WEIGHT = 100
 
-    def __init__(self, var_cls, ncls, limits, extras=()):
+    def __init__(self, var_cls, types, limits, grammar):
         self.var_cls = tuple(var_cls)
-        self.ncls = ncls
+        self.types = tuple(types)
+        self.ncls = len(types)
         self.limits = limits
-        # Operators next to the base grammar. The terms of the base
-        # grammar come first at every cost, so a bank without extras is
-        # the bank of the base grammar.
-        self.extras = tuple(extras)
-        self.cw = CANON_WIDTHS[ncls]
-        rng = random.Random('bank:%d:%r:%d' % (limits.seed, self.var_cls,
-                                               ncls))
+        self.grammar = tuple(grammar)
+        self.cw = tuple(w for w, _ in types)
+        rng = random.Random('bank:%d:%r:%r' % (limits.seed, self.var_cls,
+                                               self.types))
         n = limits.bank_samples
-        self.op = []      # 'var' | 'lit' | G_*
+        self.op = []      # 'var' | 'lit' | operator key
         self.arg = []     # variable index / literal key / None
-        self.cls = []     # width class of the value
+        self.cls = []     # type class of the value
         self.cost = []
         self.vars = []    # bit set of the variables used
-        self.a = []       # operand term indices (-1 if none)
-        self.b = []
-        self.segs = []    # (op, cls, cls_a, cost, start, end)
+        self.opnds = []   # operand term indices
+        self.segs = []    # (key, cls, operand classes, cost, start, end)
         self.cost_end = []  # cost_end[c] = number of terms of cost <= c
         self.truncated = False
+        # Per operator: candidate terms evaluated on the bank samples and
+        # terms kept. ``truncated_at`` is (cost, operator, budget) of the
+        # level that reached a budget, and ``starved`` the operators that
+        # got no term at that level because of it.
+        self.built = {}
+        self.kept = {}
+        self.truncated_at = None
+        self.starved = []
+        self.evals = 0
+        self.counters = {}
         self._expr = {}
         self._seen = set()
         self._r1 = np.array([rng.getrandbits(64) | 1 for _ in range(n)], U64)
         self._r2 = np.array([rng.getrandbits(64) | 1 for _ in range(n)], U64)
         self._V = np.zeros((256, n), U64)
         self._OK = np.ones((256, n), bool)
+        envs = draw_envs([self.types[c] for c in self.var_cls], n, rng)
         for i, c in enumerate(self.var_cls):
-            w = self.cw[c]
-            vals = np.array([_draw(w, rng) for _ in range(n)], U64)
-            self._leaf('var', i, c, 1 << i, vals)
-        for c in range(ncls):
+            self._leaf('var', i, c, 1 << i,
+                       np.array([env[i] for env in envs], U64))
+        for c, (w, kind) in enumerate(self.types):
+            if kind != 'i':
+                continue   # a literal is an integer constant
             for k in ir.LITERALS:
-                v = ir.lit_value(self.cw[c], k)
-                self._leaf('lit', k, c, 0, np.full(n, v, U64))
+                if w == 1 and k == '-1':
+                    continue   # the same value as 1
+                self._leaf('lit', k, c, 0,
+                           np.full(n, ir.lit_value(w, k), U64))
         self.n_leaves = len(self.op)
         self.cost_end.append(len(self.op))
+        # key -> [(result class, operand classes)], at the canonical
+        # types. The tuples with one operand class come first: of two
+        # equal terms the first one is kept.
+        self.sigs = {}
+        for key in self.grammar:
+            info = ops.parse(key)[0]
+            sigs = [(k, kas) for k in range(self.ncls)
+                    for kas in itertools.product(range(self.ncls),
+                                                 repeat=info.operands)
+                    if ops.signature_ok(key, self.types[k],
+                                        [self.types[a] for a in kas])]
+            sigs.sort(key=lambda s: (len(set(s[1])), s))
+            self.sigs[key] = sigs
         self._arrays()
 
     # -- construction --
@@ -395,64 +367,74 @@ class Bank:
         self.cls.append(cls)
         self.cost.append(0)
         self.vars.append(vars_)
-        self.a.append(-1)
-        self.b.append(-1)
+        self.opnds.append(())
 
     def _arrays(self):
         self.cls_np = np.array(self.cls, np.int16)
         self.cost_np = np.array(self.cost, np.int16)
         self.vars_np = np.array(self.vars, np.int64)
         self.lit_np = np.array([o == 'lit' for o in self.op], bool)
-        self.a_np = np.array(self.a, np.int64)
-        self.b_np = np.array(self.b, np.int64)
+        self.opnd_np = np.full((len(self.op), 3), -1, np.int64)
+        for i, o in enumerate(self.opnds):
+            self.opnd_np[i, :len(o)] = o
 
-    def _add_segment(self, op, cls, cls_a, cost, ai, bi):
+    def _add_segment(self, key, cls, kas, cost, idx, cap=None):
         """Evaluates candidate terms on the bank samples, drops duplicates
-        and appends the rest as one segment. ``bi`` is None for casts."""
+        and appends the rest as one segment. ``idx`` has one array of term
+        indices for each operand. ``cap`` limits the terms that this call
+        adds: the call then returns the candidates that it did not look
+        at (else None). Raises _Full when a budget ends."""
+        name = ops.base(key)
         room = self.limits.max_terms - len(self.op)
         if room <= 0:
-            self.truncated = True
-            return
-        w, wa = self.cw[cls], self.cw[cls_a]
-        va = self._V[ai]
-        ok = self._OK[ai]
-        if bi is None:
-            vals, bad = kernel(op, w, wa, va, None)
-        else:
-            vals, bad = kernel(op, w, wa, va, self._V[bi])
-            ok = ok & self._OK[bi]
-        if bad is not None:
-            ok = ok & ~bad
+            raise _Full(key, 'terms')
+        if self.evals >= self._eval_limit:
+            raise _Full(key, 'evaluations')
+        self.built[name] = self.built.get(name, 0) + len(idx[0])
+        before = self.counters.get('generic_terms', 0)
+        vals, ok = kernels.apply(
+            key, self.cw[cls], [self.cw[k] for k in kas],
+            [self._V[i] for i in idx], [self._OK[i] for i in idx],
+            self.counters)
+        generic = self.counters.get('generic_terms', 0) - before
+        self.evals += len(idx[0]) + generic * (self.GENERIC_WEIGHT - 1)
         keep = ok.any(axis=1)   # a term that is always poison is useless
-        key = self._key(cls, vals, ok)
-        _, first = np.unique(key, return_index=True)
+        hkey = self._key(cls, vals, ok)
+        _, first = np.unique(hkey, return_index=True)
         first.sort()
-        chosen = []
-        for j, k in zip(first.tolist(), key[first].tolist()):
+        chosen, full, rest = [], False, None
+        limit = room if cap is None else min(room, cap)
+        for j, k in zip(first.tolist(), hkey[first].tolist()):
             if keep[j] and k not in self._seen:
-                self._seen.add(k)
-                chosen.append(j)
-                if len(chosen) >= room:
-                    self.truncated = True
+                if len(chosen) >= limit:
+                    full = limit == room
+                    rest = [i[j:] for i in idx]
                     break
-        if not chosen:
-            return
-        start = len(self.op)
-        end = start + len(chosen)
-        self._grow(end)
-        self._V[start:end] = vals[chosen]
-        self._OK[start:end] = ok[chosen]
-        al = ai[chosen].tolist()
-        bl = bi[chosen].tolist() if bi is not None else [-1] * len(chosen)
-        for x, y in zip(al, bl):
-            self.op.append(op)
-            self.arg.append(None)
-            self.cls.append(cls)
-            self.cost.append(cost)
-            self.vars.append(self.vars[x] | (self.vars[y] if y >= 0 else 0))
-            self.a.append(x)
-            self.b.append(y)
-        self.segs.append((op, cls, cls_a, cost, start, end))
+                self._seen.add(k)
+                self._level_keys.append(k)
+                chosen.append(j)
+        if chosen:
+            self.kept[name] = self.kept.get(name, 0) + len(chosen)
+            start = len(self.op)
+            end = start + len(chosen)
+            self._grow(end)
+            self._V[start:end] = vals[chosen]
+            self._OK[start:end] = ok[chosen]
+            cols = [i[chosen].tolist() for i in idx]
+            for row in zip(*cols):
+                self.op.append(key)
+                self.arg.append(None)
+                self.cls.append(cls)
+                self.cost.append(cost)
+                v = 0
+                for x in row:
+                    v |= self.vars[x]
+                self.vars.append(v)
+                self.opnds.append(row)
+            self.segs.append((key, cls, tuple(kas), cost, start, end))
+        if full:
+            raise _Full(key, 'terms')
+        return rest
 
     def _level(self, c):
         return np.arange(self.cost_end[c - 1] if c else 0, self.cost_end[c])
@@ -463,97 +445,162 @@ class Bank:
             self._extend(len(self.cost_end))
             self.cost_end.append(len(self.op))
             self._arrays()
+        if self.truncated:
+            # The bank does not grow again.
+            self._V = self._OK = self._seen = None
 
     def _extend(self, c):
+        """The terms of cost ``c``. First the operators one after the
+        other, in the order of the grammar. If a budget ends before the
+        last operator, the level is built again with the operators in
+        turns, so that the order of the grammar does not decide which
+        operators get the room that is left."""
         if self.truncated:
             return
-        self._extend_unary(c, ir.CASTS)
-        self._extend_binary(c, ir.BINOPS)
-        if self.extras:
-            self._extend_unary(c, [o for o in self.extras
-                                   if o not in ops.ENUMERATED_BINARY])
-            self._extend_binary(c, [o for o in self.extras
-                                    if o in ops.ENUMERATED_BINARY])
+        self._eval_limit = self.limits.max_evals
+        mark = (len(self.op), len(self.segs), dict(self.built),
+                dict(self.kept), self.evals)
+        self._level_keys = []
+        try:
+            for key in self.grammar:
+                for _ in self._terms_of(key, c, self.CHUNK, None):
+                    pass
+            self._compact(mark[0], mark[1])
+            return
+        except _Full:
+            pass
+        # Undo the level.
+        n, nsegs, self.built, self.kept, _ = mark
+        for k in self._level_keys:
+            self._seen.discard(k)
+        self._level_keys = []
+        for name in ('op', 'arg', 'cls', 'cost', 'vars', 'opnds'):
+            del getattr(self, name)[n:]
+        del self.segs[nsegs:]
+        # The evaluations of the first try are spent. The level gets a
+        # part of the budget again.
+        self._eval_limit = self.evals + self.limits.max_evals // 4
+        room = self.limits.max_terms - n
+        cap = max(8, room // (2 * max(1, len(self.grammar))))
+        gens = [(key, self._terms_of(key, c, self.FAIR_CHUNK, cap))
+                for key in self.grammar]
+        at = None
+        while gens and at is None:
+            alive = []
+            for turn, (key, g) in enumerate(gens):
+                try:
+                    next(g)
+                    alive.append((key, g))
+                except StopIteration:
+                    pass
+                except _Full as f:
+                    at = f.args
+                    alive += gens[turn:]
+                    break
+            gens = alive
+        if at is not None:
+            self.truncated = True
+            self.truncated_at = (c, ops.base(at[0]), at[1])
+            got = {ops.base(s[0]) for s in self.segs[nsegs:]}
+            self.starved = sorted({ops.base(k) for k, _ in gens} - got)
+        self._compact(n, nsegs)
 
-    @staticmethod
-    def _class_pair_ok(op, k, ka):
-        """A one-operand operator with a result of width class ``k`` and
-        an operand of width class ``ka`` (wider classes are wider)."""
-        if op in ops.ENUMERATED_UNARY:
-            return k == ka
-        if op in ops.ENUMERATED_COUNT:
-            return True
-        if op == 'G_TRUNC' or op in ops.ENUMERATED_NARROW:
-            return k < ka
-        return k > ka
+    def _compact(self, n0, s0):
+        """Puts the terms of a level (from term ``n0`` and segment ``s0``)
+        in the order of operator, result class and operand classes, so
+        that each of these is one segment: an evaluation makes one call
+        per segment. A term of a level has operands of lower levels
+        only."""
+        segs = self.segs[s0:]
+        if len(segs) < 2:
+            return
+        pos = {k: i for i, k in enumerate(self.grammar)}
+        order = sorted(range(len(segs)),
+                       key=lambda i: (pos[segs[i][0]], segs[i][1],
+                                      segs[i][2], i))
+        perm = np.concatenate([np.arange(segs[i][4], segs[i][5])
+                               for i in order])
+        for name in ('op', 'arg', 'cls', 'cost', 'vars', 'opnds'):
+            lst = getattr(self, name)
+            lst[n0:] = [lst[j] for j in perm.tolist()]
+        self._V[n0:n0 + len(perm)] = self._V[perm]
+        self._OK[n0:n0 + len(perm)] = self._OK[perm]
+        del self.segs[s0:]
+        at = n0
+        for i in order:
+            key, cls, kas, cost, a, b = segs[i]
+            last = self.segs[-1] if len(self.segs) > s0 else None
+            if last and last[:3] == (key, cls, kas):
+                self.segs[-1] = last[:5] + (at + b - a,)
+            else:
+                self.segs.append((key, cls, kas, cost, at, at + b - a))
+            at += b - a
 
-    def _extend_unary(self, c, operators):
-        for op in operators:
-            oc = ops.cost(op)
-            if c < oc or self.truncated:
+    def _terms_of(self, key, c, chunk, cap):
+        """Adds the terms of cost ``c`` with the operator ``key`` at the
+        root. A generator: it yields after each segment."""
+        info = ops.parse(key)[0]
+        rest = c - info.cost
+        if rest < 0:
+            return
+        arity = info.operands
+        comm = info.commutative and arity >= 2
+        for costs in _compositions(rest, arity):
+            # (b op a) is the same term as (a op b).
+            if comm and costs[0] > costs[1]:
                 continue
-            prev = self._level(c - oc)
-            for k in range(self.ncls):
-                for ka in range(self.ncls):
-                    if not self._class_pair_ok(op, k, ka):
-                        continue
-                    ai = prev[(self.cls_np[prev] == ka) &
-                              ~self.lit_np[prev]]
-                    if len(ai):
-                        self._add_segment(op, k, ka, c, ai, None)
-
-    def _extend_binary(self, c, operators):
-        for op in operators:
-            info = ops.parse(op)[0]
-            oc = info.cost
-            comm = info.commutative
-            # The second operand is an amount of any type.
-            shift = bool(info.meta.get('shift') or info.meta.get('rotate'))
-            for ca in range(0, c - oc + 1):
-                cb = c - oc - ca
-                # (b op a) is the same term as (a op b).
-                if comm and ca > cb:
+            levels = [self._level(x) for x in costs]
+            for k, kas in self.sigs[key]:
+                parts = [l[self.cls_np[l] == ka]
+                         for l, ka in zip(levels, kas)]
+                if any(len(p) == 0 for p in parts):
                     continue
-                la, lb = self._level(ca), self._level(cb)
-                for ka in range(self.ncls):
-                    A = la[self.cls_np[la] == ka]
-                    if not len(A):
-                        continue
-                    for kb in range(self.ncls):
-                        if not shift and kb != ka:
-                            continue
-                        B = lb[self.cls_np[lb] == kb]
-                        if kb != ka:
-                            # Literal shift amounts use the value type.
-                            B = B[~self.lit_np[B]]
-                        if not len(B):
-                            continue
-                        step = max(1, self.CHUNK // len(B))
-                        for s in range(0, len(A), step):
-                            ai = np.repeat(A[s:s + step], len(B))
-                            bi = np.tile(B, len(A[s:s + step]))
-                            va, vb = self.vars_np[ai], self.vars_np[bi]
-                            # Linear terms only; an operation on literals
-                            # alone is a constant, which costs nothing and
-                            # is not in the grammar.
-                            sel = ((va & vb) == 0) & ((va | vb) != 0)
-                            if comm and ca == cb:
-                                sel &= ai < bi
-                            if sel.any():
-                                self._add_segment(op, ka, ka, c, ai[sel],
-                                                  bi[sel])
-                            if self.truncated:
-                                return
+                sym = comm and costs[0] == costs[1] and kas[0] == kas[1]
+                for idx, used in self._products(parts, chunk):
+                    # An operation on literals alone is a constant, which
+                    # costs nothing and is not in the grammar.
+                    sel = used != 0
+                    if sym:
+                        sel &= idx[0] < idx[1]
+                    todo = [i[sel] for i in idx] if sel.any() else None
+                    while todo is not None:
+                        todo = self._add_segment(key, k, kas, c, todo, cap)
+                        yield
+
+    def _products(self, parts, chunk):
+        """The combinations of one term of each part in which no variable
+        occurs twice (linear terms only), in pieces of about ``chunk``
+        combinations: (index arrays, variables used)."""
+        if len(parts) == 1:
+            for s in range(0, len(parts[0]), chunk):
+                a = parts[0][s:s + chunk]
+                yield [a], self.vars_np[a]
+            return
+        A = parts[0]
+        for rest, rv in self._products(parts[1:], chunk):
+            n = len(rest[0])
+            step = max(1, chunk // n)
+            for s in range(0, len(A), step):
+                a = A[s:s + step]
+                ai = np.repeat(a, n)
+                va = self.vars_np[ai]
+                vr = np.tile(rv, len(a))
+                sel = (va & vr) == 0
+                if sel.any():
+                    yield [ai[sel]] + [np.tile(r, len(a))[sel]
+                                       for r in rest], (va | vr)[sel]
 
     # -- use --
 
     def size(self, max_cost):
         return self.cost_end[min(max_cost, len(self.cost_end) - 1)]
 
-    def evaluate(self, widths, env_cols, max_cost):
+    def evaluate(self, types, env_cols, max_cost, counters=None):
         """Values of every term of cost <= max_cost for the samples
-        ``env_cols`` (one uint64 array per variable), at the instance's
-        ``widths`` (indexed by width class). Returns (V, OK)."""
+        ``env_cols`` (one uint64 array per variable), at the ``types`` of
+        the instance (indexed by type class). Returns (V, OK). A term
+        whose operator has no result of these types (a bank has type
+        classes, not types) is poison."""
         n = self.size(max_cost)
         ns = len(env_cols[0]) if env_cols else 1
         V = np.zeros((n, ns), U64)
@@ -562,43 +609,51 @@ class Bank:
             if self.op[i] == 'var':
                 V[i] = env_cols[self.arg[i]]
             else:
-                V[i] = U64(ir.lit_value(widths[self.cls[i]], self.arg[i]))
-        for op, cls, cls_a, cost, s, e in self.segs:
+                V[i] = U64(ir.lit_value(types[self.cls[i]][0], self.arg[i]))
+        valid = {}
+        for key, cls, kas, cost, s, e in self.segs:
             if cost > max_cost:
                 break
-            ai = self.a_np[s:e]
-            va = V[ai]
-            ok = OK[ai]
-            if self.b[s] < 0:
-                vals, bad = kernel(op, widths[cls], widths[cls_a], va, None)
-            else:
-                bi = self.b_np[s:e]
-                vals, bad = kernel(op, widths[cls], widths[cls_a], va,
-                                   V[bi])
-                ok = ok & OK[bi]
-            if bad is not None:
-                ok = ok & ~bad
-            V[s:e] = vals
-            OK[s:e] = ok
+            sig = (key, cls, kas)
+            if sig not in valid:
+                valid[sig] = ops.signature_ok(key, types[cls],
+                                              [types[k] for k in kas])
+            if not valid[sig]:
+                OK[s:e] = False
+                continue
+            cols = [V[self.opnd_np[s:e, j]] for j in range(len(kas))]
+            oks = [OK[self.opnd_np[s:e, j]] for j in range(len(kas))]
+            V[s:e], OK[s:e] = kernels.apply(
+                key, types[cls][0], [types[k][0] for k in kas], cols, oks,
+                counters)
         return V, OK
 
-    def expr(self, i, widths):
-        """The term as an ir expression at the given widths."""
-        key = (i, widths)
+    def expr(self, i, types):
+        """The term as an ir expression at the given types."""
+        key = (i, types)
         e = self._expr.get(key)
         if e is None:
             op = self.op[i]
             if op == 'var':
                 e = ('var', self.arg[i])
             elif op == 'lit':
-                e = ('lit', widths[self.cls[i]], self.arg[i])
-            elif self.b[i] < 0:
-                e = (op, widths[self.cls[i]], self.expr(self.a[i], widths))
+                e = ('lit', types[self.cls[i]][0], self.arg[i])
             else:
-                e = (op, widths[self.cls[i]], self.expr(self.a[i], widths),
-                     self.expr(self.b[i], widths))
+                e = (op, types[self.cls[i]][0]) + tuple(
+                    self.expr(a, types) for a in self.opnds[i])
             self._expr[key] = e
         return e
+
+
+def _compositions(total, parts):
+    """The ways to write ``total`` as an ordered sum of ``parts``
+    non-negative integers."""
+    if parts == 1:
+        yield (total,)
+        return
+    for first in range(total + 1):
+        for rest in _compositions(total - first, parts - 1):
+            yield (first,) + rest
 
 
 class Context:
@@ -611,12 +666,25 @@ class Context:
         self.cex = {}     # variable widths -> [input assignment]
         self.seconds = {'bank_build': 0.0, 'bank_eval': 0.0, 'smt': 0.0}
         self.bank_hits = 0
+        # 'generic_terms': terms of an instance evaluated with the
+        # evaluator of the registry (operators without a kernel).
+        self.counters = {}
+        # Operator -> counters of the replacement candidates that contain
+        # it (see count_ops).
+        self.op_stats = {}
 
-    def bank(self, var_cls, ncls, max_cost, extras=()):
-        key = (tuple(var_cls), ncls, tuple(extras))
+    def count_ops(self, tgt, what):
+        for op in {ops.base(n[0]) for n in ir.nodes(tgt)} or {'(leaf)'}:
+            st = self.op_stats.setdefault(op, {})
+            st[what] = st.get(what, 0) + 1
+
+    def bank(self, var_cls, types, max_cost, grammar):
+        """The bank of a signature (the type class of each variable and
+        the canonical types) and a grammar (operator keys)."""
+        key = (tuple(var_cls), tuple(types), tuple(grammar))
         b = self.banks.get(key)
         if b is None:
-            b = self.banks[key] = Bank(var_cls, ncls, self.limits, extras)
+            b = self.banks[key] = Bank(var_cls, types, self.limits, grammar)
         else:
             self.bank_hits += 1
         if len(b.cost_end) <= max_cost:
@@ -631,7 +699,31 @@ class Context:
             pool.append(env)
 
     def stats(self):
-        return {'banks': len(self.banks), 'bank_reuses': self.bank_hits,
+        built, kept, starved = {}, {}, {}
+        for b in self.banks.values():
+            for o, n in b.built.items():
+                built[o] = built.get(o, 0) + n
+            for o, n in b.kept.items():
+                kept[o] = kept.get(o, 0) + n
+            for o in b.starved:
+                starved[o] = starved.get(o, 0) + 1
+        per_op = {}
+        for o in sorted(set(built) | set(self.op_stats)):
+            per_op[o] = dict(sorted(self.op_stats.get(o, {}).items()),
+                             terms_built=built.get(o, 0),
+                             terms_kept=kept.get(o, 0),
+                             banks_without_room=starved.get(o, 0))
+        return {'per_operator': per_op,
+                'banks_truncated_at': sorted(
+                    '%s cost %d (%s)' % (b.truncated_at[1], b.truncated_at[0],
+                                      b.truncated_at[2])
+                    for b in self.banks.values() if b.truncated_at),
+                'generic_terms_built': sum(
+                    b.counters.get('generic_terms', 0)
+                    for b in self.banks.values()),
+                'generic_terms_evaluated': self.counters.get(
+                    'generic_terms', 0),
+                'banks': len(self.banks), 'bank_reuses': self.bank_hits,
                 'bank_terms': sum(len(b.op) for b in self.banks.values()),
                 'banks_truncated': sum(b.truncated
                                        for b in self.banks.values()),
@@ -642,14 +734,33 @@ class Context:
 
 
 def signature(inst):
-    """(width classes of the variables, widths by class) or None if the
-    instance has more width classes than a bank supports."""
-    widths = sorted(set(inst.vw) |
-                    {e[1] for e in [inst.expr] + ir.interior_nodes(inst.expr)})
-    if len(widths) not in CANON_WIDTHS or max(widths) > 64:
+    """(type class of each variable, types by class, canonical types by
+    class), or None if a bank does not support the types of the instance.
+    A type is (width, kind): two types of one width are two classes."""
+    types = ir.types_of(inst.expr, inst.vw, inst.vk)
+    if types is None:
         return None
-    cls = {w: i for i, w in enumerate(widths)}
-    return tuple(cls[w] for w in inst.vw), tuple(widths)
+    types = tuple(sorted(types))
+    canon = canonical_types(types)
+    if canon is None:
+        return None
+    cls = {t: i for i, t in enumerate(types)}
+    return (tuple(cls[(w, k)] for w, k in zip(inst.vw, inst.vk)), types,
+            canon)
+
+
+def _canon_nan(vals, ty):
+    """The values of the type ``ty`` with every NaN replaced by one NaN:
+    the samples do not tell the payloads of a NaN apart (the proof
+    does)."""
+    w, kind = ty
+    if kind != 'f':
+        return vals
+    eb = fp.FORMATS[w][0]
+    frac = U64((1 << (w - 1 - eb)) - 1)
+    emask = U64(((1 << eb) - 1) << (w - 1 - eb))
+    nan = ((vals & emask) == emask) & ((vals & frac) != U64(0))
+    return np.where(nan, U64(fp.qnan(w)), vals)
 
 
 def prove_concrete(inst, tgt, backend):
@@ -691,7 +802,8 @@ def max_search_cost(inst, limits):
     return src_cost - 1
 
 
-def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None):
+def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
+                     log=None):
     """Proves candidate replacements (cheapest first) under the instance's
     concrete facts. A refuting model becomes a sample: it filters the
     remaining candidates and is kept for later instances."""
@@ -719,14 +831,25 @@ def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None):
                 return True
         return False
 
-    for tgt in cands:
+    def note(tgt, status):
+        ctx.count_ops(tgt, status)
+        if log is not None:
+            log.append({'tgt': ir.to_sexpr(tgt), 'status': status})
+
+    stats['stop'] = 'complete'
+    for n, tgt in enumerate(cands):
+        ctx.count_ops(tgt, 'fingerprint_matches')
         if any(not refines_on(inst, tgt, e) for e in cex):
             stats['cex_filtered'] += 1
+            note(tgt, 'refuted_by_counterexample')
             continue
         if envs and dominated(tgt):
             stats['dominated'] += 1
+            note(tgt, 'dominated')
             continue
         if stats['smt_checks'] >= limits.max_proofs:
+            stats['stop'] = 'proof_budget'
+            stats['not_tried'] = len(cands) - n
             break
         stats['smt_checks'] += 1
         t0 = time.monotonic()
@@ -737,12 +860,19 @@ def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None):
             env = tuple(r.model)
             cex.append(env)
             ctx.add_cex(inst.vw, env)
+            note(tgt, 'smt_refuted')
             continue
         if r.status != 'unsat':
+            # Not a proof and not a refutation: the candidate stays open.
             stats['smt_unknown'] += 1
+            note(tgt, 'smt_unknown')
             continue
+        note(tgt, 'proved')
         out.append({'tgt': tgt, 'cost': ir.cost(tgt), 'proof': r})
         if len(out) >= limits.max_candidates:
+            if n + 1 < len(cands):
+                stats['stop'] = 'candidate_limit'
+                stats['not_tried'] = len(cands) - n - 1
             break
     return out
 
@@ -774,42 +904,49 @@ def literal_spellings(inst):
 def new_stats():
     return {'terms': 0, 'fingerprint_matches': 0, 'smt_checks': 0,
             'smt_refuted': 0, 'smt_unknown': 0, 'cex_filtered': 0,
-            'dominated': 0}
+            'dominated': 0, 'not_tried': 0}
 
 
-def discover(inst, backend, limits=None, ctx=None):
+# Why the search of one instance ended. 'complete': every term of the
+# grammar up to the cost limit was compared with the source and every
+# match was decided. The other values say that a budget ended the search:
+# no result then does not mean that the grammar has none.
+STOPS = ('complete', 'no_signature', 'source_always_poison',
+         'bank_truncated', 'proof_budget', 'candidate_limit', 'smt_unknown')
+
+
+def discover(inst, backend, limits=None, ctx=None, log=None):
     """Returns (candidates, stats). Each candidate is a dict with the
-    replacement expression and its concrete proof result."""
+    replacement expression and its concrete proof result. stats['stop']
+    is one of STOPS. ``log`` (a dict) receives the record of the search:
+    the grammar, the limits that were reached and every candidate with
+    its status."""
     ctx = ctx or Context(limits)
     limits = limits or ctx.limits
     stats = new_stats()
+    stats['stop'] = 'complete'
     if ir.cost(inst.expr) == 0:
         return [], stats
     sig = signature(inst)
     if sig is None:
+        stats['stop'] = 'no_signature'
         return [], stats
-    var_cls, widths = sig
+    var_cls, types, canon = sig
     max_cost = max_search_cost(inst, limits)
     envs = instance_envs(inst, limits, ctx)
     # Poison and undefined behaviour of the source allow every value.
     src = [None if v is ir.UB else v
            for v in (ir.evaluate(inst.expr, inst.vw, env) for env in envs)]
     if all(v is None for v in src):
-        return [], stats  # always poison on the samples: nothing to learn
-    bank = ctx.bank(var_cls, len(widths), max_cost,
-                    grammar_extras(inst, limits))
-    t0 = time.monotonic()
+        # Always poison on the samples: nothing to learn.
+        stats['stop'] = 'source_always_poison'
+        return [], stats
     cols = [np.array([env[i] for env in envs], U64)
             for i in range(len(inst.vw))]
-    V, OK = bank.evaluate(widths, cols, max_cost)
-    n = V.shape[0]
-    stats['terms'] = n
     src_ok = np.array([v is not None for v in src], bool)
-    src_val = np.array([v or 0 for v in src], U64)
-    root_cls = widths.index(inst.expr[1])
-    rows = np.nonzero(bank.cls_np[:n] == root_cls)[0]
-    agree = (((V[rows] == src_val) & OK[rows]) | ~src_ok).all(axis=1)
-    ctx.seconds['bank_eval'] += time.monotonic() - t0
+    root = ir.type_of(inst.expr, inst.vw, inst.vk)
+    src_val = _canon_nan(np.array([v or 0 for v in src], U64), root)
+    root_cls = types.index(root)
 
     src_variants = set(ir.commuted_variants(inst.expr))
     # A replacement equal to a subtree of the source is realized by the
@@ -819,15 +956,50 @@ def discover(inst, backend, limits=None, ctx=None):
     # Neither is the source with a constant input spelled as a literal.
     for e in literal_spellings(inst):
         src_variants.update(ir.commuted_variants(e))
-    cands = []
-    for i in rows[agree].tolist():
-        e = bank.expr(i, widths)
-        # A bank has width classes, not widths: an operator can have a
-        # type rule that the widths of this instance do not meet.
-        if e not in src_variants and ir.well_typed(e, inst.vw):
-            cands.append((bank.cost[i], ir.to_sexpr(e), e))
-    cands.sort()
+    found = {}
+    stages = []
+    truncated = None
+    for label, names in grammar_stages(inst, limits, types):
+        bank = ctx.bank(var_cls, canon, max_cost, grammar_keys(names, inst))
+        t0 = time.monotonic()
+        V, OK = bank.evaluate(types, cols, max_cost, ctx.counters)
+        n = V.shape[0]
+        stats['terms'] += n
+        rows = np.nonzero(bank.cls_np[:n] == root_cls)[0]
+        agree = (((_canon_nan(V[rows], root) == src_val) & OK[rows]) |
+                 ~src_ok).all(axis=1)
+        ctx.seconds['bank_eval'] += time.monotonic() - t0
+        new = 0
+        for i in rows[agree].tolist():
+            e = bank.expr(i, types)
+            # A bank has type classes, not types: an operator can have a
+            # type rule that the widths of this instance do not meet.
+            if e not in src_variants and e not in found and \
+                    ir.well_typed(e, inst.vw):
+                found[e] = (bank.cost[i], ir.to_sexpr(e), e)
+                new += 1
+        cut = bank.truncated and bank.truncated_at[0] <= max_cost
+        if cut and truncated is None:
+            truncated = label
+        stages.append({
+            'stage': label, 'operators': list(names), 'terms': n,
+            'new_matches': new,
+            'stop': 'bank_truncated: %s at cost %d, operator %s' % (
+                bank.truncated_at[2], bank.truncated_at[0],
+                bank.truncated_at[1]) if cut else 'complete'})
+    cands = sorted(found.values())
     stats['fingerprint_matches'] = len(cands)
+    clog = [] if log is not None else None
     out = prove_candidates(inst, [e for _, _, e in cands], backend, limits,
-                           ctx, stats, envs)
+                           ctx, stats, envs, clog)
+    # The first limit that was reached, in the order of the search.
+    if truncated is not None:
+        stats['stop'] = 'bank_truncated'
+    elif stats['stop'] == 'complete' and stats['smt_unknown']:
+        stats['stop'] = 'smt_unknown'
+    if log is not None:
+        log.update({'grammar': limits.grammar, 'stages': stages,
+                    'types': ['%s%d' % (k, w) for w, k in types],
+                    'max_cost': max_cost, 'terms': stats['terms'],
+                    'candidates': clog, 'stop': stats['stop']})
     return out, stats

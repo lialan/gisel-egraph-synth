@@ -9,7 +9,6 @@ guard passed, i.e. when the rule was applied.
 import collections
 import os
 import re
-import resource
 import subprocess
 import tempfile
 
@@ -23,12 +22,32 @@ FALLBACK = re.compile(r'Instruction selection used fallback path for (\S+)')
 TIMEOUT = 120  # seconds per compilation
 
 
+def run_timed(cmd, timeout=TIMEOUT, cwd=None):
+    """Runs ``cmd``. Returns (exit code, stderr text, CPU seconds). The
+    CPU time is the user and system time of this process alone (wait4),
+    so it is correct when other compilations run at the same time. The
+    exit code is -1 if the command did not end in ``timeout`` seconds."""
+    with tempfile.TemporaryFile() as err:
+        p = subprocess.Popen(['timeout', '-k', '5', str(timeout)] + cmd,
+                             stdout=subprocess.DEVNULL, stderr=err, cwd=cwd)
+        _, status, ru = os.wait4(p.pid, 0)
+        rc = os.waitstatus_to_exitcode(status)
+        p.returncode = rc   # the process was reaped here
+        err.seek(0)
+        text = err.read().decode(errors='replace')
+    if rc in (124, 137):
+        rc = -1
+    return rc, text, ru.ru_utime + ru.ru_stime
+
+
 def compile_ll(llc, target, path, flags=(), synth=False, disabled=(),
-               count_rules=True):
+               count_rules=True, cwd=None, timeout=None):
     """Compiles one .ll file. Returns a dict with rc and, on success, the
     instruction count, assembly size, per-rule counters and the functions
-    that fell back to SelectionDAG. A compilation
-    that does not finish in TIMEOUT seconds counts as failed (rc -1)."""
+    that fell back to SelectionDAG. The compilation runs with the machine
+    verifier, so a verifier error is a failed compilation. A compilation
+    that does not finish in TIMEOUT seconds counts as failed (rc -1).
+    'user' is the CPU time of the compilation."""
     with tempfile.NamedTemporaryFile(suffix='.s', delete=False) as tf:
         out = tf.name
     cmd = [llc] + target.ll_flags + ['-verify-machineinstrs'] + list(flags)
@@ -39,29 +58,25 @@ def compile_ll(llc, target, path, flags=(), synth=False, disabled=(),
         if disabled:
             cmd.append(target.disable_rule_flag + ','.join(disabled))
     cmd += [path, '-o', out]
-    r0 = resource.getrusage(resource.RUSAGE_CHILDREN)
-    try:
-        p = subprocess.run(cmd, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.PIPE, text=True,
-                           errors='replace', timeout=TIMEOUT)
-    except subprocess.TimeoutExpired:
+    timeout = timeout or TIMEOUT
+    rc, stderr, cpu = run_timed(cmd, timeout, cwd)
+    if rc == -1:
         if os.path.exists(out):
             os.remove(out)
-        return {'rc': -1, 'err': 'timeout after %d s' % TIMEOUT, 'user': 0.0}
-    r1 = resource.getrusage(resource.RUSAGE_CHILDREN)
+        return {'rc': -1, 'err': 'timeout after %d s' % timeout,
+                'user': cpu}
     # Functions that GlobalISel could not compile (-global-isel-abort=2).
     # SelectionDAG compiled them, so their instructions say nothing about
     # GlobalISel; a change in this set makes two runs incomparable.
-    res = {'rc': p.returncode,
-           'fallback': sorted(set(FALLBACK.findall(p.stderr)))}
+    res = {'rc': rc, 'fallback': sorted(set(FALLBACK.findall(stderr)))}
     if synth and count_rules:
-        m = collections.Counter(MATCHED.findall(p.stderr))
-        g = collections.Counter(PASSED.findall(p.stderr))
+        m = collections.Counter(MATCHED.findall(stderr))
+        g = collections.Counter(PASSED.findall(stderr))
         if m:
             res['matched'] = dict(sorted(m.items()))
         if g:
             res['passed'] = dict(sorted(g.items()))
-    if p.returncode == 0:
+    if rc == 0:
         with open(out) as f:
             s = f.read()
         res.update(insns=len(re.findall(target.insn_regex, s, re.M)),
@@ -70,23 +85,29 @@ def compile_ll(llc, target, path, flags=(), synth=False, disabled=(),
             res.update(sgpr=sum(map(int, SGPR.findall(s))),
                        vgpr=sum(map(int, VGPR.findall(s))))
     else:
-        res['err'] = p.stderr[-400:]
+        res['err'] = stderr[-400:]
     if os.path.exists(out):  # llc removes it itself when it fails
         os.remove(out)
-    res['user'] = r1.ru_utime - r0.ru_utime  # approximate under threads
+    res['user'] = cpu
     return res
 
 
-def failing_rules(llc, target, path, seconds=20, loop_passes=50):
+def failing_rules(llc, target, path, seconds=20, loop_passes=50,
+                  disabled=(), cwd=None, every=False):
     """The rules that are the probable cause of a compilation of ``path``
     that fails with the synthesized rules: the rules whose guard passes
     again and again when the compilation does not end (a loop with other
-    combines), or the last rule whose guard passed before a crash."""
-    cmd = [llc] + target.ll_flags + [target.enable_flag,
-                                     '-debug-only=gisel-synth', path, '-o',
-                                     os.devnull]
+    combines), or the last rule whose guard passed before a crash. With
+    ``every``: each rule whose guard passed in the compilation."""
+    cmd = [llc] + target.ll_flags + ['-verify-machineinstrs',
+                                     target.enable_flag,
+                                     '-debug-only=gisel-synth']
+    if disabled:
+        cmd.append(target.disable_rule_flag + ','.join(disabled))
+    cmd += [path, '-o', os.devnull]
     with tempfile.TemporaryFile() as err:
-        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err)
+        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err,
+                             cwd=cwd)
         try:
             p.wait(timeout=seconds)
             looped = False
@@ -98,6 +119,8 @@ def failing_rules(llc, target, path, seconds=20, loop_passes=50):
         err.seek(max(0, os.fstat(err.fileno()).st_size - (1 << 22)))
         text = err.read().decode(errors='replace')
     passed = PASSED.findall(text)
+    if every:
+        return sorted(set(passed))
     if looped:
         c = collections.Counter(passed)
         return sorted(r for r, n in c.items() if n >= loop_passes)
@@ -106,9 +129,15 @@ def failing_rules(llc, target, path, seconds=20, loop_passes=50):
     return []
 
 
-def run_combiner(llc, target, mir, synth=False, disabled=()):
+class CombinerLoop(RuntimeError):
+    """The combiner did not end: see run_combiner."""
+
+
+def run_combiner(llc, target, mir, synth=False, disabled=(), timeout=30):
     """Runs the target's pre-legalizer combiner on MIR text. Returns the
-    output MIR."""
+    output MIR. Raises RuntimeError if llc fails, and CombinerLoop if it
+    does not end in ``timeout`` seconds: a rule that loops with another combine makes the
+    combiner run without end, and its memory grows all the time."""
     cmd = [llc] + target.triple_flags + ['-run-pass=' + target.combiner,
                                          '-verify-machineinstrs']
     if synth:
@@ -116,7 +145,12 @@ def run_combiner(llc, target, mir, synth=False, disabled=()):
         if disabled:
             cmd.append(target.disable_rule_flag + ','.join(disabled))
     cmd += ['-x', 'mir', '-', '-o', '-']
-    p = subprocess.run(cmd, input=mir, capture_output=True, text=True)
+    try:
+        p = subprocess.run(cmd, input=mir, capture_output=True, text=True,
+                           timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise CombinerLoop('llc did not end in %d s (a combiner loop)'
+                           % timeout)
     if p.returncode:
         raise RuntimeError('llc failed:\n' + p.stderr[-2000:])
     return p.stdout

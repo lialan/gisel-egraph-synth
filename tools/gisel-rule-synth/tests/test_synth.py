@@ -6,6 +6,7 @@ Run:  python3 -m unittest discover -s llvm/utils/gisel-rule-synth/tests
 
 import json
 import os
+import itertools
 import random
 import sys
 import tempfile
@@ -17,8 +18,8 @@ sys.path.insert(0, ROOT)
 
 import z3  # noqa: E402
 
-from girs import (compose, corpus, discover, emit, ir, match,  # noqa
-                  ops, precond, select, smt, synth, targets)
+from girs import (compose, corpus, discover, emit, ir, kernels,  # noqa
+                  match, ops, precond, select, smt, synth, targets)
 
 
 def V(i):
@@ -106,12 +107,15 @@ class DiscoveryTest(unittest.TestCase):
 
     def test_terms_are_linear(self):
         ctx = discover.Context(self.lim)
-        bank = ctx.bank((0, 0), 1, 2)
-        n = bank.size(2)
-        self.assertGreater(n, 20)
-        for k in range(n):
-            e = bank.expr(k, (32,))
-            self.assertTrue(ir.is_linear(e), ir.to_sexpr(e))
+        types = ((32, 'i'),)
+        for names in (ops.ENUMERATED, ('G_FSHL', 'G_SELECT', 'G_ICMP')):
+            bank = ctx.bank((0, 0), discover.canonical_types(types), 2,
+                            discover.grammar_keys(names))
+            n = bank.size(2)
+            self.assertGreater(n, 20)
+            for k in range(n):
+                e = bank.expr(k, types)
+                self.assertTrue(ir.is_linear(e), ir.to_sexpr(e))
 
     def test_bank_is_shared_across_shapes_and_widths(self):
         # Two sources of different shape and width, same signature (two
@@ -157,41 +161,45 @@ class GrammarTest(unittest.TestCase):
     """The operators next to the base grammar of the enumerative search."""
 
     def test_kernels_match_the_evaluator(self):
+        # A kernel is a faster form of the evaluator of the registry:
+        # the two agree on every operator key, also for poison operands.
         rng = random.Random(1)
+        np = discover.np
         U64 = discover.U64
-        for op in ops.ENUMERATED + ops.ENUMERATED_EXTRA:
-            info = ops.parse(op)[0]
-            unary = op in ir.CASTS or (op in ops.ENUMERATED_EXTRA and
-                                       op not in ops.ENUMERATED_BINARY)
+        widths = (1, 8, 16, 32, 33, 64)
+        for name in list(kernels.KERNELS) + list(kernels.NONSTRICT):
+            info = ops.REGISTRY[name]
             checked = 0
-            for w in (1, 8, 16, 32, 33, 64):
-                for wa in (1, 8, 16, 32, 33, 64):
-                    for wb in ((None,) if unary else (wa, 8)):
-                        ws = [wa] if unary else [wa, wb]
-                        if not info.typecheck(w, ws, None, 0):
+            for key in ops.search_keys(name, [3]):
+                _, attr, res = ops.parse(key)
+                for w in widths:
+                    for ws in itertools.product(widths,
+                                                repeat=info.operands):
+                        if len(set(ws)) > 2 or \
+                                not info.typecheck(w, list(ws), attr, res):
                             continue
-                        a = discover._special(wa) + \
-                            [rng.getrandbits(wa) for _ in range(40)]
-                        a = [x & ir.mask(wa) for x in a]
-                        b = None if unary else \
-                            [discover._draw(wb, rng) & ir.mask(wb)
-                             for _ in a]
-                        v, bad = discover.kernel(
-                            op, w, wa, discover.np.array(a, U64),
-                            None if unary else discover.np.array(b, U64))
-                        for i, x in enumerate(a):
-                            ref = ir.apply_op(op, w, ws,
-                                              [x] if unary else [x, b[i]])
-                            got = None if bad is not None and bad[i] \
-                                else int(v[i])
-                            self.assertEqual(got, ref, (op, w, ws, x, b))
-                            checked += 1
-            self.assertGreater(checked, 0, op)
+                        cols = [np.array([
+                            discover._special(x) +
+                            [discover._draw(x, rng) for _ in range(24)]],
+                            U64) & U64(ir.mask(x)) for x in ws]
+                        oks = [np.ones(c.shape, bool) for c in cols]
+                        oks[-1][0, :4] = False
+                        v, ok = kernels.apply(key, w, list(ws), cols, oks)
+                        g, gok = kernels.generic(key, w, list(ws), cols,
+                                                 oks)
+                        self.assertTrue(np.array_equal(ok, gok),
+                                        (key, w, ws))
+                        self.assertTrue(np.array_equal(
+                            np.where(ok, v, 0), np.where(gok, g, 0)),
+                            (key, w, ws))
+                        checked += 1
+            self.assertGreater(checked, 0, name)
 
     def test_base_bank_does_not_change_with_the_default_grammar(self):
         lim = discover.Limits()
         i = inst(('G_AND', 32, V(0), V(1)), (32, 32), [(0, 0), (0, 0)])
-        self.assertEqual(discover.grammar_extras(i, lim), ())
+        self.assertEqual(discover.grammar_stages(i, lim),
+                         [('source', ir.CASTS + ir.BINOPS)])
 
     def test_source_operator_is_in_the_grammar(self):
         # umin(zext x, zext y) -> zext(umin(x, y)): the replacement needs
@@ -200,7 +208,8 @@ class GrammarTest(unittest.TestCase):
         lim = discover.Limits()
         src = ('G_UMIN', 32, ('G_ZEXT', 32, V(0)), ('G_ZEXT', 32, V(1)))
         i = inst(src, (8, 8), [(0, 0), (0, 0)])
-        self.assertEqual(discover.grammar_extras(i, lim), ('G_UMIN',))
+        self.assertEqual(discover.grammar_stages(i, lim),
+                         [('source', ir.CASTS + ir.BINOPS + ('G_UMIN',))])
         cands, _ = discover.discover(i, be, lim)
         self.assertIn(('G_ZEXT', 32, ('G_UMIN', 8, V(0), V(1))),
                       [t for c in cands

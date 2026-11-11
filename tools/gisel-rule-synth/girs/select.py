@@ -31,6 +31,7 @@ import re
 
 from . import emit
 from . import ir
+from . import ops
 from . import match
 from . import measure
 from . import precond
@@ -58,6 +59,14 @@ POLICY = [
     'redundant_with_synthesized: other selected rules reach the same result '
     'on every example, and no measured gain',
     'not_fired: does not apply to its own example, and no measured gain',
+    'probe_error: the run of the rule alone on its example failed, so its '
+    'novelty is not known; never counted as a new rule, and not selected '
+    'without a measured gain',
+    'probe_loop: alone with the existing combines, the combiner does not '
+    'end on the example of the rule; never selected',
+    'final_set_violation: with the selected set, a file does not compile, '
+    'has other SelectionDAG fallbacks or has more instructions than without '
+    'the rules, and the file is good again without this rule',
     'unobserved: its guard never passes on the target corpus (it was '
     'learned from seed inputs only), and no measured gain',
     'never_fires: applicable in the corpus but never fired when the corpus '
@@ -84,6 +93,14 @@ class _Fn:
         self.n += 1
         self.lines.append('    %s:_(s%d) = %s' % (r, w, rhs))
         return r
+
+    def emit_results(self, ws, rhs):
+        """An instruction with one result of each width of ``ws``."""
+        rs = ['%%%d' % (self.n + i) for i in range(len(ws))]
+        self.n += len(ws)
+        self.lines.append('    %s = %s' % (', '.join(
+            '%s:_(s%d)' % (r, w) for r, w in zip(rs, ws)), rhs))
+        return rs
 
     def arg(self, w):
         if w > 32:
@@ -130,11 +147,38 @@ def build_mir(rule, example, name, target):
             r = fn.emit(w, 'G_OR %s, %s' % (r, c))
         xs.append(r)
 
+    several = {}
+
     def walk(e):
         if ir.is_var(e):
             return xs[e[1]]
+        if not ir.is_op(e):
+            return fn.emit(e[1], 'G_CONSTANT i%d %d' % (e[1],
+                                                       ir.leaf_value(e)))
+        info, attr, res = ops.parse(e[0])
         args = [walk(a) for a in e[2:]]
-        return fn.emit(e[1], '%s %s' % (e[0], ', '.join(args)))
+        # The attribute of the operator is an operand of the instruction.
+        if info.attr == 'pred':
+            text = '%s intpred(%s), %s' % (info.name, attr, ', '.join(args))
+        elif info.attr == 'imm':
+            text = '%s %s, %d' % (info.name, ', '.join(args), attr)
+        else:
+            text = '%s %s' % (info.name, ', '.join(args))
+        if info.shape == 'unmerge':
+            # Equal parts of the operand.
+            ws = [e[1]] * (ir.width(e[2], vw) // e[1])
+        else:
+            kinds = info.meta.get('result_kinds', ['main'])
+            if len(kinds) == 1:
+                return fn.emit(e[1], text)
+            main = [ir.width(a, vw) for a, k in zip(
+                e[2:], info.meta['operand_kinds']) if k == 'main']
+            ws = [1 if k == 'bool' else (main[0] if k == 'main' else e[1])
+                  for k in kinds]
+        # One instruction for all the results that the pattern uses.
+        if text not in several:
+            several[text] = fn.emit_results(ws, text)
+        return several[text][res]
     root = walk(src)
     w = src[1]
     if w < 32:
@@ -211,6 +255,9 @@ def novelty(llc, target, rules):
             others = [n for n in all_recs if n not in names[r['id']]]
             alone = count(measure.run_combiner(llc, target, mir, True,
                                                others))
+        except measure.CombinerLoop as e:
+            out[r['id']] = {'class': 'loop', 'error': str(e)}
+            continue
         except RuntimeError as e:
             out[r['id']] = {'class': 'error', 'error': str(e)[-300:]}
             continue
@@ -247,9 +294,15 @@ def redundancy(llc, target, rules, nov, order):
         # the two does not make this one redundant.
         pair = r.get('variant_of') or rid + emit.ONE_USE_SUFFIX
         off += names.get(pair, [])
-        with_r = count(measure.run_combiner(llc, target, mir, True, off))
-        without = count(measure.run_combiner(llc, target, mir, True,
-                                             off + names[rid]))
+        try:
+            with_r = count(measure.run_combiner(llc, target, mir, True,
+                                                off))
+            without = count(measure.run_combiner(llc, target, mir, True,
+                                                 off + names[rid]))
+        except RuntimeError:
+            # Not known: the rule is not redundant. The check of the final
+            # set finds a set of rules that loops on a file.
+            continue
         if all(without[n] <= with_r[n] for n, _ in fns):
             active.discard(rid)
             redundant.add(rid)
@@ -279,9 +332,44 @@ def online(compare, rules):
 def compile_failures(llc, target, compare, rules, jobs, log=print):
     """Rule id -> files that compile without the synthesized rules and do
     not compile with every candidate, and compile again without the rule
-    (with the other rules of the same file that are found). A file whose
-    failure has no such rule is an error: its cause is not known."""
+    (with the other rules of the same file that are found). A failure is
+    a loop with other combines, a crash, a machine verifier error, or an
+    instruction that the target does not select and an error of the
+    SelectionDAG fallback. A file whose failure has no such rule is an
+    error: its cause is not known."""
     by_id = {r['id']: r for r in rules}
+    of_name = {n: r['id'] for r in rules for n in emit.record_names(r)}
+
+    def compiles(path, off):
+        names = [n for i in off for n in emit.record_names(by_id[i])]
+        return measure.compile_ll(llc, target, path, synth=True,
+                                  disabled=names, count_rules=False,
+                                  timeout=30)['rc'] == 0
+
+    def smallest_set(path):
+        """The general case: the cause is some of the rules whose guard
+        passed. All of them are disabled (and the rules that pass after
+        that, while the file fails), then each one is enabled again if
+        the file still compiles."""
+        off = []
+        for _ in range(4):
+            names = [n for i in off for n in emit.record_names(by_id[i])]
+            more = sorted({of_name[n] for n in measure.failing_rules(
+                llc, target, path, disabled=names, every=True)
+                if n in of_name} - set(off))
+            off += more
+            if compiles(path, off):
+                break
+            if not more:
+                return None
+        else:
+            return None
+        for i in list(off):
+            rest = [x for x in off if x != i]
+            if compiles(path, rest):
+                off = rest
+        return off
+
     files = sorted(p for p, res in compare.items()
                    if res['base']['rc'] == 0 and res['synth'].get('rc'))
     if not files:
@@ -289,14 +377,11 @@ def compile_failures(llc, target, compare, rules, jobs, log=print):
     log('select: %d files do not compile with every candidate' % len(files))
 
     def one(path):
-        ids = [i for i in measure.failing_rules(llc, target, path)
-               if i in by_id]
-        names = [n for i in ids for n in emit.record_names(by_id[i])]
-        if not ids:
-            return path, None
-        res = measure.compile_ll(llc, target, path, synth=True,
-                                 disabled=names, count_rules=False)
-        return path, ids if res['rc'] == 0 else None
+        ids = sorted({of_name[n] for n in measure.failing_rules(
+            llc, target, path) if n in of_name})
+        if ids and compiles(path, ids):
+            return path, ids
+        return path, smallest_set(path)
     out, unknown = {}, []
     with concurrent.futures.ThreadPoolExecutor(jobs) as ex:
         for path, ids in ex.map(one, files):
@@ -364,7 +449,7 @@ def _loo_in_set(llc, target, cur, off, names, sel, jobs):
             llc, target, path, synth=True, disabled=off + names[rid],
             count_rules=False)
     out = {rid: {'insns': 0, 'fired': 0, 'better': 0, 'worse': 0,
-                 'evidence': []} for rid in sel}
+                 'evidence': [], '_per_file': {}} for rid in sel}
     for path in cur:
         for rid, n in cur[path].get('passed', {}).items():
             if rid in out:
@@ -375,6 +460,9 @@ def _loo_in_set(llc, target, cur, off, names, sel, jobs):
                 continue
             d = cur[path]['insns'] - res['insns']
             out[rid]['insns'] += d
+            # (instructions the rule adds to the file, the fallbacks of
+            # the file without the rule)
+            out[rid]['_per_file'][path] = (d, res.get('fallback', []))
             if d:
                 out[rid]['better' if d < 0 else 'worse'] += 1
                 out[rid]['evidence'].append('%s: %+d' % (
@@ -382,8 +470,96 @@ def _loo_in_set(llc, target, cur, off, names, sel, jobs):
     return out
 
 
+def _public(d):
+    return {k: v for k, v in d.items() if not k.startswith('_')}
+
+
+def _violations(cur, base):
+    """The files that are worse with the rules than without: file ->
+    'compile_failure' | 'fallback_changed' | 'regression'. ``base`` and
+    ``cur`` map a file to its measure.compile_ll result."""
+    out = {}
+    for p, c in cur.items():
+        b = base[p]
+        if b['rc']:
+            continue
+        if c['rc']:
+            out[p] = 'compile_failure'
+        elif c.get('fallback', []) != b.get('fallback', []):
+            out[p] = 'fallback_changed'
+        elif c['insns'] > b['insns']:
+            out[p] = 'regression'
+    return out
+
+
+def check_set(llc, target, paths, base, names, sel, jobs):
+    """Compiles ``paths`` with only the rules ``sel`` enabled. Returns
+    (file -> result, disabled records, violations)."""
+    cur, off = _measure_set(llc, target, paths, names, sel, jobs)
+    return cur, off, _violations(cur, base)
+
+
+def enforce(llc, target, paths, base, names, sel, jobs, log=print,
+            max_rounds=40):
+    """Removes rules from ``sel`` until no file of ``paths`` is worse with
+    the set than without it (see _violations). ``paths`` are all the files
+    of the corpus, also the files that do not compile with every candidate.
+    Returns (set, rule -> {'reason', 'files'}, file -> result, violations
+    that no rule explains)."""
+    sel = set(sel)
+    dropped = {}
+    unexplained = {}
+    for _ in range(max_rounds):
+        cur, off, viol = check_set(llc, target, paths, base, names, sel,
+                                   jobs)
+        unexplained = {}
+        if not viol:
+            break
+
+        def culprits(p):
+            kind = viol[p]
+            if kind == 'compile_failure':
+                ids = [i for i in measure.failing_rules(llc, target, p,
+                                                        disabled=off)
+                       if i in sel]
+            else:
+                ids = [r for r in cur[p].get('passed', {}) if r in sel]
+            good, gain = [], {}
+            for r in ids:
+                res = measure.compile_ll(llc, target, p, synth=True,
+                                         disabled=off + names[r],
+                                         count_rules=False)
+                if p not in _violations({p: res}, base):
+                    good.append(r)
+                elif res['rc'] == 0 and cur[p]['rc'] == 0:
+                    gain[r] = cur[p]['insns'] - res['insns']
+            if good:
+                return p, kind, sorted(good)[:1]
+            # No single rule: every fired rule that adds instructions.
+            return p, kind, sorted(r for r, g in gain.items() if g > 0) or \
+                sorted(ids)
+        blame = {}
+        with concurrent.futures.ThreadPoolExecutor(jobs) as ex:
+            for p, kind, ids in ex.map(culprits, sorted(viol)):
+                if not ids:
+                    unexplained[p] = kind
+                for r in ids:
+                    blame.setdefault(r, []).append((p, kind))
+        if not blame:
+            break
+        for r, files in sorted(blame.items()):
+            sel.discard(r)
+            dropped[r] = {'reason': 'final_set_violation',
+                          'files': ['%s: %s' % (os.path.basename(p), k)
+                                    for p, k in files[:5]],
+                          'violations': len(files)}
+            log('select: drop %s (%d files worse with the selected set: '
+                '%s)' % (r, len(files), files[0][1]))
+    return sel, dropped, cur, unexplained
+
+
 def refine(llc, target, compare, names, sel, guard, keep_unmeasured, jobs,
-           log=print, alt=None, need_gain=()):
+           log=print, alt=None, need_gain=(), no_regressions=False):
     """Shrinks the selected set until every rule in it is worth its place
     *inside the set*. Returns (set, id -> marginal, id -> reason dropped,
     summary of the set). ``alt`` maps a rule to its one-use variant: the
@@ -427,6 +603,35 @@ def refine(llc, target, compare, names, sel, guard, keep_unmeasured, jobs,
             log('select: drop %s (no gain, guard cost %d on %d matches)' %
                 (weak[0], guard[weak[0]], matched.get(weak[0], 0)))
             continue
+        if no_regressions:
+            # No file may be worse with the set than without it. The rule
+            # that explains the most of the worse files goes first.
+            base = {p: compare[p]['base'] for p in files}
+            viol = _violations(cur, base)
+            score = {}
+            for p, kind in viol.items():
+                for rid in sel:
+                    e = loo[rid]['_per_file'].get(p)
+                    if e is None:
+                        continue
+                    fixed = kind == 'fallback_changed' and \
+                        e[1] == base[p].get('fallback', [])
+                    if e[0] > 0 or fixed:
+                        score[rid] = score.get(rid, 0) + max(e[0], 1)
+            if score:
+                worst = max(sorted(score), key=lambda r: score[r])
+                dropped[worst] = ('measured_regression', loo[worst])
+                sel.discard(worst)
+                log('select: drop %s (makes %d files worse inside the '
+                    'set)' % (worst, sum(
+                        1 for p in viol
+                        if (loo[worst]['_per_file'].get(p) or (0,))[0] > 0)))
+                if worst in alt:
+                    v = alt.pop(worst)
+                    dropped.pop(v, None)
+                    sel.add(v)
+                    log('select: try %s in its place' % v)
+                continue
         break
     ok = [p for p in files if cur[p]['rc'] == 0]
     base = sum(compare[p]['base']['insns'] for p in ok)
@@ -524,7 +729,9 @@ def select(db, target, insts=None, llc=None, compare=None, jobs=8,
         p = prof[rid]
         g = gain(rid)
         cls = nov[rid]['class'] if nov else None
-        if g < 0:
+        if cls == 'loop':
+            sel = 'probe_loop'
+        elif g < 0:
             sel = 'measured_regression'
         elif g > 0:
             sel = 'emitted'
@@ -534,7 +741,9 @@ def select(db, target, insts=None, llc=None, compare=None, jobs=8,
             sel = 'covered_by_existing_combine'
         elif red and rid in red:
             sel = 'redundant_with_synthesized'
-        elif cls in ('not_fired', 'error'):
+        elif cls == 'error':
+            sel = 'probe_error'
+        elif cls == 'not_fired':
             sel = 'not_fired'
         elif passes(rid) == 0:
             sel = 'unobserved'
@@ -576,8 +785,14 @@ def select(db, target, insts=None, llc=None, compare=None, jobs=8,
         prof[rid]['compile_failure'] = {
             'files': len(paths),
             'examples': [os.path.basename(p) for p in paths[:3]]}
+    # The same for a rule that loops alone on its own example.
+    loops = {r['id'] for r in rules
+             if nov and nov[r['id']]['class'] == 'loop'}
+    for rid in loops:
+        prof[rid]['selection'] = 'probe_loop'
     for base in [b for b, v in alt.items()
-                 if v in failures or b in failures]:
+                 if v in failures or b in failures or
+                 v in loops or b in loops]:
         del alt[base]
     set_summary = None
     if marg is not None:
@@ -591,13 +806,14 @@ def select(db, target, insts=None, llc=None, compare=None, jobs=8,
             keep_unmeasured, jobs, log, alt,
             # A rule that moves an operation to a wider type changes code
             # that the target can prefer as it is.
-            {r['id'] for r in rules if r['class'] == 'widens_operation'})
+            {r['id'] for r in rules if r['class'] == 'widens_operation'},
+            no_regressions)
         for rid, (why, m) in dropped.items():
             prof[rid]['selection'] = why
-            prof[rid]['in_set'] = m
+            prof[rid]['in_set'] = _public(m)
         for rid in final:
             prof[rid]['selection'] = 'emitted'
-            prof[rid]['in_set'] = loo[rid]
+            prof[rid]['in_set'] = _public(loo[rid])
 
     def set_gain(rid):
         return -prof[rid].get('in_set', {}).get('insns', -gain(rid))

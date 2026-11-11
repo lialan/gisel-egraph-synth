@@ -272,7 +272,7 @@ inline bool guard_synth_icmp_fa5e7560_1u(const MachineRegisterInfo &MRI, GISelVa
 inline void apply_synth_icmp_fa5e7560(MachineIRBuilder &B, MachineInstr &Root, Register Dst, Register X0, Register X1, Register X2, Register T0) {
   [[maybe_unused]] MachineRegisterInfo &MRI = *B.getMRI();
   B.setInstrAndDebugLoc(Root);
-  auto N0 = B.buildICmp(CmpInst::ICMP_NE, Dst, X0, X1);
+  [[maybe_unused]] auto N0 = B.buildICmp(CmpInst::ICMP_NE, Dst, X0, X1);
   Root.eraseFromParent();
 }
 
@@ -683,9 +683,9 @@ inline void apply_synth_icmp_7274715e(MachineIRBuilder &B, MachineInstr &Root, R
   B.setInstrAndDebugLoc(Root);
   APInt C0 = *getIConstantVRegVal(X0, MRI);
   APInt C3 = *getIConstantVRegVal(X3, MRI);
-  auto N0 = B.buildConstant(MRI.getType(X0), (C3 - C0));
-  auto N1 = B.buildInstr(TargetOpcode::G_MUL, {MRI.getType(X0)}, {N0.getReg(0), X1});
-  auto N2 = B.buildICmp(CmpInst::ICMP_EQ, Dst, X2, N1.getReg(0));
+  [[maybe_unused]] auto N0 = B.buildConstant(MRI.getType(X0), (C3 - C0));
+  [[maybe_unused]] auto N1 = B.buildInstr(TargetOpcode::G_MUL, {MRI.getType(X0)}, {N0.getReg(0), X1});
+  [[maybe_unused]] auto N2 = B.buildICmp(CmpInst::ICMP_EQ, Dst, X2, N1.getReg(0));
   Root.eraseFromParent();
 }
 
@@ -726,9 +726,9 @@ inline void apply_synth_icmp_8f303343(MachineIRBuilder &B, MachineInstr &Root, R
   B.setInstrAndDebugLoc(Root);
   APInt C0 = *getIConstantVRegVal(X0, MRI);
   APInt C3 = *getIConstantVRegVal(X3, MRI);
-  auto N0 = B.buildConstant(MRI.getType(X0), (C3 - C0));
-  auto N1 = B.buildInstr(TargetOpcode::G_MUL, {MRI.getType(X0)}, {N0.getReg(0), X1});
-  auto N2 = B.buildICmp(CmpInst::ICMP_NE, Dst, X2, N1.getReg(0));
+  [[maybe_unused]] auto N0 = B.buildConstant(MRI.getType(X0), (C3 - C0));
+  [[maybe_unused]] auto N1 = B.buildInstr(TargetOpcode::G_MUL, {MRI.getType(X0)}, {N0.getReg(0), X1});
+  [[maybe_unused]] auto N2 = B.buildICmp(CmpInst::ICMP_NE, Dst, X2, N1.getReg(0));
   Root.eraseFromParent();
 }
 

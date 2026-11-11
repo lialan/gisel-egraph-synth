@@ -81,6 +81,22 @@ def _extract_one(llc, path, out_dir, kind, target, extra=()):
     return path, out
 
 
+def _legality(llc, target, path, out):
+    """Writes the legality table of the target (targets.Capability) with
+    one compiler run on the file ``path``. Returns ``out`` or None."""
+    cmd = [llc] + target.ll_flags + [path, '-o', os.devnull,
+                                     target.legality_flag + out,
+                                     '-gisel-synth-corpus-out=' + os.devnull]
+    if target.corpus_flag:
+        cmd.append(target.corpus_flag)
+    else:
+        return None
+    rc = subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=EXTRACT_TIMEOUT).returncode
+    return out if rc == 0 and os.path.exists(out) else None
+
+
 def cmd_extract(args):
     from girs import targets
     target = targets.get(args.target)
@@ -336,39 +352,202 @@ def _record_emission(rules):
     return out
 
 
-def cmd_synth(args):
-    from girs import compose, corpus, discover, egraph, ir, smt, synth
+def _model_sha():
+    """A hash of what decides the result of a search or of a proof: the
+    operator table and the modules with the semantics and the search."""
+    girs = os.path.join(HERE, 'girs')
+    return _sha([os.path.join(girs, f) for f in (
+        'gmir_ops.json', 'ops.py', 'ir.py', 'fp.py', 'smt.py',
+        'discover.py', 'kernels.py', 'corpus.py', 'region.py',
+        'sibling.py', 'precond.py')])
 
+
+class _DiscoveryCache:
+    """The proved concrete candidates of an instance, by a key of the
+    instance, the limits of the search and the model. A change of the
+    model or of a budget is a different key, so the search runs again. A
+    search with a solver answer that is not a proof and not a refutation is
+    not stored: the next run tries again."""
+
+    def __init__(self, path, limits, timeout_ms):
+        self.path = path
+        self.ident = repr((sorted(limits.identity().items()), timeout_ms,
+                           _model_sha()))
+        self.hits = self.stored = 0
+        if path:
+            os.makedirs(path, exist_ok=True)
+
+    def _file(self, inst):
+        h = hashlib.sha256(repr((self.ident, inst.key())).encode())
+        return os.path.join(self.path, h.hexdigest()[:24] + '.json')
+
+    def get(self, inst):
+        from girs import ir
+        if not self.path or not os.path.exists(self._file(inst)):
+            return None
+        with open(self._file(inst)) as f:
+            rec = json.load(f)
+        self.hits += 1
+        return ([{'tgt': ir.from_json(t)} for t in rec['candidates']],
+                rec['stats'], rec['log'])
+
+    def put(self, inst, cands, st, log):
+        from girs import ir
+        if not self.path or st['smt_unknown']:
+            return
+        tmp = self._file(inst) + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump({'candidates': [ir.to_json(c['tgt']) for c in cands],
+                       'stats': st, 'log': log}, f)
+        os.replace(tmp, self._file(inst))
+        self.stored += 1
+
+
+def _schedule(insts, share):
+    """The order of the search. ``insts`` is in the order of value
+    (occurrences times the instructions at stake). A budget that ends the
+    search early then leaves out the rare patterns and the operators with
+    few instances, so one of every 1/share places goes to the next
+    instance of the root operator that has the fewest places so far."""
+    import collections
+    from girs import ops
+    if share <= 0 or len(insts) < 2:
+        return list(insts)
+    period = max(2, round(1 / share))
+    queues = {}
+    for i in insts:
+        queues.setdefault(ops.base(i.expr[0]), collections.deque()).append(i)
+    places = dict.fromkeys(queues, 0)
+    done, out, value = set(), [], collections.deque(insts)
+
+    def take(q):
+        while q:
+            i = q.popleft()
+            if id(i) not in done:
+                done.add(id(i))
+                places[ops.base(i.expr[0])] += 1
+                out.append(i)
+                return True
+        return False
+    while len(out) < len(insts):
+        if len(out) % period == period - 1:
+            for op in sorted(queues, key=lambda o: (places[o], o)):
+                if take(queues[op]):
+                    break
+        else:
+            take(value)
+    return out
+
+
+def cmd_synth(args):
+    from girs import compose, corpus, discover, egraph, ir, region, \
+        sibling, smt, synth
+
+    if args.mode == 'semantics-only' and (args.egraph or args.compose_corpus
+                                          or args.compose_axioms):
+        sys.exit('synth --mode semantics-only: the rewrites of the e-graph '
+                 'combiner and rule composition are not candidate sources '
+                 'of this mode')
     t0 = time.monotonic()
     files = _corpus_files(args.corpus)
     insts, cstats = corpus.load(files)
     # Most valuable first: occurrences times the instructions at stake.
     insts.sort(key=lambda i: (-len(i.prov) * ir.cost(i.expr),
                               ir.to_sexpr(i.expr), i.vw, i.facts))
+    insts = _schedule(insts, args.explore_share)
     if args.max_instances:
         insts = insts[:args.max_instances]
     backend = smt.Z3Backend(timeout_ms=args.timeout_ms)
-    dlim = discover.Limits(seed=args.seed, grammar=args.grammar)
+    from girs import targets
+    cap = targets.Capability.load(args.legality) if args.legality else None
+    dlim = discover.Limits(seed=args.seed, grammar=args.grammar,
+                           max_terms=args.max_terms,
+                           max_evals=args.max_evals,
+                           max_proofs=args.max_proofs,
+                           max_candidates=args.max_candidates,
+                           capability=cap)
     slim = synth.SynthLimits(max_atoms=args.max_atoms)
     ctx = discover.Context(dlim)
     sy = synth.Synthesizer(backend, slim, proof_dir=args.proofs)
-    dstats = {'instances': 0, 'with_candidates': 0, 'candidates': 0}
+    dstats = {'instances': 0, 'with_candidates': 0, 'candidates': 0,
+              'not_searched_time_budget': 0}
     dstats.update(discover.new_stats())
+    stops = {}
+    # Discoveries whose source has a value below the root with a user
+    # outside the tree: candidates for a rule with several outputs.
+    joint = []
+    # Instance -> the replacements of its root that became rules: a rule
+    # for two roots must be cheaper than they are.
+    found = {}
+    cache = _DiscoveryCache(args.cache, dlim, args.timeout_ms)
+    slog = open(args.search_log, 'w') if args.search_log else None
     seconds = {}
     t = time.monotonic()
     t_synth = 0.0
     for inst in insts:
+        if args.time_budget_s and \
+                time.monotonic() - t - t_synth > args.time_budget_s:
+            # The budget ended the search: these instances have no result.
+            dstats['not_searched_time_budget'] += 1
+            continue
         dstats['instances'] += 1
-        cands, st = discover.discover(inst, backend, dlim, ctx)
+        hit = cache.get(inst)
+        if hit:
+            cands, st, log = hit
+        else:
+            log = {}
+            cands, st = discover.discover(inst, backend, dlim, ctx, log)
+            cache.put(inst, cands, st, log)
+        stop = st.pop('stop')
+        stops[stop] = stops.get(stop, 0) + 1
+        st['stop'] = stop
         for k in st:
-            dstats[k] += st[k]
+            if k != 'stop':
+                dstats[k] += st[k]
         if cands:
             dstats['with_candidates'] += 1
         ts = time.monotonic()
+        rids = []
         for c in cands:
             dstats['candidates'] += 1
-            sy.add(inst, c['tgt'])
+            rids.append(sy.add(inst, c['tgt']))
+            if rids[-1]:
+                found.setdefault(inst.key(), []).append(c['tgt'])
+            if args.regions and rids[-1] and region.interior_outputs(inst):
+                joint.append((inst, c['tgt'], rids[-1]))
+        if args.regions:
+            # A result of an instruction with several results that also
+            # computes a value below the root: a candidate that the term
+            # bank hides behind a term with the same samples.
+            have = {c['tgt'] for c in cands}
+            for alt in region.root_alternatives(inst, dlim, ctx):
+                if alt in have:
+                    continue
+                dstats['region_alternatives'] = dstats.get(
+                    'region_alternatives', 0) + 1
+                if discover.prove_concrete(inst, alt,
+                                           backend).status != 'unsat':
+                    continue
+                rid = sy.add(inst, alt, provenance={
+                    'discovery': 'joint-region-alternative+smt'})
+                if rid:
+                    joint.append((inst, alt, rid))
         t_synth += time.monotonic() - ts
+        if slog and (log.get('candidates') or stop != 'complete'):
+            p0 = inst.prov[0]
+            # The rule of each proved candidate, in order (null: no
+            # precondition was found for the generalized rule).
+            slog.write(json.dumps(dict(
+                log, source=ir.to_sexpr(inst.expr), vw=list(inst.vw),
+                facts=inst.to_json()['facts'], occurrences=len(inst.prov),
+                example={'file': os.path.basename(p0[0]), 'fn': p0[1],
+                         'root': p0[2]}, cached=bool(hit),
+                proved=[ir.to_sexpr(c['tgt']) for c in cands],
+                rules=rids), sort_keys=True) + '\n')
+    if slog:
+        slog.close()
+    dstats['stop'] = dict(sorted(stops.items()))
+    dstats['cache'] = {'hits': cache.hits, 'stored': cache.stored}
     seconds['discovery'] = round(time.monotonic() - t - t_synth, 2)
     seconds['generalization'] = round(t_synth, 2)
 
@@ -440,6 +619,7 @@ def cmd_synth(args):
             st = discover.new_stats()
             proved = discover.prove_candidates(inst, [e for e, _ in props],
                                                backend, dlim, ctx, st, envs)
+            st.pop('stop', None)
             for k in st:
                 pstats[k] += st[k]
             for c in proved:
@@ -462,6 +642,25 @@ def cmd_synth(args):
     fstats = sy.finalize(insts + extra)
     seconds['selection_of_disjuncts'] = round(time.monotonic() - t, 2)
 
+    # Rules with several outputs: the same term bank and the same proofs,
+    # for the root and for the values below it that have other users.
+    rstats = {}
+    if args.regions:
+        t = time.monotonic()
+        rstats = region.extend(sy, joint, backend, dlim, ctx)
+        seconds['regions'] = round(time.monotonic() - t, 2)
+    # Rules for two roots: the root of a tree and a second instruction of
+    # the block that reads inputs of the tree.
+    sstats = {}
+    if args.siblings:
+        t = time.monotonic()
+        pair_stats = {}
+        pairs = sibling.load_pairs(files, pair_stats)
+        sstats = sibling.extend(sy, pairs, found, backend, dlim, ctx,
+                                args.max_pairs)
+        sstats['corpus'] = pair_stats
+        seconds['siblings'] = round(time.monotonic() - t, 2)
+
     rules = [synth.strip_private(sy.rules[rid]) for rid in sorted(sy.rules)]
     for r in rules:
         r['support']['examples'].sort(key=lambda e: (e['file'], e['fn'],
@@ -473,10 +672,16 @@ def cmd_synth(args):
     db = {
         'format': 'gi-rule-synth-library-v2',
         'generator_version': GENERATOR_VERSION,
+        # The candidate sources of this library. 'semantics-only': the
+        # enumerative search alone (operator semantics, no rewrite of the
+        # e-graph combiner, no composition of rules).
+        'discovery_mode': args.mode or (
+            'hybrid' if efiles or cfiles else 'semantics-only'),
+        'model_sha256': _model_sha(),
         'semantic_model': synth.SEMANTIC_MODEL,
         'solver': '%s %s' % (backend.name, backend.version),
         'widths': list(synth.WIDTHS),
-        'limits': {'discovery': vars(dlim), 'synthesis': vars(slim),
+        'limits': {'discovery': dlim.identity(), 'synthesis': vars(slim),
                    'timeout_ms': args.timeout_ms},
         'corpus': {'files': len(files), 'sha256': _sha(files),
                    'records': cstats['records'],
@@ -498,13 +703,17 @@ def cmd_synth(args):
     for r in rules:
         by_class[r['class']] = by_class.get(r['class'], 0) + 1
     seconds['total'] = round(time.monotonic() - t0, 2)
+    import resource
     stats = {'provenance': _provenance(), 'seconds': seconds,
+             'peak_rss_mb': resource.getrusage(
+                 resource.RUSAGE_SELF).ru_maxrss // 1024,
              'solver_calls': backend.calls,
              'solver_seconds': round(backend.seconds, 2),
              'discovery': dstats, 'enumeration': ctx.stats(),
              'composition': pstats, 'egraph': estats,
              'synthesis': sy.stats, 'emission': emission,
-             'disjuncts': fstats, 'rules_by_class': by_class,
+             'disjuncts': fstats, 'regions': rstats, 'siblings': sstats,
+             'rules_by_class': by_class,
              'corpus': cstats}
     with open(args.stats or os.path.splitext(args.o)[0] + '.stats.json',
               'w') as f:
@@ -566,7 +775,7 @@ def cmd_recheck(args):
     """Re-proves every rule in the library from its JSON form: every
     disjunct for each of its width schedules, and the emitted disjunction
     as a whole."""
-    from girs import ir, precond, smt, synth
+    from girs import ir, precond, region, smt, synth
     db = _load_db(args.db)
     backend = smt.Z3Backend(timeout_ms=args.timeout_ms)
     bad = n = 0
@@ -576,6 +785,9 @@ def cmd_recheck(args):
         cv = tuple(r.get('const_vars', ()))
         ok = (set(ir.variables(tgt)) <= set(ir.variables(src)) and
               ir.is_linear_in(tgt, cv))
+        if r.get('region'):
+            # Every output in one query, for each width map.
+            ok = ok and not cv and region.structural(r)
         status = 'valid' if ok else 'structural'
         checks = []
         for d in r['disjuncts'] + r.get('unselected_disjuncts', []):
@@ -591,6 +803,11 @@ def cmd_recheck(args):
             if status != 'valid':
                 break
             n += 1
+            if r.get('region'):
+                sched = region.schedules(r, wmaps)
+                status = 'structural' if None in sched else \
+                    region.verify(sched, dnf, backend)[0]
+                continue
             status, _ = synth.verify(synth.rule_schedules(r, wmaps), dnf,
                                      backend, cv)
         if status != 'valid':
@@ -682,21 +899,97 @@ def cmd_report(args):
 
 def cmd_all(args):
     corpus_dir = args.corpus_dir
-    a = argparse.Namespace(llc=args.llc, o=corpus_dir, mir=[SEED_MIR],
-                           ll=args.ll, ll_list=args.ll_list, j=args.j,
-                           target='AMDGPU', depth=None, max_trees=None)
-    cmd_extract(a)
-    cmd_synth(argparse.Namespace(
-        corpus=[corpus_dir], o=args.db, proofs=args.proofs, stats=None,
-        timeout_ms=args.timeout_ms, seed=0, max_atoms=2,
-        max_instances=args.max_instances, compose_corpus=[],
-        compose_steps=3, compose_axioms=False))
-    return cmd_emit(argparse.Namespace(db=args.db, td=DEFAULT_TD,
-                                       inc=DEFAULT_INC, check=False,
-                                       profiles=None, all_candidates=False))
+    cmd_extract(default_args('extract', llc=args.llc, o=corpus_dir,
+                             mir=[SEED_MIR], ll=args.ll,
+                             ll_list=args.ll_list, j=args.j))
+    cmd_synth(default_args('synth', corpus=[corpus_dir], o=args.db,
+                           proofs=args.proofs, timeout_ms=args.timeout_ms,
+                           max_instances=args.max_instances,
+                           grammar=args.grammar))
+    return cmd_emit(default_args('emit', db=args.db, td=args.td,
+                                 inc=args.inc))
 
 
-def main():
+# --------------------------------------------------------------- mine ---
+
+def cmd_mine(args):
+    """The complete run (girs/mine.py): from a configuration and corpus
+    manifests to a selected, checked and evaluated rule set."""
+    from girs import mine
+    run = mine.Run(args.config, args.run_dir, sys.modules[__name__],
+                   local=args.local)
+    if args.export:
+        return mine.export(run, sys.modules[__name__])
+    run.run(until=args.until, force=args.force)
+
+
+def cmd_compare_runs(args):
+    """Compares the reports of several runs: the rule families that each
+    run found, and the cost of each search."""
+    from girs import report
+    reports = {}
+    for d in args.runs:
+        with open(os.path.join(d, 'report.json')) as f:
+            rep = json.load(f)
+        reports[rep['run']] = rep
+    out = report.compare_runs(reports)
+    if args.o:
+        with open(args.o, 'w') as f:
+            json.dump(out, f, indent=1, sort_keys=True)
+            f.write('\n')
+    print('rule families of the libraries, by the runs that have them:')
+    for k, n in out['library_families_by_runs'].items():
+        print('  %-40s %d' % (k, n))
+    for n, r in sorted(out['runs'].items()):
+        c = r['counts']
+        print('%s: grammar %s, %d library rules, %d selected, %d with gain, '
+              '%.0f s, %s MB, %d bank terms (%d banks at the term limit)' % (
+                  n, r['grammar'], c['library_rules'], c['selected_rules'],
+                  c['selected_rules_with_measured_gain'],
+                  r['seconds']['total'], r['peak_rss_mb'], r['bank_terms'],
+                  r['banks_truncated']))
+
+
+# ------------------------------------------------------------- parser ---
+
+_SUBPARSERS = {}
+
+
+def default_args(cmd, **over):
+    """The arguments of the subcommand ``cmd`` as its parser gives them
+    for a command line without options, with the values of ``over``.
+
+    A command that calls another command builds the arguments here, so an
+    option that is added to a subcommand has its default in every caller.
+    A name that the subcommand does not have is an error, and so is a
+    required argument without a value."""
+    if not _SUBPARSERS:
+        build_parser()
+    sub = _SUBPARSERS[cmd]
+    ns = argparse.Namespace()
+    required = []
+    for a in sub._actions:
+        if a.dest in ('help', argparse.SUPPRESS):
+            continue
+        d = a.default
+        setattr(ns, a.dest, list(d) if isinstance(d, list) else d)
+        if a.required or (not a.option_strings and a.nargs in (None, '+')):
+            required.append(a.dest)
+    for k, v in sub._defaults.items():
+        setattr(ns, k, v)
+    unknown = sorted(set(over) - set(vars(ns)))
+    if unknown:
+        raise TypeError('subcommand %s has no argument %s' %
+                        (cmd, ', '.join(unknown)))
+    missing = sorted(k for k in required if k not in over)
+    if missing:
+        raise TypeError('subcommand %s needs %s' % (cmd, ', '.join(missing)))
+    for k, v in over.items():
+        setattr(ns, k, v)
+    return ns
+
+
+def build_parser():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawTextHelpFormatter)
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -722,14 +1015,59 @@ def main():
     p.add_argument('--stats')
     p.add_argument('--timeout-ms', type=int, default=10000)
     p.add_argument('--seed', type=int, default=0)
-    p.add_argument('--grammar', choices=('base', 'source', 'all'),
+    p.add_argument('--grammar',
+                   choices=('base', 'source', 'all', 'registry', 'auto'),
                    default='source',
                    help='operators of the replacement terms of the '
-                        'enumerative search next to the base grammar: '
-                        'none, the operators of the source (default), or '
-                        'every operator with a sample kernel')
+                        'enumerative search: the base grammar; that and '
+                        'the operators of the source (default); the 44 '
+                        'operators of the first extension; every operator '
+                        'of the registry that a rule can create; or auto: '
+                        'the source grammar, then the operators that the '
+                        'target has (--legality), then the registry')
+    p.add_argument('--legality', help='the legality table of the target '
+                   '(extract --legality): the grammar auto adds the '
+                   'operators that the target has before the others')
+    p.add_argument('--max-evals', type=int, default=40000000,
+                   help='budget: candidate terms that one term bank '
+                        'evaluates at one cost level')
+    p.add_argument('--mode', choices=('semantics-only', 'hybrid'),
+                   help='semantics-only: the enumerative search is the '
+                        'only candidate source, and --egraph or a '
+                        'composition option is an error')
     p.add_argument('--max-atoms', type=int, default=2)
     p.add_argument('--max-instances', type=int, default=0)
+    p.add_argument('--max-terms', type=int, default=50000,
+                   help='budget: terms of one term bank')
+    p.add_argument('--max-proofs', type=int, default=48,
+                   help='budget: SMT checks of the candidates of one '
+                        'instance')
+    p.add_argument('--max-candidates', type=int, default=6,
+                   help='budget: proved candidates of one instance')
+    p.add_argument('--time-budget-s', type=float, default=0,
+                   help='budget: seconds of the enumerative search (0: no '
+                        'limit); the instances after it are not searched')
+    p.add_argument('--regions', action='store_true',
+                   help='also search rules with several outputs: the root '
+                        'and the values below it that have other users '
+                        '(girs/region.py)')
+    p.add_argument('--siblings', action='store_true',
+                   help='also search rules for two roots: the root of a '
+                        'tree and a second instruction of the block that '
+                        'reads inputs of the tree (girs/sibling.py)')
+    p.add_argument('--max-pairs', type=int, default=0,
+                   help='budget: pairs of roots that --siblings searches '
+                        '(0: all)')
+    p.add_argument('--explore-share', type=float, default=0.2,
+                   help='the part of the search order that goes to the '
+                        'root operators with the fewest instances so far '
+                        '(the rest is by value); it decides what a budget '
+                        'leaves out')
+    p.add_argument('--search-log', help='JSON-lines file: the record of '
+                   'the search of each instance with a candidate or with '
+                   'a budget that ended the search')
+    p.add_argument('--cache', help='directory with the proved candidates '
+                   'of earlier runs with the same model and budgets')
     p.add_argument('--compose-corpus', nargs='*', default=[],
                    help='deeper corpus (extract --depth 3) for rule '
                    'composition and coverage')
@@ -827,10 +1165,44 @@ def main():
     p.add_argument('--proofs', default=DEFAULT_PROOFS)
     p.add_argument('--timeout-ms', type=int, default=10000)
     p.add_argument('--max-instances', type=int, default=0)
+    p.add_argument('--grammar',
+                   choices=('base', 'source', 'all', 'registry', 'auto'),
+                   default='source')
+    p.add_argument('--td', default=DEFAULT_TD)
+    p.add_argument('--inc', default=DEFAULT_INC)
     p.add_argument('-j', type=int, default=os.cpu_count())
     p.set_defaults(fn=cmd_all)
 
-    args = ap.parse_args()
+    p = sub.add_parser('mine', help='the complete run: extract, discover, '
+                       'prove, build, measure, select, check, evaluate')
+    p.add_argument('--config', required=True, help='JSON file, see '
+                   'girs/mine.py and configs/')
+    p.add_argument('--run-dir', required=True, help='the directory of the '
+                   'run; a run that was interrupted continues')
+    p.add_argument('--local', help='JSON file with the values of this '
+                   'machine (paths of compilers, references, jobs); its '
+                   'keys replace the keys of the configuration')
+    p.add_argument('--until', help='stop after this stage')
+    p.add_argument('--force', nargs='*', default=[],
+                   help='stages to run again')
+    p.add_argument('--export', action='store_true',
+                   help='copy the library and the profile of the finished '
+                   'run to rules.json and targets/')
+    p.set_defaults(fn=cmd_mine)
+
+    p = sub.add_parser('compare-runs', help='compare the reports of '
+                       'several `mine` runs')
+    p.add_argument('runs', nargs='+', help='run directories')
+    p.add_argument('-o', help='JSON output')
+    p.set_defaults(fn=cmd_compare_runs)
+
+    _SUBPARSERS.clear()
+    _SUBPARSERS.update(sub.choices)
+    return ap
+
+
+def main():
+    args = build_parser().parse_args()
     sys.exit(args.fn(args) or 0)
 
 

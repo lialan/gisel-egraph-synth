@@ -37,6 +37,9 @@ class Target:
         # llc flag that adds the corpus extractor after the pre-legalizer
         # combiner, or None: then the MIR is taken with -stop-after.
         self.corpus_flag = corpus_flag
+        # The corpus extractor also writes the legality table of the
+        # target (Capability) with this flag and a file name.
+        self.legality_flag = '-gisel-synth-legality='
         self.arg32, self.arg64, self.ret = arg32, arg64, ret
         self.insn_regex = insn_regex
         self.group = 'gi_synth_combines_' + name.lower()
@@ -45,6 +48,49 @@ class Target:
     @property
     def profile_path(self):
         return os.path.join(PROFILE_DIR, self.name + '.json')
+
+
+class Capability:
+    """What the legalizer of a target does with each generic operator at
+    each combination of scalar widths: the table that
+    `llc -gisel-synth-legality=FILE` writes. A search with the grammar
+    'auto' adds the operators that the target has before the others."""
+
+    NATIVE = ('Legal', 'Custom')
+    RESIZED = ('WidenScalar', 'NarrowScalar')
+
+    def __init__(self, table, digest=''):
+        self.ops = table['operators']
+        self.target = table.get('target', '')
+        self.digest = digest
+
+    @classmethod
+    def load(cls, path):
+        import hashlib
+        import json
+        with open(path, 'rb') as f:
+            data = f.read()
+        return cls(json.loads(data), hashlib.sha256(data).hexdigest())
+
+    def action(self, name, widths):
+        return self.ops.get(name, {}).get(
+            ','.join(str(w) for w in widths), 'Unsupported')
+
+    def capable(self, name, types):
+        """True if the target has the operator ``name`` for values of the
+        ``types`` ((width, kind) each): an instruction of these widths is
+        legal, or the legalizer changes its width to one that is. False
+        if the legalizer expands the operation or has no rule for it."""
+        acts = self.ops.get(name)
+        if not acts:
+            return False
+        widths = {str(w) for w, _ in types}
+        native = any(a in self.NATIVE for a in acts.values())
+        for combo, a in acts.items():
+            if set(combo.split(',')) <= widths and (
+                    a in self.NATIVE or (a in self.RESIZED and native)):
+                return True
+        return False
 
 
 TARGETS = {

@@ -19,6 +19,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/CodeGen/GlobalISel/GIEGraph.h"
 #include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
+#include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
@@ -31,6 +32,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetMachine.h"
 
 #define DEBUG_TYPE "gisel-synth-corpus"
 
@@ -52,6 +54,12 @@ static cl::opt<unsigned> MaxTreesPerRoot(
     "gisel-synth-corpus-max-trees", cl::Hidden, cl::init(16),
     cl::desc("Maximum number of expression trees written per root "
              "instruction"));
+
+static cl::opt<std::string> LegalityOut(
+    "gisel-synth-legality", cl::Hidden,
+    cl::desc("Also write the action of the legalizer for each operator of "
+             "the e-graph operator table and each combination of scalar "
+             "widths to this JSON file"));
 
 namespace {
 
@@ -229,6 +237,9 @@ public:
             J.attribute("type", typeName(MRI.getType(R)));
             J.attribute("zero", hex(KB.Zero));
             J.attribute("one", hex(KB.One));
+            // A fact like the known bits: a rule that needs it checks it
+            // again where it matches.
+            J.attribute("noundef", isGuaranteedNotToBeUndefOrPoison(R, MRI));
             const MachineInstr *Def = MRI.getVRegDef(R);
             J.attribute("def", Def ? std::string(opcodeName(Def))
                                    : std::string("<none>"));
@@ -272,8 +283,12 @@ private:
       else if (P->ImmAttr)
         J.attribute("imm",
                     N.MI->getOperand(N.MI->getNumOperands() - 1).getImm());
-      if (N.MI->getNumExplicitDefs() > 1)
+      // The first result names the instruction: two results of one
+      // instruction have the same "mi".
+      if (N.MI->getNumExplicitDefs() > 1) {
         J.attribute("res", static_cast<int64_t>(defIndex(*N.MI, N.Reg)));
+        J.attribute("mi", regName(N.MI->getOperand(0).getReg()));
+      }
       J.attribute("w",
                   static_cast<int64_t>(MRI.getType(N.Reg).getSizeInBits()));
       J.attribute("type", typeName(MRI.getType(N.Reg)));
@@ -281,6 +296,7 @@ private:
       KnownBits KB = VT.getKnownBits(N.Reg);
       J.attribute("zero", hex(KB.Zero));
       J.attribute("one", hex(KB.One));
+      J.attribute("noundef", isGuaranteedNotToBeUndefOrPoison(N.Reg, MRI));
       J.attribute("uses",
                   static_cast<int64_t>(std::distance(MRI.use_nodbg_begin(N.Reg),
                                                      MRI.use_nodbg_end())));
@@ -318,6 +334,70 @@ raw_ostream &getCorpusStream() {
   return *OS;
 }
 
+/// Writes what the legalizer of the target does with each operator of the
+/// table: operator -> widths of its type indices -> action. The synthesizer
+/// reads it to try the operators that the target has before the others. It is
+/// not a cost model: a rule is selected from measurements.
+void writeLegality(const MachineFunction &MF) {
+  const TargetSubtargetInfo &STI = MF.getSubtarget();
+  const LegalizerInfo *LI = STI.getLegalizerInfo();
+  const TargetInstrInfo *TII = STI.getInstrInfo();
+  if (!LI)
+    return;
+  std::error_code EC;
+  raw_fd_ostream OS(LegalityOut, EC, sys::fs::OF_Text);
+  if (EC)
+    report_fatal_error("cannot open " + Twine(LegalityOut) + ": " +
+                       EC.message());
+  static const unsigned Widths[] = {1, 8, 16, 32, 64};
+  json::OStream J(OS, 1);
+  J.object([&] {
+    J.attribute("version", 1);
+    J.attribute("target", MF.getTarget().getTargetTriple().str());
+    J.attribute("cpu", STI.getCPU());
+    J.attributeObject("operators", [&] {
+      for (unsigned Opc = TargetOpcode::PRE_ISEL_GENERIC_OPCODE_START;
+           Opc <= TargetOpcode::PRE_ISEL_GENERIC_OPCODE_END; ++Opc) {
+        if (!getSupportedOp(Opc))
+          continue;
+        const MCInstrDesc &Desc = TII->get(Opc);
+        if (Desc.isVariadic())
+          continue;
+        unsigned NumIdx = 0;
+        for (const MCOperandInfo &Op : Desc.operands())
+          if (Op.isGenericType())
+            NumIdx = std::max(NumIdx, Op.getGenericTypeIndex() + 1);
+        if (NumIdx == 0 || NumIdx > 3)
+          continue;
+        J.attributeObject(TII->getName(Opc), [&] {
+          SmallVector<unsigned, 3> Idx(NumIdx, 0);
+          while (true) {
+            SmallVector<LLT, 3> Types;
+            std::string Key;
+            for (unsigned I : Idx) {
+              Types.push_back(LLT::scalar(Widths[I]));
+              Key += (Key.empty() ? "" : ",") + utostr(Widths[I]);
+            }
+            std::string Action;
+            raw_string_ostream AS(Action);
+            AS << LI->getAction({Opc, Types}).Action;
+            J.attribute(Key, Action);
+            unsigned I = 0;
+            for (; I < NumIdx; ++I) {
+              if (++Idx[I] < std::size(Widths))
+                break;
+              Idx[I] = 0;
+            }
+            if (I == NumIdx)
+              break;
+          }
+        });
+      }
+    });
+  });
+  OS << "\n";
+}
+
 } // end anonymous namespace
 
 char GISynthCorpusExtractor::ID = 0;
@@ -346,6 +426,11 @@ bool GISynthCorpusExtractor::runOnMachineFunction(MachineFunction &MF) {
   GISelValueTracking &VT =
       getAnalysis<GISelValueTrackingAnalysisLegacy>().get(MF);
   raw_ostream &OS = getCorpusStream();
+  static bool LegalityWritten = false;
+  if (!LegalityOut.empty() && !LegalityWritten) {
+    LegalityWritten = true;
+    writeLegality(MF);
+  }
   for (const MachineBasicBlock &MBB : MF) {
     Extractor E(MRI, VT, MBB);
     for (const MachineInstr &MI : MBB) {

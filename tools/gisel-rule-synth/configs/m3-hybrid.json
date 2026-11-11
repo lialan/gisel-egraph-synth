@@ -1,0 +1,14 @@
+{
+ "name": "m3-hybrid",
+ "mode": "hybrid",
+ "target": "AMDGPU",
+ "manifests": {
+  "discovery": "../manifests/amdgpu-discovery.txt",
+  "validation": "../manifests/amdgpu-validation.txt",
+  "heldout": "../manifests/amdgpu-heldout-codegen.txt"
+ },
+ "search": {
+  "grammar": "auto",
+  "regions": true
+ }
+}

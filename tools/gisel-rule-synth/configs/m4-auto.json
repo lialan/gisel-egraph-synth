@@ -1,0 +1,15 @@
+{
+ "name": "m4-auto",
+ "mode": "semantics-only",
+ "target": "AMDGPU",
+ "manifests": {
+  "discovery": "../manifests/amdgpu-discovery.txt",
+  "validation": "../manifests/amdgpu-validation.txt",
+  "heldout": "../manifests/amdgpu-heldout-codegen.txt"
+ },
+ "search": {
+  "grammar": "auto",
+  "regions": true,
+  "siblings": true
+ }
+}

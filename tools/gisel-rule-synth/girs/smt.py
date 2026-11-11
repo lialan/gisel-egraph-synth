@@ -215,6 +215,35 @@ def refinement_violation(enc, src, tgt, guard):
                   z3.Or(tu, z3.And(z3.Not(sp), z3.Or(tp, z3.Not(same)))))
 
 
+def joint_violation(enc, pairs, guard):
+    """The formula of a region with several outputs. ``pairs`` are (source
+    value, replacement) of each output; the first source is the root and
+    the others are nodes of the root. Satisfiable iff some input that
+    satisfies the facts and the guard gives the source defined behaviour,
+    while a replacement has undefined behaviour, or some output of the
+    source is not poison and its replacement is poison or different.
+
+    One encoder has the terms of every output: a node of the source that
+    two outputs have is one value, and so is an instruction that two
+    replacements have."""
+    root = pairs[0][0]
+    assert not ir.repeated_freeze(root), 'one G_FREEZE term twice'
+    # The source has undefined behaviour if a value of it has: the root
+    # (which has the nodes below it) or a root next to it.
+    su = z3.Or([enc.enc_full(s)[2] for s, _ in pairs])
+    bad = []
+    for src, tgt in pairs:
+        sv, sp, _ = enc.enc_full(src)
+        tv, tp, tu = enc.enc_full(tgt, side='tgt')
+        same = z3.Or(sv == tv, z3.And(_made_nan(enc, src),
+                                      z3.fpIsNaN(fp.z3_value(tv)))) \
+            if ir.result_kind(src) == 'f' else sv == tv
+        bad.append(z3.Or(tu, z3.And(z3.Not(sp), z3.Or(tp, z3.Not(same)))))
+    return z3.And(enc.well_formed(), guard,
+                  z3.And([enc.recipe_guard(t) for _, t in pairs]),
+                  z3.Not(su), z3.Or(bad))
+
+
 def split_model(vals, n):
     """(values, known zeros, known ones, poison flags) of a model."""
     return vals[:n], vals[n:2 * n], vals[2 * n:3 * n], vals[3 * n:]

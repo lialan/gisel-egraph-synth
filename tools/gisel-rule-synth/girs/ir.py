@@ -184,6 +184,39 @@ def result_kind(e, expected=None):
     return 'i'
 
 
+def type_of(e, vw, vk):
+    """The type (width, kind) of the value of ``e`` for variables of the
+    widths ``vw`` and the kinds ``vk``, or None if an operator does not
+    get operands of the kinds that it needs. A literal and a constant are
+    integers."""
+    if is_var(e):
+        return (vw[e[1]], vk[e[1]])
+    if not is_op(e):
+        return (e[1], 'i')
+    kinds = []
+    for a in e[2:]:
+        t = type_of(a, vw, vk)
+        if t is None:
+            return None
+        kinds.append(t[1])
+    if not ops.known(e[0]):
+        return None
+    k = ops.parse(e[0])[0].result_kind(kinds)
+    return None if k is None else (e[1], k)
+
+
+def types_of(e, vw, vk):
+    """The set of the types of the variables and of every operation of
+    ``e``, or None (see type_of)."""
+    out = set(zip(vw, vk))
+    for n in nodes(e):
+        t = type_of(n, vw, vk)
+        if t is None:
+            return None
+        out.add(t)
+    return out
+
+
 def var_kinds(e, expected=None, out=None):
     """variable -> 'f' | 'i' | 'x' for the variables of ``e`` whose kind
     the operators determine; 'x' if a variable is used as both."""

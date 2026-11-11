@@ -93,6 +93,49 @@ class OpInfo:
         self.smt = None
         # stage -> reason why the stage is not supported.
         self.unsupported = {}
+        # The values of an immediate attribute that a search tries, next
+        # to the values of the source (see search_keys). A comparison has
+        # every predicate.
+        self.imm_domain = ()
+
+    # -- the contract of a search --
+
+    def lhs(self):
+        """'yes' if the operator can be in the source of a rule, else the
+        reason: a source needs the evaluator and the SMT model."""
+        if self.smt is None or self.eval is None:
+            return self.unsupported.get('smt', 'no model')
+        return 'yes'
+
+    def rhs(self):
+        """'yes' if a search can build a replacement with the operator,
+        else the reason. A model is not enough: the rule must be able to
+        create the instruction (an operation that can trap and G_FREEZE
+        are matched but not created), and the operator has a fixed number
+        of operands."""
+        if self.lhs() != 'yes':
+            return self.lhs()
+        if self.operands is None:
+            return 'the number of operands is not fixed'
+        if self.results is None:
+            return 'the number of results is not fixed'
+        return self.unsupported.get('emit', 'yes')
+
+    def result_kind(self, operand_kinds):
+        """The kind ('i' integer, 'f' floating point) of the result for
+        operands of the given kinds, or None if the operands do not have
+        the kinds that the operator needs."""
+        ks = list(operand_kinds)
+        if self.freeze:
+            return ks[0]
+        if self.shape in ('merge', 'unmerge'):
+            # The bits of the operands, of any kind.
+            return 'i'
+        if self.shape == 'select':
+            return ks[1] if ks[0] == 'i' and ks[1] == ks[2] else None
+        if any(k != ('f' if self.fp_operand else 'i') for k in ks):
+            return None
+        return 'f' if self.fp_result else 'i'
 
 
 REGISTRY = {}
@@ -157,6 +200,41 @@ def known(key):
         return True
     except (KeyError, ValueError):
         return False
+
+
+def signature_ok(key, rtype, otypes):
+    """True if the operator ``key`` has a result of the type ``rtype`` for
+    operands of the types ``otypes``. A type is (width, kind); see
+    OpInfo.result_kind. This is the one type check of a search: an
+    operator needs no other code to be in a term bank."""
+    info, attr, res = parse(key)
+    if info.typecheck is None or info.operands != len(otypes) or \
+            res >= (info.results or 1):
+        return False
+    if info.result_kind([k for _, k in otypes]) != rtype[1]:
+        return False
+    return bool(info.typecheck(rtype[0], [w for w, _ in otypes], attr, res))
+
+
+def search_keys(name, imms=()):
+    """The operator keys of ``name`` that a search enumerates: one for
+    each value of the attribute domain and for each result. ``imms`` are
+    more values of an immediate attribute (the values of the source)."""
+    info = REGISTRY[name]
+    attrs = [None]
+    if info.attr == 'pred':
+        attrs = PREDS
+    elif info.attr == 'imm':
+        attrs = sorted(set(info.imm_domain) | set(imms))
+    return [make_key(name, a, r) for a in attrs
+            for r in range(info.results or 1)]
+
+
+def rhs_operators(namespace='generic'):
+    """The operators that a search can build replacements with, in the
+    order of the registry."""
+    return tuple(n for n, i in REGISTRY.items()
+                 if i.namespace == namespace and i.rhs() == 'yes')
 
 
 def is_commutative(key):
@@ -827,9 +905,11 @@ _NO_SEMANTICS = {
 ENUMERATED = ('G_ADD', 'G_SUB', 'G_MUL', 'G_AND', 'G_OR', 'G_XOR', 'G_SHL',
               'G_LSHR', 'G_ASHR', 'G_TRUNC', 'G_ZEXT', 'G_SEXT')
 
-# Operators the search can also build terms from (discover.py has a
-# sample kernel for each). Which of them a term bank has is a limit of the
-# search (discover.Limits.grammar): by default the operators of the source.
+# The operators of the fixed grammar 'all' next to the base grammar (the
+# operators that had a sample kernel when that grammar was defined). The
+# search can build terms from every operator with rhs() == 'yes'; which
+# of them a term bank has is a limit of the search
+# (discover.Limits.grammar).
 ENUMERATED_BINARY = (
     'G_SMIN', 'G_SMAX', 'G_UMIN', 'G_UMAX', 'G_ABDS', 'G_ABDU',
     'G_UADDSAT', 'G_SADDSAT', 'G_USUBSAT', 'G_SSUBSAT', 'G_UMULH',
@@ -900,6 +980,8 @@ def _load_generic():
                 why = _NO_SEMANTICS.get(name, 'no model yet')
                 info.unsupported['eval'] = why
                 info.unsupported['smt'] = why
+        if attr == 'imm':
+            info.imm_domain = (1, 8, 16, 32)
         if 'typecheck' in info.unsupported:
             for st in ('eval', 'smt'):
                 info.unsupported.setdefault(st,
@@ -937,7 +1019,7 @@ def capability(info, stage):
         # Every operator with a model can be in the source of a corpus
         # instance and of an e-graph candidate. The enumerative search
         # builds replacement terms only from the operators of its grammar.
-        if info.name in ENUMERATED or info.name in ENUMERATED_EXTRA:
+        if info.rhs() == 'yes':
             return 'enumerative+egraph'
         return 'enumerative-source+egraph'
     return 'yes'

@@ -97,7 +97,7 @@ class FormatTest(unittest.TestCase):
             info = ops.REGISTRY[name]
             for stage in ops.STAGES:
                 self.assertIn(ops.capability(info, stage),
-                              ('yes', 'enumerative-source+egraph'),
+                              ('yes', 'enumerative+egraph'),
                               (name, stage))
         tc = ops.REGISTRY['G_FPEXT'].typecheck
         self.assertTrue(tc(64, [32], None, 0))

@@ -55,6 +55,7 @@ def one_use_variant(rule):
     only changes the code, and the changed code can be worse for the
     target. `select` measures the two variants and keeps one of them."""
     if rule['needs_one_use'] or rule['cost']['replacement'] == 0 or \
+            rule.get('region') or \
             not ir.interior_nodes(ir.from_json(rule['source_json'])):
         return None
     v = dict(rule)
@@ -81,7 +82,10 @@ def candidates(db, target=None):
              r['cost']['replacement'] < r['cost']['source'] and
              widened_bits(r) <= bits)) and
            r['disjuncts'] and 'dominated_by' not in r]
-    out.sort(key=lambda r: (r['cost']['replacement'] - r['cost']['source'],
+    # A rule with several outputs applies only if a value below the root
+    # has another user; it comes before the rule of the root alone.
+    out.sort(key=lambda r: (not r.get('region'),
+                            r['cost']['replacement'] - r['cost']['source'],
                             r['cost']['source'], r['id']))
     res = []
     for r in out:
@@ -270,8 +274,115 @@ def _needs_cpp_apply(tgt, const_vars=()):
 
 
 def _rule_needs_cpp_apply(rule):
-    return _needs_cpp_apply(ir.from_json(rule['replacement_json']),
-                            tuple(rule.get('const_vars', ())))
+    return bool(rule.get('region')) or \
+        _needs_cpp_apply(ir.from_json(rule['replacement_json']),
+                         tuple(rule.get('const_vars', ())))
+
+
+def _region_outputs(rule):
+    """(register of the old value, replacement, kind) of each output
+    below the root of a rule with several outputs."""
+    if not rule.get('region'):
+        return []
+    src = ir.from_json(rule['source_json'])
+    kinds = _interior_kinds(src)
+    return [('T%d' % (o['node'] - 1), ir.from_json(o['replacement_json']),
+             kinds[o['node'] - 1]) for o in rule['region']['outputs'][1:]]
+
+
+def _region_inputs(rule):
+    """The variables that the replacements of a rule with several
+    outputs read."""
+    vs = set(ir.variables(ir.from_json(rule['replacement_json'])))
+    for _, t, _ in _region_outputs(rule):
+        vs |= set(ir.variables(t))
+    sib = _sibling(rule)
+    if sib is not None and sib[1] is not None:
+        vs |= set(ir.variables(sib[1]))
+    return sorted(vs)
+
+
+def _sibling(rule):
+    """(sibling, its replacement or None) of a rule for a region with two
+    roots (girs/sibling.py), or None. None as the replacement: the
+    sibling stays, and the replacement of the root reads its results."""
+    sibs = (rule.get('region') or {}).get('siblings')
+    if not sibs:
+        return None
+    s = sibs[0]
+    return (ir.from_json(s['source_json']),
+            None if s['stays'] else ir.from_json(s['replacement_json']))
+
+
+def _sibling_results(b, vw):
+    """(operand index, width or None) of the results of the instruction
+    of the sibling ``b`` that the guard reads. None as the width: one
+    bit, whatever the width map is (a carry or an overflow result)."""
+    info, _, res = ops.parse(b[0])
+    kinds = info.meta.get('result_kinds')
+    if info.results == 1 or not kinds:
+        return [(res, b[1])]
+    main = ir.width(b[2], vw)
+    return [(k, main if kind == 'main' else None)
+            for k, kind in enumerate(kinds)]
+
+
+def _sibling_name(rule):
+    return 'sibling_' + rule.get('variant_of', rule['id'])
+
+
+def _cpp_sibling(rule):
+    """The C++ function that finds the sibling of a rule for a region
+    with two roots: an instruction of the block of the root that reads
+    the first operand of the sibling and that has its operator and its
+    operands."""
+    b = _sibling(rule)[0]
+    info, attr, res = ops.parse(b[0])
+    _, interior = _annotate(ir.from_json(rule['source_json']))
+    forms = [(attr, b[2:])]
+    if info.commutative:
+        forms.append((attr, (b[3], b[2]) + b[4:]))
+    elif info.attr == 'pred' and ops.SWAPPED_PRED[attr] != attr:
+        forms.append((ops.SWAPPED_PRED[attr], (b[3], b[2])))
+    conds = ['MI.getOpcode() == TargetOpcode::%s' % info.name]
+    if info.shape == 'unmerge':
+        conds.append('MI.getNumExplicitDefs() > %d' % res)
+        first = 'MI.getNumOperands() - 1'
+    else:
+        first = '%d' % (info.results + (info.attr == 'pred'))
+    if info.attr == 'imm':
+        conds.append('MI.getOperand(%s + %d).getImm() == %d' % (
+            first, len(b) - 2, attr))
+    if interior:
+        conds.append('!is_contained({%s}, MI.getOperand(0).getReg())' %
+                     ', '.join('T%d' % k for k in range(len(interior))))
+    alts = []
+    for a, args in dict.fromkeys(forms):
+        c = ['MI.getOperand(1).getPredicate() == %s' % _CPP_PRED[a]] \
+            if info.attr == 'pred' else []
+        c += ['MI.getOperand(%s%s).getReg() == X%d' % (
+            first, ' + %d' % k if k else '', x[1])
+            for k, x in enumerate(args)]
+        alts.append(' && '.join(c))
+    conds.append(alts[0] if len(alts) == 1 else
+                 '(%s)' % ' ||\n            '.join('(%s)' % x for x in alts))
+    params = ['const MachineRegisterInfo &MRI', 'MachineInstr &Root'] + \
+        ['[[maybe_unused]] Register %s' % p for p in _apply_params(rule)[1:]]
+    return '\n'.join([
+        '/// The second root of %s: %s.' % (rule['id'], ir.to_sexpr(b)),
+        'inline MachineInstr *%s(%s) {' % (_sibling_name(rule),
+                                           ', '.join(params)),
+        '  return findSiblingRoot(MRI, Root, X%d, [&](const MachineInstr '
+        '&MI) {' % b[2][1],
+        '    return %s;' % ' &&\n           '.join(conds),
+        '  });', '}'])
+
+
+def _instr_key(e):
+    """The instruction of a replacement node: the results of one
+    instruction with several results are one instruction."""
+    info, attr, _ = ops.parse(e[0])
+    return (info.name, attr, e[1] if info.results == 1 else None) + e[2:]
 
 
 _CPP_APINT = {'G_ADD': '(%s + %s)', 'G_SUB': '(%s - %s)',
@@ -465,8 +576,27 @@ def _cpp_apply(rule):
     def new(text):
         name = 'N%d' % n[0]
         n[0] += 1
-        body.append('  auto %s = %s;' % (name, text))
+        body.append('  [[maybe_unused]] auto %s = %s;' % (name, text))
         return name
+
+    outs = _region_outputs(rule)
+    sib = _sibling(rule)
+    if sib is not None:
+        b, rb = sib
+        sres = ops.parse(b[0])[2]
+        if rb is None:
+            # The instruction of the sibling is there: a node of the
+            # replacement that is that instruction reads its results.
+            built[_instr_key(b)] = 'NSib'
+        else:
+            outs = outs + [('SR%d' % sres, rb, ir.result_kind(b))]
+    # (instruction, result) -> the register that the instruction defines:
+    # the root and the old values of the other outputs.
+    want = {}
+    for dname, t in [('Dst', tgt)] + [(d, t) for d, t, _ in outs]:
+        if ir.is_op(t) and not ir.is_constant_expr(t, cv) and \
+                _instr_key(t) not in built:
+            want.setdefault((_instr_key(t), ops.parse(t[0])[2]), dname)
 
     def walk(e, dst=None, kind=None):
         """Returns the C++ expression of the value of ``e``, which its
@@ -489,19 +619,18 @@ def _cpp_apply(rule):
         kind = ir.result_kind(e, kind)
         args = [walk(a, None, ir.operand_kind(e, k, kind))
                 for k, a in enumerate(e[2:])]
-        key = (info.name, attr) + e[2:]
+        key = _instr_key(e)
         if key not in built:
             # Each result of the instruction gets its type from the
             # operator: the main type or s1.
             if info.results == 1:
-                rtys = [dst or ty(e[1], kind)]
+                rtys = [want.get((key, 0)) or ty(e[1], kind)]
             else:
                 kinds = info.meta['result_kinds']
                 mainw = ir.width(e[2], rule['vw'])
-                rtys = [ty(mainw, 'i') if k == 'main' else ty(1, 'i')
-                        for k in kinds]
-                if dst:
-                    rtys[res] = dst
+                rtys = [want.get((key, n)) or
+                        (ty(mainw, 'i') if k == 'main' else ty(1, 'i'))
+                        for n, k in enumerate(kinds)]
             if info.attr == 'pred':
                 text = 'B.buildICmp(%s, %s, %s)' % (
                     _CPP_PRED[attr], rtys[0], ', '.join(args))
@@ -514,14 +643,56 @@ def _cpp_apply(rule):
             built[key] = new(text)
         return '%s.getReg(%d)' % (built[key], res)
 
-    walk(tgt, 'Dst', root_kind)
+    if not outs and sib is None:
+        walk(tgt, 'Dst', root_kind)
     params = ['MachineIRBuilder &B', 'MachineInstr &Root'] + \
         ['Register %s' % p for p in _apply_params(rule)]
+    head = ['  B.setInstrAndDebugLoc(Root);']
+    tail = []
+    if sib is not None:
+        for dname, t, kind in [('Dst', tgt, root_kind)] + outs:
+            v = walk(t, None, kind)
+            if not ir.is_op(t) or ir.is_constant_expr(t, cv) or want.get(
+                    (_instr_key(t), ops.parse(t[0])[2])) != dname:
+                body.append('  B.buildCopy(%s, %s);' % (dname, v))
+        # The sibling is found before a new instruction defines its
+        # register. A sibling that stays is moved before the root if it
+        # is after it; else the replacement is built before the first of
+        # the two roots.
+        head = ['  MachineInstr *Sib = %s(MRI, Root, %s);' % (
+            _sibling_name(rule), ', '.join(_apply_params(rule)[1:]))] + [
+            '  [[maybe_unused]] Register SR%d = Sib->getOperand(%d).getReg();'
+            % (k, k) for k, _ in _sibling_results(b, rule['vw'])] + [
+            '  B.setInstrAndDebugLoc(*siblingInsertPoint(Root, *Sib, {%s}, '
+            '/*SibStays=*/%s, /*Move=*/true));' % (
+                ', '.join('X%d' % v for v in _region_inputs(rule)),
+                'true' if rb is None else 'false')]
+        if rb is None:
+            head.append('  [[maybe_unused]] MachineInstrBuilder NSib('
+                        'B.getMF(), Sib);')
+        else:
+            tail = ['  Sib->eraseFromParent();']
+    elif outs:
+        # The replacement of an output below the root that is not the
+        # result of a new instruction of its own is a copy.
+        for dname, t, kind in [('Dst', tgt, root_kind)] + outs:
+            v = walk(t, None, kind)
+            if not ir.is_op(t) or ir.is_constant_expr(t, cv) or want.get(
+                    (_instr_key(t), ops.parse(t[0])[2])) != dname:
+                body.append('  B.buildCopy(%s, %s);' % (dname, v))
+        # The old instructions are found before a new instruction defines
+        # their registers, and the replacement is built before the first
+        # of them: it then dominates the users of every output.
+        head = ['  MachineInstr *Old%d = MRI.getVRegDef(%s);' % (n, d)
+                for n, (d, _, _) in enumerate(outs)] + [
+            '  B.setInstrAndDebugLoc(*firstRegionOutput(Root, {%s}, {%s}));'
+            % (', '.join(d for d, _, _ in outs),
+               ', '.join('X%d' % v for v in _region_inputs(rule)))]
+        tail = ['  Old%d->eraseFromParent();' % n for n in range(len(outs))]
     out = ['/// Builds %s.' % rule['replacement'],
            'inline void %s(%s) {' % (_apply_name(rule), ', '.join(params)),
-           '  [[maybe_unused]] MachineRegisterInfo &MRI = *B.getMRI();',
-           '  B.setInstrAndDebugLoc(Root);'] + body + \
-        ['  Root.eraseFromParent();', '}']
+           '  [[maybe_unused]] MachineRegisterInfo &MRI = *B.getMRI();'] + \
+        head + body + tail + ['  Root.eraseFromParent();', '}']
     return '\n'.join(out)
 
 
@@ -540,14 +711,28 @@ def why_not_emittable(rule):
     src_kinds = ir.var_kinds(src)
     if any(src_kinds.get(v) == 'f' for v in cv):
         return 'a floating-point constant in the source'
-    for n in ir.nodes(tgt):
+    sib = _sibling(rule)
+    there = set()
+    if sib is not None:
+        info = ops.parse(sib[0][0])[0]
+        if info.shape not in ops._EMIT_SHAPES + ('unmerge',):
+            return 'no match of a second root with the shape %s' % info.shape
+        if info.meta.get('may_trap'):
+            return 'a second root that can trap is not moved'
+        if sib[1] is None:
+            there.add(_instr_key(sib[0]))
+    for n in [n for t in [tgt] + [t for _, t, _ in _region_outputs(rule)] +
+              ([sib[1]] if sib is not None and sib[1] is not None else [])
+              for n in ir.nodes(t)]:
+        if _instr_key(n) in there:
+            continue
         why = ops.capability(ops.parse(n[0])[0], 'emit')
         if why != 'yes':
             return '%s: %s' % (n[0], why)
     try:
         _annotate(src)
         _cpp_recipe_checks(tgt, cv, _bits_fn(rule))
-        if _needs_cpp_apply(tgt, cv):
+        if _rule_needs_cpp_apply(rule):
             _cpp_apply(rule)
         else:
             _apply_patterns(tgt, rule['vw'], rule['source_json']['w'], src)
@@ -656,6 +841,11 @@ def _cpp_guard(r):
     _, interior = _annotate(src)
     n, k = len(vw), len(interior)
     cols = list(vw) + interior + [src[1]]
+    sib = _sibling(r)
+    sres = _sibling_results(sib[0], vw) if sib is not None else []
+    # A result of the sibling with a width of its own in every map (one
+    # bit) is the column None.
+    cols += [w for _, w in sres]
     dnf = rule_dnf(r)
     # Disjuncts that share their verified schedules share a table.
     tables, table_of = [], []
@@ -664,7 +854,7 @@ def _cpp_guard(r):
     # wider operation is divided again by the target.
     wide = widened_bits(r)
     for d in r['disjuncts']:
-        rows = sorted({tuple(dict(m)[w] for w in cols)
+        rows = sorted({tuple(1 if w is None else dict(m)[w] for w in cols)
                        for m in d['width_maps']
                        if not wide or dict(m)[wide] <= targets.NATIVE_BITS})
         # No width is left: a row that no register has.
@@ -676,9 +866,10 @@ def _cpp_guard(r):
               'Register Dst'] + ['Register X%d' % i for i in range(n)] + \
         ['Register T%d' % i for i in range(k)]
     regs = ['X%d' % i for i in range(n)] + ['T%d' % i for i in range(k)] + \
-        ['Dst']
+        ['Dst'] + ['SR%d' % i for i, _ in sres]
     what = ', '.join(['x%d' % i for i in range(n)] +
-                     ['t%d' % i for i in range(k)] + ['root'])
+                     ['t%d' % i for i in range(k)] + ['root'] +
+                     ['s%d' % i for i, _ in sres])
     out = ['/// %s -> %s' % (r['source'], r['replacement']),
            '/// if %s' % r['precondition']]
     for ti, rows in enumerate(tables):
@@ -687,8 +878,18 @@ def _cpp_guard(r):
             '; '.join(','.join(str(w) for w in row) for row in rows)))
     out += ['inline bool %s(%s) {' % (_guard_name(r), ', '.join(params)),
             '  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: '
-            'matched: %s\\n");' % r['id'],
-            '  unsigned W[%d];' % len(cols),
+            'matched: %s\\n");' % r['id']]
+    if sib is not None:
+        out += ['  // The second root of the region.',
+                '  MachineInstr *Root = MRI.getVRegDef(Dst);',
+                '  MachineInstr *Sib = Root ? %s(MRI, *Root, %s) : nullptr;'
+                % (_sibling_name(r), ', '.join(
+                    ['X%d' % i for i in range(n)] +
+                    ['T%d' % i for i in range(k)])),
+                '  if (!Sib)', '    return false;'] + [
+            '  Register SR%d = Sib->getOperand(%d).getReg();' % (i, i)
+            for i, _ in sres]
+    out += ['  unsigned W[%d];' % len(cols),
             '  if (!getScalarWidths(MRI, {%s}, W))' % ', '.join(regs),
             '    return false;']
     for ti, rows in enumerate(tables):
@@ -723,8 +924,7 @@ def _cpp_guard(r):
         if ('W%d' % i) in text.replace('WRoot', ''):
             out.append('  [[maybe_unused]] unsigned W%d = W[%d];' % (i, i))
     if 'WRoot' in text:
-        out.append('  [[maybe_unused]] unsigned WRoot = W[%d];' %
-                   (len(cols) - 1))
+        out.append('  [[maybe_unused]] unsigned WRoot = W[%d];' % (n + k))
     # Disjuncts without atoms need no value tracking; try them first.
     order = sorted(range(len(dnf)), key=lambda i: (bool(dnf[i]), i))
     have = set()
@@ -760,8 +960,25 @@ def _cpp_guard(r):
                 out.append('    K%d = VT->getKnownBits(X%d);' % (v, v))
             out.append('    Pass = %s;' % cond.replace('\n', '\n  '))
             out.append('  }')
-    out += ['  if (!Pass)', '    return false;',
-            '  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: '
+    out += ['  if (!Pass)', '    return false;']
+    if sib is not None:
+        out += ['  // The replacement can be built: the two roots are near '
+                'in one block,',
+                '  // and the inputs are defined before the first of them.',
+                '  if (!siblingInsertPoint(*Root, *Sib, {%s}, /*SibStays=*/%s'
+                '))' % (', '.join('X%d' % v for v in _region_inputs(r)),
+                        'true' if sib[1] is None else 'false'),
+                '    return false;']
+    elif r.get('region'):
+        out += ['  // Each value below the root that the rule replaces has '
+                'another user,',
+                '  // and the replacement can be built before the first of '
+                'them.',
+                '  if (!isJointRegion(MRI, Dst, {%s}, {%s}))' % (
+                    ', '.join(d for d, _, _ in _region_outputs(r)),
+                    ', '.join('X%d' % v for v in _region_inputs(r))),
+                '    return false;']
+    out += ['  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: '
             'guard passed: %s\\n");' % r['id'],
             '  return true;', '}']
     return '\n'.join(out)
@@ -793,7 +1010,12 @@ def emit_inc(rules, sel, names):
              '// clang-format off',
              '']
     applies = set()
+    finders = set()
     for r in rules:
+        if _sibling(r) is not None and _sibling_name(r) not in finders:
+            finders.add(_sibling_name(r))
+            lines.append(_cpp_sibling(r))
+            lines.append('')
         lines.append(_cpp_guard(r))
         lines.append('')
         if _rule_needs_cpp_apply(r) and _apply_name(r) not in applies:

@@ -19,10 +19,20 @@ class Instance:
     """A concrete expression with concrete input facts."""
 
     def __init__(self, expr, vw, facts, consts, interior_uses, flags, prov,
-                 sub_facts=None):
+                 sub_facts=None, kinds=None):
         self.expr = expr            # ir expression; leaves are ('var', i)
         self.vw = tuple(vw)         # variable widths
-        self.facts = tuple(facts)   # per variable (known_zero, known_one)
+        # Per variable 'f' (a floating-point value) or 'i' (an integer):
+        # what the operators of the expression need, else what the type of
+        # the register says (``kinds``), else an integer.
+        need = ir.var_kinds(expr)
+        self.vk = tuple(
+            need[i] if need.get(i) in ('i', 'f') else
+            ((kinds[i] if kinds else None) or 'i')
+            for i in range(len(self.vw)))
+        # Per variable (known_zero, known_one) or (known_zero, known_one,
+        # True): the value is also known to be neither undef nor poison.
+        self.facts = tuple(facts)
         self.consts = tuple(consts)  # per variable: int or None
         self.interior_uses = tuple(interior_uses)  # pre-order, below root
         self.flags = tuple(flags)   # flags seen on any node of the tree
@@ -33,6 +43,9 @@ class Instance:
         # Variables that a rule from this instance only matches as
         # constants: the replacement computes a constant from them.
         self.const_vars = ()
+        # The register of each variable in the record that the instance
+        # was read from (sibling.py pairs records by them), or None.
+        self.regs = None
 
     def facts_of(self, e):
         """Known bits (zero, one) of a variable or of an operation node of
@@ -114,6 +127,8 @@ def parse_record(rec, source='', why=None):
             return None
         shared[reg] = len(inputs)
         inputs.append({'reg': reg, 'w': node['w'], 'zero': node['zero'],
+                       'type': node.get('type', ''),
+                       'noundef': node.get('noundef', False),
                        'one': node['one'], 'def': node['op']})
     sub = []
     expr = _convert(rec['expr'], inputs, uses, flags, shared, root=True,
@@ -124,21 +139,38 @@ def parse_record(rec, source='', why=None):
     expr = ir.rename(expr, renum)
     sub_facts = {ir.rename(e, renum): f for e, f in sub}
     inputs = [inputs[o] for o in order]
-    vw, facts, consts = [], [], []
+    vw, facts, consts, kinds = [], [], [], []
     for inp in inputs:
         w = inp['w']
+        kinds.append('f' if inp.get('type', '').startswith('f') else None)
         z, o = int(inp['zero'], 16), int(inp['one'], 16)
         if z & o:
             raise ValueError('inconsistent known bits in corpus: %r' % inp)
+        c = int(inp['const'], 16) if 'const' in inp else None
+        if c is not None:
+            # Every bit of a constant is known. The value tracking of the
+            # compiler reports no known bits for a floating-point
+            # constant, so the facts come from the constant.
+            if c & z or (c & o) != o:
+                raise ValueError('known bits that the constant does not '
+                                 'have: %r' % inp)
+            z, o = ~c & ir.mask(w), c
         vw.append(w)
-        facts.append((z, o))
-        consts.append(int(inp['const'], 16) if 'const' in inp else None)
+        # 'noundef': the value is neither undef nor poison (a constant
+        # never is). A corpus of an older extractor does not say it.
+        if c is not None or inp.get('noundef'):
+            facts.append((z, o, True))
+        else:
+            facts.append((z, o))
+        consts.append(c)
     if not ir.well_typed(expr, vw):
         why.append('not well typed for the model: %s' %
                    ops.base(expr[0]))
         return None
-    return Instance(expr, vw, facts, consts, uses, sorted(flags),
-                    [(source, rec['fn'], rec['root'])], sub_facts)
+    inst = Instance(expr, vw, facts, consts, uses, sorted(flags),
+                    [(source, rec['fn'], rec['root'])], sub_facts, kinds)
+    inst.regs = tuple(inp['reg'] for inp in inputs)
+    return inst
 
 
 def _find(node, reg):
@@ -215,7 +247,15 @@ def load(paths):
                     continue
                 k = inst.key()
                 if k in by_key:
-                    by_key[k].prov.extend(inst.prov)
+                    old = by_key[k]
+                    old.prov.extend(inst.prov)
+                    # The most users of each value below the root in any
+                    # occurrence: a value with a user outside the tree is
+                    # an output of the region (region.py).
+                    if len(old.interior_uses) == len(inst.interior_uses):
+                        old.interior_uses = tuple(
+                            max(a, b) for a, b in zip(old.interior_uses,
+                                                      inst.interior_uses))
                 else:
                     by_key[k] = inst
     # Deterministic order: by number of occurrences (desc), then shape.

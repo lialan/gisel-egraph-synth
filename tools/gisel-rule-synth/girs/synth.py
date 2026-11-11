@@ -189,12 +189,16 @@ def verify(sched, dnf, backend, const_vars=()):
 
 
 def synthesize_precondition(src, tgt, vw, facts, sched, backend, limits,
-                            pool=None, fvw=None, frw=None, const_vars=()):
+                            pool=None, fvw=None, frw=None, const_vars=(),
+                            verify_fn=None):
     """CEGIS over the precondition grammar. Returns (valid, stats) where
     valid lists every minimal valid conjunction as (pred, proofs), smallest
     first. ``pool`` is the counterexample pool of the rule class; it is
     extended in place. ``facts`` are the training facts, for variables of
-    widths ``fvw`` and root width ``frw`` (default: the pattern's)."""
+    widths ``fvw`` and root width ``frw`` (default: the pattern's).
+    ``verify_fn`` proves the schedules ``sched`` (default: verify; a rule
+    with several outputs has schedules and a proof of its own)."""
+    verify_fn = verify_fn or verify
     fvw = vw if fvw is None else fvw
     frw = src[1] if frw is None else frw
     atoms = [a for a in precond.enumerate_atoms(fvw, frw)
@@ -219,7 +223,7 @@ def synthesize_precondition(src, tgt, vw, facts, sched, backend, limits,
             if any(precond.eval_pred(p, f, v, r) for v, f, r in pool):
                 stats['pruned_by_cex'] += 1
                 continue
-            status, info = verify(sched, [p], backend, const_vars)
+            status, info = verify_fn(sched, [p], backend, const_vars)
             if status == 'invalid':
                 pool.append(info)
                 stats['counterexamples'] += 1

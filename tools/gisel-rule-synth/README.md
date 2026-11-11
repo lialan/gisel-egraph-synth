@@ -11,8 +11,8 @@ engine or e-graph runs inside LLVM.
   `llc`. An assertions build is needed by `select` (it counts rule matches
   with `-debug-only=gisel-synth`).
 - Python 3 with the z3 and numpy modules (`pip install z3-solver numpy`), but
-  only for `synth` and `recheck`. `extract`, `select`, `report` and `emit`
-  need no solver, so a normal LLVM build never needs z3.
+  only for `synth`, `mine` and `recheck`. `extract`, `select`, `report` and
+  `emit` need no solver, so a normal LLVM build never needs z3.
 
 ## Two layers: the library and the target profiles
 
@@ -31,7 +31,62 @@ engine or e-graph runs inside LLVM.
 describe it in `girs/targets.py`, include the group in its pre-legalizer
 combiner behind a flag, and run `select`.
 
+## The complete run: `mine`
+
+```sh
+S=llvm/utils/gisel-rule-synth/gi-rule-synth.py
+$S mine --config llvm/utils/gisel-rule-synth/configs/m3-auto.json \
+        --run-dir runs/m3-auto
+```
+
+`mine` goes from a configuration and corpus manifests to a selected and
+checked rule set and its report (`report.md`, `report.json`), without a
+manual step between the stages:
+
+| Stage | Result |
+|---|---|
+| `identity` | what the run is made from: source commit and dirty state, hashes of the tool, of the semantic model and of the registry, the compiler, the frozen library and profiles, the manifests, the budgets and the seed |
+| `prepare` | the `opt -O2` form of every file (the second pipeline) |
+| `extract` | the corpus of the discovery files, written by the baseline pipeline (the synthesized rules are off), and the legality table of the target |
+| `discover` | candidates, preconditions and proofs: the rule library of the run |
+| `build` | a compiler with every candidate of the library |
+| `measure` | the selection files with and without every candidate |
+| `select` | the target profile |
+| `verify` | the selected set on every selection file: compile failures, machine verifier errors, changed SelectionDAG fallbacks, files with more instructions. A rule that makes a file worse is removed, and the check runs again |
+| `freeze` | hashes of everything that decides the result. The held-out files are not read before this stage |
+| `heldout` | the frozen set and the reference sets on every role and pipeline |
+| `report` | the counts, the relation to the frozen library, the search record and the evaluation |
+
+- **Resume.** Each run has a directory. A stage writes a record in
+  `state.json` with a hash of its inputs; `mine` skips a stage whose record
+  has the hash of the current inputs. An interrupted run continues, and a
+  changed input (a manifest, a budget, the tool) runs the stages after it
+  again. The stages with many compiler runs keep their results per file.
+  `--until STAGE` stops after a stage; `--force STAGE...` runs stages again.
+- **Configuration.** `configs/*.json`: `mode`, `target`, `manifests` (role ->
+  file with one `.ll` path per line), `search` (grammar, budgets, seed,
+  `regions`, `siblings`), `select`. `girs/mine.py` (`DEFAULTS`) has every key. `--local
+  FILE` gives the values of one machine (compiler paths, reference
+  compilers, jobs).
+- **Roles.** `discovery` files give the corpus. `discovery` and `validation`
+  files select the rules. `heldout` files are compiled only after the set is
+  frozen; `frozen.json` counts the held-out evaluations of a run directory.
+  A file must not be in two manifests. `eval/make_manifest.py` writes a
+  manifest from directories with the baseline compiler alone.
+- **Modes.** `semantics-only`: the candidates come from the enumerative
+  search alone (operator semantics, types, costs, budgets). The rewrites of
+  the e-graph combiner, the composition of rules and the frozen library are
+  not inputs, and the run fails if a rule has another source. `hybrid` adds
+  the e-graph candidates and the composition; each rule records its sources.
+- **Pipelines.** Every measurement is made for `.ll -> llc` (`direct`) and
+  for `.ll -> opt -O2 -> llc` (`opt-O2`), and reported separately.
+- **Export.** A run does not write `rules.json` or `targets/`. `mine
+  --export` copies the library and the profile of a finished run there.
+  `compare-runs RUN...` compares finished runs.
+
 ## Commands
+
+The steps of `mine` are also commands:
 
 ```sh
 S=llvm/utils/gisel-rule-synth/gi-rule-synth.py
@@ -94,27 +149,59 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
    trees by reason (`corpus.unsupported_reasons` in `rules.stats.json`,
    next to the occurrences of each operator, `corpus.operators`). A new
    operator of the table with a model needs no change in these two places.
+   A node and an input also have `noundef` (the value is neither undef nor
+   poison, `isGuaranteedNotToBeUndefOrPoison`): the search without the
+   e-graph combiner can find a rule with the precondition `def(x)`. The two
+   results of one instruction have the same `mi`. `llc
+   -gisel-synth-legality=FILE` writes what the legalizer does with each
+   operator at each combination of scalar widths (`targets.Capability`).
 1. **Discovery** (`discover.py`). Enumerative search for a cheaper
    expression that agrees with the source on samples, then an SMT proof under
    the instance's concrete known bits. The source can have every operator
-   with a model. The replacement terms are built from the base grammar
-   (`ops.ENUMERATED`: the nine arithmetic and bit operations and the three
-   integer casts) and, with `synth --grammar`, from the operators of
-   `ops.ENUMERATED_EXTRA` (min/max, absolute difference, saturating
-   arithmetic, high multiplication, averages, rotations, `G_ABS`,
-   `G_BSWAP`, `G_BITREVERSE`, the bit counts and the saturating
-   truncations): `source` (default) adds the operators of this list that
-   the source has, so the search of a source of the base grammar does not
-   change; `all` adds the full list; `base` adds none. The operators with
-   an attribute, with several results or with three operands, the
-   conversions with a floating-point value, and the operators that a rule
-   must not create are only in sources (`enum-src+egraph` in
-   `capabilities`); the e-graph candidates give replacements with them. The enumeration is done once per
-   *signature* (width class of every input), in a term bank pruned by
-   observational equivalence, and reused by every instance with that
-   signature whatever its shape or bit widths. Instances are visited by
-   corpus frequency times instructions at stake. Refuting SMT models become
-   samples for the rest of the run.
+   with a model.
+
+   *The registry decides what a term bank can build.* `OpInfo.rhs()` says if
+   a rule can create an operator, or why not (an operation that can trap and
+   `G_FREEZE` are matched and not created). `ops.signature_ok` is the one
+   type check: the number of operands, the type rule and the kind of each
+   value (integer or floating point; two types of one width are two type
+   classes). `ops.search_keys` gives the keys of an operator: one for each
+   predicate, each value of an immediate (`imm_domain` and the values of
+   the source) and each result. An operator without a sample kernel
+   (`kernels.py`) is evaluated with the evaluator of the registry. A new
+   operator needs an entry in the registry and no change in `discover.py`.
+
+   `synth --grammar` selects the operators of a bank:
+
+   | Grammar | Operators |
+   |---|---|
+   | `base` | `ops.ENUMERATED`: nine arithmetic and bit operations, three integer casts |
+   | `source` (default) | `base` and the operators of the source that a rule can create |
+   | `all` | `base` and `ops.ENUMERATED_EXTRA` (32 operators with one result and no attribute) |
+   | `registry` | every operator with `rhs() == 'yes'`: also comparisons, `G_SELECT`, the overflow and carry operators, the funnel shifts, the conversions with a floating-point value, the operators with an immediate |
+   | `auto` | in steps: `source`, then the operators that the target has at the types of the source (`--legality`), then `registry`. Each step is a function of the operators and types of the source, of the registry and of the target, not of what the source computes |
+
+   The enumeration is done once per *signature* (type class of every
+   input), in a term bank pruned by observational equivalence, and reused by
+   every instance with that signature whatever its shape or bit widths. A
+   bank has one term per sample fingerprint: that is a filter, not a proof,
+   and a term can hide another term with the same samples (the region step
+   below has its own candidates for that reason).
+
+   *Budgets.* `--max-terms` (terms of a bank), `--max-evals` (candidate
+   terms that a bank evaluates per cost level; inside a level each operator
+   gets a share, so the operators at the end of a grammar are also tried),
+   `--max-proofs`, `--max-candidates`, `--time-budget-s`, `--timeout-ms`.
+   The search of each instance ends with a reason (`discover.STOPS`):
+   `complete`, or the budget that ended it. A budget is not "no result in
+   the grammar"; `rules.stats.json` counts the reasons and `--search-log`
+   has every candidate with its status.
+
+   Instances are visited by corpus frequency times instructions at stake,
+   with a share (`--explore-share`) for the rarest root operators. Refuting
+   SMT models become samples for the rest of the run. The proved candidates
+   of an instance are kept in `--cache` by the instance, the limits and the
+   model hash; an UNKNOWN answer is not kept.
 2. **Generalization** (`synth.py`, `precond.py`). One rule per (source,
    replacement), widths abstracted. CEGIS over a known-bits grammar finds
    *every* minimal sufficient conjunction, not just the first; strictly
@@ -152,6 +239,86 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
    gives no rule. A rewrite that gives no candidate is counted with its
    reason in `rules.stats.json` (`egraph.rejected`).
 
+5. **Regions with several outputs** (`region.py`, `synth --regions`). A
+   rule of the search above replaces the root of a tree. A value below the
+   root that has another user stays, so the rule removes the root only. Such
+   a value is a second output of the region. The step searches a replacement
+   of that value that shares instructions with the replacement of the root:
+
+   ```
+   %s = G_SUB %x, %y            ; %s has other users
+   %c = G_ICMP ugt, %s, %x      ; the root
+   ->
+   %s, %c = G_USUBO %x, %y
+   ```
+
+   A rule with a region has `region.outputs`: `(node, result)` of each
+   value that is replaced (node 0 is the root, node k the k-th value below
+   it in pre-order) with its replacement. Equal instructions of the
+   replacements are one instruction and their cost counts once; two results
+   of one instruction are one instruction.
+   - *Candidates*: the terms of the bank, the values that the instructions
+     of the other replacements compute (the other result of an instruction
+     with two results), and for the root a result of an instruction with
+     several results of which another result is a value below the root.
+   - *Proof*: one query per width map with every output
+     (`smt.joint_violation`), under the precondition of the rule of the
+     root. A width map without that proof is not a width of the new rule.
+     The replacements read each input once in all.
+   - *Generated code*: the guard also checks that each replaced value has
+     another user, is in the block of the root, and that no input of the
+     replacement is defined after the first of them (`isJointRegion`). The
+     apply function builds the replacement before that first value and
+     erases the old instructions.
+   - *Limits*: one basic block; the other outputs are below the root (step
+     6 has two roots that share only operands); a value that occurs twice
+     in the source and a result of an instruction with several results are
+     not replaced; no computed constants.
+
+6. **Regions with two roots** (`sibling.py`, `synth --siblings`). The
+   second root (the sibling) is not in the tree of the first: it is one
+   instruction of the same block that reads only inputs of that tree.
+
+   ```
+   %d = G_SUB %x, %y                ; the sibling
+   %c = G_ICMP uge, %x, %y
+   %r = G_SELECT %c, %a, %b         ; the primary root
+   ->
+   %d, %o = G_USUBO %x, %y
+   %r = G_SELECT %o, %b, %a
+   ```
+
+   - *Pairs*: the corpus has one tree per root. `sibling.load_pairs` pairs
+     the records of one basic block by their registers: each tree with each
+     record of one instruction whose inputs are inputs of the tree. An
+     instruction of the tree, another result of such an instruction and the
+     definition of an input are not siblings.
+   - *Candidates*: no rewrite is given. The values of instructions that a
+     replacement can read for no added cost are leaves of the term bank,
+     next to the inputs: the results of the sibling if it stays, or the
+     other results of a new instruction with several results of which one
+     result has the samples of the sibling (the sibling is then replaced by
+     that result). A term with the samples of the primary root that reads a
+     leaf is a candidate; the leaf is replaced by its definition. A
+     candidate must be cheaper than the two roots and than the rules of the
+     primary root alone.
+   - *Proof*: the joint query of step 5 with the two roots, with a
+     precondition from the same grammar and the same width schedules. A
+     sibling that stays is its own replacement. The source has undefined
+     behaviour if one of the roots has.
+   - *Rule*: `region.siblings` has the sibling, `stays` and its
+     replacement. The combine rule matches the primary tree.
+   - *Generated code*: `sibling_<id>` finds the sibling among the first
+     users of its first operand (`findSiblingRoot`). The guard checks the
+     widths of its results with the widths of the pattern, and that the two
+     roots are near in one block (`siblingInsertPoint`). The apply function
+     builds the replacement before the first of the two roots; a sibling
+     that stays and that is after the root is moved before it (its operands
+     are inputs of the tree).
+   - *Limits*: one basic block and one sibling; the sibling is one
+     instruction; a sibling that is replaced has one result; no `G_FREEZE`
+     in a root; a sibling that can trap is not emitted.
+
 A replacement can have a *computed constant*: a constant that the source
 does not have. The importer looks for a recipe, an expression over the
 constants of the source (`G_ADD`, `G_SUB`, `G_MUL`, `G_AND`, `G_OR`, `G_XOR`,
@@ -188,7 +355,10 @@ profile records
   how many pass the guard (offline, no compiler);
 - **novelty**: the rule alone against the target's existing combiner, on a
   MIR function built from its own training example (`new`, `covered`,
-  `worse`, `not_fired`);
+  `worse`, `not_fired`). The run has a time limit. If the combiner does
+  not end (the rule loops with an existing combine), the class is `loop`
+  and the rule is never selected (`probe_loop`). If llc fails, the class is
+  `error`: the novelty is not known, and the rule is not a new rule;
 - **redundancy**: other synthesized rules reach the same result;
 - **measured effect**: matches and applications when the files are compiled
   with every candidate, and the change in instruction count of the final
@@ -226,7 +396,12 @@ takes its place.
 | `girs/ir.py` | typed expressions: operators with attributes and result indices, constants, computed constants |
 | `girs/egraph.py` | import of the e-graph export: candidates, recipes of computed constants |
 | `girs/corpus.py` | corpus reader, DAG-aware tree conversion |
-| `girs/discover.py` | term banks, fingerprints, concrete SMT proof |
+| `girs/discover.py` | grammars, term banks, fingerprints, concrete SMT proof |
+| `girs/kernels.py` | sample kernels of operators (speed only; the evaluator of the registry is the reference) |
+| `girs/region.py` | rules with several outputs: candidates, joint proof |
+| `girs/sibling.py` | rules for two roots: pairs from the corpus, candidates, rule creation |
+| `girs/mine.py` | the complete run: stages, state, resume, export |
+| `girs/report.py` | the report of a run and the comparison of runs |
 | `girs/precond.py` | precondition grammar (eval / z3 / C++), implication |
 | `girs/synth.py` | generalization, width schedules, CEGIS, disjunctions, dominance, rule library |
 | `girs/compose.py` | rule composition into macro rules |
@@ -242,7 +417,10 @@ takes its place.
 | `targets/*.json` | target profiles |
 | `proofs/` | SMT-LIB2 queries of the proofs, named by SHA-256 |
 | `eval/compare.py` | compiles a file list as base / synthesized rules / e-graph and compares the final code |
-| `tests/test_synth.py`, `tests/test_unified.py`, `tests/test_fp.py` | unit tests (`python3 -m unittest discover -s llvm/utils/gisel-rule-synth/tests`) |
+| `eval/make_manifest.py` | writes a corpus manifest with the baseline compiler |
+| `configs/*.json` | run configurations of `mine` |
+| `manifests/*.txt` | corpus manifests: discovery, validation, held-out |
+| `tests/*.py` | unit tests (`python3 -m unittest discover -s llvm/utils/gisel-rule-synth/tests`); the tests of the real extraction chain need `build/bin/llc` or `GIRS_LLC` |
 
 Generated in-tree files:
 `llvm/include/llvm/Target/GlobalISel/GISynthCombines.td` and
@@ -269,9 +447,17 @@ every disjunct of `P` and for the emitted disjunction as a whole.
   the source, and one `G_FREEZE` term must not occur twice in a source. A
   rule can match a `G_FREEZE` but does not create one.
 - The precondition atom `def(x)` says that an input is neither undef nor
-  poison (`isGuaranteedNotToBeUndefOrPoison` in the guard). The e-graph
-  export gives this fact for a value; the known-bits corpus does not, so
-  only an e-graph candidate can get this atom. `freeze(x) -> x` needs it.
+  poison (`isGuaranteedNotToBeUndefOrPoison` in the guard). The corpus and
+  the e-graph export give this fact for a value (`noundef`). `freeze(x) ->
+  x` needs it.
+- The precondition atom `x == 1` says that the known bits give the
+  constant 1. With "all bits known zero" and "all bits known one" the
+  grammar has the three literals of the search (0, 1, -1).
+- A rule with several outputs is proved for all of them in one query: an
+  output of the source that is not poison has the same value in the
+  replacement, whatever the other outputs are. A node of the source that
+  two outputs have is one value, and so is an instruction that two
+  replacements have.
 - A floating-point value is its bit pattern (`girs/fp.py`: half, single and
   double). `G_FPEXT` is exact. `G_FPTRUNC`, `G_SITOFP` and `G_UITOFP` round
   to nearest, ties to even. `G_FPTOSI` and `G_FPTOUI` round toward zero and
