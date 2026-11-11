@@ -1,0 +1,59 @@
+# RUN: rm -f %t.jsonl
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-export=%t.jsonl -o - %s | FileCheck %s --check-prefix=MIR
+# RUN: FileCheck %s --input-file=%t.jsonl
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-export=%t.jsonl -gisel-egraph-export-all -o /dev/null %s
+# RUN: FileCheck %s --check-prefix=ALL --input-file=%t.jsonl
+
+# The export writes one JSON record per region with a cheaper form: the
+# original expression DAG, the selected DAG, the inputs with their known
+# bits and the correspondence of the roots. It does not change the function
+# (the default mode is shadow), and it appends to the file.
+
+# MIR-LABEL: name: umin_of_masks
+# MIR: G_SELECT
+
+# CHECK: {"version":1,"fn":"umin_of_masks","bb":0,"stage":"pre-legalizer","triple":"amdgcn-amd-amdhsa","profitable":true,"refinement":true
+# CHECK-SAME: "cost":{"original":6,"optimized":2}
+# CHECK-SAME: "inputs":[{"id":0,"in":0,"reg":"%0","type":"s32","zero":"0x0","one":"0x0","def":"COPY"
+# CHECK-SAME: "constants":[{"id":1,"type":"s32","value":"0xFF"},{"id":3,"type":"s32","value":"0xF"}]
+# CHECK-SAME: "original":[{"id":2,"op":"G_AND","best":2,"instr":3,"reg":"%3","type":"s32","uses":1,"zero":"0xFFFFFF00","one":"0x0","args":[0,1]}
+# CHECK-SAME: {"id":8,"op":"G_ICMP","pred":"ult",
+# CHECK-SAME: "optimized":[
+# CHECK-SAME: {"id":4,"op":"G_AND","type":"s32","args":[0,3]},{"id":11,"op":"G_UMIN","type":"s32","args":[5,4]}
+# CHECK-SAME: "roots":[{"reg":"%9","original":9,"optimized":11}]
+# CHECK-SAME: "rules":{
+# CHECK-SAME: "umin-from-select-ult":1
+# A region without a cheaper form gives no record.
+# CHECK-NOT: "fn":"no_change"
+
+# ALL: "fn":"umin_of_masks"
+# ALL: "fn":"umin_of_masks"
+# ALL: "fn":"no_change","bb":0,"stage":"pre-legalizer","triple":"amdgcn-amd-amdhsa","profitable":false
+
+---
+name: umin_of_masks
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1
+    %0:_(s32) = COPY $vgpr0
+    %1:_(s32) = COPY $vgpr1
+    %2:_(s32) = G_CONSTANT i32 255
+    %3:_(s32) = G_AND %0, %2
+    %4:_(s32) = G_CONSTANT i32 15
+    %5:_(s32) = G_AND %3, %4
+    %6:_(s32) = G_SUB %1, %1
+    %7:_(s32) = G_ADD %5, %6
+    %8:_(s1) = G_ICMP intpred(ult), %7, %1
+    %9:_(s32) = G_SELECT %8, %7, %1
+    $vgpr0 = COPY %9
+...
+---
+name: no_change
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1
+    %0:_(s32) = COPY $vgpr0
+    %1:_(s32) = COPY $vgpr1
+    %2:_(s32) = G_ADD %0, %1
+    $vgpr0 = COPY %2
+...

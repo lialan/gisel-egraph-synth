@@ -729,6 +729,22 @@ LLT getTypedResultType(const OpProperties &P, unsigned Index, LLT MainTy);
 
 /// The properties of all supported operators, in a fixed order.
 ArrayRef<OpProperties> getAllOpProperties();
+/// The name of the operator \p Opcode as it is written in patterns.
+StringRef getOperatorName(unsigned Opcode);
+/// The name of the CmpInst::Predicate \p Attr of an OpShape::Compare node.
+StringRef getComparePredicateName(uint64_t Attr);
+/// The value of the operator \p P on constant operands, or std::nullopt if
+/// the operator has no fold function or the result is poison or undefined.
+/// \p Attr is the ENode::Attr of the node and \p ResultWidth the width of
+/// its type.
+std::optional<APInt> foldOperator(const OpProperties &P, ArrayRef<APInt> Ops,
+                                  uint64_t Attr, unsigned ResultWidth);
+/// Write the typing metadata of all supported operators as one JSON object.
+/// Tools outside of the compiler (llvm/utils/gisel-rule-synth) read it, so
+/// that they do not keep a second table of operator shapes. With
+/// \p WithSamples, each operator also has the values of its fold function
+/// on a fixed set of operands, to compare an independent model with it.
+void printOpPropertiesJSON(raw_ostream &OS, bool WithSamples);
 /// The properties of \p Opcode, or null if the operator is not supported.
 const OpProperties *getOpProperties(unsigned Opcode);
 

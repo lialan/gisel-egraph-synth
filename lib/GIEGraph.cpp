@@ -14,10 +14,12 @@
 #include "llvm/CodeGen/GlobalISel/GIEGraph.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 #include <deque>
 #include <set>
@@ -933,6 +935,262 @@ static bool propagatesPoisonExactly(const EGraph &G, const OpProperties &P,
 
 static StringRef getICmpPredicateName(uint64_t Attr) {
   return CmpInst::getPredicateName(static_cast<CmpInst::Predicate>(Attr));
+}
+
+StringRef llvm::egraph::getOperatorName(unsigned Opcode) {
+  return getOpcodeName(Opcode);
+}
+
+StringRef llvm::egraph::getComparePredicateName(uint64_t Attr) {
+  return getICmpPredicateName(Attr);
+}
+
+std::optional<APInt> llvm::egraph::foldOperator(const OpProperties &P,
+                                                ArrayRef<APInt> Ops,
+                                                uint64_t Attr,
+                                                unsigned ResultWidth) {
+  if (P.Fold && Ops.size() == 2)
+    return P.Fold(Ops[0], Ops[1]);
+  if (P.FoldUnary && Ops.size() == 1)
+    return P.FoldUnary(Ops[0], ResultWidth);
+  if (P.FoldN)
+    return P.FoldN(Ops, Attr, ResultWidth);
+  return std::nullopt;
+}
+
+static StringRef getShapeName(OpShape S) {
+  switch (S) {
+  case OpShape::Binary:
+    return "binary";
+  case OpShape::Unary:
+    return "unary";
+  case OpShape::Cast:
+    return "cast";
+  case OpShape::BitCount:
+    return "bitcount";
+  case OpShape::Compare:
+    return "compare";
+  case OpShape::Select:
+    return "select";
+  case OpShape::PtrAdd:
+    return "ptradd";
+  case OpShape::Phi:
+    return "phi";
+  case OpShape::Typed:
+    return "typed";
+  case OpShape::Merge:
+    return "merge";
+  case OpShape::Unmerge:
+    return "unmerge";
+  case OpShape::Effect:
+    return "effect";
+  }
+  llvm_unreachable("unknown operator shape");
+}
+
+static StringRef getCastKindName(CastKind K) {
+  switch (K) {
+  case CastKind::None:
+    return "none";
+  case CastKind::Truncate:
+    return "trunc";
+  case CastKind::ZeroExtend:
+    return "zext";
+  case CastKind::SignExtend:
+    return "sext";
+  case CastKind::AnyExtend:
+    return "anyext";
+  case CastKind::SatTruncate:
+    return "sat-trunc";
+  case CastKind::PtrToInt:
+    return "ptrtoint";
+  case CastKind::IntToPtr:
+    return "inttoptr";
+  case CastKind::Extract:
+    return "extract";
+  }
+  llvm_unreachable("unknown cast kind");
+}
+
+static StringRef getTypeKindName(TypeKind K) {
+  switch (K) {
+  case TypeKind::Main:
+    return "main";
+  case TypeKind::Free:
+    return "free";
+  case TypeKind::Bool:
+    return "bool";
+  }
+  llvm_unreachable("unknown type kind");
+}
+
+/// The operand values of the samples of printOpPropertiesJSON at \p W bits.
+static SmallVector<APInt, 8> getSampleValues(unsigned W, bool Few) {
+  SmallVector<APInt, 8> Vals;
+  auto Add = [&](APInt V) {
+    if (!is_contained(Vals, V))
+      Vals.push_back(V);
+  };
+  Add(APInt::getZero(W));
+  Add(APInt(W, 1));
+  Add(APInt::getAllOnes(W));
+  Add(APInt::getSignMask(W));
+  if (W == 1 || Few)
+    return Vals;
+  Add(APInt(W, 3));
+  Add(APInt(W, W - 1));
+  Add(APInt(W, W, /*isSigned=*/false, /*implicitTrunc=*/true));
+  Add(APInt::getSignedMaxValue(W));
+  Add(APInt::getSplat(W, APInt(8, 0xa5)));
+  Add(APInt::getSplat(W, APInt(8, 0x16)));
+  return Vals;
+}
+
+/// Write the samples of \p P for the main type width \p W and, for a cast,
+/// the other width \p W2.
+static void printOpSamples(json::OStream &J, const OpProperties &P, unsigned W,
+                           unsigned W2) {
+  unsigned NumOps = P.NumOperands;
+  if (NumOps < 1 || NumOps > 3)
+    return;
+  // The width of each operand and of each result.
+  SmallVector<unsigned, 3> OpWidths(NumOps, W);
+  SmallVector<unsigned, 2> ResWidths = {W};
+  SmallVector<uint64_t, 10> Attrs = {0};
+  switch (P.Shape) {
+  case OpShape::Cast:
+    if (P.Cast == CastKind::PtrToInt || P.Cast == CastKind::IntToPtr ||
+        P.Cast == CastKind::Extract)
+      return;
+    if (P.Cast == CastKind::Truncate || P.Cast == CastKind::SatTruncate)
+      OpWidths[0] = W2;
+    else
+      ResWidths[0] = W2;
+    break;
+  case OpShape::Compare:
+    ResWidths[0] = 1;
+    Attrs.clear();
+    for (unsigned Pred = CmpInst::FIRST_ICMP_PREDICATE;
+         Pred <= CmpInst::LAST_ICMP_PREDICATE; ++Pred)
+      Attrs.push_back(Pred);
+    break;
+  case OpShape::Select:
+    OpWidths[0] = 1;
+    break;
+  case OpShape::Typed:
+    for (unsigned I = 0; I != NumOps; ++I)
+      if (P.OperandKinds[I] == TypeKind::Bool)
+        OpWidths[I] = 1;
+    ResWidths.clear();
+    for (TypeKind K : P.ResultKinds)
+      ResWidths.push_back(K == TypeKind::Bool ? 1 : W);
+    break;
+  case OpShape::Binary:
+  case OpShape::Unary:
+  case OpShape::BitCount:
+    break;
+  default:
+    return;
+  }
+  if (P.ImmAttr)
+    Attrs = {1, W / 2};
+  SmallVector<SmallVector<APInt, 8>, 3> Vals;
+  for (unsigned OW : OpWidths)
+    Vals.push_back(getSampleValues(OW, /*Few=*/NumOps == 3));
+  SmallVector<unsigned, 3> Idx(NumOps, 0);
+  while (true) {
+    SmallVector<APInt, 3> Ops;
+    for (unsigned I = 0; I != NumOps; ++I)
+      Ops.push_back(Vals[I][Idx[I]]);
+    for (unsigned Res = 0, E = ResWidths.size(); Res != E; ++Res) {
+      for (uint64_t Attr : Attrs) {
+        uint64_t NodeAttr = P.hasProjections() ? Res : Attr;
+        std::optional<APInt> Out =
+            foldOperator(P, Ops, NodeAttr, ResWidths[Res]);
+        J.object([&] {
+          J.attribute("w", ResWidths[Res]);
+          if (P.Shape == OpShape::Compare)
+            J.attribute("pred", getICmpPredicateName(Attr));
+          else if (P.ImmAttr)
+            J.attribute("imm", Attr);
+          if (P.hasProjections())
+            J.attribute("res", Res);
+          J.attributeArray("ops", [&] {
+            for (const APInt &V : Ops)
+              J.value(std::to_string(V.getBitWidth()) + ":0x" +
+                      toString(V, 16, /*Signed=*/false));
+          });
+          if (Out)
+            J.attribute("out", "0x" + toString(*Out, 16, /*Signed=*/false));
+          else
+            J.attribute("out", nullptr);
+        });
+      }
+    }
+    unsigned I = 0;
+    for (; I != NumOps; ++I) {
+      if (++Idx[I] < Vals[I].size())
+        break;
+      Idx[I] = 0;
+    }
+    if (I == NumOps)
+      break;
+  }
+}
+
+void llvm::egraph::printOpPropertiesJSON(raw_ostream &OS, bool WithSamples) {
+  json::OStream J(OS, /*IndentSize=*/1);
+  J.object([&] {
+    J.attribute("version", 1);
+    J.attributeArray("operators", [&] {
+      for (const OpProperties &P : getAllOpProperties()) {
+        J.object([&] {
+          J.attribute("name", P.Name);
+          J.attribute("shape", getShapeName(P.Shape));
+          J.attribute("operands", P.NumOperands);
+          if (P.Shape == OpShape::Typed) {
+            J.attributeArray("operand_kinds", [&] {
+              for (TypeKind K : P.OperandKinds)
+                J.value(getTypeKindName(K));
+            });
+            J.attributeArray("result_kinds", [&] {
+              for (TypeKind K : P.ResultKinds)
+                J.value(getTypeKindName(K));
+            });
+          }
+          if (P.Cast != CastKind::None)
+            J.attribute("cast", getCastKindName(P.Cast));
+          auto Flag = [&](StringRef Name, bool Value) {
+            if (Value)
+              J.attribute(Name, true);
+          };
+          Flag("commutative", P.Commutative);
+          Flag("associative", P.Associative);
+          Flag("shift", P.IsShift);
+          Flag("rotate", P.IsRotate);
+          Flag("imm_attr", P.ImmAttr);
+          Flag("stops_poison", P.StopsPoison);
+          Flag("bit_field", P.IsBitField);
+          Flag("may_be_poison", P.MayBePoison);
+          Flag("may_trap", P.MayTrap);
+          Flag("signed", P.IsSigned);
+          Flag("has_fold", P.Fold || P.FoldUnary || P.FoldN);
+          if (P.PoisonVariant == TargetOpcode::G_CTLZ_ZERO_POISON)
+            J.attribute("poison_variant", "G_CTLZ_ZERO_POISON");
+          else if (P.PoisonVariant == TargetOpcode::G_CTTZ_ZERO_POISON)
+            J.attribute("poison_variant", "G_CTTZ_ZERO_POISON");
+          else
+            assert(!P.PoisonVariant && "poison variant without a name");
+          if (WithSamples && (P.Fold || P.FoldUnary || P.FoldN))
+            J.attributeArray("samples", [&] {
+              printOpSamples(J, P, 8, 32);
+              printOpSamples(J, P, 32, 64);
+            });
+        });
+      }
+    });
+  });
+  OS << "\n";
 }
 
 /// Print the attribute of an operation as it is written in patterns.

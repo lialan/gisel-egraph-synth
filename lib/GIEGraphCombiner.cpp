@@ -18,7 +18,9 @@
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/CodeGen/GlobalISel/GIEGraph.h"
+#include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
@@ -34,8 +36,11 @@
 #include "llvm/InitializePasses.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetMachine.h"
 #include <map>
 #include <set>
 
@@ -131,6 +136,27 @@ static cl::opt<bool> PrintRules(
     "gisel-egraph-print-rules", cl::Hidden, cl::init(false),
     cl::desc("Print the rewrite rules of the e-graph combiner (one per line, "
              "'name: LHS => RHS') to stderr when the pass first runs"));
+
+static cl::opt<bool> PrintOps(
+    "gisel-egraph-print-ops", cl::Hidden, cl::init(false),
+    cl::desc("Print the typing metadata of the operators of the e-graph "
+             "combiner as JSON to stdout when the pass first runs"));
+static cl::opt<bool> PrintOpSamples(
+    "gisel-egraph-print-op-samples", cl::Hidden, cl::init(false),
+    cl::desc("With -gisel-egraph-print-ops: also print values of the fold "
+             "function of each operator"));
+static cl::opt<std::string> ExportFile(
+    "gisel-egraph-export", cl::Hidden,
+    cl::desc("Append one JSON record per region with a cheaper candidate to "
+             "this file: the typed DAG of the region and the DAG that the "
+             "extractor selected (for llvm/utils/gisel-rule-synth)"));
+static cl::opt<bool> ExportAll(
+    "gisel-egraph-export-all", cl::Hidden, cl::init(false),
+    cl::desc("With -gisel-egraph-export: also write the regions without a "
+             "cheaper candidate"));
+
+/// The version of the record format of -gisel-egraph-export.
+static constexpr unsigned ExportVersion = 1;
 
 static const char *TimerGroupName = "gisel-egraph";
 static const char *TimerGroupDesc = "GlobalISel e-graph combiner";
@@ -433,6 +459,13 @@ private:
       MDT.emplace(MF);
     return *MDT;
   }
+  /// Known bits for -gisel-egraph-export, computed on first use.
+  GISelValueTracking &getValueTracking() {
+    if (!VT)
+      VT.emplace(MF);
+    return *VT;
+  }
+  void exportNode(json::OStream &J, const ENode &N) const;
 
   MachineFunction &MF;
   MachineRegisterInfo &MRI;
@@ -440,11 +473,42 @@ private:
   bool IsLegalized;
   TargetCostModel CM;
   std::optional<MachineDominatorTree> MDT;
+  std::optional<GISelValueTracking> VT;
   DenseMap<const MachineInstr *, unsigned> Order;
   SmallPtrSet<const MachineInstr *, 32> Visited;
   SmallPtrSet<const MachineInstr *, 32> Erased;
 };
 } // namespace
+
+/// Write the operator, the attribute and the flags of the operation \p N.
+void EGraphCombinerImpl::exportNode(json::OStream &J, const ENode &N) const {
+  const OpProperties *P = getOpProperties(N.Opcode);
+  J.attribute("op", CM.TII->getName(getInstrOpcode(N)));
+  if (P->Shape == OpShape::Compare)
+    J.attribute("pred", getComparePredicateName(N.Attr));
+  else if (P->hasProjections())
+    J.attribute("res", N.Attr);
+  else if (P->ImmAttr)
+    J.attribute("imm", N.Attr);
+  else if (P->Shape == OpShape::Phi || P->Shape == OpShape::Effect ||
+           P->StopsPoison)
+    J.attribute("site", N.Attr);
+  static const std::pair<uint32_t, const char *> FlagNames[] = {
+      {MachineInstr::NoUWrap, "nuw"},
+      {MachineInstr::NoSWrap, "nsw"},
+      {MachineInstr::IsExact, "exact"},
+      {MachineInstr::Disjoint, "disjoint"},
+      {MachineInstr::NonNeg, "nneg"},
+      {MachineInstr::NoUSWrap, "nusw"},
+      {MachineInstr::SameSign, "samesign"},
+      {MachineInstr::InBounds, "inbounds"}};
+  if (N.Flags & ~PoisonVariantFlag)
+    J.attributeArray("flags", [&] {
+      for (const auto &[Flag, Name] : FlagNames)
+        if (N.Flags & Flag)
+          J.value(Name);
+    });
+}
 
 void EGraphCombinerImpl::numberBlock(MachineBasicBlock &MBB) {
   Order.clear();
@@ -551,6 +615,19 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
   SmallVector<OrigDef, 32> OrigDefs;
   // The flags of the node of each instruction of the region.
   DenseMap<const MachineInstr *, uint32_t> OrigFlags;
+  // For -gisel-egraph-export: the nodes of the region as they were added
+  // (the operands are the classes before the saturation), and the classes
+  // of the inputs and of the constants.
+  struct ExportNode {
+    EClassId Class;
+    ENode N;
+    MachineInstr *MI;
+    unsigned DefIdx;
+  };
+  bool Exporting = !ExportFile.empty();
+  std::vector<ExportNode> ExportNodes;
+  SmallVector<EClassId, 8> InputClasses;
+  SmallVector<std::pair<EClassId, APInt>, 8> ExportConsts;
   uint64_t OldCost = 0;
 
   auto GetOperandClass = [&](Register Reg, bool IsPhiOperand) {
@@ -573,6 +650,8 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       C = getIConstantVRegVal(Reg, MRI);
     if (C) {
       Id = G.addConstant(Ty, *C);
+      if (Exporting)
+        ExportConsts.push_back({Id, *C});
       ConstDefs.insert(Def);
       if (Def->getOpcode() == TargetOpcode::G_CONSTANT)
         OrigDefs.push_back({Id, Def, 0});
@@ -582,6 +661,7 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       if (!Carried)
         InputIndex[Reg] = InputRegs.size();
       InputRegs.push_back(Reg);
+      InputClasses.push_back(Id);
       InputIsCarried.push_back(Carried);
       InputIsPhiOnly.push_back(IsPhiOperand);
     }
@@ -650,7 +730,10 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       if (!P->hasResult()) {
         ENode N = ENode::makeOp(P->Opcode, LLT(), Ops, Flags, Attr);
         OldCost += std::max(1u, CM.getNodeCost(N));
-        InstrClass[MI] = G.add(std::move(N));
+        EClassId Id = G.add(N);
+        InstrClass[MI] = Id;
+        if (Exporting)
+          ExportNodes.push_back({Id, std::move(N), MI, 0});
         continue;
       }
       // One node per result; the instruction is counted once.
@@ -662,7 +745,9 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
         if (I == 0)
           OldCost += std::max(1u, CM.getNodeCost(N));
         CM.addOriginal(G, N);
-        EClassId Id = G.add(std::move(N));
+        EClassId Id = G.add(N);
+        if (Exporting)
+          ExportNodes.push_back({Id, std::move(N), MI, I});
         RegClass[Def] = Id;
         if (P->Shape != OpShape::Phi)
           OrigDefs.push_back({Id, MI, I});
@@ -821,6 +906,162 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
           OS << " " << Rules[RI].getName() << "=" << S.RuleApplications[RI];
       OS << "\n";
     }
+  }
+
+  if (Exporting && (Profitable || ExportAll)) {
+    static std::unique_ptr<raw_fd_ostream> Out;
+    if (!Out) {
+      std::error_code EC;
+      Out =
+          std::make_unique<raw_fd_ostream>(ExportFile, EC, sys::fs::OF_Append);
+      if (EC)
+        report_fatal_error(Twine("cannot open ") + ExportFile + ": " +
+                           EC.message());
+    }
+    auto Hex = [](const APInt &V) {
+      return "0x" + toString(V, 16, /*Signed=*/false);
+    };
+    auto RegName = [](Register Reg) {
+      return "%" + utostr(Reg.virtRegIndex());
+    };
+    auto TypeName = [](LLT Ty) {
+      std::string Name;
+      raw_string_ostream OS(Name);
+      OS << Ty;
+      return Name;
+    };
+    auto KnownBitsOf = [&](json::OStream &J, Register Reg) {
+      if (!MRI.getType(Reg).isScalar())
+        return;
+      KnownBits KB = getValueTracking().getKnownBits(Reg);
+      J.attribute("zero", Hex(KB.Zero));
+      J.attribute("one", Hex(KB.One));
+    };
+    json::OStream J(*Out);
+    J.object([&] {
+      J.attribute("version", ExportVersion);
+      J.attribute("fn", MF.getName());
+      J.attribute("bb", MBB.getNumber());
+      J.attribute("stage", IsLegalized ? "post-legalizer" : "pre-legalizer");
+      J.attribute("triple", MF.getTarget().getTargetTriple().str());
+      J.attribute("profitable", Profitable);
+      J.attribute("refinement", UsesRefinement);
+      J.attribute("blocker", Blocker);
+      J.attribute("saturated", S.Saturated);
+      J.attributeObject("cost", [&] {
+        J.attribute("original", OldCost);
+        J.attribute("optimized", NewCost);
+      });
+      J.attributeArray("inputs", [&] {
+        for (unsigned I = 0, End = InputRegs.size(); I != End; ++I) {
+          Register Reg = InputRegs[I];
+          J.object([&] {
+            J.attribute("id", InputClasses[I]);
+            J.attribute("in", I);
+            J.attribute("reg", RegName(Reg));
+            J.attribute("type", TypeName(MRI.getType(Reg)));
+            KnownBitsOf(J, Reg);
+            const MachineInstr *Def = MRI.getVRegDef(Reg);
+            J.attribute("def", Def ? CM.TII->getName(Def->getOpcode())
+                                   : StringRef("<none>"));
+            const InputInfo &Info = G.getInputInfo(I);
+            J.attribute("not_undef", Info.NotUndef);
+            J.attribute("not_poison", Info.NotPoison);
+            if (InputIsCarried[I])
+              J.attribute("carried", true);
+          });
+        }
+      });
+      J.attributeArray("constants", [&] {
+        for (const std::pair<EClassId, APInt> &C : ExportConsts)
+          J.object([&] {
+            J.attribute("id", C.first);
+            J.attribute("type", TypeName(G.getType(C.first)));
+            J.attribute("value", Hex(C.second));
+          });
+      });
+      // The region, in program order. An instruction with several results
+      // has one node per result. "best" is the id of the "optimized" node
+      // that the extractor selected for the value of the node.
+      J.attributeArray("original", [&] {
+        for (const ExportNode &EN : ExportNodes)
+          J.object([&] {
+            J.attribute("id", EN.Class);
+            exportNode(J, EN.N);
+            if (E.getChosenNode(E.resolve(EN.Class)))
+              J.attribute("best", E.resolve(EN.Class));
+            J.attribute("instr", Order.lookup(EN.MI));
+            if (EN.MI->getNumExplicitDefs()) {
+              Register Reg = EN.MI->getOperand(EN.DefIdx).getReg();
+              J.attribute("reg", RegName(Reg));
+              J.attribute("type", TypeName(MRI.getType(Reg)));
+              J.attribute("uses", uint64_t(range_size(
+                                      MRI.use_nodbg_instructions(Reg))));
+              KnownBitsOf(J, Reg);
+            }
+            J.attributeArray("args", [&] {
+              for (EClassId Op : EN.N.Ops)
+                J.value(Op);
+            });
+          });
+      });
+      // The expressions that the extractor selected, operands first.
+      J.attributeArray("optimized", [&] {
+        DenseSet<EClassId> Written;
+        std::function<void(EClassId)> Write = [&](EClassId C) {
+          EClassId Rc = E.resolve(C);
+          const ENode *N = E.getChosenNode(Rc);
+          if (!N || !Written.insert(Rc).second)
+            return;
+          for (EClassId Op : N->Ops)
+            Write(Op);
+          J.object([&] {
+            J.attribute("id", Rc);
+            if (N->isInput()) {
+              J.attribute("in", N->InputIdx);
+            } else if (N->isConstant()) {
+              J.attribute("type", TypeName(N->Ty));
+              J.attribute("value", Hex(N->Imm));
+            } else {
+              exportNode(J, *N);
+              if (N->Ty.isValid())
+                J.attribute("type", TypeName(N->Ty));
+              J.attributeArray("args", [&] {
+                for (EClassId Op : N->Ops)
+                  J.value(E.resolve(Op));
+              });
+            }
+          });
+        };
+        for (EClassId Root : RootClasses)
+          Write(Root);
+        for (const ExportNode &EN : ExportNodes)
+          Write(EN.Class);
+      });
+      J.attributeArray("roots", [&] {
+        for (unsigned I = 0, End = R.Roots.size(); I != End; ++I)
+          J.object([&] {
+            const RootRef &Root = R.Roots[I];
+            if (Root.isValue())
+              J.attribute("reg", RegName(Root.getReg()));
+            J.attribute("original", Root.isValue()
+                                        ? RegClass.lookup(Root.getReg())
+                                        : InstrClass.lookup(Root.MI));
+            // "original" is an id of the "original" nodes, inputs and
+            // constants (a class before the saturation); "optimized" is an
+            // id of the "optimized" nodes.
+            J.attribute("optimized", E.resolve(RootClasses[I]));
+          });
+      });
+      J.attributeObject("rules", [&] {
+        ArrayRef<RewriteRule> Rules = getRules();
+        for (unsigned RI = 0, RE = Rules.size(); RI != RE; ++RI)
+          if (S.RuleApplications[RI])
+            J.attribute(Rules[RI].getName(), S.RuleApplications[RI]);
+      });
+    });
+    *Out << "\n";
+    Out->flush();
   }
 
   if (!DoRewrite)
@@ -1134,6 +1375,12 @@ bool GIEGraphCombiner::runOnMachineFunction(MachineFunction &MF) {
   const MachineFunctionProperties &Props = MF.getProperties();
   if (Props.hasProperty(MachineFunctionProperties::Property::FailedISel))
     return false;
+  if (PrintOps) {
+    static bool Printed = false;
+    if (!Printed)
+      printOpPropertiesJSON(outs(), PrintOpSamples);
+    Printed = true;
+  }
   if (PrintRules) {
     static bool Printed = false;
     if (!Printed) {
