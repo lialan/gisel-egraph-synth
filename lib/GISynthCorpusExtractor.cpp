@@ -1,0 +1,311 @@
+//===- GISynthCorpusExtractor.cpp - Corpus for the rule synthesizer ------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// Writes small gMIR expression trees and their GISelValueTracking known bits
+// to a JSON-lines file for llvm/utils/gisel-rule-synth. See the header for an
+// overview and llvm/utils/gisel-rule-synth/README.md for the record format.
+//
+//===----------------------------------------------------------------------===//
+
+#include "llvm/CodeGen/GlobalISel/GISynthCorpusExtractor.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
+#include "llvm/CodeGen/GlobalISel/Utils.h"
+#include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/CodeGen/TargetOpcodes.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
+#include "llvm/InitializePasses.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/raw_ostream.h"
+
+#define DEBUG_TYPE "gisel-synth-corpus"
+
+using namespace llvm;
+
+STATISTIC(NumTreesWritten, "Number of expression trees written");
+
+static cl::opt<std::string>
+    CorpusOut("gisel-synth-corpus-out", cl::Hidden, cl::init("-"),
+              cl::desc("JSON-lines output file of the GlobalISel rule "
+                       "synthesizer corpus extractor ('-' = stdout)"));
+
+static cl::opt<unsigned> MaxDepth(
+    "gisel-synth-corpus-max-depth", cl::Hidden, cl::init(2),
+    cl::desc("Maximum depth of an extracted expression tree (1 = the root "
+             "instruction with leaf operands)"));
+
+static cl::opt<unsigned> MaxTreesPerRoot(
+    "gisel-synth-corpus-max-trees", cl::Hidden, cl::init(16),
+    cl::desc("Maximum number of expression trees written per root "
+             "instruction"));
+
+namespace {
+
+bool isSupportedOpcode(unsigned Opc) {
+  switch (Opc) {
+  case TargetOpcode::G_ADD:
+  case TargetOpcode::G_SUB:
+  case TargetOpcode::G_MUL:
+  case TargetOpcode::G_AND:
+  case TargetOpcode::G_OR:
+  case TargetOpcode::G_XOR:
+  case TargetOpcode::G_SHL:
+  case TargetOpcode::G_LSHR:
+  case TargetOpcode::G_ASHR:
+  case TargetOpcode::G_TRUNC:
+  case TargetOpcode::G_ZEXT:
+  case TargetOpcode::G_SEXT:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool isSupportedScalar(const MachineRegisterInfo &MRI, Register R) {
+  if (!R.isVirtual())
+    return false;
+  LLT Ty = MRI.getType(R);
+  return Ty.isScalar() && Ty.getSizeInBits() <= 64;
+}
+
+/// An instruction that can be an interior node of an extracted tree: a
+/// supported opcode with one virtual scalar def and virtual scalar uses.
+bool isSupportedInstr(const MachineRegisterInfo &MRI, const MachineInstr &MI) {
+  if (!isSupportedOpcode(MI.getOpcode()) || MI.getNumDefs() != 1)
+    return false;
+  for (const MachineOperand &MO : MI.operands())
+    if (!MO.isReg() || !isSupportedScalar(MRI, MO.getReg()))
+      return false;
+  return true;
+}
+
+std::string hex(const APInt &V) { return "0x" + toString(V, 16, false); }
+
+std::string regName(Register R) { return "%" + utostr(R.virtRegIndex()); }
+
+/// A tree node. Leaves (MI == nullptr) are tree inputs.
+struct TreeNode {
+  const MachineInstr *MI = nullptr;
+  Register Reg;
+  SmallVector<unsigned, 2> Args; // indices into the owning Tree's Nodes.
+};
+
+struct Tree {
+  SmallVector<TreeNode, 8> Nodes; // Nodes.back() is the root.
+};
+
+class Extractor {
+  const MachineRegisterInfo &MRI;
+  GISelValueTracking &VT;
+  const MachineBasicBlock &MBB;
+
+public:
+  Extractor(const MachineRegisterInfo &MRI, GISelValueTracking &VT,
+            const MachineBasicBlock &MBB)
+      : MRI(MRI), VT(VT), MBB(MBB) {}
+
+  /// All tree shapes for value \p R with at most \p Depth interior levels.
+  /// A leaf is always the first variant.
+  std::vector<Tree> enumerate(Register R, unsigned Depth) const {
+    std::vector<Tree> Out;
+    Tree Leaf;
+    Leaf.Nodes.push_back({nullptr, R, {}});
+    Out.push_back(std::move(Leaf));
+    if (Depth == 0)
+      return Out;
+    const MachineInstr *Def = MRI.getVRegDef(R);
+    if (!Def || Def->getParent() != &MBB || !isSupportedInstr(MRI, *Def))
+      return Out;
+
+    // Cartesian product of the operand variants.
+    std::vector<std::vector<Tree>> OpVariants;
+    for (const MachineOperand &MO : Def->uses())
+      OpVariants.push_back(enumerate(MO.getReg(), Depth - 1));
+    SmallVector<unsigned, 2> Idx(OpVariants.size(), 0);
+    while (Out.size() < MaxTreesPerRoot + 1) {
+      Tree T;
+      TreeNode Root{Def, R, {}};
+      for (unsigned I = 0; I < OpVariants.size(); ++I) {
+        const Tree &Sub = OpVariants[I][Idx[I]];
+        unsigned Base = T.Nodes.size();
+        for (TreeNode N : Sub.Nodes) {
+          for (unsigned &A : N.Args)
+            A += Base;
+          T.Nodes.push_back(N);
+        }
+        Root.Args.push_back(T.Nodes.size() - 1);
+      }
+      T.Nodes.push_back(Root);
+      Out.push_back(std::move(T));
+      // Advance the odometer.
+      unsigned I = 0;
+      for (; I < Idx.size(); ++I) {
+        if (++Idx[I] < OpVariants[I].size())
+          break;
+        Idx[I] = 0;
+      }
+      if (I == Idx.size())
+        break;
+    }
+    return Out;
+  }
+
+  void write(raw_ostream &OS, const MachineFunction &MF, const Tree &T) const {
+    // Inputs are numbered in order of first (left-to-right) occurrence, and a
+    // register that occurs twice is the same input.
+    DenseMap<Register, unsigned> InputIdx;
+    SmallVector<Register, 4> Inputs;
+    unsigned Interior = 0;
+    for (const TreeNode &N : T.Nodes) {
+      if (N.MI) {
+        ++Interior;
+        continue;
+      }
+      if (InputIdx.try_emplace(N.Reg, Inputs.size()).second)
+        Inputs.push_back(N.Reg);
+    }
+
+    json::OStream J(OS);
+    J.object([&] {
+      J.attribute("fn", MF.getName());
+      J.attribute("bb", MBB.getNumber());
+      J.attribute("root", regName(T.Nodes.back().Reg));
+      J.attribute("interior", Interior);
+      J.attributeBegin("expr");
+      writeNode(J, T, T.Nodes.size() - 1, InputIdx);
+      J.attributeEnd();
+      J.attributeArray("inputs", [&] {
+        for (Register R : Inputs) {
+          J.object([&] {
+            unsigned W = MRI.getType(R).getSizeInBits();
+            KnownBits KB = VT.getKnownBits(R);
+            J.attribute("reg", regName(R));
+            J.attribute("w", W);
+            J.attribute("zero", hex(KB.Zero));
+            J.attribute("one", hex(KB.One));
+            const MachineInstr *Def = MRI.getVRegDef(R);
+            J.attribute("def", Def ? std::string(opcodeName(Def))
+                                   : std::string("<none>"));
+            if (auto C = getIConstantVRegVal(R, MRI))
+              J.attribute("const", hex(*C));
+          });
+        }
+      });
+    });
+    OS << "\n";
+    ++NumTreesWritten;
+  }
+
+private:
+  static std::string opcodeName(const MachineInstr *MI) {
+    const TargetInstrInfo *TII = MI->getMF()->getSubtarget().getInstrInfo();
+    return std::string(TII->getName(MI->getOpcode()));
+  }
+
+  void writeNode(json::OStream &J, const Tree &T, unsigned I,
+                 const DenseMap<Register, unsigned> &InputIdx) const {
+    const TreeNode &N = T.Nodes[I];
+    J.object([&] {
+      if (!N.MI) {
+        J.attribute("in", InputIdx.lookup(N.Reg));
+        return;
+      }
+      J.attribute("op", opcodeName(N.MI));
+      J.attribute("w",
+                  static_cast<int64_t>(MRI.getType(N.Reg).getSizeInBits()));
+      J.attribute("reg", regName(N.Reg));
+      KnownBits KB = VT.getKnownBits(N.Reg);
+      J.attribute("zero", hex(KB.Zero));
+      J.attribute("one", hex(KB.One));
+      J.attribute("uses",
+                  static_cast<int64_t>(std::distance(MRI.use_nodbg_begin(N.Reg),
+                                                     MRI.use_nodbg_end())));
+      J.attributeArray("flags", [&] {
+        if (N.MI->getFlag(MachineInstr::NoUWrap))
+          J.value("nuw");
+        if (N.MI->getFlag(MachineInstr::NoSWrap))
+          J.value("nsw");
+        if (N.MI->getFlag(MachineInstr::IsExact))
+          J.value("exact");
+        if (N.MI->getFlag(MachineInstr::Disjoint))
+          J.value("disjoint");
+        if (N.MI->getFlag(MachineInstr::NonNeg))
+          J.value("nneg");
+      });
+      J.attributeArray("args", [&] {
+        for (unsigned A : N.Args)
+          writeNode(J, T, A, InputIdx);
+      });
+    });
+  }
+};
+
+raw_ostream &getCorpusStream() {
+  if (CorpusOut == "-")
+    return outs();
+  static std::unique_ptr<raw_fd_ostream> OS;
+  if (!OS) {
+    std::error_code EC;
+    OS = std::make_unique<raw_fd_ostream>(CorpusOut, EC, sys::fs::OF_Text);
+    if (EC)
+      report_fatal_error("cannot open " + Twine(CorpusOut) + ": " +
+                         EC.message());
+  }
+  return *OS;
+}
+
+} // end anonymous namespace
+
+char GISynthCorpusExtractor::ID = 0;
+INITIALIZE_PASS_BEGIN(GISynthCorpusExtractor, DEBUG_TYPE,
+                      "GlobalISel rule synthesizer corpus extractor", false,
+                      true)
+INITIALIZE_PASS_DEPENDENCY(GISelValueTrackingAnalysisLegacy)
+INITIALIZE_PASS_END(GISynthCorpusExtractor, DEBUG_TYPE,
+                    "GlobalISel rule synthesizer corpus extractor", false, true)
+
+GISynthCorpusExtractor::GISynthCorpusExtractor() : MachineFunctionPass(ID) {
+  initializeGISynthCorpusExtractorPass(*PassRegistry::getPassRegistry());
+}
+
+void GISynthCorpusExtractor::getAnalysisUsage(AnalysisUsage &AU) const {
+  AU.setPreservesAll();
+  AU.addRequired<GISelValueTrackingAnalysisLegacy>();
+  MachineFunctionPass::getAnalysisUsage(AU);
+}
+
+bool GISynthCorpusExtractor::runOnMachineFunction(MachineFunction &MF) {
+  if (MF.getProperties().hasProperty(
+          MachineFunctionProperties::Property::FailedISel))
+    return false;
+  const MachineRegisterInfo &MRI = MF.getRegInfo();
+  GISelValueTracking &VT =
+      getAnalysis<GISelValueTrackingAnalysisLegacy>().get(MF);
+  raw_ostream &OS = getCorpusStream();
+  for (const MachineBasicBlock &MBB : MF) {
+    Extractor E(MRI, VT, MBB);
+    for (const MachineInstr &MI : MBB) {
+      if (!isSupportedInstr(MRI, MI))
+        continue;
+      std::vector<Tree> Trees =
+          E.enumerate(MI.getOperand(0).getReg(), MaxDepth);
+      // Skip the leaf-only variant.
+      for (unsigned I = 1; I < Trees.size(); ++I)
+        E.write(OS, MF, Trees[I]);
+    }
+  }
+  OS.flush();
+  return false;
+}

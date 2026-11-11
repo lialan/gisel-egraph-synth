@@ -1,0 +1,27 @@
+{
+ "corpus": {
+  "distinct": 2954,
+  "records": 29854,
+  "unsupported": 0
+ },
+ "discovery": {
+  "candidates": 389,
+  "fingerprint_matches": 404,
+  "instances": 2954,
+  "smt_refuted": 14,
+  "smt_unknown": 1,
+  "terms": 3418181,
+  "with_candidates": 277
+ },
+ "llvm_commit": "3dfff8e3f6e5f25caf3cded8fd4ef578f8348995",
+ "seconds_discovery": 148.41,
+ "seconds_total": 153.79,
+ "solver_calls": 1355,
+ "solver_seconds": 14.16,
+ "synthesis": {
+  "discoveries": 389,
+  "generalized": 61,
+  "rejected": 42,
+  "reused": 240
+ }
+}
