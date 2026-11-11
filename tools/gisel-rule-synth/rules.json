@@ -10,6 +10,7 @@
   "sha256": "08f4619a052f83fd1abb6fd8e946d129496407041b581f90134688cc19f2e0c5"
  },
  "format": "gi-rule-synth-library-v2",
+ "generator_version": "1.6",
  "limits": {
   "discovery": {
    "bank_samples": 64,
@@ -31,6 +32,44 @@
   "timeout_ms": 10000
  },
  "rejected": [
+  {
+   "example": {
+    "facts": [
+     [
+      "0x0",
+      "0x0"
+     ],
+     [
+      "0xffffffef",
+      "0x10"
+     ],
+     [
+      "0x0",
+      "0x0"
+     ]
+    ],
+    "file": "extract-hi16-true16.ll.4f267be049.jsonl",
+    "fn": "no_extract_hi16_multi_use_shift",
+    "root": "%12"
+   },
+   "instances": 2,
+   "reason": "no_precondition_in_grammar",
+   "replacement": "(G_TRUNC:s16 (G_ADD:s32 (G_ASHR:s32 x0 x1) x2))",
+   "search": {
+    "atoms": 10,
+    "counterexamples": 4,
+    "pruned_by_cex": 28,
+    "solver_calls": 4,
+    "tried": 32,
+    "unknown": 0
+   },
+   "source": "(G_ADD:s16 (G_TRUNC:s16 (G_LSHR:s32 x0 x1)) (G_TRUNC:s16 x2))",
+   "vw": [
+    32,
+    32,
+    32
+   ]
+  },
   {
    "example": {
     "facts": [
@@ -1039,6 +1078,44 @@
    "example": {
     "facts": [
      [
+      "0x8000000000000000",
+      "0x0"
+     ],
+     [
+      "0xffffffffffffffdf",
+      "0x20"
+     ],
+     [
+      "0xffffffff80000000",
+      "0x0"
+     ]
+    ],
+    "file": "udiv64.ll.f25b5ef4c6.jsonl",
+    "fn": "s_test_udiv31_i64",
+    "root": "%49"
+   },
+   "instances": 12,
+   "reason": "solver_unknown",
+   "replacement": "(G_TRUNC:s32 (G_MUL:s64 (G_ASHR:s64 x0 x1) x2))",
+   "search": {
+    "atoms": 11,
+    "counterexamples": 5,
+    "pruned_by_cex": 50,
+    "solver_calls": 17,
+    "tried": 67,
+    "unknown": 12
+   },
+   "source": "(G_MUL:s32 (G_TRUNC:s32 (G_LSHR:s64 x0 x1)) (G_TRUNC:s32 x2))",
+   "vw": [
+    64,
+    64,
+    64
+   ]
+  },
+  {
+   "example": {
+    "facts": [
+     [
       "0x1",
       "0x0"
      ],
@@ -1531,6 +1608,49 @@
    "example": {
     "facts": [
      [
+      "0x0",
+      "0x0"
+     ],
+     [
+      "0xffffffffffffffdf",
+      "0x20"
+     ],
+     [
+      "0xffffffff00000000",
+      "0x0"
+     ],
+     [
+      "0xffffffff00000000",
+      "0x0"
+     ]
+    ],
+    "file": "udiv64.ll.f25b5ef4c6.jsonl",
+    "fn": "s_test_udiv32_i64",
+    "root": "%49"
+   },
+   "instances": 2,
+   "reason": "no_precondition_in_grammar",
+   "replacement": "(G_TRUNC:s32 (G_SUB:s64 (G_ASHR:s64 x0 x1) (G_MUL:s64 x2 x3)))",
+   "search": {
+    "atoms": 32,
+    "counterexamples": 26,
+    "pruned_by_cex": 248,
+    "solver_calls": 26,
+    "tried": 274,
+    "unknown": 0
+   },
+   "source": "(G_SUB:s32 (G_TRUNC:s32 (G_LSHR:s64 x0 x1)) (G_MUL:s32 (G_TRUNC:s32 x2) (G_TRUNC:s32 x3)))",
+   "vw": [
+    64,
+    64,
+    64,
+    64
+   ]
+  },
+  {
+   "example": {
+    "facts": [
+     [
       "0xfffffffe",
       "0x1"
      ],
@@ -1747,45 +1867,7 @@
    },
    "instances": 1,
    "reason": "no_precondition_in_grammar",
-   "replacement": "(G_SEXT:s32 (G_SUB:s8 1:s8 x0))",
-   "search": {
-    "atoms": 82,
-    "counterexamples": 8,
-    "pruned_by_cex": 1716,
-    "solver_calls": 8,
-    "tried": 1724,
-    "unknown": 0
-   },
-   "source": "(G_ZEXT:s32 (G_AND:s8 (G_XOR:s8 x0 x1) x2))",
-   "vw": [
-    8,
-    8,
-    8
-   ]
-  },
-  {
-   "example": {
-    "facts": [
-     [
-      "0xfe",
-      "0x0"
-     ],
-     [
-      "0x0",
-      "0xff"
-     ],
-     [
-      "0xfe",
-      "0x1"
-     ]
-    ],
-    "file": "anyext.ll.8d39b1779a.jsonl",
-    "fn": "anyext_i1_i32",
-    "root": "%27"
-   },
-   "instances": 2,
-   "reason": "no_precondition_in_grammar",
-   "replacement": "(G_SEXT:s32 (G_XOR:s8 1:s8 x0))",
+   "replacement": "(G_LSHR:s32 1:s32 x0)",
    "search": {
     "atoms": 82,
     "counterexamples": 4,
@@ -2996,6 +3078,494 @@
    },
    "unselected_disjuncts": [],
    "vw": [
+    32,
+    32
+   ],
+   "widens_operation": true,
+   "width_specific": false
+  },
+  {
+   "class": "widens_operation",
+   "cost": {
+    "replacement": 4,
+    "source": 6
+   },
+   "coverage": {
+    "disjunct_occurrences": [
+     7
+    ],
+    "match_instances": 1,
+    "match_occurrences": 7,
+    "pass_instances": 1,
+    "pass_occurrences": 7
+   },
+   "disjuncts": [
+    {
+     "coverage_occurrences": 7,
+     "example": {
+      "facts": [
+       [
+        "0x0",
+        "0x0"
+       ],
+       [
+        "0x0",
+        "0x0"
+       ],
+       [
+        "0x0",
+        "0x0"
+       ]
+      ],
+      "vw": [
+       32,
+       32,
+       32
+      ]
+     },
+     "pred": "true",
+     "pred_json": [],
+     "proofs": [
+      {
+       "result": "unsat",
+       "root_w": 16,
+       "smt2_sha256": "12ac827c3a48ee8f",
+       "vw": [
+        32,
+        32,
+        32
+       ],
+       "width_map": [
+        [
+         16,
+         16
+        ],
+        [
+         32,
+         32
+        ]
+       ]
+      },
+      {
+       "result": "unsat",
+       "root_w": 8,
+       "smt2_sha256": "8083e1e817c279a7",
+       "vw": [
+        16,
+        16,
+        16
+       ],
+       "width_map": [
+        [
+         16,
+         8
+        ],
+        [
+         32,
+         16
+        ]
+       ]
+      },
+      {
+       "result": "unsat",
+       "root_w": 8,
+       "smt2_sha256": "8ebf237eb68c1f54",
+       "vw": [
+        32,
+        32,
+        32
+       ],
+       "width_map": [
+        [
+         16,
+         8
+        ],
+        [
+         32,
+         32
+        ]
+       ]
+      },
+      {
+       "result": "unsat",
+       "root_w": 8,
+       "smt2_sha256": "6c474dcb70bd0a21",
+       "vw": [
+        64,
+        64,
+        64
+       ],
+       "width_map": [
+        [
+         16,
+         8
+        ],
+        [
+         32,
+         64
+        ]
+       ]
+      },
+      {
+       "result": "unsat",
+       "root_w": 16,
+       "smt2_sha256": "3e0bc0e375c0e96a",
+       "vw": [
+        64,
+        64,
+        64
+       ],
+       "width_map": [
+        [
+         16,
+         16
+        ],
+        [
+         32,
+         64
+        ]
+       ]
+      },
+      {
+       "result": "unsat",
+       "root_w": 32,
+       "smt2_sha256": "4684da92fcdc2921",
+       "vw": [
+        64,
+        64,
+        64
+       ],
+       "width_map": [
+        [
+         16,
+         32
+        ],
+        [
+         32,
+         64
+        ]
+       ]
+      }
+     ],
+     "support": {
+      "instances": 4,
+      "occurrences": 28
+     },
+     "width_maps": [
+      [
+       [
+        16,
+        16
+       ],
+       [
+        32,
+        32
+       ]
+      ],
+      [
+       [
+        16,
+        8
+       ],
+       [
+        32,
+        16
+       ]
+      ],
+      [
+       [
+        16,
+        8
+       ],
+       [
+        32,
+        32
+       ]
+      ],
+      [
+       [
+        16,
+        8
+       ],
+       [
+        32,
+        64
+       ]
+      ],
+      [
+       [
+        16,
+        16
+       ],
+       [
+        32,
+        64
+       ]
+      ],
+      [
+       [
+        16,
+        32
+       ],
+       [
+        32,
+        64
+       ]
+      ]
+     ]
+    }
+   ],
+   "id": "synth_add_3046d7af",
+   "needs_one_use": true,
+   "precondition": "true",
+   "provenance": {
+    "composed_from": [
+     "synth_mul_8b175515",
+     "synth_add_2c1da8a7"
+    ],
+    "discovery": "composition",
+    "generalization": "symbolic-known-bits"
+   },
+   "replacement": "(G_TRUNC:s16 (G_ADD:s32 (G_MUL:s32 x0 x1) x2))",
+   "replacement_json": {
+    "args": [
+     {
+      "args": [
+       {
+        "args": [
+         {
+          "var": 0
+         },
+         {
+          "var": 1
+         }
+        ],
+        "op": "G_MUL",
+        "w": 32
+       },
+       {
+        "var": 2
+       }
+      ],
+      "op": "G_ADD",
+      "w": 32
+     }
+    ],
+    "op": "G_TRUNC",
+    "w": 16
+   },
+   "search": {
+    "atoms": 0,
+    "counterexamples": 0,
+    "pruned_by_cex": 0,
+    "solver_calls": 6,
+    "tried": 1,
+    "unknown": 0
+   },
+   "semantic_status": {
+    "direction": "source -> replacement",
+    "dnf_proofs": [
+     {
+      "result": "unsat",
+      "root_w": 8,
+      "smt2_sha256": "8083e1e817c279a7",
+      "vw": [
+       16,
+       16,
+       16
+      ],
+      "width_map": [
+       [
+        16,
+        8
+       ],
+       [
+        32,
+        16
+       ]
+      ]
+     },
+     {
+      "result": "unsat",
+      "root_w": 8,
+      "smt2_sha256": "8ebf237eb68c1f54",
+      "vw": [
+       32,
+       32,
+       32
+      ],
+      "width_map": [
+       [
+        16,
+        8
+       ],
+       [
+        32,
+        32
+       ]
+      ]
+     },
+     {
+      "result": "unsat",
+      "root_w": 8,
+      "smt2_sha256": "6c474dcb70bd0a21",
+      "vw": [
+       64,
+       64,
+       64
+      ],
+      "width_map": [
+       [
+        16,
+        8
+       ],
+       [
+        32,
+        64
+       ]
+      ]
+     },
+     {
+      "result": "unsat",
+      "root_w": 16,
+      "smt2_sha256": "12ac827c3a48ee8f",
+      "vw": [
+       32,
+       32,
+       32
+      ],
+      "width_map": [
+       [
+        16,
+        16
+       ],
+       [
+        32,
+        32
+       ]
+      ]
+     },
+     {
+      "result": "unsat",
+      "root_w": 16,
+      "smt2_sha256": "3e0bc0e375c0e96a",
+      "vw": [
+       64,
+       64,
+       64
+      ],
+      "width_map": [
+       [
+        16,
+        16
+       ],
+       [
+        32,
+        64
+       ]
+      ]
+     },
+     {
+      "result": "unsat",
+      "root_w": 32,
+      "smt2_sha256": "4684da92fcdc2921",
+      "vw": [
+       64,
+       64,
+       64
+      ],
+      "width_map": [
+       [
+        16,
+        32
+       ],
+       [
+        32,
+        64
+       ]
+      ]
+     }
+    ],
+    "kind": "verified_refinement",
+    "model": "gmir-int-v1",
+    "solver": "z3 5.4.0"
+   },
+   "source": "(G_ADD:s16 (G_MUL:s16 (G_TRUNC:s16 x0) (G_TRUNC:s16 x1)) (G_TRUNC:s16 x2))",
+   "source_json": {
+    "args": [
+     {
+      "args": [
+       {
+        "args": [
+         {
+          "var": 0
+         }
+        ],
+        "op": "G_TRUNC",
+        "w": 16
+       },
+       {
+        "args": [
+         {
+          "var": 1
+         }
+        ],
+        "op": "G_TRUNC",
+        "w": 16
+       }
+      ],
+      "op": "G_MUL",
+      "w": 16
+     },
+     {
+      "args": [
+       {
+        "var": 2
+       }
+      ],
+      "op": "G_TRUNC",
+      "w": 16
+     }
+    ],
+    "op": "G_ADD",
+    "w": 16
+   },
+   "support": {
+    "examples": [
+     {
+      "file": "mad.u16.ll.c408d8841b.jsonl",
+      "fn": "v_mad_u16",
+      "root": "%15"
+     },
+     {
+      "file": "mad.u16.ll.c408d8841b.jsonl",
+      "fn": "v_mad_u16",
+      "root": "%15"
+     },
+     {
+      "file": "mad.u16.ll.c408d8841b.jsonl",
+      "fn": "v_mad_u16",
+      "root": "%15"
+     },
+     {
+      "file": "mad.u16.ll.c408d8841b.jsonl",
+      "fn": "v_mad_u16_zext",
+      "root": "%15"
+     },
+     {
+      "file": "mad.u16.ll.c408d8841b.jsonl",
+      "fn": "v_mad_u16_zext",
+      "root": "%15"
+     }
+    ],
+    "instances": 4,
+    "occurrences": 28,
+    "source_flags": [],
+    "training_constants": {}
+   },
+   "unselected_disjuncts": [],
+   "vw": [
+    32,
     32,
     32
    ],
@@ -29153,480 +29723,6 @@
    "width_specific": false
   },
   {
-   "class": "reduces_cost",
-   "cost": {
-    "replacement": 2,
-    "source": 3
-   },
-   "coverage": {
-    "disjunct_occurrences": [
-     1
-    ],
-    "match_instances": 3,
-    "match_occurrences": 4,
-    "pass_instances": 1,
-    "pass_occurrences": 1
-   },
-   "disjuncts": [
-    {
-     "coverage_occurrences": 1,
-     "example": {
-      "facts": [
-       [
-        "0xfe",
-        "0x0"
-       ],
-       [
-        "0x0",
-        "0xff"
-       ],
-       [
-        "0xfe",
-        "0x1"
-       ]
-      ],
-      "vw": [
-       8,
-       8,
-       8
-      ]
-     },
-     "pred": "all(KZ(x0) | KO(x2)) && trailing(KO(x1)) >= umax(x2)",
-     "pred_json": [
-      [
-       "all2",
-       [
-        "Z",
-        0
-       ],
-       [
-        "O",
-        2
-       ]
-      ],
-      [
-       "trail",
-       [
-        "O",
-        1
-       ],
-       2
-      ]
-     ],
-     "proofs": [
-      {
-       "result": "unsat",
-       "root_w": 32,
-       "smt2_sha256": "485cc22c8825b425",
-       "vw": [
-        8,
-        8,
-        8
-       ],
-       "width_map": [
-        [
-         8,
-         8
-        ],
-        [
-         32,
-         32
-        ]
-       ]
-      },
-      {
-       "result": "unsat",
-       "root_w": 16,
-       "smt2_sha256": "d02f29dd15616293",
-       "vw": [
-        8,
-        8,
-        8
-       ],
-       "width_map": [
-        [
-         8,
-         8
-        ],
-        [
-         32,
-         16
-        ]
-       ]
-      },
-      {
-       "result": "unsat",
-       "root_w": 64,
-       "smt2_sha256": "5b37cc77eacadbab",
-       "vw": [
-        8,
-        8,
-        8
-       ],
-       "width_map": [
-        [
-         8,
-         8
-        ],
-        [
-         32,
-         64
-        ]
-       ]
-      },
-      {
-       "result": "unsat",
-       "root_w": 32,
-       "smt2_sha256": "a328ce3858b29b51",
-       "vw": [
-        16,
-        16,
-        16
-       ],
-       "width_map": [
-        [
-         8,
-         16
-        ],
-        [
-         32,
-         32
-        ]
-       ]
-      },
-      {
-       "result": "unsat",
-       "root_w": 64,
-       "smt2_sha256": "1a1c033bcf5e2acf",
-       "vw": [
-        16,
-        16,
-        16
-       ],
-       "width_map": [
-        [
-         8,
-         16
-        ],
-        [
-         32,
-         64
-        ]
-       ]
-      },
-      {
-       "result": "unsat",
-       "root_w": 64,
-       "smt2_sha256": "f8d273acc0ada584",
-       "vw": [
-        32,
-        32,
-        32
-       ],
-       "width_map": [
-        [
-         8,
-         32
-        ],
-        [
-         32,
-         64
-        ]
-       ]
-      }
-     ],
-     "support": {
-      "instances": 1,
-      "occurrences": 1
-     },
-     "width_maps": [
-      [
-       [
-        8,
-        8
-       ],
-       [
-        32,
-        32
-       ]
-      ],
-      [
-       [
-        8,
-        8
-       ],
-       [
-        32,
-        16
-       ]
-      ],
-      [
-       [
-        8,
-        8
-       ],
-       [
-        32,
-        64
-       ]
-      ],
-      [
-       [
-        8,
-        16
-       ],
-       [
-        32,
-        32
-       ]
-      ],
-      [
-       [
-        8,
-        16
-       ],
-       [
-        32,
-        64
-       ]
-      ],
-      [
-       [
-        8,
-        32
-       ],
-       [
-        32,
-        64
-       ]
-      ]
-     ]
-    }
-   ],
-   "id": "synth_zext_19c72bf5",
-   "needs_one_use": true,
-   "precondition": "all(KZ(x0) | KO(x2)) && trailing(KO(x1)) >= umax(x2)",
-   "provenance": {
-    "composed_from": [
-     "synth_zext_d3f2c9f4",
-     "synth_and_8aedd82f"
-    ],
-    "discovery": "composition",
-    "generalization": "symbolic-known-bits"
-   },
-   "replacement": "(G_SEXT:s32 (G_SUB:s8 x2 x0))",
-   "replacement_json": {
-    "args": [
-     {
-      "args": [
-       {
-        "var": 2
-       },
-       {
-        "var": 0
-       }
-      ],
-      "op": "G_SUB",
-      "w": 8
-     }
-    ],
-    "op": "G_SEXT",
-    "w": 32
-   },
-   "search": {
-    "atoms": 41,
-    "counterexamples": 9,
-    "pruned_by_cex": 851,
-    "solver_calls": 21,
-    "tried": 862,
-    "unknown": 0
-   },
-   "semantic_status": {
-    "direction": "source -> replacement",
-    "dnf_proofs": [
-     {
-      "result": "unsat",
-      "root_w": 16,
-      "smt2_sha256": "d02f29dd15616293",
-      "vw": [
-       8,
-       8,
-       8
-      ],
-      "width_map": [
-       [
-        8,
-        8
-       ],
-       [
-        32,
-        16
-       ]
-      ]
-     },
-     {
-      "result": "unsat",
-      "root_w": 32,
-      "smt2_sha256": "485cc22c8825b425",
-      "vw": [
-       8,
-       8,
-       8
-      ],
-      "width_map": [
-       [
-        8,
-        8
-       ],
-       [
-        32,
-        32
-       ]
-      ]
-     },
-     {
-      "result": "unsat",
-      "root_w": 64,
-      "smt2_sha256": "5b37cc77eacadbab",
-      "vw": [
-       8,
-       8,
-       8
-      ],
-      "width_map": [
-       [
-        8,
-        8
-       ],
-       [
-        32,
-        64
-       ]
-      ]
-     },
-     {
-      "result": "unsat",
-      "root_w": 32,
-      "smt2_sha256": "a328ce3858b29b51",
-      "vw": [
-       16,
-       16,
-       16
-      ],
-      "width_map": [
-       [
-        8,
-        16
-       ],
-       [
-        32,
-        32
-       ]
-      ]
-     },
-     {
-      "result": "unsat",
-      "root_w": 64,
-      "smt2_sha256": "1a1c033bcf5e2acf",
-      "vw": [
-       16,
-       16,
-       16
-      ],
-      "width_map": [
-       [
-        8,
-        16
-       ],
-       [
-        32,
-        64
-       ]
-      ]
-     },
-     {
-      "result": "unsat",
-      "root_w": 64,
-      "smt2_sha256": "f8d273acc0ada584",
-      "vw": [
-       32,
-       32,
-       32
-      ],
-      "width_map": [
-       [
-        8,
-        32
-       ],
-       [
-        32,
-        64
-       ]
-      ]
-     }
-    ],
-    "kind": "verified_refinement",
-    "model": "gmir-int-v1",
-    "solver": "z3 5.4.0"
-   },
-   "source": "(G_ZEXT:s32 (G_AND:s8 (G_XOR:s8 x0 x1) x2))",
-   "source_json": {
-    "args": [
-     {
-      "args": [
-       {
-        "args": [
-         {
-          "var": 0
-         },
-         {
-          "var": 1
-         }
-        ],
-        "op": "G_XOR",
-        "w": 8
-       },
-       {
-        "var": 2
-       }
-      ],
-      "op": "G_AND",
-      "w": 8
-     }
-    ],
-    "op": "G_ZEXT",
-    "w": 32
-   },
-   "support": {
-    "examples": [
-     {
-      "file": "anyext.ll.8d39b1779a.jsonl",
-      "fn": "anyext_i1_i32",
-      "root": "%27"
-     }
-    ],
-    "instances": 1,
-    "occurrences": 1,
-    "source_flags": [],
-    "training_constants": {
-     "x1": [
-      "0xff"
-     ],
-     "x2": [
-      "0x1"
-     ]
-    }
-   },
-   "unselected_disjuncts": [],
-   "vw": [
-    8,
-    8,
-    8
-   ],
-   "widens_operation": false,
-   "width_specific": false
-  },
-  {
    "class": "widens_operation",
    "cost": {
     "replacement": 1,
@@ -30901,482 +30997,6 @@
    "unselected_disjuncts": [],
    "vw": [
     32
-   ],
-   "widens_operation": false,
-   "width_specific": false
-  },
-  {
-   "class": "reduces_cost",
-   "cost": {
-    "replacement": 2,
-    "source": 3
-   },
-   "coverage": {
-    "disjunct_occurrences": [
-     1
-    ],
-    "match_instances": 3,
-    "match_occurrences": 4,
-    "pass_instances": 1,
-    "pass_occurrences": 1
-   },
-   "disjuncts": [
-    {
-     "coverage_occurrences": 1,
-     "example": {
-      "facts": [
-       [
-        "0xfe",
-        "0x0"
-       ],
-       [
-        "0x0",
-        "0xff"
-       ],
-       [
-        "0xfe",
-        "0x1"
-       ]
-      ],
-      "vw": [
-       8,
-       8,
-       8
-      ]
-     },
-     "pred": "all(KZ(x0) | KO(x2)) && trailing(KO(x1)) >= umax(x2)",
-     "pred_json": [
-      [
-       "all2",
-       [
-        "Z",
-        0
-       ],
-       [
-        "O",
-        2
-       ]
-      ],
-      [
-       "trail",
-       [
-        "O",
-        1
-       ],
-       2
-      ]
-     ],
-     "proofs": [
-      {
-       "result": "unsat",
-       "root_w": 32,
-       "smt2_sha256": "f8456ce2f4322b42",
-       "vw": [
-        8,
-        8,
-        8
-       ],
-       "width_map": [
-        [
-         8,
-         8
-        ],
-        [
-         32,
-         32
-        ]
-       ]
-      },
-      {
-       "result": "unsat",
-       "root_w": 16,
-       "smt2_sha256": "82e61f2c327dee78",
-       "vw": [
-        8,
-        8,
-        8
-       ],
-       "width_map": [
-        [
-         8,
-         8
-        ],
-        [
-         32,
-         16
-        ]
-       ]
-      },
-      {
-       "result": "unsat",
-       "root_w": 64,
-       "smt2_sha256": "e00941804d9cb0fd",
-       "vw": [
-        8,
-        8,
-        8
-       ],
-       "width_map": [
-        [
-         8,
-         8
-        ],
-        [
-         32,
-         64
-        ]
-       ]
-      },
-      {
-       "result": "unsat",
-       "root_w": 32,
-       "smt2_sha256": "d7fb18cd323c8583",
-       "vw": [
-        16,
-        16,
-        16
-       ],
-       "width_map": [
-        [
-         8,
-         16
-        ],
-        [
-         32,
-         32
-        ]
-       ]
-      },
-      {
-       "result": "unsat",
-       "root_w": 64,
-       "smt2_sha256": "e4b9dec118ac5a7b",
-       "vw": [
-        16,
-        16,
-        16
-       ],
-       "width_map": [
-        [
-         8,
-         16
-        ],
-        [
-         32,
-         64
-        ]
-       ]
-      },
-      {
-       "result": "unsat",
-       "root_w": 64,
-       "smt2_sha256": "53b7395e271b09a0",
-       "vw": [
-        32,
-        32,
-        32
-       ],
-       "width_map": [
-        [
-         8,
-         32
-        ],
-        [
-         32,
-         64
-        ]
-       ]
-      }
-     ],
-     "support": {
-      "instances": 1,
-      "occurrences": 1
-     },
-     "width_maps": [
-      [
-       [
-        8,
-        8
-       ],
-       [
-        32,
-        32
-       ]
-      ],
-      [
-       [
-        8,
-        8
-       ],
-       [
-        32,
-        16
-       ]
-      ],
-      [
-       [
-        8,
-        8
-       ],
-       [
-        32,
-        64
-       ]
-      ],
-      [
-       [
-        8,
-        16
-       ],
-       [
-        32,
-        32
-       ]
-      ],
-      [
-       [
-        8,
-        16
-       ],
-       [
-        32,
-        64
-       ]
-      ],
-      [
-       [
-        8,
-        32
-       ],
-       [
-        32,
-        64
-       ]
-      ]
-     ]
-    }
-   ],
-   "dominated_by": "synth_zext_19c72bf5",
-   "id": "synth_zext_def1dc84",
-   "needs_one_use": true,
-   "precondition": "all(KZ(x0) | KO(x2)) && trailing(KO(x1)) >= umax(x2)",
-   "provenance": {
-    "composed_from": [
-     "synth_zext_d3f2c9f4",
-     "synth_and_8aedd82f",
-     "synth_sub_a68748bb"
-    ],
-    "discovery": "composition",
-    "generalization": "symbolic-known-bits"
-   },
-   "replacement": "(G_SEXT:s32 (G_XOR:s8 x0 x2))",
-   "replacement_json": {
-    "args": [
-     {
-      "args": [
-       {
-        "var": 0
-       },
-       {
-        "var": 2
-       }
-      ],
-      "op": "G_XOR",
-      "w": 8
-     }
-    ],
-    "op": "G_SEXT",
-    "w": 32
-   },
-   "search": {
-    "atoms": 41,
-    "counterexamples": 7,
-    "pruned_by_cex": 853,
-    "solver_calls": 19,
-    "tried": 862,
-    "unknown": 0
-   },
-   "semantic_status": {
-    "direction": "source -> replacement",
-    "dnf_proofs": [
-     {
-      "result": "unsat",
-      "root_w": 16,
-      "smt2_sha256": "82e61f2c327dee78",
-      "vw": [
-       8,
-       8,
-       8
-      ],
-      "width_map": [
-       [
-        8,
-        8
-       ],
-       [
-        32,
-        16
-       ]
-      ]
-     },
-     {
-      "result": "unsat",
-      "root_w": 32,
-      "smt2_sha256": "f8456ce2f4322b42",
-      "vw": [
-       8,
-       8,
-       8
-      ],
-      "width_map": [
-       [
-        8,
-        8
-       ],
-       [
-        32,
-        32
-       ]
-      ]
-     },
-     {
-      "result": "unsat",
-      "root_w": 64,
-      "smt2_sha256": "e00941804d9cb0fd",
-      "vw": [
-       8,
-       8,
-       8
-      ],
-      "width_map": [
-       [
-        8,
-        8
-       ],
-       [
-        32,
-        64
-       ]
-      ]
-     },
-     {
-      "result": "unsat",
-      "root_w": 32,
-      "smt2_sha256": "d7fb18cd323c8583",
-      "vw": [
-       16,
-       16,
-       16
-      ],
-      "width_map": [
-       [
-        8,
-        16
-       ],
-       [
-        32,
-        32
-       ]
-      ]
-     },
-     {
-      "result": "unsat",
-      "root_w": 64,
-      "smt2_sha256": "e4b9dec118ac5a7b",
-      "vw": [
-       16,
-       16,
-       16
-      ],
-      "width_map": [
-       [
-        8,
-        16
-       ],
-       [
-        32,
-        64
-       ]
-      ]
-     },
-     {
-      "result": "unsat",
-      "root_w": 64,
-      "smt2_sha256": "53b7395e271b09a0",
-      "vw": [
-       32,
-       32,
-       32
-      ],
-      "width_map": [
-       [
-        8,
-        32
-       ],
-       [
-        32,
-        64
-       ]
-      ]
-     }
-    ],
-    "kind": "verified_refinement",
-    "model": "gmir-int-v1",
-    "solver": "z3 5.4.0"
-   },
-   "source": "(G_ZEXT:s32 (G_AND:s8 (G_XOR:s8 x0 x1) x2))",
-   "source_json": {
-    "args": [
-     {
-      "args": [
-       {
-        "args": [
-         {
-          "var": 0
-         },
-         {
-          "var": 1
-         }
-        ],
-        "op": "G_XOR",
-        "w": 8
-       },
-       {
-        "var": 2
-       }
-      ],
-      "op": "G_AND",
-      "w": 8
-     }
-    ],
-    "op": "G_ZEXT",
-    "w": 32
-   },
-   "support": {
-    "examples": [
-     {
-      "file": "anyext.ll.8d39b1779a.jsonl",
-      "fn": "anyext_i1_i32",
-      "root": "%27"
-     }
-    ],
-    "instances": 1,
-    "occurrences": 1,
-    "source_flags": [],
-    "training_constants": {
-     "x1": [
-      "0xff"
-     ],
-     "x2": [
-      "0x1"
-     ]
-    }
-   },
-   "unselected_disjuncts": [],
-   "vw": [
-    8,
-    8,
-    8
    ],
    "widens_operation": false,
    "width_specific": false

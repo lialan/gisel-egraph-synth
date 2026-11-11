@@ -34,30 +34,44 @@ from . import ir
 from . import match
 from . import precond
 from . import synth
+from . import targets
 
 
 class Limits:
-    def __init__(self, max_steps=3, max_states=256, min_cost=3):
+    def __init__(self, max_steps=3, max_states=256, min_cost=3,
+                 widen_bits=targets.NATIVE_BITS):
         self.max_steps = max_steps
         self.max_states = max_states
         self.min_cost = min_cost    # sources cheaper than this are skipped
+        # A step or a result can move an operation to a wider type of at
+        # most this width. Such an operation uses the same register on a
+        # target whose registers are that wide (see Target.native_bits);
+        # a wider operation never pays off.
+        self.widen_bits = widen_bits
 
 
 class Step:
-    """A verified rule as a structural rewrite step."""
+    """A verified rule, or an axiom, as a structural rewrite step."""
 
-    def __init__(self, rule):
-        self.id = rule['id']
-        self.src = ir.from_json(rule['source_json'])
-        self.tgt = ir.from_json(rule['replacement_json'])
-        self.vw = tuple(rule['vw'])
+    def __init__(self, rule=None, axiom=None):
+        if axiom:
+            self.id, self.src, self.tgt = axiom
+            self.vw = (AXIOM_WIDTH,) * len(ir.variables(self.src))
+        else:
+            self.id = rule['id']
+            self.src = ir.from_json(rule['source_json'])
+            self.tgt = ir.from_json(rule['replacement_json'])
+            self.vw = tuple(rule['vw'])
         self.rule = rule
 
     def fires(self, inst):
         """Replacements the rule itself gives at the root of the instance:
         the pattern matches, the widths are proved and a disjunct holds on
-        the known bits of what the variables bind."""
+        the known bits of what the variables bind. An axiom is not a rule
+        of the combiner and gives nothing."""
         out = []
+        if self.rule is None:
+            return out
         src_ws = set(self.vw) | {n[1] for n in [self.src] +
                                  ir.interior_nodes(self.src)}
         for bind, wmap in match.match(self.src, self.vw, inst.expr,
@@ -108,16 +122,61 @@ class Step:
         return (t[0], wmap[t[1]]) + tuple(args)
 
 
+AXIOM_WIDTH = 32
+
+
+def axioms():
+    """Equal-cost identities that move parentheses: associativity of the
+    commutative operations, and the forms of it with a subtraction. The
+    combiner has no reason to apply one of them by itself, and the
+    enumerator does not keep them (an equal-cost rule is kept only if it
+    changes the operation). In a chain, they put two operands next to each
+    other so that a rule can fold them. Returns (id, source, replacement)
+    for one width; the matcher maps the width.
+
+    They are off by default (`synth --compose-axioms`): on the AMDGPU
+    training corpus they add proposals but no macro rule, because the
+    corpus is the code after the combiner, and the combiner reassociates."""
+    a, b, c = ('var', 0), ('var', 1), ('var', 2)
+
+    def op(o, x, y):
+        return (o, AXIOM_WIDTH, x, y)
+    out = [('axiom:assoc-%s' % o[2:].lower(),
+            op(o, op(o, a, b), c), op(o, a, op(o, b, c)))
+           for o in ir.COMMUTATIVE]
+    add, sub = 'G_ADD', 'G_SUB'
+    out += [
+        ('axiom:add-sub', op(sub, op(add, a, b), c), op(add, a, op(sub, b, c))),
+        ('axiom:sub-add', op(add, op(sub, a, b), c), op(sub, op(add, a, c), b)),
+        ('axiom:sub-add-2', op(add, op(sub, a, b), c),
+         op(sub, a, op(sub, b, c))),
+        ('axiom:sub-sub', op(sub, op(sub, a, b), c), op(sub, a, op(add, b, c))),
+        ('axiom:sub-of-add', op(sub, a, op(add, b, c)),
+         op(sub, op(sub, a, b), c)),
+        ('axiom:sub-of-sub', op(sub, a, op(sub, b, c)),
+         op(add, op(sub, a, b), c)),
+    ]
+    return out
+
+
 class Index:
-    def __init__(self, rules=()):
+    def __init__(self, rules=(), widen_bits=targets.NATIVE_BITS,
+                 with_axioms=False):
         self.by_op = {}
         self.ids = set()
+        self.widen_bits = widen_bits
         for r in rules:
             self.add(r)
+        if with_axioms:
+            for ax in axioms():
+                s = Step(axiom=ax)
+                self.by_op.setdefault(s.src[0], []).append(s)
 
     def add(self, rule):
-        # A step that moves an operation to a wider type never pays off.
-        if rule['id'] in self.ids or rule['widens_operation']:
+        # See Limits.widen_bits.
+        if rule['id'] in self.ids or synth.widened_width(
+                ir.from_json(rule['source_json']),
+                ir.from_json(rule['replacement_json'])) > self.widen_bits:
             return
         self.ids.add(rule['id'])
         s = Step(rule)
@@ -256,16 +315,22 @@ def propose(inst, index, envs, limits=None):
                         if new is None:
                             continue
                         s2 = steps + [st.id]
+                        rule_steps = sum(not i.startswith('axiom:') and
+                                         i != 'collapse' for i in s2)
                         if new != raw:
                             if new in seen:
                                 continue
                             seen.add(new)
                             s2.append('collapse')
                         if ir.cost(new) > cost0 or \
-                                synth.widens_operation(src, new):
+                                synth.widened_width(src, new) > \
+                                limits.widen_bits:
                             continue
                         nxt.append((new, s2))
-                        if len(s2) < 2 or ir.cost(new) >= cost0 or \
+                        # An axiom alone changes nothing; a chain needs a
+                        # rule and one more step.
+                        if len(s2) < 2 or rule_steps == 0 or \
+                                ir.cost(new) >= cost0 or \
                                 new in out or new in direct:
                             continue
                         if not ir.is_linear(new) or \

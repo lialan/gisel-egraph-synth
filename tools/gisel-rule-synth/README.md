@@ -99,16 +99,28 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
    proposal; it goes through the same proof and generalization as a
    discovered rule and becomes a direct *macro rule* (provenance
    `composition`, with the ids of the steps). The steps are only a search
-   heuristic: the macro rule has its own proof.
+   heuristic: the macro rule has its own proof. A step or a result can move
+   an operation to a wider type of at most 32 bits (the register width of
+   the targets in `girs/targets.py`); a wider operation is never proposed.
 
 Everything is deterministic: every solver check runs in a fresh solver
 context, so `rules.json` and the proof files are byte-identical between runs
 on the same corpus.
 
+`rules.stats.json` and each target profile have a `provenance` record: the
+version of the tool and a hash of its source files, the commit that was
+checked out when the tool ran, and `llvm_dirty` (the `llvm` directory had
+changes that were not committed). The commit is necessarily older than the
+commit that contains the generated file; the hash identifies the tool
+without a commit.
+
 ## How a target selects (`select.py`)
 
-Candidates are the library rules that reduce cost and are not dominated. For
-each one the profile records
+Candidates are the library rules that reduce cost and are not dominated. A
+rule that moves an operation to a wider type is a candidate only if that
+type is not wider than the registers of the target (`Target.native_bits`):
+there the wider operation uses the same register. For each candidate the
+profile records
 
 - **coverage**: occurrences of the source pattern in the target's corpus and
   how many pass the guard (offline, no compiler);
@@ -128,6 +140,19 @@ effect): rules that add instructions are dropped, and so are rules that
 query known bits but remove nothing (`--keep-unmeasured` keeps those), one at
 a time until the set is stable. The profile lists every candidate with its
 selection and the evidence, and the measured totals of the final set.
+
+**One-use variants.** A rule removes the interior operations of its source
+only if they have no other user. If its replacement costs as much as the
+root alone, the rule removes nothing from a source with a shared interior
+value; it only changes the code, and the target can select worse code for
+the result. Such a rule `R` has a variant `R_1u` with a one-use guard on
+every interior value. With every candidate enabled, one of the two fires on
+a source without a shared value and the other takes its place when the
+first is disabled, so the measured effect of `R` is the effect of its
+firings on shared values. If those remove no
+instruction, the profile selects `R_1u` (`one_use_variant_selected`); if
+`R` is dropped later because it adds instructions inside the set, `R_1u`
+takes its place.
 
 ## Files
 

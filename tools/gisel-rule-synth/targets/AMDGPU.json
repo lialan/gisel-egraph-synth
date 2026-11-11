@@ -1,19 +1,30 @@
 {
  "combiner": "amdgpu-prelegalizer-combiner",
- "emitted_records": 53,
+ "emitted_records": 55,
  "enable_flag": "-amdgpu-gisel-synth-combines",
  "evidence": {
-  "compare": "cmp_train_cand2.json",
+  "compare": "cmp_amd_cand.json",
   "corpus_coverage": true,
   "corpus_files": 1417,
   "keep_unmeasured": false,
   "leave_one_out": true,
   "measured": true,
-  "novelty_and_redundancy": true
+  "no_regressions": false,
+  "novelty_and_redundancy": true,
+  "provenance": {
+   "generator_sha256": "68302181903b11d5c4d12ad9607178b7f3c57c285711710a5f3f0d20d505aa98",
+   "generator_version": "1.6",
+   "llvm_commit": "9886924f6aa120022ed11df8f2660b1c8aec03ed",
+   "llvm_dirty": true,
+   "python": "3.10.12"
+  }
  },
  "format": "gi-rule-synth-target-v1",
  "policy": [
-  "candidates: proved rules whose replacement is cheaper than the source",
+  "candidates: proved rules whose replacement is cheaper than the source; a rule that moves an operation to a wider type only if that type is not wider than the registers of the target",
+  "one_use_variant_selected: the rule has a variant that applies only if no interior value of the source has another user; where the rule fires and the variant does not, it removes no instruction (or it adds instructions), so the variant is used",
+  "plain_variant_selected: the variant of a rule that removes instructions also from a source with a shared interior value (with --no-regressions: and makes no file worse there)",
+  "variant_not_measured: one-use variants are selected by measurement only",
   "not_emittable: the replacement cannot be written as an apply pattern",
   "measured_regression: more instructions with the rule than without, with every candidate enabled or inside the selected set",
   "worse_than_existing: alone, loses to the existing combiner on its own example",
@@ -22,7 +33,7 @@
   "not_fired: does not apply to its own example, and no measured gain",
   "unobserved: its guard never passes on the target corpus (it was learned from seed inputs only), and no measured gain",
   "never_fires: applicable in the corpus but never fired when the corpus was compiled with every candidate (another rule gets there first)",
-  "no_measured_gain: inside the selected set it removes no instruction from the final code and its guard queries known bits (cost without measured benefit); rules without a known-bits guard are kept",
+  "no_measured_gain: inside the selected set it removes no instruction from the final code and its guard queries known bits (cost without measured benefit); rules without a known-bits guard are kept, but not a rule that moves an operation to a wider type",
   "emitted: everything else"
  ],
  "rules": {
@@ -39,11 +50,9 @@
    "guard_cost": 10,
    "marginal": {
     "better": 0,
-    "evidence": [
-     "s_uaddo_usubo_pseudo.ll: +2"
-    ],
-    "insns": 2,
-    "worse": 1
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
    },
    "novelty": {
     "class": "new",
@@ -58,14 +67,149 @@
     ]
    },
    "online": {
-    "files_fired": 2,
-    "files_matched": 16,
+    "files_fired": 0,
+    "files_matched": 14,
+    "fired": 0,
+    "matched": 34
+   },
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_add_151f8386_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     2
+    ],
+    "match_instances": 15,
+    "match_occurrences": 26,
+    "pass_instances": 1,
+    "pass_occurrences": 2
+   },
+   "guard_cost": 10,
+   "in_set": {
+    "better": 0,
+    "evidence": [
+     "s_uaddo_usubo_pseudo.ll: +2"
+    ],
     "fired": 2,
-    "matched": 37
+    "insns": 2,
+    "worse": 1
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_add_151f8386_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 2,
+    "files_matched": 12,
+    "fired": 2,
+    "matched": 30
    },
    "pattern_nodes": 2,
    "records": 2,
    "selection": "measured_regression"
+  },
+  "synth_add_2c1da8a7": {
+   "corpus": {
+    "disjunct_occurrences": [
+     5
+    ],
+    "match_instances": 4,
+    "match_occurrences": 5,
+    "pass_instances": 4,
+    "pass_occurrences": 5
+   },
+   "guard_cost": 0,
+   "in_set": {
+    "better": 0,
+    "evidence": [],
+    "fired": 5,
+    "insns": 0,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 1,
+    "evidence": [
+     "mad.u16.ll: -3"
+    ],
+    "insns": -3,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_add_2c1da8a7_d0",
+      "source": 4
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 6,
+    "files_matched": 7,
+    "fired": 12,
+    "matched": 13
+   },
+   "pattern_nodes": 3,
+   "records": 1,
+   "selection": "no_measured_gain"
+  },
+  "synth_add_3046d7af": {
+   "corpus": {
+    "disjunct_occurrences": [
+     7
+    ],
+    "match_instances": 1,
+    "match_occurrences": 7,
+    "pass_instances": 1,
+    "pass_occurrences": 7
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 6,
+      "fn": "synth_add_3046d7af_d0",
+      "source": 6
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 5,
+   "records": 2,
+   "selection": "redundant_with_synthesized"
   },
   "synth_add_44397536": {
    "corpus": {
@@ -92,6 +236,45 @@
       "class": "new",
       "existing": 3,
       "fn": "synth_add_44397536_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 3,
+   "records": 4,
+   "selection": "never_fires"
+  },
+  "synth_add_44397536_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_add_44397536_1u_d0",
       "source": 3
      }
     ]
@@ -140,6 +323,45 @@
     "files_matched": 15,
     "fired": 0,
     "matched": 106
+   },
+   "pattern_nodes": 2,
+   "records": 4,
+   "selection": "never_fires"
+  },
+  "synth_and_205dce25_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     3
+    ],
+    "match_instances": 19,
+    "match_occurrences": 27,
+    "pass_instances": 2,
+    "pass_occurrences": 3
+   },
+   "guard_cost": 9,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_and_205dce25_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 15,
+    "fired": 0,
+    "matched": 100
    },
    "pattern_nodes": 2,
    "records": 4,
@@ -270,7 +492,7 @@
     "matched": 1
    },
    "pattern_nodes": 3,
-   "rank": 11,
+   "rank": 12,
    "records": 8,
    "selection": "emitted"
   },
@@ -285,13 +507,6 @@
     "pass_occurrences": 18
    },
    "guard_cost": 9,
-   "in_set": {
-    "better": 0,
-    "evidence": [],
-    "fired": 18,
-    "insns": 0,
-    "worse": 0
-   },
    "marginal": {
     "better": 0,
     "evidence": [],
@@ -315,6 +530,52 @@
     "files_matched": 14,
     "fired": 18,
     "matched": 144
+   },
+   "pattern_nodes": 2,
+   "records": 4,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_and_5b7741a2_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     18
+    ],
+    "match_instances": 13,
+    "match_occurrences": 59,
+    "pass_instances": 1,
+    "pass_occurrences": 18
+   },
+   "guard_cost": 9,
+   "in_set": {
+    "better": 0,
+    "evidence": [],
+    "fired": 0,
+    "insns": 0,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 2,
+      "fn": "synth_and_5b7741a2_1u_d0",
+      "source": 2
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 13,
+    "fired": 0,
+    "matched": 86
    },
    "pattern_nodes": 2,
    "records": 4,
@@ -370,6 +631,45 @@
     "pass_occurrences": 2
    },
    "guard_cost": 10,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 2,
+      "fn": "synth_and_83abd1ae_d0",
+      "source": 2
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 8,
+    "fired": 0,
+    "matched": 38
+   },
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_and_83abd1ae_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     2
+    ],
+    "match_instances": 7,
+    "match_occurrences": 11,
+    "pass_instances": 2,
+    "pass_occurrences": 2
+   },
+   "guard_cost": 10,
    "in_set": {
     "better": 0,
     "evidence": [],
@@ -390,16 +690,16 @@
       "alone": 1,
       "class": "new",
       "existing": 2,
-      "fn": "synth_and_83abd1ae_d0",
+      "fn": "synth_and_83abd1ae_1u_d0",
       "source": 2
      }
     ]
    },
    "online": {
     "files_fired": 1,
-    "files_matched": 8,
+    "files_matched": 5,
     "fired": 2,
-    "matched": 41
+    "matched": 20
    },
    "pattern_nodes": 2,
    "records": 2,
@@ -444,6 +744,45 @@
    "records": 4,
    "selection": "never_fires"
   },
+  "synth_and_8aedd82f_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 21,
+    "match_occurrences": 71,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "guard_cost": 14,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 4,
+      "class": "new",
+      "existing": 5,
+      "fn": "synth_and_8aedd82f_1u_d0",
+      "source": 5
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 23,
+    "fired": 0,
+    "matched": 394
+   },
+   "pattern_nodes": 2,
+   "records": 4,
+   "selection": "never_fires"
+  },
   "synth_and_90819c65": {
    "corpus": {
     "disjunct_occurrences": [
@@ -475,9 +814,9 @@
    },
    "online": {
     "files_fired": 15,
-    "files_matched": 143,
+    "files_matched": 145,
     "fired": 37,
-    "matched": 1743
+    "matched": 1747
    },
    "pattern_nodes": 1,
    "records": 1,
@@ -533,21 +872,10 @@
     "pass_occurrences": 2
    },
    "guard_cost": 6,
-   "in_set": {
-    "better": 1,
-    "evidence": [
-     "idot4u.ll: -2"
-    ],
-    "fired": 1,
-    "insns": -2,
-    "worse": 0
-   },
    "marginal": {
-    "better": 1,
-    "evidence": [
-     "idot4u.ll: -2"
-    ],
-    "insns": -2,
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
     "worse": 0
    },
    "novelty": {
@@ -563,17 +891,104 @@
     ]
    },
    "online": {
+    "files_fired": 0,
+    "files_matched": 1,
+    "fired": 0,
+    "matched": 3
+   },
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_and_b1e9087f_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     2
+    ],
+    "match_instances": 3,
+    "match_occurrences": 5,
+    "pass_instances": 1,
+    "pass_occurrences": 2
+   },
+   "guard_cost": 6,
+   "in_set": {
+    "better": 1,
+    "evidence": [
+     "idot4u.ll: -2"
+    ],
+    "fired": 1,
+    "insns": -2,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "covered",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "covered",
+      "existing": 2,
+      "fn": "synth_and_b1e9087f_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
     "files_fired": 1,
     "files_matched": 2,
     "fired": 1,
     "matched": 4
    },
    "pattern_nodes": 2,
-   "rank": 5,
+   "rank": 6,
    "records": 2,
    "selection": "emitted"
   },
   "synth_and_d05a2340": {
+   "corpus": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 4,
+    "match_occurrences": 6,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "guard_cost": 10,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 2,
+      "fn": "synth_and_d05a2340_d0",
+      "source": 2
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 8,
+    "fired": 0,
+    "matched": 38
+   },
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_and_d05a2340_1u": {
    "corpus": {
     "disjunct_occurrences": [
      1
@@ -594,11 +1009,9 @@
     "worse": 0
    },
    "marginal": {
-    "better": 1,
-    "evidence": [
-     "div-rem-by-constant-64.ll: -2"
-    ],
-    "insns": -2,
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
     "worse": 0
    },
    "novelty": {
@@ -608,19 +1021,19 @@
       "alone": 1,
       "class": "new",
       "existing": 2,
-      "fn": "synth_and_d05a2340_d0",
+      "fn": "synth_and_d05a2340_1u_d0",
       "source": 2
      }
     ]
    },
    "online": {
     "files_fired": 1,
-    "files_matched": 8,
+    "files_matched": 5,
     "fired": 1,
-    "matched": 39
+    "matched": 18
    },
    "pattern_nodes": 2,
-   "rank": 6,
+   "rank": 7,
    "records": 2,
    "selection": "emitted"
   },
@@ -654,10 +1067,10 @@
     ]
    },
    "online": {
-    "files_fired": 25,
-    "files_matched": 143,
-    "fired": 66,
-    "matched": 3192
+    "files_fired": 26,
+    "files_matched": 145,
+    "fired": 67,
+    "matched": 3195
    },
    "pattern_nodes": 1,
    "records": 2,
@@ -850,9 +1263,9 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 116,
+    "files_matched": 119,
     "fired": 0,
-    "matched": 1091
+    "matched": 1101
    },
    "pattern_nodes": 1,
    "records": 1,
@@ -905,9 +1318,48 @@
     "matched": 20
    },
    "pattern_nodes": 2,
-   "rank": 10,
+   "rank": 11,
    "records": 1,
    "selection": "emitted"
+  },
+  "synth_lshr_c497647d_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     2
+    ],
+    "match_instances": 3,
+    "match_occurrences": 8,
+    "pass_instances": 1,
+    "pass_occurrences": 2
+   },
+   "guard_cost": 10,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 2,
+      "fn": "synth_lshr_c497647d_1u_d0",
+      "source": 2
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 5,
+    "fired": 0,
+    "matched": 11
+   },
+   "pattern_nodes": 2,
+   "records": 1,
+   "selection": "plain_variant_selected"
   },
   "synth_lshr_f9d26973": {
    "corpus": {
@@ -947,6 +1399,54 @@
    "pattern_nodes": 2,
    "records": 1,
    "selection": "redundant_with_synthesized"
+  },
+  "synth_mul_8b175515": {
+   "corpus": {
+    "disjunct_occurrences": [
+     31
+    ],
+    "match_instances": 8,
+    "match_occurrences": 31,
+    "pass_instances": 8,
+    "pass_occurrences": 31
+   },
+   "guard_cost": 0,
+   "in_set": {
+    "better": 0,
+    "evidence": [
+     "mad.u16.ll: +1"
+    ],
+    "fired": 9,
+    "insns": 1,
+    "worse": 1
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_mul_8b175515_d0",
+      "source": 4
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 3,
+    "files_matched": 4,
+    "fired": 9,
+    "matched": 10
+   },
+   "pattern_nodes": 3,
+   "records": 1,
+   "selection": "measured_regression"
   },
   "synth_or_155b7f74": {
    "corpus": {
@@ -1143,6 +1643,45 @@
    "records": 4,
    "selection": "never_fires"
   },
+  "synth_or_89fb0342_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     2
+    ],
+    "match_instances": 40,
+    "match_occurrences": 206,
+    "pass_instances": 1,
+    "pass_occurrences": 2
+   },
+   "guard_cost": 9,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_or_89fb0342_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 24,
+    "fired": 0,
+    "matched": 442
+   },
+   "pattern_nodes": 2,
+   "records": 4,
+   "selection": "never_fires"
+  },
   "synth_or_9c2e7958": {
    "corpus": {
     "disjunct_occurrences": [
@@ -1162,9 +1701,11 @@
     "worse": 0
    },
    "marginal": {
-    "better": 0,
-    "evidence": [],
-    "insns": 0,
+    "better": 1,
+    "evidence": [
+     "bitop3-shared-operand.ll: -1"
+    ],
+    "insns": -1,
     "worse": 0
    },
    "novelty": {
@@ -1180,17 +1721,95 @@
     ]
    },
    "online": {
-    "files_fired": 2,
-    "files_matched": 2,
-    "fired": 3,
-    "matched": 3
+    "files_fired": 1,
+    "files_matched": 1,
+    "fired": 1,
+    "matched": 1
    },
    "pattern_nodes": 2,
-   "rank": 14,
+   "rank": 16,
    "records": 4,
    "selection": "emitted"
   },
+  "synth_or_9c2e7958_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     4
+    ],
+    "match_instances": 2,
+    "match_occurrences": 4,
+    "pass_instances": 2,
+    "pass_occurrences": 4
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_or_9c2e7958_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 2,
+    "files_matched": 2,
+    "fired": 2,
+    "matched": 2
+   },
+   "pattern_nodes": 2,
+   "records": 4,
+   "selection": "plain_variant_selected"
+  },
   "synth_or_d4ad0f19": {
+   "corpus": {
+    "disjunct_occurrences": [
+     2
+    ],
+    "match_instances": 1,
+    "match_occurrences": 2,
+    "pass_instances": 1,
+    "pass_occurrences": 2
+   },
+   "guard_cost": 9,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_or_d4ad0f19_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 2,
+   "records": 4,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_or_d4ad0f19_1u": {
    "corpus": {
     "disjunct_occurrences": [
      2
@@ -1211,11 +1830,9 @@
     "worse": 0
    },
    "marginal": {
-    "better": 1,
-    "evidence": [
-     "bitop3-shared-operand.ll: -2"
-    ],
-    "insns": -2,
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
     "worse": 0
    },
    "novelty": {
@@ -1225,7 +1842,7 @@
       "alone": 2,
       "class": "new",
       "existing": 3,
-      "fn": "synth_or_d4ad0f19_d0",
+      "fn": "synth_or_d4ad0f19_1u_d0",
       "source": 3
      }
     ]
@@ -1237,7 +1854,7 @@
     "matched": 1
    },
    "pattern_nodes": 2,
-   "rank": 8,
+   "rank": 9,
    "records": 4,
    "selection": "emitted"
   },
@@ -1288,11 +1905,50 @@
     "matched": 1
    },
    "pattern_nodes": 3,
-   "rank": 3,
+   "rank": 4,
    "records": 8,
    "selection": "emitted"
   },
   "synth_or_d7cb9f3c": {
+   "corpus": {
+    "disjunct_occurrences": [
+     2
+    ],
+    "match_instances": 1,
+    "match_occurrences": 2,
+    "pass_instances": 1,
+    "pass_occurrences": 2
+   },
+   "guard_cost": 14,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_or_d7cb9f3c_d0",
+      "source": 4
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 3,
+   "records": 4,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_or_d7cb9f3c_1u": {
    "corpus": {
     "disjunct_occurrences": [
      2
@@ -1313,11 +1969,9 @@
     "worse": 0
    },
    "marginal": {
-    "better": 1,
-    "evidence": [
-     "bitop3-shared-operand.ll: -2"
-    ],
-    "insns": -2,
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
     "worse": 0
    },
    "novelty": {
@@ -1327,7 +1981,7 @@
       "alone": 2,
       "class": "new",
       "existing": 4,
-      "fn": "synth_or_d7cb9f3c_d0",
+      "fn": "synth_or_d7cb9f3c_1u_d0",
       "source": 4
      }
     ]
@@ -1339,7 +1993,7 @@
     "matched": 1
    },
    "pattern_nodes": 3,
-   "rank": 9,
+   "rank": 10,
    "records": 4,
    "selection": "emitted"
   },
@@ -1386,7 +2040,7 @@
     "matched": 3
    },
    "pattern_nodes": 3,
-   "rank": 15,
+   "rank": 14,
    "records": 4,
    "selection": "emitted"
   },
@@ -1401,13 +2055,6 @@
     "pass_occurrences": 3
    },
    "guard_cost": 0,
-   "in_set": {
-    "better": 0,
-    "evidence": [],
-    "fired": 4,
-    "insns": 0,
-    "worse": 0
-   },
    "marginal": {
     "better": 0,
     "evidence": [],
@@ -1427,13 +2074,59 @@
     ]
    },
    "online": {
-    "files_fired": 2,
-    "files_matched": 3,
-    "fired": 4,
-    "matched": 6
+    "files_fired": 1,
+    "files_matched": 2,
+    "fired": 2,
+    "matched": 4
    },
    "pattern_nodes": 2,
-   "rank": 13,
+   "records": 1,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_shl_a7bba6d0_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     3
+    ],
+    "match_instances": 3,
+    "match_occurrences": 3,
+    "pass_instances": 3,
+    "pass_occurrences": 3
+   },
+   "guard_cost": 0,
+   "in_set": {
+    "better": 0,
+    "evidence": [],
+    "fired": 2,
+    "insns": 0,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 2,
+      "fn": "synth_shl_a7bba6d0_1u_d0",
+      "source": 2
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 2,
+    "files_matched": 3,
+    "fired": 2,
+    "matched": 4
+   },
+   "pattern_nodes": 2,
+   "rank": 15,
    "records": 1,
    "selection": "emitted"
   },
@@ -1475,6 +2168,91 @@
    "pattern_nodes": 2,
    "records": 2,
    "selection": "never_fires"
+  },
+  "synth_shl_edbd16af_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 14,
+    "match_occurrences": 160,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "guard_cost": 9,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 2,
+      "fn": "synth_shl_edbd16af_1u_d0",
+      "source": 2
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 22,
+    "fired": 0,
+    "matched": 470
+   },
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "never_fires"
+  },
+  "synth_sub_8a9faaef": {
+   "corpus": {
+    "disjunct_occurrences": [
+     4
+    ],
+    "match_instances": 1,
+    "match_occurrences": 4,
+    "pass_instances": 1,
+    "pass_occurrences": 4
+   },
+   "guard_cost": 0,
+   "in_set": {
+    "better": 0,
+    "evidence": [],
+    "fired": 2,
+    "insns": 0,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_sub_8a9faaef_d0",
+      "source": 4
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 1,
+    "files_matched": 1,
+    "fired": 2,
+    "matched": 2
+   },
+   "pattern_nodes": 3,
+   "records": 1,
+   "selection": "no_measured_gain"
   },
   "synth_sub_c1235ab0": {
    "corpus": {
@@ -1527,6 +2305,45 @@
    "records": 4,
    "selection": "emitted"
   },
+  "synth_sub_c1235ab0_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     34
+    ],
+    "match_instances": 1,
+    "match_occurrences": 34,
+    "pass_instances": 1,
+    "pass_occurrences": 34
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_sub_c1235ab0_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 3,
+   "records": 4,
+   "selection": "plain_variant_selected"
+  },
   "synth_sub_ebf10e1b": {
    "corpus": {
     "disjunct_occurrences": [
@@ -1566,6 +2383,45 @@
    "records": 2,
    "selection": "never_fires"
   },
+  "synth_sub_ebf10e1b_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_sub_ebf10e1b_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 3,
+   "records": 2,
+   "selection": "never_fires"
+  },
   "synth_trunc_110bd23a": {
    "corpus": {
     "disjunct_occurrences": [
@@ -1577,13 +2433,6 @@
     "pass_occurrences": 200
    },
    "guard_cost": 0,
-   "in_set": {
-    "better": 0,
-    "evidence": [],
-    "fired": 202,
-    "insns": 0,
-    "worse": 0
-   },
    "marginal": {
     "better": 0,
     "evidence": [],
@@ -1603,13 +2452,59 @@
     ]
    },
    "online": {
-    "files_fired": 35,
-    "files_matched": 36,
-    "fired": 202,
-    "matched": 207
+    "files_fired": 3,
+    "files_matched": 5,
+    "fired": 7,
+    "matched": 12
    },
    "pattern_nodes": 2,
-   "rank": 12,
+   "records": 1,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_trunc_110bd23a_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     200
+    ],
+    "match_instances": 12,
+    "match_occurrences": 200,
+    "pass_instances": 12,
+    "pass_occurrences": 200
+   },
+   "guard_cost": 0,
+   "in_set": {
+    "better": 0,
+    "evidence": [],
+    "fired": 199,
+    "insns": 0,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 0,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_trunc_110bd23a_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 35,
+    "files_matched": 36,
+    "fired": 195,
+    "matched": 200
+   },
+   "pattern_nodes": 2,
+   "rank": 13,
    "records": 1,
    "selection": "emitted"
   },
@@ -1692,7 +2587,7 @@
     "files_fired": 1,
     "files_matched": 445,
     "fired": 1,
-    "matched": 7418
+    "matched": 7445
    },
    "pattern_nodes": 1,
    "records": 1,
@@ -1737,6 +2632,45 @@
    "records": 2,
    "selection": "covered_by_existing_combine"
   },
+  "synth_trunc_ae393859_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 3,
+    "match_occurrences": 3,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "guard_cost": 5,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "covered",
+    "examples": [
+     {
+      "alone": 0,
+      "class": "covered",
+      "existing": 0,
+      "fn": "synth_trunc_ae393859_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 25,
+    "fired": 0,
+    "matched": 274
+   },
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "covered_by_existing_combine"
+  },
   "synth_trunc_dc391593": {
    "corpus": {
     "disjunct_occurrences": [
@@ -1762,6 +2696,45 @@
       "class": "new",
       "existing": 4,
       "fn": "synth_trunc_dc391593_d0",
+      "source": 4
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 3,
+   "records": 1,
+   "selection": "redundant_with_synthesized"
+  },
+  "synth_trunc_dc391593_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 0,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_trunc_dc391593_1u_d0",
       "source": 4
      }
     ]
@@ -1854,6 +2827,45 @@
    "records": 4,
    "selection": "never_fires"
   },
+  "synth_xor_4d0f9294_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_xor_4d0f9294_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 3,
+   "records": 4,
+   "selection": "never_fires"
+  },
   "synth_xor_535a60d9": {
    "corpus": {
     "disjunct_occurrences": [
@@ -1901,7 +2913,7 @@
     "matched": 7337
    },
    "pattern_nodes": 1,
-   "rank": 2,
+   "rank": 3,
    "records": 2,
    "selection": "emitted"
   },
@@ -1952,7 +2964,7 @@
     "matched": 1
    },
    "pattern_nodes": 2,
-   "rank": 4,
+   "rank": 5,
    "records": 4,
    "selection": "emitted"
   },
@@ -2003,11 +3015,50 @@
     "matched": 1
    },
    "pattern_nodes": 3,
-   "rank": 7,
+   "rank": 8,
    "records": 4,
    "selection": "emitted"
   },
   "synth_xor_c2d39168": {
+   "corpus": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "guard_cost": 10,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 3,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_xor_c2d39168_d0",
+      "source": 4
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 1,
+    "fired": 0,
+    "matched": 1
+   },
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_xor_c2d39168_1u": {
    "corpus": {
     "disjunct_occurrences": [
      1
@@ -2040,7 +3091,7 @@
       "alone": 3,
       "class": "new",
       "existing": 4,
-      "fn": "synth_xor_c2d39168_d0",
+      "fn": "synth_xor_c2d39168_1u_d0",
       "source": 4
      }
     ]
@@ -2055,17 +3106,17 @@
    "records": 2,
    "selection": "measured_regression"
   },
-  "synth_zext_19c72bf5": {
+  "synth_zext_96d1e64d": {
    "corpus": {
     "disjunct_occurrences": [
      1
     ],
-    "match_instances": 3,
-    "match_occurrences": 4,
+    "match_instances": 6,
+    "match_occurrences": 35,
     "pass_instances": 1,
     "pass_occurrences": 1
    },
-   "guard_cost": 14,
+   "guard_cost": 0,
    "marginal": {
     "better": 0,
     "evidence": [],
@@ -2076,23 +3127,158 @@
     "class": "new",
     "examples": [
      {
-      "alone": 4,
+      "alone": 1,
       "class": "new",
-      "existing": 5,
-      "fn": "synth_zext_19c72bf5_d0",
-      "source": 5
+      "existing": 2,
+      "fn": "synth_zext_96d1e64d_d0",
+      "source": 2
      }
     ]
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 2,
+    "files_matched": 33,
     "fired": 0,
-    "matched": 6
+    "matched": 94
    },
-   "pattern_nodes": 3,
-   "records": 4,
-   "selection": "redundant_with_synthesized"
+   "pattern_nodes": 2,
+   "records": 1,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_zext_96d1e64d_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 6,
+    "match_occurrences": 35,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "guard_cost": 0,
+   "in_set": {
+    "better": 0,
+    "evidence": [],
+    "fired": 2,
+    "insns": 0,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 2,
+      "fn": "synth_zext_96d1e64d_1u_d0",
+      "source": 2
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 2,
+    "files_matched": 28,
+    "fired": 2,
+    "matched": 76
+   },
+   "pattern_nodes": 2,
+   "records": 1,
+   "selection": "no_measured_gain"
+  },
+  "synth_zext_a25c36b8": {
+   "corpus": {
+    "disjunct_occurrences": [
+     7
+    ],
+    "match_instances": 4,
+    "match_occurrences": 38,
+    "pass_instances": 1,
+    "pass_occurrences": 7
+   },
+   "guard_cost": 5,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_zext_a25c36b8_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 7,
+    "fired": 0,
+    "matched": 64
+   },
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_zext_a25c36b8_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     7
+    ],
+    "match_instances": 4,
+    "match_occurrences": 38,
+    "pass_instances": 1,
+    "pass_occurrences": 7
+   },
+   "guard_cost": 5,
+   "in_set": {
+    "better": 2,
+    "evidence": [
+     "fix-sgpr-copies-wwm.ll: -2",
+     "local-atomics.ll: -4"
+    ],
+    "fired": 7,
+    "insns": -6,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_zext_a25c36b8_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 3,
+    "files_matched": 5,
+    "fired": 7,
+    "matched": 13
+   },
+   "pattern_nodes": 2,
+   "rank": 2,
+   "records": 2,
+   "selection": "emitted"
   },
   "synth_zext_b81e0e0c": {
    "corpus": {
@@ -2125,9 +3311,9 @@
    },
    "online": {
     "files_fired": 1,
-    "files_matched": 321,
+    "files_matched": 320,
     "fired": 1,
-    "matched": 2948
+    "matched": 2939
    },
    "pattern_nodes": 1,
    "records": 1,
@@ -2135,22 +3321,24 @@
   }
  },
  "selected_set": {
-  "applications": 262,
+  "applications": 264,
   "failed": 0,
-  "files_better": 7,
+  "files_better": 9,
   "files_compiled": 811,
   "files_worse": 0,
-  "guard_evaluations": 7659,
-  "insns_delta": -43,
+  "guard_evaluations": 7646,
+  "insns_delta": -49,
   "regressions": []
  },
  "summary": {
-  "covered_by_existing_combine": 13,
-  "emitted": 15,
-  "measured_regression": 2,
-  "never_fires": 9,
-  "no_measured_gain": 3,
-  "redundant_with_synthesized": 7
+  "covered_by_existing_combine": 14,
+  "emitted": 16,
+  "measured_regression": 3,
+  "never_fires": 16,
+  "no_measured_gain": 6,
+  "one_use_variant_selected": 12,
+  "plain_variant_selected": 3,
+  "redundant_with_synthesized": 8
  },
  "target": "AMDGPU"
 }

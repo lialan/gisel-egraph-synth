@@ -103,35 +103,43 @@ def synth_xor_66308b8b_c3 : GICombineRule<
          [{ return gisynth::guard_synth_xor_66308b8b(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
   (apply (GIReplaceReg $dst, $x1))>;
 
-// synth_or_d7cb9f3c: (G_OR:s32 (G_SUB:s32 x0 x1) (G_XOR:s32 x1 x2)) -> (G_XOR:s32 x0 x1)
+// synth_or_d7cb9f3c_1u: (G_OR:s32 (G_SUB:s32 x0 x1) (G_XOR:s32 x1 x2)) -> (G_XOR:s32 x0 x1)
 //   if all(KO(x0) | KZ(x2)) && all(KZ(x1) | KO(x2))
-def synth_or_d7cb9f3c : GICombineRule<
+def synth_or_d7cb9f3c_1u : GICombineRule<
   (defs root:$dst),
   (match (G_SUB $t0, $x0, $x1),
          (G_XOR $t1, $x1, $x2),
          (G_OR $dst, $t0, $t1),
-         [{ return gisynth::guard_synth_or_d7cb9f3c(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_or_d7cb9f3c_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
   (apply (G_XOR $dst, $x0, $x1))>;
-def synth_or_d7cb9f3c_c1 : GICombineRule<
+def synth_or_d7cb9f3c_1u_c1 : GICombineRule<
   (defs root:$dst),
   (match (G_XOR $t1, $x1, $x2),
          (G_SUB $t0, $x0, $x1),
          (G_OR $dst, $t1, $t0),
-         [{ return gisynth::guard_synth_or_d7cb9f3c(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_or_d7cb9f3c_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
   (apply (G_XOR $dst, $x0, $x1))>;
-def synth_or_d7cb9f3c_c2 : GICombineRule<
+def synth_or_d7cb9f3c_1u_c2 : GICombineRule<
   (defs root:$dst),
   (match (G_SUB $t0, $x0, $x1),
          (G_XOR $t1, $x2, $x1),
          (G_OR $dst, $t0, $t1),
-         [{ return gisynth::guard_synth_or_d7cb9f3c(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_or_d7cb9f3c_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
   (apply (G_XOR $dst, $x0, $x1))>;
-def synth_or_d7cb9f3c_c3 : GICombineRule<
+def synth_or_d7cb9f3c_1u_c3 : GICombineRule<
   (defs root:$dst),
   (match (G_XOR $t1, $x2, $x1),
          (G_SUB $t0, $x0, $x1),
          (G_OR $dst, $t1, $t0),
-         [{ return gisynth::guard_synth_or_d7cb9f3c(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_or_d7cb9f3c_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
   (apply (G_XOR $dst, $x0, $x1))>;
 
 // synth_sub_c1235ab0: (G_SUB:s32 (G_ADD:s32 x0 x1) (G_ADD:s32 x0 x2)) -> (G_SUB:s32 x1 x2)
@@ -165,6 +173,45 @@ def synth_sub_c1235ab0_c3 : GICombineRule<
          [{ return gisynth::guard_synth_sub_c1235ab0(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
   (apply (G_SUB $dst, $x1, $x2))>;
 
+// synth_sub_c1235ab0_1u: (G_SUB:s32 (G_ADD:s32 x0 x1) (G_ADD:s32 x0 x2)) -> (G_SUB:s32 x1 x2)
+//   if true
+def synth_sub_c1235ab0_1u : GICombineRule<
+  (defs root:$dst),
+  (match (G_ADD $t0, $x0, $x1),
+         (G_ADD $t1, $x0, $x2),
+         (G_SUB $dst, $t0, $t1),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_sub_c1235ab0_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+  (apply (G_SUB $dst, $x1, $x2))>;
+def synth_sub_c1235ab0_1u_c1 : GICombineRule<
+  (defs root:$dst),
+  (match (G_ADD $t0, $x0, $x1),
+         (G_ADD $t1, $x2, $x0),
+         (G_SUB $dst, $t0, $t1),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_sub_c1235ab0_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+  (apply (G_SUB $dst, $x1, $x2))>;
+def synth_sub_c1235ab0_1u_c2 : GICombineRule<
+  (defs root:$dst),
+  (match (G_ADD $t0, $x1, $x0),
+         (G_ADD $t1, $x0, $x2),
+         (G_SUB $dst, $t0, $t1),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_sub_c1235ab0_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+  (apply (G_SUB $dst, $x1, $x2))>;
+def synth_sub_c1235ab0_1u_c3 : GICombineRule<
+  (defs root:$dst),
+  (match (G_ADD $t0, $x1, $x0),
+         (G_ADD $t1, $x2, $x0),
+         (G_SUB $dst, $t0, $t1),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_sub_c1235ab0_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+  (apply (G_SUB $dst, $x1, $x2))>;
+
 // synth_xor_535a60d9: (G_XOR:s8 x0 x1) -> x0
 //   if all(KZ(x1))
 def synth_xor_535a60d9 : GICombineRule<
@@ -178,49 +225,55 @@ def synth_xor_535a60d9_c1 : GICombineRule<
          [{ return gisynth::guard_synth_xor_535a60d9(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg()); }]),
   (apply (GIReplaceReg $dst, $x0))>;
 
-// synth_and_83abd1ae: (G_AND:s32 (G_ASHR:s32 x0 x1) x2) -> (G_LSHR:s32 x0 x1)
+// synth_and_83abd1ae_1u: (G_AND:s32 (G_ASHR:s32 x0 x1) x2) -> (G_LSHR:s32 x0 x1)
 //   if leading(KZ(x2)) >= umax(x1) && trailing(KO(x2)) >= bitwidth - umin(x1)
-def synth_and_83abd1ae : GICombineRule<
+def synth_and_83abd1ae_1u : GICombineRule<
   (defs root:$dst),
   (match (G_ASHR $t0, $x0, $x1),
          (G_AND $dst, $t0, $x2),
-         [{ return gisynth::guard_synth_and_83abd1ae(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_and_83abd1ae_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
   (apply (G_LSHR $dst, $x0, $x1))>;
-def synth_and_83abd1ae_c1 : GICombineRule<
+def synth_and_83abd1ae_1u_c1 : GICombineRule<
   (defs root:$dst),
   (match (G_ASHR $t0, $x0, $x1),
          (G_AND $dst, $x2, $t0),
-         [{ return gisynth::guard_synth_and_83abd1ae(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_and_83abd1ae_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
   (apply (G_LSHR $dst, $x0, $x1))>;
 
-// synth_and_b1e9087f: (G_AND:s32 (G_SEXT:s32 x0) x1) -> (G_ZEXT:s32 x0)
+// synth_and_b1e9087f_1u: (G_AND:s32 (G_SEXT:s32 x0) x1) -> (G_ZEXT:s32 x0)
 //   if high(KZ(x1), bitwidth(x0)) && low(KO(x1), bitwidth(x0))
-def synth_and_b1e9087f : GICombineRule<
+def synth_and_b1e9087f_1u : GICombineRule<
   (defs root:$dst),
   (match (G_SEXT $t0, $x0),
          (G_AND $dst, $t0, $x1),
-         [{ return gisynth::guard_synth_and_b1e9087f(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_and_b1e9087f_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
   (apply (G_ZEXT $dst, $x0))>;
-def synth_and_b1e9087f_c1 : GICombineRule<
+def synth_and_b1e9087f_1u_c1 : GICombineRule<
   (defs root:$dst),
   (match (G_SEXT $t0, $x0),
          (G_AND $dst, $x1, $t0),
-         [{ return gisynth::guard_synth_and_b1e9087f(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_and_b1e9087f_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
   (apply (G_ZEXT $dst, $x0))>;
 
-// synth_and_d05a2340: (G_AND:s64 (G_ASHR:s64 x0 x1) x2) -> (G_LSHR:s64 x0 x1)
+// synth_and_d05a2340_1u: (G_AND:s64 (G_ASHR:s64 x0 x1) x2) -> (G_LSHR:s64 x0 x1)
 //   if leading(KZ(x2)) >= umax(x1) && trailing(KO(x2)) >= bitwidth - umin(x1)
-def synth_and_d05a2340 : GICombineRule<
+def synth_and_d05a2340_1u : GICombineRule<
   (defs root:$dst),
   (match (G_ASHR $t0, $x0, $x1),
          (G_AND $dst, $t0, $x2),
-         [{ return gisynth::guard_synth_and_d05a2340(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_and_d05a2340_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
   (apply (G_LSHR $dst, $x0, $x1))>;
-def synth_and_d05a2340_c1 : GICombineRule<
+def synth_and_d05a2340_1u_c1 : GICombineRule<
   (defs root:$dst),
   (match (G_ASHR $t0, $x0, $x1),
          (G_AND $dst, $x2, $t0),
-         [{ return gisynth::guard_synth_and_d05a2340(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_and_d05a2340_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
   (apply (G_LSHR $dst, $x0, $x1))>;
 
 // synth_lshr_c497647d: (G_LSHR:s32 (G_ASHR:s32 x0 x1) x2) -> (G_LSHR:s32 x0 x2)
@@ -259,65 +312,90 @@ def synth_or_9c2e7958_c3 : GICombineRule<
          [{ return gisynth::guard_synth_or_9c2e7958(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
   (apply (G_OR $dst, $x0, $x1))>;
 
-// synth_or_d4ad0f19: (G_OR:s32 (G_ADD:s32 x0 x1) x0) -> (G_XOR:s32 x0 x1)
+// synth_or_d4ad0f19_1u: (G_OR:s32 (G_ADD:s32 x0 x1) x0) -> (G_XOR:s32 x0 x1)
 //   if all(KZ(x0) | KZ(x1))
-def synth_or_d4ad0f19 : GICombineRule<
+def synth_or_d4ad0f19_1u : GICombineRule<
   (defs root:$dst),
   (match (G_ADD $t0, $x0, $x1),
          (G_OR $dst, $t0, $x0),
-         [{ return gisynth::guard_synth_or_d4ad0f19(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_or_d4ad0f19_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
   (apply (G_XOR $dst, $x0, $x1))>;
-def synth_or_d4ad0f19_c1 : GICombineRule<
+def synth_or_d4ad0f19_1u_c1 : GICombineRule<
   (defs root:$dst),
   (match (G_ADD $t0, $x0, $x1),
          (G_OR $dst, $x0, $t0),
-         [{ return gisynth::guard_synth_or_d4ad0f19(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_or_d4ad0f19_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
   (apply (G_XOR $dst, $x0, $x1))>;
-def synth_or_d4ad0f19_c2 : GICombineRule<
+def synth_or_d4ad0f19_1u_c2 : GICombineRule<
   (defs root:$dst),
   (match (G_ADD $t0, $x1, $x0),
          (G_OR $dst, $t0, $x0),
-         [{ return gisynth::guard_synth_or_d4ad0f19(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_or_d4ad0f19_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
   (apply (G_XOR $dst, $x0, $x1))>;
-def synth_or_d4ad0f19_c3 : GICombineRule<
+def synth_or_d4ad0f19_1u_c3 : GICombineRule<
   (defs root:$dst),
   (match (G_ADD $t0, $x1, $x0),
          (G_OR $dst, $x0, $t0),
-         [{ return gisynth::guard_synth_or_d4ad0f19(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_or_d4ad0f19_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
   (apply (G_XOR $dst, $x0, $x1))>;
 
-// synth_shl_a7bba6d0: (G_SHL:s64 x0 (G_ZEXT:s64 x1)) -> (G_SHL:s64 x0 x1)
+// synth_shl_a7bba6d0_1u: (G_SHL:s64 x0 (G_ZEXT:s64 x1)) -> (G_SHL:s64 x0 x1)
 //   if true
-def synth_shl_a7bba6d0 : GICombineRule<
+def synth_shl_a7bba6d0_1u : GICombineRule<
   (defs root:$dst),
   (match (G_ZEXT $t0, $x1),
          (G_SHL $dst, $x0, $t0),
-         [{ return gisynth::guard_synth_shl_a7bba6d0(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_shl_a7bba6d0_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
   (apply (G_SHL $dst, $x0, $x1))>;
 
-// synth_shl_edbd16af: (G_SHL:s32 (G_AND:s32 x0 x1) x2) -> (G_SHL:s32 x0 x2)
+// synth_shl_edbd16af_1u: (G_SHL:s32 (G_AND:s32 x0 x1) x2) -> (G_SHL:s32 x0 x2)
 //   if trailing(KO(x1)) >= bitwidth - umin(x2)
-def synth_shl_edbd16af : GICombineRule<
+def synth_shl_edbd16af_1u : GICombineRule<
   (defs root:$dst),
   (match (G_AND $t0, $x0, $x1),
          (G_SHL $dst, $t0, $x2),
-         [{ return gisynth::guard_synth_shl_edbd16af(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_shl_edbd16af_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
   (apply (G_SHL $dst, $x0, $x2))>;
-def synth_shl_edbd16af_c1 : GICombineRule<
+def synth_shl_edbd16af_1u_c1 : GICombineRule<
   (defs root:$dst),
   (match (G_AND $t0, $x1, $x0),
          (G_SHL $dst, $t0, $x2),
-         [{ return gisynth::guard_synth_shl_edbd16af(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_shl_edbd16af_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
   (apply (G_SHL $dst, $x0, $x2))>;
 
-// synth_trunc_110bd23a: (G_TRUNC:s8 (G_TRUNC:s16 x0)) -> (G_TRUNC:s8 x0)
+// synth_trunc_110bd23a_1u: (G_TRUNC:s8 (G_TRUNC:s16 x0)) -> (G_TRUNC:s8 x0)
 //   if true
-def synth_trunc_110bd23a : GICombineRule<
+def synth_trunc_110bd23a_1u : GICombineRule<
   (defs root:$dst),
   (match (G_TRUNC $t0, $x0),
          (G_TRUNC $dst, $t0),
-         [{ return gisynth::guard_synth_trunc_110bd23a(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${t0}.getReg()); }]),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_trunc_110bd23a_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${t0}.getReg()); }]),
   (apply (G_TRUNC $dst, $x0))>;
+
+// synth_zext_a25c36b8_1u: (G_ZEXT:s32 (G_XOR:s1 x0 x1)) -> (G_LSHR:s32 1:s32 x0)
+//   if all(KO(x1))
+def synth_zext_a25c36b8_1u : GICombineRule<
+  (defs root:$dst),
+  (match (G_XOR $t0, $x0, $x1),
+         (G_ZEXT $dst, $t0),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_zext_a25c36b8_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+  (apply (G_LSHR $dst, (GITypeOf<"$dst"> 1), $x0))>;
+def synth_zext_a25c36b8_1u_c1 : GICombineRule<
+  (defs root:$dst),
+  (match (G_XOR $t0, $x1, $x0),
+         (G_ZEXT $dst, $t0),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_zext_a25c36b8_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+  (apply (G_LSHR $dst, (GITypeOf<"$dst"> 1), $x0))>;
 
 // synth_and_5466e589: (G_AND:s32 (G_XOR:s32 x0 x1) (G_XOR:s32 x0 x2)) -> (G_AND:s32 (G_XOR:s32 x0 x1) x2)
 //   if all(KZ(x0) | KO(x1))
@@ -488,34 +566,36 @@ def synth_xor_70267483_c3 : GICombineRule<
   (apply (G_XOR GITypeOf<"$dst">:$n0, $x1, $x2),
          (G_AND $dst, $n0, $x0))>;
 
-// AArch64: 7 rules, 18 records.
+// AArch64: 8 rules, 19 records.
 def gi_synth_combines_aarch64 : GICombineGroup<[
   synth_xor_66308b8b, synth_xor_66308b8b_c1, synth_xor_66308b8b_c2,
-  synth_xor_66308b8b_c3, synth_sub_c1235ab0, synth_sub_c1235ab0_c1,
-  synth_sub_c1235ab0_c2, synth_sub_c1235ab0_c3, synth_and_83abd1ae,
-  synth_and_83abd1ae_c1, synth_lshr_c497647d, synth_shl_a7bba6d0,
-  synth_shl_edbd16af, synth_shl_edbd16af_c1, synth_or_ecb7e28d,
-  synth_or_ecb7e28d_c1, synth_or_ecb7e28d_c2, synth_or_ecb7e28d_c3
+  synth_xor_66308b8b_c3, synth_sub_c1235ab0_1u, synth_sub_c1235ab0_1u_c1,
+  synth_sub_c1235ab0_1u_c2, synth_sub_c1235ab0_1u_c3, synth_and_83abd1ae_1u,
+  synth_and_83abd1ae_1u_c1, synth_lshr_c497647d, synth_shl_a7bba6d0_1u,
+  synth_shl_edbd16af_1u, synth_shl_edbd16af_1u_c1, synth_trunc_110bd23a_1u,
+  synth_or_ecb7e28d, synth_or_ecb7e28d_c1, synth_or_ecb7e28d_c2,
+  synth_or_ecb7e28d_c3
 ]>;
 
-// AMDGPU: 15 rules, 53 records.
+// AMDGPU: 16 rules, 55 records.
 def gi_synth_combines_amdgpu : GICombineGroup<[
   synth_or_d54b7fbe, synth_or_d54b7fbe_c1, synth_or_d54b7fbe_c2,
   synth_or_d54b7fbe_c3, synth_or_d54b7fbe_c4, synth_or_d54b7fbe_c5,
   synth_or_d54b7fbe_c6, synth_or_d54b7fbe_c7, synth_xor_66308b8b,
   synth_xor_66308b8b_c1, synth_xor_66308b8b_c2, synth_xor_66308b8b_c3,
-  synth_or_d7cb9f3c, synth_or_d7cb9f3c_c1, synth_or_d7cb9f3c_c2,
-  synth_or_d7cb9f3c_c3, synth_sub_c1235ab0, synth_sub_c1235ab0_c1,
+  synth_or_d7cb9f3c_1u, synth_or_d7cb9f3c_1u_c1, synth_or_d7cb9f3c_1u_c2,
+  synth_or_d7cb9f3c_1u_c3, synth_sub_c1235ab0, synth_sub_c1235ab0_c1,
   synth_sub_c1235ab0_c2, synth_sub_c1235ab0_c3, synth_xor_535a60d9,
-  synth_xor_535a60d9_c1, synth_and_b1e9087f, synth_and_b1e9087f_c1,
-  synth_and_d05a2340, synth_and_d05a2340_c1, synth_lshr_c497647d,
+  synth_xor_535a60d9_c1, synth_and_b1e9087f_1u, synth_and_b1e9087f_1u_c1,
+  synth_and_d05a2340_1u, synth_and_d05a2340_1u_c1, synth_lshr_c497647d,
   synth_or_9c2e7958, synth_or_9c2e7958_c1, synth_or_9c2e7958_c2,
-  synth_or_9c2e7958_c3, synth_or_d4ad0f19, synth_or_d4ad0f19_c1,
-  synth_or_d4ad0f19_c2, synth_or_d4ad0f19_c3, synth_shl_a7bba6d0,
-  synth_trunc_110bd23a, synth_and_5466e589, synth_and_5466e589_c1,
-  synth_and_5466e589_c2, synth_and_5466e589_c3, synth_and_5466e589_c4,
-  synth_and_5466e589_c5, synth_and_5466e589_c6, synth_and_5466e589_c7,
-  synth_or_ecb7e28d, synth_or_ecb7e28d_c1, synth_or_ecb7e28d_c2,
-  synth_or_ecb7e28d_c3, synth_xor_70267483, synth_xor_70267483_c1,
-  synth_xor_70267483_c2, synth_xor_70267483_c3
+  synth_or_9c2e7958_c3, synth_or_d4ad0f19_1u, synth_or_d4ad0f19_1u_c1,
+  synth_or_d4ad0f19_1u_c2, synth_or_d4ad0f19_1u_c3, synth_shl_a7bba6d0_1u,
+  synth_trunc_110bd23a_1u, synth_zext_a25c36b8_1u, synth_zext_a25c36b8_1u_c1,
+  synth_and_5466e589, synth_and_5466e589_c1, synth_and_5466e589_c2,
+  synth_and_5466e589_c3, synth_and_5466e589_c4, synth_and_5466e589_c5,
+  synth_and_5466e589_c6, synth_and_5466e589_c7, synth_or_ecb7e28d,
+  synth_or_ecb7e28d_c1, synth_or_ecb7e28d_c2, synth_or_ecb7e28d_c3,
+  synth_xor_70267483, synth_xor_70267483_c1, synth_xor_70267483_c2,
+  synth_xor_70267483_c3
 ]>;

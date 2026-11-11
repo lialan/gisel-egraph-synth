@@ -16,8 +16,14 @@ PROFILE_DIR = os.path.join(HERE, 'targets')
 
 class Target:
     def __init__(self, name, triple_flags, combiner, enable_flag,
-                 corpus_flag, arg32, arg64, ret, insn_regex):
+                 corpus_flag, arg32, arg64, ret, insn_regex,
+                 native_bits=32):
         self.name = name
+        # The width of the smallest register of the target's integer
+        # operations. An operation on a narrower type is done in a register
+        # of this width, so a rule that moves an operation to a wider type
+        # of at most this width costs nothing on this target.
+        self.native_bits = native_bits
         self.triple_flags = triple_flags
         self.ll_flags = triple_flags + ['-O2', '-global-isel',
                                         '-global-isel-abort=2']
@@ -56,6 +62,9 @@ TARGETS = {
         lambda r: 'RET_ReallyLR implicit %s' % r,
         r'^\t[a-z][a-z0-9.]*(\s|$)'),
 }
+
+
+NATIVE_BITS = max(t.native_bits for t in TARGETS.values())
 
 
 def get(name):

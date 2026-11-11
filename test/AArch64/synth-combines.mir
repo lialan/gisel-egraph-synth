@@ -308,17 +308,18 @@ body: |
     RET_ReallyLR implicit $x0
 ...
 
-# synth_trunc_110bd23a is in the library and AMDGPU selects it; the AArch64
-# profile does not (it costs instructions there, measured), so nothing
-# changes.
+# synth_trunc_110bd23a_1u: trunc(trunc a) -> trunc a. The AArch64 profile
+# selects the variant of the rule that applies only if the inner value has no
+# other user (the rule without that guard costs instructions there,
+# measured).
 ---
-name: trunc_of_trunc_not_selected
+name: trunc_of_trunc_one_use
 tracksRegLiveness: true
 body: |
   bb.0:
     liveins: $x0, $x1, $x2
 
-    ; OFF-LABEL: name: trunc_of_trunc_not_selected
+    ; OFF-LABEL: name: trunc_of_trunc_one_use
     ; OFF: liveins: $x0, $x1, $x2
     ; OFF-NEXT: {{  $}}
     ; OFF-NEXT: %a:_(s64) = COPY $x0
@@ -328,12 +329,11 @@ body: |
     ; OFF-NEXT: $w0 = COPY %r(s32)
     ; OFF-NEXT: RET_ReallyLR implicit $w0
     ;
-    ; ON-LABEL: name: trunc_of_trunc_not_selected
+    ; ON-LABEL: name: trunc_of_trunc_one_use
     ; ON: liveins: $x0, $x1, $x2
     ; ON-NEXT: {{  $}}
     ; ON-NEXT: %a:_(s64) = COPY $x0
-    ; ON-NEXT: %t0:_(s32) = G_TRUNC %a(s64)
-    ; ON-NEXT: %r16:_(s16) = G_TRUNC %t0(s32)
+    ; ON-NEXT: %r16:_(s16) = G_TRUNC %a(s64)
     ; ON-NEXT: %r:_(s32) = G_ZEXT %r16(s16)
     ; ON-NEXT: $w0 = COPY %r(s32)
     ; ON-NEXT: RET_ReallyLR implicit $w0
@@ -345,4 +345,43 @@ body: |
     %r:_(s32) = G_ZEXT %r16(s16)
     $w0 = COPY %r(s32)
     RET_ReallyLR implicit $w0
+...
+
+# The inner value has a second user: the variant with the one-use guard does
+# not apply.
+---
+name: trunc_of_trunc_shared
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x0
+
+    ; OFF-LABEL: name: trunc_of_trunc_shared
+    ; OFF: liveins: $x0
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %a:_(s64) = COPY $x0
+    ; OFF-NEXT: %t0:_(s32) = G_TRUNC %a(s64)
+    ; OFF-NEXT: %r16:_(s16) = G_TRUNC %t0(s32)
+    ; OFF-NEXT: %r:_(s32) = G_ZEXT %r16(s16)
+    ; OFF-NEXT: $w0 = COPY %r(s32)
+    ; OFF-NEXT: $w1 = COPY %t0(s32)
+    ; OFF-NEXT: RET_ReallyLR implicit $w0, implicit $w1
+    ;
+    ; ON-LABEL: name: trunc_of_trunc_shared
+    ; ON: liveins: $x0
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %a:_(s64) = COPY $x0
+    ; ON-NEXT: %t0:_(s32) = G_TRUNC %a(s64)
+    ; ON-NEXT: %r16:_(s16) = G_TRUNC %t0(s32)
+    ; ON-NEXT: %r:_(s32) = G_ZEXT %r16(s16)
+    ; ON-NEXT: $w0 = COPY %r(s32)
+    ; ON-NEXT: $w1 = COPY %t0(s32)
+    ; ON-NEXT: RET_ReallyLR implicit $w0, implicit $w1
+    %a:_(s64) = COPY $x0
+    %t0:_(s32) = G_TRUNC %a(s64)
+    %r16:_(s16) = G_TRUNC %t0(s32)
+    %r:_(s32) = G_ZEXT %r16(s16)
+    $w0 = COPY %r(s32)
+    $w1 = COPY %t0(s32)
+    RET_ReallyLR implicit $w0, implicit $w1
 ...

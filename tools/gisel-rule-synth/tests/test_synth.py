@@ -639,10 +639,49 @@ class EmitTest(unittest.TestCase):
         for r in self.db['rules']:
             self.assertEqual(r['semantic_status']['kind'],
                              'verified_refinement')
-            if r['class'] != 'reduces_cost' or 'dominated_by' in r:
+            # A rule that moves an operation to a wider type is emitted
+            # only if that type fits in a register of a target.
+            widens = r['class'] == 'widens_operation' and \
+                emit.widened_bits(r) <= targets.NATIVE_BITS and \
+                r['cost']['replacement'] < r['cost']['source']
+            if (r['class'] != 'reduces_cost' and not widens) or \
+                    'dominated_by' in r:
                 self.assertNotIn('def %s ' % r['id'], td)
         for r in emit.candidates(self.db):
             self.assertLess(r['cost']['replacement'], r['cost']['source'])
+
+    def test_one_use_variants(self):
+        cands = emit.candidates(self.db)
+        by_id = {r['id']: r for r in cands}
+        variants = [r for r in cands if 'variant_of' in r]
+        self.assertTrue(variants)
+        for v in variants:
+            base = by_id[v['variant_of']]
+            # The variant follows its rule, guards every interior value of
+            # the source, and exists only if the rule can fire without
+            # removing an instruction.
+            self.assertEqual(cands.index(v), cands.index(base) + 1)
+            self.assertEqual(v['id'], base['id'] + emit.ONE_USE_SUFFIX)
+            self.assertTrue(v['needs_one_use'])
+            self.assertFalse(base['needs_one_use'])
+            self.assertGreater(base['cost']['replacement'], 0)
+            self.assertIsNone(emit.one_use_variant(v))
+        td, _, _ = emit.emit(self.db, all_candidates=True)
+        v = variants[0]
+        body = td.split('def %s ' % v['id'])[1].split('def ')[0]
+        self.assertIn('GIHasOneUse', body)
+
+    def test_widening_candidates_fit_the_target(self):
+        narrow = targets.Target('T16', [], 'x-combiner', '-x', None, None,
+                                None, None, '', native_bits=16)
+        wide = {r['id'] for r in emit.candidates(self.db, targets.get(
+            'AMDGPU')) if r['class'] == 'widens_operation'}
+        self.assertTrue(wide)
+        self.assertFalse([r for r in emit.candidates(self.db, narrow)
+                          if r['class'] == 'widens_operation'])
+        for r in self.db['rules']:
+            if r['id'] in wide:
+                self.assertLessEqual(emit.widened_bits(r), 32)
 
     def test_symmetric_commuted_forms_are_not_repeated(self):
         by = {(r['source'], r['replacement']): r

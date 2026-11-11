@@ -76,11 +76,18 @@ def widens_operation(src, tgt):
     truncs into an s32 mul). Such rules are verified but not emitted: they
     are not profitable on targets with native narrow operations and would
     fight the existing narrowing combines."""
+    return widened_width(src, tgt) != 0
+
+
+def widened_width(src, tgt):
+    """The width of the widest non-cast operation of the replacement, if
+    it is wider than every non-cast operation of the source; else 0."""
     def ops(e):
         return [n for n in [e] + ir.interior_nodes(e)
                 if ir.is_op(n) and n[0] not in ir.CASTS]
-    sw = [n[1] for n in ops(src)] or [0]
-    return any(n[1] > max(sw) for n in ops(tgt))
+    sw = max([n[1] for n in ops(src)] or [0])
+    tw = max([n[1] for n in ops(tgt)] or [0])
+    return tw if tw > sw else 0
 
 
 def canonicalize(src, tgt, vw, facts):

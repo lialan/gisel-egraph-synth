@@ -55,8 +55,8 @@ inline bool guard_synth_xor_66308b8b(const MachineRegisterInfo &MRI, GISelValueT
 /// (G_OR:s32 (G_SUB:s32 x0 x1) (G_XOR:s32 x1 x2)) -> (G_XOR:s32 x0 x1)
 /// if all(KO(x0) | KZ(x2)) && all(KZ(x1) | KO(x2))
 /// Proved for widths (x0, x1, x2, t0, t1, root): 8,8,8,8,8,8; 16,16,16,16,16,16; 32,32,32,32,32,32; 64,64,64,64,64,64.
-inline bool guard_synth_or_d7cb9f3c(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0, Register T1) {
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_or_d7cb9f3c\n");
+inline bool guard_synth_or_d7cb9f3c_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0, Register T1) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_or_d7cb9f3c_1u\n");
   unsigned W[6];
   if (!getScalarWidths(MRI, {X0, X1, X2, T0, T1, Dst}, W))
     return false;
@@ -72,7 +72,7 @@ inline bool guard_synth_or_d7cb9f3c(const MachineRegisterInfo &MRI, GISelValueTr
       (K1.Zero | K2.One).isAllOnes();
   if (!Pass)
     return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_d7cb9f3c\n");
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_d7cb9f3c_1u\n");
   return true;
 }
 
@@ -91,6 +91,24 @@ inline bool guard_synth_sub_c1235ab0(const MachineRegisterInfo &MRI, GISelValueT
   if (!Pass)
     return false;
   DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_sub_c1235ab0\n");
+  return true;
+}
+
+/// (G_SUB:s32 (G_ADD:s32 x0 x1) (G_ADD:s32 x0 x2)) -> (G_SUB:s32 x1 x2)
+/// if true
+/// Proved for widths (x0, x1, x2, t0, t1, root): 8,8,8,8,8,8; 16,16,16,16,16,16; 32,32,32,32,32,32; 64,64,64,64,64,64.
+inline bool guard_synth_sub_c1235ab0_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0, Register T1) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_sub_c1235ab0_1u\n");
+  unsigned W[6];
+  if (!getScalarWidths(MRI, {X0, X1, X2, T0, T1, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][6] = {{8, 8, 8, 8, 8, 8}, {16, 16, 16, 16, 16, 16}, {32, 32, 32, 32, 32, 32}, {64, 64, 64, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  bool Pass = true;
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_sub_c1235ab0_1u\n");
   return true;
 }
 
@@ -118,8 +136,8 @@ inline bool guard_synth_xor_535a60d9(const MachineRegisterInfo &MRI, GISelValueT
 /// (G_AND:s32 (G_ASHR:s32 x0 x1) x2) -> (G_LSHR:s32 x0 x1)
 /// if leading(KZ(x2)) >= umax(x1) && trailing(KO(x2)) >= bitwidth - umin(x1)
 /// Proved for widths (x0, x1, x2, t0, root): 8,8,8,8,8; 16,16,16,16,16; 32,32,32,32,32; 64,64,64,64,64.
-inline bool guard_synth_and_83abd1ae(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0) {
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_and_83abd1ae\n");
+inline bool guard_synth_and_83abd1ae_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_and_83abd1ae_1u\n");
   unsigned W[5];
   if (!getScalarWidths(MRI, {X0, X1, X2, T0, Dst}, W))
     return false;
@@ -134,15 +152,15 @@ inline bool guard_synth_and_83abd1ae(const MachineRegisterInfo &MRI, GISelValueT
       coversLowAfterShift(K2.One, K1);
   if (!Pass)
     return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_83abd1ae\n");
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_83abd1ae_1u\n");
   return true;
 }
 
 /// (G_AND:s32 (G_SEXT:s32 x0) x1) -> (G_ZEXT:s32 x0)
 /// if high(KZ(x1), bitwidth(x0)) && low(KO(x1), bitwidth(x0))
 /// Proved for widths (x0, x1, t0, root): 8,16,16,16; 8,32,32,32; 8,64,64,64; 16,32,32,32; 16,64,64,64; 32,64,64,64.
-inline bool guard_synth_and_b1e9087f(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_and_b1e9087f\n");
+inline bool guard_synth_and_b1e9087f_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_and_b1e9087f_1u\n");
   unsigned W[4];
   if (!getScalarWidths(MRI, {X0, X1, T0, Dst}, W))
     return false;
@@ -158,15 +176,15 @@ inline bool guard_synth_and_b1e9087f(const MachineRegisterInfo &MRI, GISelValueT
       K1.One.countr_one() >= W0;
   if (!Pass)
     return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_b1e9087f\n");
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_b1e9087f_1u\n");
   return true;
 }
 
 /// (G_AND:s64 (G_ASHR:s64 x0 x1) x2) -> (G_LSHR:s64 x0 x1)
 /// if leading(KZ(x2)) >= umax(x1) && trailing(KO(x2)) >= bitwidth - umin(x1)
 /// Proved for widths (x0, x1, x2, t0, root): 16,8,16,16,16; 32,8,32,32,32; 32,16,32,32,32; 64,8,64,64,64; 64,16,64,64,64; 64,32,64,64,64.
-inline bool guard_synth_and_d05a2340(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0) {
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_and_d05a2340\n");
+inline bool guard_synth_and_d05a2340_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_and_d05a2340_1u\n");
   unsigned W[5];
   if (!getScalarWidths(MRI, {X0, X1, X2, T0, Dst}, W))
     return false;
@@ -181,7 +199,7 @@ inline bool guard_synth_and_d05a2340(const MachineRegisterInfo &MRI, GISelValueT
       coversLowAfterShift(K2.One, K1);
   if (!Pass)
     return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_d05a2340\n");
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_d05a2340_1u\n");
   return true;
 }
 
@@ -229,8 +247,8 @@ inline bool guard_synth_or_9c2e7958(const MachineRegisterInfo &MRI, GISelValueTr
 /// (G_OR:s32 (G_ADD:s32 x0 x1) x0) -> (G_XOR:s32 x0 x1)
 /// if all(KZ(x0) | KZ(x1))
 /// Proved for widths (x0, x1, t0, root): 8,8,8,8; 16,16,16,16; 32,32,32,32; 64,64,64,64.
-inline bool guard_synth_or_d4ad0f19(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_or_d4ad0f19\n");
+inline bool guard_synth_or_d4ad0f19_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_or_d4ad0f19_1u\n");
   unsigned W[4];
   if (!getScalarWidths(MRI, {X0, X1, T0, Dst}, W))
     return false;
@@ -244,15 +262,15 @@ inline bool guard_synth_or_d4ad0f19(const MachineRegisterInfo &MRI, GISelValueTr
   bool Pass = (K0.Zero | K1.Zero).isAllOnes();
   if (!Pass)
     return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_d4ad0f19\n");
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_d4ad0f19_1u\n");
   return true;
 }
 
 /// (G_SHL:s64 x0 (G_ZEXT:s64 x1)) -> (G_SHL:s64 x0 x1)
 /// if true
 /// Proved for widths (x0, x1, t0, root): 16,8,16,16; 32,8,32,32; 32,16,32,32; 64,8,64,64; 64,16,64,64; 64,32,64,64.
-inline bool guard_synth_shl_a7bba6d0(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_shl_a7bba6d0\n");
+inline bool guard_synth_shl_a7bba6d0_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_shl_a7bba6d0_1u\n");
   unsigned W[4];
   if (!getScalarWidths(MRI, {X0, X1, T0, Dst}, W))
     return false;
@@ -262,15 +280,15 @@ inline bool guard_synth_shl_a7bba6d0(const MachineRegisterInfo &MRI, GISelValueT
   bool Pass = true;
   if (!Pass)
     return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_shl_a7bba6d0\n");
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_shl_a7bba6d0_1u\n");
   return true;
 }
 
 /// (G_SHL:s32 (G_AND:s32 x0 x1) x2) -> (G_SHL:s32 x0 x2)
 /// if trailing(KO(x1)) >= bitwidth - umin(x2)
 /// Proved for widths (x0, x1, x2, t0, root): 8,8,8,8,8; 16,16,16,16,16; 32,32,32,32,32; 64,64,64,64,64.
-inline bool guard_synth_shl_edbd16af(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0) {
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_shl_edbd16af\n");
+inline bool guard_synth_shl_edbd16af_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_shl_edbd16af_1u\n");
   unsigned W[5];
   if (!getScalarWidths(MRI, {X0, X1, X2, T0, Dst}, W))
     return false;
@@ -284,15 +302,15 @@ inline bool guard_synth_shl_edbd16af(const MachineRegisterInfo &MRI, GISelValueT
   bool Pass = coversLowAfterShift(K1.One, K2);
   if (!Pass)
     return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_shl_edbd16af\n");
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_shl_edbd16af_1u\n");
   return true;
 }
 
 /// (G_TRUNC:s8 (G_TRUNC:s16 x0)) -> (G_TRUNC:s8 x0)
 /// if true
 /// Proved for widths (x0, t0, root): 16,8,1; 32,16,1; 32,16,4; 32,16,7; 32,16,8; 32,16,9; 32,16,11; 32,16,12; 32,16,13; 64,16,8; 64,32,8; 64,32,16; 64,55,32.
-inline bool guard_synth_trunc_110bd23a(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register T0) {
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_trunc_110bd23a\n");
+inline bool guard_synth_trunc_110bd23a_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_trunc_110bd23a_1u\n");
   unsigned W[3];
   if (!getScalarWidths(MRI, {X0, T0, Dst}, W))
     return false;
@@ -302,7 +320,28 @@ inline bool guard_synth_trunc_110bd23a(const MachineRegisterInfo &MRI, GISelValu
   bool Pass = true;
   if (!Pass)
     return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_trunc_110bd23a\n");
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_trunc_110bd23a_1u\n");
+  return true;
+}
+
+/// (G_ZEXT:s32 (G_XOR:s1 x0 x1)) -> (G_LSHR:s32 1:s32 x0)
+/// if all(KO(x1))
+/// Proved for widths (x0, x1, t0, root): 1,1,1,32.
+inline bool guard_synth_zext_a25c36b8_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_zext_a25c36b8_1u\n");
+  unsigned W[4];
+  if (!getScalarWidths(MRI, {X0, X1, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][4] = {{1, 1, 1, 32}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!VT)
+    return false;
+  KnownBits K1 = VT->getKnownBits(X1);
+  bool Pass = K1.One.isAllOnes();
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_zext_a25c36b8_1u\n");
   return true;
 }
 
@@ -370,16 +409,17 @@ inline bool guard_synth_xor_70267483(const MachineRegisterInfo &MRI, GISelValueT
     "synth_xor_66308b8b_c1",
     "synth_xor_66308b8b_c2",
     "synth_xor_66308b8b_c3",
-    "synth_sub_c1235ab0",
-    "synth_sub_c1235ab0_c1",
-    "synth_sub_c1235ab0_c2",
-    "synth_sub_c1235ab0_c3",
-    "synth_and_83abd1ae",
-    "synth_and_83abd1ae_c1",
+    "synth_sub_c1235ab0_1u",
+    "synth_sub_c1235ab0_1u_c1",
+    "synth_sub_c1235ab0_1u_c2",
+    "synth_sub_c1235ab0_1u_c3",
+    "synth_and_83abd1ae_1u",
+    "synth_and_83abd1ae_1u_c1",
     "synth_lshr_c497647d",
-    "synth_shl_a7bba6d0",
-    "synth_shl_edbd16af",
-    "synth_shl_edbd16af_c1",
+    "synth_shl_a7bba6d0_1u",
+    "synth_shl_edbd16af_1u",
+    "synth_shl_edbd16af_1u_c1",
+    "synth_trunc_110bd23a_1u",
     "synth_or_ecb7e28d",
     "synth_or_ecb7e28d_c1",
     "synth_or_ecb7e28d_c2",
@@ -400,31 +440,33 @@ inline bool guard_synth_xor_70267483(const MachineRegisterInfo &MRI, GISelValueT
     "synth_xor_66308b8b_c1",
     "synth_xor_66308b8b_c2",
     "synth_xor_66308b8b_c3",
-    "synth_or_d7cb9f3c",
-    "synth_or_d7cb9f3c_c1",
-    "synth_or_d7cb9f3c_c2",
-    "synth_or_d7cb9f3c_c3",
+    "synth_or_d7cb9f3c_1u",
+    "synth_or_d7cb9f3c_1u_c1",
+    "synth_or_d7cb9f3c_1u_c2",
+    "synth_or_d7cb9f3c_1u_c3",
     "synth_sub_c1235ab0",
     "synth_sub_c1235ab0_c1",
     "synth_sub_c1235ab0_c2",
     "synth_sub_c1235ab0_c3",
     "synth_xor_535a60d9",
     "synth_xor_535a60d9_c1",
-    "synth_and_b1e9087f",
-    "synth_and_b1e9087f_c1",
-    "synth_and_d05a2340",
-    "synth_and_d05a2340_c1",
+    "synth_and_b1e9087f_1u",
+    "synth_and_b1e9087f_1u_c1",
+    "synth_and_d05a2340_1u",
+    "synth_and_d05a2340_1u_c1",
     "synth_lshr_c497647d",
     "synth_or_9c2e7958",
     "synth_or_9c2e7958_c1",
     "synth_or_9c2e7958_c2",
     "synth_or_9c2e7958_c3",
-    "synth_or_d4ad0f19",
-    "synth_or_d4ad0f19_c1",
-    "synth_or_d4ad0f19_c2",
-    "synth_or_d4ad0f19_c3",
-    "synth_shl_a7bba6d0",
-    "synth_trunc_110bd23a",
+    "synth_or_d4ad0f19_1u",
+    "synth_or_d4ad0f19_1u_c1",
+    "synth_or_d4ad0f19_1u_c2",
+    "synth_or_d4ad0f19_1u_c3",
+    "synth_shl_a7bba6d0_1u",
+    "synth_trunc_110bd23a_1u",
+    "synth_zext_a25c36b8_1u",
+    "synth_zext_a25c36b8_1u_c1",
     "synth_and_5466e589",
     "synth_and_5466e589_c1",
     "synth_and_5466e589_c2",

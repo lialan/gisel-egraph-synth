@@ -1,6 +1,6 @@
 {
  "combiner": "aarch64-prelegalizer-combiner",
- "emitted_records": 18,
+ "emitted_records": 19,
  "enable_flag": "-aarch64-gisel-synth-combines",
  "evidence": {
   "compare": "cmp_a64_cand.json",
@@ -9,11 +9,22 @@
   "keep_unmeasured": false,
   "leave_one_out": true,
   "measured": true,
-  "novelty_and_redundancy": true
+  "no_regressions": false,
+  "novelty_and_redundancy": true,
+  "provenance": {
+   "generator_sha256": "68302181903b11d5c4d12ad9607178b7f3c57c285711710a5f3f0d20d505aa98",
+   "generator_version": "1.6",
+   "llvm_commit": "9886924f6aa120022ed11df8f2660b1c8aec03ed",
+   "llvm_dirty": true,
+   "python": "3.10.12"
+  }
  },
  "format": "gi-rule-synth-target-v1",
  "policy": [
-  "candidates: proved rules whose replacement is cheaper than the source",
+  "candidates: proved rules whose replacement is cheaper than the source; a rule that moves an operation to a wider type only if that type is not wider than the registers of the target",
+  "one_use_variant_selected: the rule has a variant that applies only if no interior value of the source has another user; where the rule fires and the variant does not, it removes no instruction (or it adds instructions), so the variant is used",
+  "plain_variant_selected: the variant of a rule that removes instructions also from a source with a shared interior value (with --no-regressions: and makes no file worse there)",
+  "variant_not_measured: one-use variants are selected by measurement only",
   "not_emittable: the replacement cannot be written as an apply pattern",
   "measured_regression: more instructions with the rule than without, with every candidate enabled or inside the selected set",
   "worse_than_existing: alone, loses to the existing combiner on its own example",
@@ -22,7 +33,7 @@
   "not_fired: does not apply to its own example, and no measured gain",
   "unobserved: its guard never passes on the target corpus (it was learned from seed inputs only), and no measured gain",
   "never_fires: applicable in the corpus but never fired when the corpus was compiled with every candidate (another rule gets there first)",
-  "no_measured_gain: inside the selected set it removes no instruction from the final code and its guard queries known bits (cost without measured benefit); rules without a known-bits guard are kept",
+  "no_measured_gain: inside the selected set it removes no instruction from the final code and its guard queries known bits (cost without measured benefit); rules without a known-bits guard are kept, but not a rule that moves an operation to a wider type",
   "emitted: everything else"
  ],
  "rules": {
@@ -39,13 +50,9 @@
    "guard_cost": 10,
    "marginal": {
     "better": 0,
-    "evidence": [
-     "arm64-csel.ll: +1",
-     "call-rv-marker.ll: +1",
-     "typepromotion-phisret.ll: +5"
-    ],
-    "insns": 7,
-    "worse": 3
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
    },
    "novelty": {
     "class": "new",
@@ -60,14 +67,149 @@
     ]
    },
    "online": {
-    "files_fired": 3,
-    "files_matched": 75,
+    "files_fired": 0,
+    "files_matched": 72,
+    "fired": 0,
+    "matched": 514
+   },
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_add_151f8386_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 46,
+    "match_occurrences": 149,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "guard_cost": 10,
+   "in_set": {
+    "better": 0,
+    "evidence": [
+     "arm64-csel.ll: +1",
+     "call-rv-marker.ll: +1",
+     "typepromotion-phisret.ll: +5"
+    ],
     "fired": 5,
-    "matched": 522
+    "insns": 7,
+    "worse": 3
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_add_151f8386_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 3,
+    "files_matched": 66,
+    "fired": 5,
+    "matched": 486
    },
    "pattern_nodes": 2,
    "records": 2,
    "selection": "measured_regression"
+  },
+  "synth_add_2c1da8a7": {
+   "corpus": {
+    "disjunct_occurrences": [
+     51
+    ],
+    "match_instances": 4,
+    "match_occurrences": 51,
+    "pass_instances": 4,
+    "pass_occurrences": 51
+   },
+   "guard_cost": 0,
+   "in_set": {
+    "better": 0,
+    "evidence": [],
+    "fired": 54,
+    "insns": 0,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_add_2c1da8a7_d0",
+      "source": 4
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 11,
+    "files_matched": 15,
+    "fired": 54,
+    "matched": 69
+   },
+   "pattern_nodes": 3,
+   "records": 1,
+   "selection": "no_measured_gain"
+  },
+  "synth_add_3046d7af": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 6,
+      "fn": "synth_add_3046d7af_d0",
+      "source": 6
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 5,
+   "records": 2,
+   "selection": "redundant_with_synthesized"
   },
   "synth_add_44397536": {
    "corpus": {
@@ -108,6 +250,45 @@
    "records": 4,
    "selection": "unobserved"
   },
+  "synth_add_44397536_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_add_44397536_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 3,
+   "records": 4,
+   "selection": "unobserved"
+  },
   "synth_and_205dce25": {
    "corpus": {
     "disjunct_occurrences": [
@@ -119,13 +300,6 @@
     "pass_occurrences": 1
    },
    "guard_cost": 9,
-   "in_set": {
-    "better": 0,
-    "evidence": [],
-    "fired": 5,
-    "insns": 0,
-    "worse": 0
-   },
    "marginal": {
     "better": 0,
     "evidence": [],
@@ -146,9 +320,55 @@
    },
    "online": {
     "files_fired": 1,
-    "files_matched": 14,
+    "files_matched": 16,
     "fired": 4,
-    "matched": 162
+    "matched": 170
+   },
+   "pattern_nodes": 2,
+   "records": 4,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_and_205dce25_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 12,
+    "match_occurrences": 49,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "guard_cost": 9,
+   "in_set": {
+    "better": 0,
+    "evidence": [],
+    "fired": 1,
+    "insns": 0,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_and_205dce25_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 12,
+    "fired": 0,
+    "matched": 98
    },
    "pattern_nodes": 2,
    "records": 4,
@@ -224,9 +444,9 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 14,
+    "files_matched": 16,
     "fired": 0,
-    "matched": 166
+    "matched": 174
    },
    "pattern_nodes": 2,
    "records": 4,
@@ -310,6 +530,45 @@
    "records": 4,
    "selection": "unobserved"
   },
+  "synth_and_5b7741a2_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 39,
+    "match_occurrences": 120,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 9,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 2,
+      "fn": "synth_and_5b7741a2_1u_d0",
+      "source": 2
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 51,
+    "fired": 0,
+    "matched": 290
+   },
+   "pattern_nodes": 2,
+   "records": 4,
+   "selection": "unobserved"
+  },
   "synth_and_643d7d3e": {
    "corpus": {
     "disjunct_occurrences": [
@@ -360,21 +619,10 @@
     "pass_occurrences": 3
    },
    "guard_cost": 10,
-   "in_set": {
-    "better": 1,
-    "evidence": [
-     "srem-pow2.ll: -3"
-    ],
-    "fired": 3,
-    "insns": -3,
-    "worse": 0
-   },
    "marginal": {
-    "better": 1,
-    "evidence": [
-     "srem-pow2.ll: -3"
-    ],
-    "insns": -3,
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
     "worse": 0
    },
    "novelty": {
@@ -390,10 +638,58 @@
     ]
    },
    "online": {
-    "files_fired": 1,
+    "files_fired": 0,
     "files_matched": 16,
+    "fired": 0,
+    "matched": 69
+   },
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_and_83abd1ae_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     3
+    ],
+    "match_instances": 28,
+    "match_occurrences": 36,
+    "pass_instances": 3,
+    "pass_occurrences": 3
+   },
+   "guard_cost": 10,
+   "in_set": {
+    "better": 1,
+    "evidence": [
+     "srem-pow2.ll: -3"
+    ],
     "fired": 3,
-    "matched": 72
+    "insns": -3,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 2,
+      "fn": "synth_and_83abd1ae_1u_d0",
+      "source": 2
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 1,
+    "files_matched": 11,
+    "fired": 3,
+    "matched": 46
    },
    "pattern_nodes": 2,
    "rank": 5,
@@ -401,6 +697,45 @@
    "selection": "emitted"
   },
   "synth_and_8aedd82f": {
+   "corpus": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 61,
+    "match_occurrences": 230,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "guard_cost": 14,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 4,
+      "class": "new",
+      "existing": 5,
+      "fn": "synth_and_8aedd82f_d0",
+      "source": 5
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 39,
+    "fired": 0,
+    "matched": 758
+   },
+   "pattern_nodes": 2,
+   "records": 4,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_and_8aedd82f_1u": {
    "corpus": {
     "disjunct_occurrences": [
      1
@@ -431,16 +766,16 @@
       "alone": 4,
       "class": "new",
       "existing": 5,
-      "fn": "synth_and_8aedd82f_d0",
+      "fn": "synth_and_8aedd82f_1u_d0",
       "source": 5
      }
     ]
    },
    "online": {
     "files_fired": 2,
-    "files_matched": 39,
+    "files_matched": 40,
     "fired": 3,
-    "matched": 757
+    "matched": 711
    },
    "pattern_nodes": 2,
    "records": 4,
@@ -477,9 +812,9 @@
    },
    "online": {
     "files_fired": 11,
-    "files_matched": 333,
+    "files_matched": 342,
     "fired": 20,
-    "matched": 8648
+    "matched": 8715
    },
    "pattern_nodes": 1,
    "records": 1,
@@ -563,6 +898,45 @@
    "records": 2,
    "selection": "covered_by_existing_combine"
   },
+  "synth_and_b1e9087f_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 4,
+    "match_occurrences": 4,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 6,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "covered",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "covered",
+      "existing": 2,
+      "fn": "synth_and_b1e9087f_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 5,
+    "fired": 0,
+    "matched": 8
+   },
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "covered_by_existing_combine"
+  },
   "synth_and_d05a2340": {
    "corpus": {
     "disjunct_occurrences": [
@@ -602,6 +976,45 @@
    "records": 2,
    "selection": "unobserved"
   },
+  "synth_and_d05a2340_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 10,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 2,
+      "fn": "synth_and_d05a2340_1u_d0",
+      "source": 2
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 11,
+    "fired": 0,
+    "matched": 43
+   },
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "unobserved"
+  },
   "synth_and_f10a015d": {
    "corpus": {
     "disjunct_occurrences": [
@@ -613,10 +1026,19 @@
     "pass_occurrences": 0
    },
    "guard_cost": 9,
-   "marginal": {
+   "in_set": {
     "better": 0,
     "evidence": [],
+    "fired": 85,
     "insns": 0,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 1,
+    "evidence": [
+     "shift-const-ne-0.ll: -1"
+    ],
+    "insns": -1,
     "worse": 0
    },
    "novelty": {
@@ -632,14 +1054,14 @@
     ]
    },
    "online": {
-    "files_fired": 24,
-    "files_matched": 330,
-    "fired": 71,
-    "matched": 17161
+    "files_fired": 32,
+    "files_matched": 339,
+    "fired": 84,
+    "matched": 17220
    },
    "pattern_nodes": 1,
    "records": 2,
-   "selection": "covered_by_existing_combine"
+   "selection": "no_measured_gain"
   },
   "synth_and_f3cdf3e0": {
    "corpus": {
@@ -828,9 +1250,9 @@
    },
    "online": {
     "files_fired": 5,
-    "files_matched": 212,
+    "files_matched": 216,
     "fired": 8,
-    "matched": 2787
+    "matched": 2836
    },
    "pattern_nodes": 1,
    "records": 1,
@@ -893,6 +1315,45 @@
    "records": 1,
    "selection": "emitted"
   },
+  "synth_lshr_c497647d_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     16
+    ],
+    "match_instances": 41,
+    "match_occurrences": 76,
+    "pass_instances": 5,
+    "pass_occurrences": 16
+   },
+   "guard_cost": 10,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 2,
+      "fn": "synth_lshr_c497647d_1u_d0",
+      "source": 2
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 9,
+    "fired": 0,
+    "matched": 92
+   },
+   "pattern_nodes": 2,
+   "records": 1,
+   "selection": "plain_variant_selected"
+  },
   "synth_lshr_f9d26973": {
    "corpus": {
     "disjunct_occurrences": [
@@ -931,6 +1392,52 @@
    "pattern_nodes": 2,
    "records": 1,
    "selection": "redundant_with_synthesized"
+  },
+  "synth_mul_8b175515": {
+   "corpus": {
+    "disjunct_occurrences": [
+     17
+    ],
+    "match_instances": 4,
+    "match_occurrences": 21,
+    "pass_instances": 3,
+    "pass_occurrences": 17
+   },
+   "guard_cost": 0,
+   "in_set": {
+    "better": 0,
+    "evidence": [],
+    "fired": 17,
+    "insns": 0,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_mul_8b175515_d0",
+      "source": 4
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 8,
+    "files_matched": 9,
+    "fired": 17,
+    "matched": 23
+   },
+   "pattern_nodes": 3,
+   "records": 1,
+   "selection": "no_measured_gain"
   },
   "synth_or_155b7f74": {
    "corpus": {
@@ -1043,7 +1550,7 @@
     "files_fired": 6,
     "files_matched": 196,
     "fired": 8,
-    "matched": 3735
+    "matched": 3743
    },
    "pattern_nodes": 1,
    "records": 2,
@@ -1127,6 +1634,45 @@
    "records": 4,
    "selection": "never_fires"
   },
+  "synth_or_89fb0342_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 212,
+    "match_occurrences": 328,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "guard_cost": 9,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_or_89fb0342_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 49,
+    "fired": 0,
+    "matched": 1122
+   },
+   "pattern_nodes": 2,
+   "records": 4,
+   "selection": "never_fires"
+  },
   "synth_or_9c2e7958": {
    "corpus": {
     "disjunct_occurrences": [
@@ -1166,6 +1712,45 @@
    "records": 4,
    "selection": "unobserved"
   },
+  "synth_or_9c2e7958_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_or_9c2e7958_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 2,
+   "records": 4,
+   "selection": "unobserved"
+  },
   "synth_or_d4ad0f19": {
    "corpus": {
     "disjunct_occurrences": [
@@ -1191,6 +1776,45 @@
       "class": "new",
       "existing": 3,
       "fn": "synth_or_d4ad0f19_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 1,
+    "fired": 0,
+    "matched": 2
+   },
+   "pattern_nodes": 2,
+   "records": 4,
+   "selection": "unobserved"
+  },
+  "synth_or_d4ad0f19_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 9,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_or_d4ad0f19_1u_d0",
       "source": 3
      }
     ]
@@ -1283,6 +1907,45 @@
    "records": 4,
    "selection": "unobserved"
   },
+  "synth_or_d7cb9f3c_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 14,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_or_d7cb9f3c_1u_d0",
+      "source": 4
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 3,
+   "records": 4,
+   "selection": "unobserved"
+  },
   "synth_or_ecb7e28d": {
    "corpus": {
     "disjunct_occurrences": [
@@ -1347,13 +2010,6 @@
     "pass_occurrences": 29
    },
    "guard_cost": 0,
-   "in_set": {
-    "better": 0,
-    "evidence": [],
-    "fired": 31,
-    "insns": 0,
-    "worse": 0
-   },
    "marginal": {
     "better": 0,
     "evidence": [],
@@ -1373,10 +2029,56 @@
     ]
    },
    "online": {
+    "files_fired": 3,
+    "files_matched": 9,
+    "fired": 11,
+    "matched": 44
+   },
+   "pattern_nodes": 2,
+   "records": 1,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_shl_a7bba6d0_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     29
+    ],
+    "match_instances": 13,
+    "match_occurrences": 31,
+    "pass_instances": 11,
+    "pass_occurrences": 29
+   },
+   "guard_cost": 0,
+   "in_set": {
+    "better": 0,
+    "evidence": [],
+    "fired": 17,
+    "insns": 0,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 2,
+      "fn": "synth_shl_a7bba6d0_1u_d0",
+      "source": 2
+     }
+    ]
+   },
+   "online": {
     "files_fired": 6,
-    "files_matched": 11,
-    "fired": 31,
-    "matched": 64
+    "files_matched": 10,
+    "fired": 20,
+    "matched": 37
    },
    "pattern_nodes": 2,
    "rank": 7,
@@ -1384,6 +2086,45 @@
    "selection": "emitted"
   },
   "synth_shl_edbd16af": {
+   "corpus": {
+    "disjunct_occurrences": [
+     8
+    ],
+    "match_instances": 58,
+    "match_occurrences": 76,
+    "pass_instances": 8,
+    "pass_occurrences": 8
+   },
+   "guard_cost": 9,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 2,
+      "fn": "synth_shl_edbd16af_d0",
+      "source": 2
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 19,
+    "fired": 0,
+    "matched": 246
+   },
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_shl_edbd16af_1u": {
    "corpus": {
     "disjunct_occurrences": [
      8
@@ -1404,11 +2145,9 @@
     "worse": 0
    },
    "marginal": {
-    "better": 1,
-    "evidence": [
-     "const-shift-of-constmasked.ll: -4"
-    ],
-    "insns": -4,
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
     "worse": 0
    },
    "novelty": {
@@ -1418,23 +2157,108 @@
       "alone": 1,
       "class": "new",
       "existing": 2,
-      "fn": "synth_shl_edbd16af_d0",
+      "fn": "synth_shl_edbd16af_1u_d0",
       "source": 2
      }
     ]
    },
    "online": {
-    "files_fired": 1,
-    "files_matched": 19,
-    "fired": 8,
-    "matched": 254
+    "files_fired": 2,
+    "files_matched": 16,
+    "fired": 9,
+    "matched": 193
    },
    "pattern_nodes": 2,
    "rank": 3,
    "records": 2,
    "selection": "emitted"
   },
+  "synth_sub_8a9faaef": {
+   "corpus": {
+    "disjunct_occurrences": [
+     34
+    ],
+    "match_instances": 3,
+    "match_occurrences": 34,
+    "pass_instances": 3,
+    "pass_occurrences": 34
+   },
+   "guard_cost": 0,
+   "in_set": {
+    "better": 0,
+    "evidence": [],
+    "fired": 13,
+    "insns": 0,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_sub_8a9faaef_d0",
+      "source": 4
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 5,
+    "files_matched": 6,
+    "fired": 13,
+    "matched": 15
+   },
+   "pattern_nodes": 3,
+   "records": 1,
+   "selection": "no_measured_gain"
+  },
   "synth_sub_c1235ab0": {
+   "corpus": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_sub_c1235ab0_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 3,
+   "records": 4,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_sub_c1235ab0_1u": {
    "corpus": {
     "disjunct_occurrences": [
      1
@@ -1455,11 +2279,9 @@
     "worse": 0
    },
    "marginal": {
-    "better": 1,
-    "evidence": [
-     "dag-ReplaceAllUsesOfValuesWith.ll: -4"
-    ],
-    "insns": -4,
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
     "worse": 0
    },
    "novelty": {
@@ -1469,7 +2291,7 @@
       "alone": 1,
       "class": "new",
       "existing": 3,
-      "fn": "synth_sub_c1235ab0_d0",
+      "fn": "synth_sub_c1235ab0_1u_d0",
       "source": 3
      }
     ]
@@ -1524,6 +2346,45 @@
    "records": 2,
    "selection": "unobserved"
   },
+  "synth_sub_ebf10e1b_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_sub_ebf10e1b_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 3,
+   "records": 2,
+   "selection": "unobserved"
+  },
   "synth_trunc_110bd23a": {
    "corpus": {
     "disjunct_occurrences": [
@@ -1557,14 +2418,61 @@
     ]
    },
    "online": {
-    "files_fired": 5,
+    "files_fired": 4,
     "files_matched": 135,
-    "fired": 11,
+    "fired": 10,
     "matched": 789
    },
    "pattern_nodes": 2,
    "records": 1,
-   "selection": "measured_regression"
+   "selection": "one_use_variant_selected"
+  },
+  "synth_trunc_110bd23a_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     11
+    ],
+    "match_instances": 9,
+    "match_occurrences": 20,
+    "pass_instances": 2,
+    "pass_occurrences": 11
+   },
+   "guard_cost": 0,
+   "in_set": {
+    "better": 0,
+    "evidence": [],
+    "fired": 1,
+    "insns": 0,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 0,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_trunc_110bd23a_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 1,
+    "files_matched": 131,
+    "fired": 1,
+    "matched": 779
+   },
+   "pattern_nodes": 2,
+   "rank": 8,
+   "records": 1,
+   "selection": "emitted"
   },
   "synth_trunc_72a7e1b3": {
    "corpus": {
@@ -1638,7 +2546,7 @@
     "files_fired": 9,
     "files_matched": 691,
     "fired": 13,
-    "matched": 11980
+    "matched": 12073
    },
    "pattern_nodes": 1,
    "records": 1,
@@ -1683,6 +2591,45 @@
    "records": 2,
    "selection": "covered_by_existing_combine"
   },
+  "synth_trunc_ae393859_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 13,
+    "match_occurrences": 20,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 5,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "covered",
+    "examples": [
+     {
+      "alone": 0,
+      "class": "covered",
+      "existing": 0,
+      "fn": "synth_trunc_ae393859_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 35,
+    "fired": 0,
+    "matched": 472
+   },
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "covered_by_existing_combine"
+  },
   "synth_trunc_dc391593": {
    "corpus": {
     "disjunct_occurrences": [
@@ -1708,6 +2655,45 @@
       "class": "new",
       "existing": 4,
       "fn": "synth_trunc_dc391593_d0",
+      "source": 4
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 3,
+   "records": 1,
+   "selection": "redundant_with_synthesized"
+  },
+  "synth_trunc_dc391593_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 0,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_trunc_dc391593_1u_d0",
       "source": 4
      }
     ]
@@ -1800,6 +2786,45 @@
    "records": 4,
    "selection": "unobserved"
   },
+  "synth_xor_4d0f9294_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_xor_4d0f9294_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 3,
+   "records": 4,
+   "selection": "unobserved"
+  },
   "synth_xor_535a60d9": {
    "corpus": {
     "disjunct_occurrences": [
@@ -1833,7 +2858,7 @@
     "files_fired": 1,
     "files_matched": 405,
     "fired": 3,
-    "matched": 10963
+    "matched": 10967
    },
    "pattern_nodes": 1,
    "records": 2,
@@ -1968,17 +2993,17 @@
    "records": 2,
    "selection": "unobserved"
   },
-  "synth_zext_19c72bf5": {
+  "synth_xor_c2d39168_1u": {
    "corpus": {
     "disjunct_occurrences": [
      0
     ],
-    "match_instances": 9,
-    "match_occurrences": 12,
+    "match_instances": 12,
+    "match_occurrences": 14,
     "pass_instances": 0,
     "pass_occurrences": 0
    },
-   "guard_cost": 14,
+   "guard_cost": 10,
    "marginal": {
     "better": 0,
     "evidence": [],
@@ -1989,23 +3014,201 @@
     "class": "new",
     "examples": [
      {
-      "alone": 4,
+      "alone": 3,
       "class": "new",
-      "existing": 5,
-      "fn": "synth_zext_19c72bf5_d0",
-      "source": 5
+      "existing": 4,
+      "fn": "synth_xor_c2d39168_1u_d0",
+      "source": 4
      }
     ]
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 4,
+    "files_matched": 7,
     "fired": 0,
-    "matched": 22
+    "matched": 17
    },
-   "pattern_nodes": 3,
-   "records": 4,
-   "selection": "redundant_with_synthesized"
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "unobserved"
+  },
+  "synth_zext_96d1e64d": {
+   "corpus": {
+    "disjunct_occurrences": [
+     18
+    ],
+    "match_instances": 10,
+    "match_occurrences": 232,
+    "pass_instances": 2,
+    "pass_occurrences": 18
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 2,
+      "fn": "synth_zext_96d1e64d_d0",
+      "source": 2
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 118,
+    "fired": 0,
+    "matched": 897
+   },
+   "pattern_nodes": 2,
+   "records": 1,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_zext_96d1e64d_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     18
+    ],
+    "match_instances": 10,
+    "match_occurrences": 232,
+    "pass_instances": 2,
+    "pass_occurrences": 18
+   },
+   "guard_cost": 0,
+   "in_set": {
+    "better": 0,
+    "evidence": [],
+    "fired": 31,
+    "insns": 0,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "new",
+      "existing": 2,
+      "fn": "synth_zext_96d1e64d_1u_d0",
+      "source": 2
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 15,
+    "files_matched": 117,
+    "fired": 31,
+    "matched": 892
+   },
+   "pattern_nodes": 2,
+   "records": 1,
+   "selection": "no_measured_gain"
+  },
+  "synth_zext_a25c36b8": {
+   "corpus": {
+    "disjunct_occurrences": [
+     45
+    ],
+    "match_instances": 20,
+    "match_occurrences": 107,
+    "pass_instances": 1,
+    "pass_occurrences": 45
+   },
+   "guard_cost": 5,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_zext_a25c36b8_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 21,
+    "fired": 0,
+    "matched": 174
+   },
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_zext_a25c36b8_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     45
+    ],
+    "match_instances": 20,
+    "match_occurrences": 107,
+    "pass_instances": 1,
+    "pass_occurrences": 45
+   },
+   "guard_cost": 5,
+   "in_set": {
+    "better": 0,
+    "evidence": [
+     "adds_cmn.ll: +4",
+     "arm64-xaluo.ll: +26",
+     "branch-relax-alignment.ll: +1",
+     "cmpxchg-idioms.ll: +1",
+     "i128-math.ll: +4",
+     "i256-math.ll: +4",
+     "select_const.ll: +3"
+    ],
+    "fired": 45,
+    "insns": 43,
+    "worse": 7
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_zext_a25c36b8_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 7,
+    "files_matched": 23,
+    "fired": 45,
+    "matched": 217
+   },
+   "pattern_nodes": 2,
+   "records": 2,
+   "selection": "measured_regression"
   },
   "synth_zext_b81e0e0c": {
    "corpus": {
@@ -2038,9 +3241,9 @@
    },
    "online": {
     "files_fired": 32,
-    "files_matched": 498,
+    "files_matched": 494,
     "fired": 65,
-    "matched": 6793
+    "matched": 6717
    },
    "pattern_nodes": 1,
    "records": 1,
@@ -2048,12 +3251,12 @@
   }
  },
  "selected_set": {
-  "applications": 67,
+  "applications": 54,
   "failed": 0,
   "files_better": 7,
   "files_compiled": 1150,
   "files_worse": 3,
-  "guard_evaluations": 713,
+  "guard_evaluations": 1373,
   "insns_delta": -27,
   "regressions": [
    "combine-sdiv.ll: +1",
@@ -2062,13 +3265,15 @@
   ]
  },
  "summary": {
-  "covered_by_existing_combine": 16,
-  "emitted": 7,
+  "covered_by_existing_combine": 17,
+  "emitted": 8,
   "measured_regression": 2,
-  "never_fires": 1,
-  "no_measured_gain": 2,
-  "redundant_with_synthesized": 6,
-  "unobserved": 15
+  "never_fires": 2,
+  "no_measured_gain": 7,
+  "one_use_variant_selected": 10,
+  "plain_variant_selected": 1,
+  "redundant_with_synthesized": 7,
+  "unobserved": 24
  },
  "target": "AArch64"
 }

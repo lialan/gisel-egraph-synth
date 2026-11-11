@@ -1,13 +1,13 @@
 {
  "composition": {
   "cex_filtered": 5,
-  "dominated": 0,
+  "dominated": 5,
   "fingerprint_matches": 0,
   "instances": 2100,
-  "macro_rules": 5,
-  "proposals": 34,
-  "proved": 22,
-  "smt_checks": 29,
+  "macro_rules": 4,
+  "proposals": 55,
+  "proved": 38,
+  "smt_checks": 45,
   "smt_refuted": 7,
   "smt_unknown": 0,
   "terms": 0
@@ -31,7 +31,7 @@
  },
  "disjuncts": {
   "dominated_disjuncts": 0,
-  "dominated_rules": 21,
+  "dominated_rules": 20,
   "rules_with_disjunction": 3,
   "unselected_disjuncts": 4
  },
@@ -42,32 +42,38 @@
   "banks_truncated": 3,
   "counterexample_pool": 8,
   "seconds": {
-   "bank_build": 1.3,
-   "bank_eval": 1.6,
-   "smt": 11.27
+   "bank_build": 1.29,
+   "bank_eval": 1.62,
+   "smt": 11.46
   }
  },
- "llvm_commit": "e4ff82d44d491022f393149afc341dc06213f099",
+ "provenance": {
+  "generator_sha256": "8a5817a0f2518fdeac65c5cdae0334e2a462606ee1b630e6b56cd3aba73fb64c",
+  "generator_version": "1.6",
+  "llvm_commit": "9886924f6aa120022ed11df8f2660b1c8aec03ed",
+  "llvm_dirty": true,
+  "python": "3.10.12"
+ },
  "rules_by_class": {
   "equal_cost": 26,
-  "reduces_cost": 58,
-  "widens_operation": 5
+  "reduces_cost": 56,
+  "widens_operation": 6
  },
  "seconds": {
-  "composition": 6.1,
-  "discovery": 14.73,
-  "generalization": 10.0,
-  "selection_of_disjuncts": 2.8,
-  "total": 34.09
+  "composition": 368.16,
+  "discovery": 14.69,
+  "generalization": 9.92,
+  "selection_of_disjuncts": 2.75,
+  "total": 395.99
  },
- "solver_calls": 3415,
- "solver_seconds": 17.48,
+ "solver_calls": 3435,
+ "solver_seconds": 379.18,
  "synthesis": {
-  "discoveries": 424,
-  "disjuncts_added": 96,
-  "generalized": 89,
-  "rejected": 60,
-  "reused": 237,
+  "discoveries": 440,
+  "disjuncts_added": 95,
+  "generalized": 88,
+  "rejected": 62,
+  "reused": 240,
   "schedules_added": 12,
   "uncovered": 14
  }

@@ -8,7 +8,7 @@ GlobalISel combine rules. See README.md.
     gi-rule-synth.py emit [rules.json] [--check] [--all-candidates]
     gi-rule-synth.py select --target T [--llc BUILD/bin/llc]
                             [--corpus CORPUS...] [--compare CMP.json]
-                            [--keep-unmeasured]
+                            [--keep-unmeasured] [--no-regressions]
     gi-rule-synth.py report [--target T]
     gi-rule-synth.py recheck [rules.json]
     gi-rule-synth.py all --llc BUILD/bin/llc
@@ -109,12 +109,40 @@ def cmd_extract(args):
 
 # -------------------------------------------------------------- synth ---
 
-def _git_head():
+# The version of the generator. Increase it when a change to the tool can
+# change the rules it writes.
+GENERATOR_VERSION = '1.6'
+
+
+def _git(*args):
     try:
-        return subprocess.check_output(['git', '-C', LLVM, 'rev-parse',
-                                        'HEAD'], text=True).strip()
+        return subprocess.check_output(('git', '-C', LLVM) + args,
+                                       text=True).strip()
     except Exception:
-        return 'unknown'
+        return None
+
+
+def _generator_sha():
+    """A hash of the source files of the tool."""
+    files = [os.path.join(HERE, 'gi-rule-synth.py')] + sorted(
+        os.path.join(HERE, 'girs', f)
+        for f in os.listdir(os.path.join(HERE, 'girs')) if f.endswith('.py'))
+    return _sha(files)
+
+
+def _provenance():
+    """What made a generated file: the tool, and the source tree. The
+    commit is the one that was checked out when the tool ran, so it is
+    older than the commit that contains the generated file; ``llvm_dirty``
+    says if the llvm directory had changes that were not committed. The
+    hash of the tool identifies it without a commit."""
+    status = _git('status', '--porcelain', '--untracked-files=no', '--',
+                  '.')
+    return {'generator_version': GENERATOR_VERSION,
+            'generator_sha256': _generator_sha(),
+            'llvm_commit': _git('rev-parse', 'HEAD') or 'unknown',
+            'llvm_dirty': None if status is None else bool(status),
+            'python': '%d.%d.%d' % sys.version_info[:3]}
 
 
 def _corpus_files(paths):
@@ -188,7 +216,8 @@ def cmd_synth(args):
         # a single step on every larger source that contains it.
         deep.sort(key=lambda i: (ir.cost(i.expr), -len(i.prov),
                                  ir.to_sexpr(i.expr), i.vw, i.facts))
-        index = compose.Index(sy.rules.values())
+        index = compose.Index(sy.rules.values(),
+                              with_axioms=args.compose_axioms)
         before = set(sy.rules)
         for inst in deep:
             pstats['instances'] += 1
@@ -228,6 +257,7 @@ def cmd_synth(args):
                       key=lambda r: (r['source'], r['replacement']))
     db = {
         'format': 'gi-rule-synth-library-v2',
+        'generator_version': GENERATOR_VERSION,
         'semantic_model': synth.SEMANTIC_MODEL,
         'solver': '%s %s' % (backend.name, backend.version),
         'widths': list(synth.WIDTHS),
@@ -250,7 +280,7 @@ def cmd_synth(args):
     for r in rules:
         by_class[r['class']] = by_class.get(r['class'], 0) + 1
     seconds['total'] = round(time.monotonic() - t0, 2)
-    stats = {'llvm_commit': _git_head(), 'seconds': seconds,
+    stats = {'provenance': _provenance(), 'seconds': seconds,
              'solver_calls': backend.calls,
              'solver_seconds': round(backend.seconds, 2),
              'discovery': dstats, 'enumeration': ctx.stats(),
@@ -366,10 +396,12 @@ def cmd_select(args):
         with open(args.compare) as f:
             compare = json.load(f)
     prof = select.select(db, target, insts, args.llc, compare, args.j,
-                         keep_unmeasured=args.keep_unmeasured)
+                         keep_unmeasured=args.keep_unmeasured,
+                         no_regressions=args.no_regressions)
     prof['evidence']['corpus_files'] = len(_corpus_files(args.corpus or []))
     prof['evidence']['compare'] = os.path.basename(args.compare) \
         if args.compare else None
+    prof['evidence']['provenance'] = _provenance()
     out = args.o or target.profile_path
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, 'w') as f:
@@ -395,7 +427,9 @@ def cmd_report(args):
     db = _load_db(args.db)
     with open(args.profile or target.profile_path) as f:
         prof = json.load(f)
+    from girs import emit
     by_id = {r['id']: r for r in db['rules']}
+    by_id.update((r['id'], r) for r in emit.candidates(db, target))
     rows = sorted(prof['rules'].items(),
                   key=lambda kv: (kv[1].get('rank', 10 ** 6),
                                   kv[1]['selection'], kv[0]))
@@ -434,7 +468,7 @@ def cmd_all(args):
         corpus=[corpus_dir], o=args.db, proofs=args.proofs, stats=None,
         timeout_ms=args.timeout_ms, seed=0, max_atoms=2,
         max_instances=args.max_instances, compose_corpus=[],
-        compose_steps=3))
+        compose_steps=3, compose_axioms=False))
     return cmd_emit(argparse.Namespace(db=args.db, td=DEFAULT_TD,
                                        inc=DEFAULT_INC, check=False,
                                        profiles=None, all_candidates=False))
@@ -472,6 +506,9 @@ def main():
                    help='deeper corpus (extract --depth 3) for rule '
                    'composition and coverage')
     p.add_argument('--compose-steps', type=int, default=3)
+    p.add_argument('--compose-axioms', action='store_true',
+                   help='also use equal-cost reassociation identities as '
+                   'composition steps')
     p.set_defaults(fn=cmd_synth)
 
     p = sub.add_parser('emit', help='generate TableGen and C++')
@@ -503,6 +540,10 @@ def main():
     p.add_argument('--keep-unmeasured', action='store_true',
                    help='keep rules that query known bits but remove no '
                    'instruction on the measured files')
+    p.add_argument('--no-regressions', action='store_true',
+                   help='use the one-use variant of a rule if its firings '
+                   'on shared values make a measured file worse, also if '
+                   'they remove instructions in total')
     p.add_argument('-o', help='profile file (default: targets/<T>.json)')
     p.add_argument('-j', type=int, default=os.cpu_count())
     p.set_defaults(fn=cmd_select)

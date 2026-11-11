@@ -36,7 +36,18 @@ from . import measure
 from . import precond
 
 POLICY = [
-    'candidates: proved rules whose replacement is cheaper than the source',
+    'candidates: proved rules whose replacement is cheaper than the source; '
+    'a rule that moves an operation to a wider type only if that type is '
+    'not wider than the registers of the target',
+    'one_use_variant_selected: the rule has a variant that applies only if '
+    'no interior value of the source has another user; where the rule '
+    'fires and the variant does not, it removes no instruction (or it adds '
+    'instructions), so the variant is used',
+    'plain_variant_selected: the variant of a rule that removes '
+    'instructions also from a source with a shared interior value (with '
+    '--no-regressions: and makes no file worse there)',
+    'variant_not_measured: one-use variants are selected by measurement '
+    'only',
     'not_emittable: the replacement cannot be written as an apply pattern',
     'measured_regression: more instructions with the rule than without, '
     'with every candidate enabled or inside the selected set',
@@ -53,7 +64,8 @@ POLICY = [
     'was compiled with every candidate (another rule gets there first)',
     'no_measured_gain: inside the selected set it removes no instruction '
     'from the final code and its guard queries known bits (cost without '
-    'measured benefit); rules without a known-bits guard are kept',
+    'measured benefit); rules without a known-bits guard are kept, but not '
+    'a rule that moves an operation to a wider type',
     'emitted: everything else',
 ]
 
@@ -227,6 +239,10 @@ def redundancy(llc, target, rules, nov, order):
         fns = [(n, build_mir(r, ex, n, target)) for n, ex in examples(r)]
         mir = '\n'.join(t for _, t in fns) + '\n'
         off = [n for i in names if i not in active for n in names[i]]
+        # A rule and its one-use variant are one rule here: the other of
+        # the two does not make this one redundant.
+        pair = r.get('variant_of') or rid + emit.ONE_USE_SUFFIX
+        off += names.get(pair, [])
         with_r = count(measure.run_combiner(llc, target, mir, True, off))
         without = count(measure.run_combiner(llc, target, mir, True,
                                              off + names[rid]))
@@ -328,10 +344,14 @@ def _loo_in_set(llc, target, cur, off, names, sel, jobs):
 
 
 def refine(llc, target, compare, names, sel, guard, keep_unmeasured, jobs,
-           log=print):
+           log=print, alt=None, need_gain=()):
     """Shrinks the selected set until every rule in it is worth its place
     *inside the set*. Returns (set, id -> marginal, id -> reason dropped,
-    summary of the set)."""
+    summary of the set). ``alt`` maps a rule to its one-use variant: the
+    variant takes the place of a rule that is dropped because it adds
+    instructions. A rule in ``need_gain`` stays only if it removes
+    instructions."""
+    alt = dict(alt or {})
     files = sorted(p for p, r in compare.items()
                    if r['base']['rc'] == 0 and r['synth'].get('rc') == 0 and
                    r['synth'].get('matched'))
@@ -347,14 +367,21 @@ def refine(llc, target, compare, names, sel, guard, keep_unmeasured, jobs,
             sel.discard(bad[0])
             log('select: drop %s (%+d instructions inside the set)' %
                 (bad[0], loo[bad[0]]['insns']))
+            if bad[0] in alt:
+                v = alt.pop(bad[0])
+                dropped.pop(v, None)
+                sel.add(v)
+                log('select: try %s in its place' % v)
             continue
         matched = {}
         for res in cur.values():
             for rid, n in res.get('matched', {}).items():
                 matched[rid] = matched.get(rid, 0) + n
-        weak = [] if keep_unmeasured else sorted(
-            (r for r in sel if loo[r]['insns'] == 0 and guard[r] > 0),
-            key=lambda r: (-guard[r] * matched.get(r, 0), r))
+        weak = sorted(
+            (r for r in sel if loo[r]['insns'] == 0 and
+             (r in need_gain or (guard[r] > 0 and not keep_unmeasured))),
+            key=lambda r: (r not in need_gain,
+                           -guard[r] * matched.get(r, 0), r))
         if weak:
             dropped[weak[0]] = ('no_measured_gain', loo[weak[0]])
             sel.discard(weak[0])
@@ -398,11 +425,11 @@ def guard_cost(rule):
 
 
 def select(db, target, insts=None, llc=None, compare=None, jobs=8,
-           log=print, keep_unmeasured=False):
+           log=print, keep_unmeasured=False, no_regressions=False):
     """Builds the target profile. ``insts`` is the target's corpus (for
     coverage), ``compare`` an eval/compare.py result for the candidate
     build. Evidence that needs llc is skipped without it."""
-    cands = emit.candidates(db)
+    cands = emit.candidates(db, target)
     rules = [r for r in cands if emit.emittable(r)]
     prof = {r['id']: {'records': len(emit.record_names(r)),
                       'pattern_nodes': pattern_nodes(r),
@@ -474,6 +501,31 @@ def select(db, target, insts=None, llc=None, compare=None, jobs=8,
         else:
             sel = 'emitted'
         p['selection'] = sel
+    # One-use variants. With every candidate enabled, one of the two fires
+    # on a source without a shared interior value, and the other fires in
+    # its place when the first is disabled. Only the rule fires on a source
+    # with a shared interior value. The marginal effect of the rule is thus
+    # the effect of its firings on such sources, and the marginal effect of
+    # the variant is zero.
+    alt = {}
+    for r in rules:
+        base = r.get('variant_of')
+        if base is None:
+            continue
+        v, b = prof[r['id']], prof[base]
+        if marg is None:
+            v['selection'] = 'variant_not_measured'
+        elif gain(base) > 0 and not (no_regressions and
+                                     marg[base]['worse']):
+            v['selection'] = 'plain_variant_selected'
+            alt[base] = r['id']
+        elif observed(base) + observed(r['id']) > 0 and \
+                b['selection'] != 'worse_than_existing':
+            # The effect of the variant is measured inside the set.
+            v['selection'] = 'emitted'
+            b['selection'] = 'one_use_variant_selected'
+        else:
+            v['selection'] = b['selection']
     set_summary = None
     if marg is not None:
         names = {r['id']: emit.record_names(r) for r in rules}
@@ -482,12 +534,16 @@ def select(db, target, insts=None, llc=None, compare=None, jobs=8,
         log('select: refining %d rules inside the selected set' % len(first))
         final, loo, dropped, set_summary = refine(
             llc, target, compare, names, first,
-            {i: prof[i]['guard_cost'] for i in first}, keep_unmeasured,
-            jobs, log)
+            {r['id']: prof[r['id']]['guard_cost'] for r in rules},
+            keep_unmeasured, jobs, log, alt,
+            # A rule that moves an operation to a wider type changes code
+            # that the target can prefer as it is.
+            {r['id'] for r in rules if r['class'] == 'widens_operation'})
         for rid, (why, m) in dropped.items():
             prof[rid]['selection'] = why
             prof[rid]['in_set'] = m
         for rid in final:
+            prof[rid]['selection'] = 'emitted'
             prof[rid]['in_set'] = loo[rid]
 
     def set_gain(rid):
@@ -510,7 +566,8 @@ def select(db, target, insts=None, llc=None, compare=None, jobs=8,
                          'novelty_and_redundancy': bool(llc),
                          'measured': compare is not None,
                          'leave_one_out': marg is not None,
-                         'keep_unmeasured': keep_unmeasured},
+                         'keep_unmeasured': keep_unmeasured,
+                         'no_regressions': no_regressions},
             'selected_set': set_summary,
             'summary': dict(sorted(summary.items())),
             'emitted_records': sum(prof[i]['records'] for i in ranked),
