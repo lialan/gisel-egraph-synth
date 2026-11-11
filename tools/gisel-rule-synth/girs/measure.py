@@ -17,6 +17,7 @@ SGPR = re.compile(r'^\s+\.sgpr_count:\s+(\d+)', re.M)
 VGPR = re.compile(r'^\s+\.vgpr_count:\s+(\d+)', re.M)
 MATCHED = re.compile(r'gisel-synth: matched: (\w+)')
 PASSED = re.compile(r'gisel-synth: guard passed: (\w+)')
+FALLBACK = re.compile(r'Instruction selection used fallback path for (\S+)')
 
 
 TIMEOUT = 120  # seconds per compilation
@@ -25,7 +26,8 @@ TIMEOUT = 120  # seconds per compilation
 def compile_ll(llc, target, path, flags=(), synth=False, disabled=(),
                count_rules=True):
     """Compiles one .ll file. Returns a dict with rc and, on success, the
-    instruction count, assembly size and per-rule counters. A compilation
+    instruction count, assembly size, per-rule counters and the functions
+    that fell back to SelectionDAG. A compilation
     that does not finish in TIMEOUT seconds counts as failed (rc -1)."""
     with tempfile.NamedTemporaryFile(suffix='.s', delete=False) as tf:
         out = tf.name
@@ -47,7 +49,11 @@ def compile_ll(llc, target, path, flags=(), synth=False, disabled=(),
             os.remove(out)
         return {'rc': -1, 'err': 'timeout after %d s' % TIMEOUT, 'user': 0.0}
     r1 = resource.getrusage(resource.RUSAGE_CHILDREN)
-    res = {'rc': p.returncode}
+    # Functions that GlobalISel could not compile (-global-isel-abort=2).
+    # SelectionDAG compiled them, so their instructions say nothing about
+    # GlobalISel; a change in this set makes two runs incomparable.
+    res = {'rc': p.returncode,
+           'fallback': sorted(set(FALLBACK.findall(p.stderr)))}
     if synth and count_rules:
         m = collections.Counter(MATCHED.findall(p.stderr))
         g = collections.Counter(PASSED.findall(p.stderr))

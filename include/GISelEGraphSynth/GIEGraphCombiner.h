@@ -7,15 +7,20 @@
 //
 //===----------------------------------------------------------------------===//
 /// \file
-/// Experimental equality-saturation based combiner for scalar integer gMIR.
+/// Experimental equality-saturation based combiner for scalar gMIR.
 ///
-/// The pass collects single-block regions of pure scalar integer operations
-/// (G_ADD, G_SUB, G_MUL, G_AND, G_OR, G_XOR, G_SHL, G_LSHR, G_ASHR with
-/// G_CONSTANT operands), translates each into an e-graph, runs bounded
-/// equality saturation with a generic rule library, extracts the cheapest
-/// equivalent (or refining) expression and, in rewrite mode, re-emits the
-/// region if it is strictly cheaper. In shadow mode (the default) the MIR is
-/// never modified; opportunities are only counted and optionally reported.
+/// The pass collects single-block regions of scalar operations: integer
+/// arithmetic, division, bitwise operations and shifts, casts, comparisons,
+/// selects, bit counts and permutations, pointer arithmetic, the PHIs of the
+/// block and its conditional branch (the operators of
+/// egraph::getAllOpProperties(), with G_CONSTANT operands). It translates
+/// each region into an e-graph, runs bounded equality saturation with a
+/// generic rule library, extracts the cheapest equivalent (or refining)
+/// expression and, in rewrite mode, re-emits the region if it is strictly
+/// cheaper. PHIs are kept or replaced by a value, never created, and a
+/// conditional branch is updated in place; the CFG does not change. In
+/// shadow mode (the default) the MIR is never modified; opportunities are
+/// only counted and optionally reported.
 ///
 /// The pass is not part of any default pipeline.
 //===----------------------------------------------------------------------===//

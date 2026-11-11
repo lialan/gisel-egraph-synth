@@ -16,6 +16,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
+#include "llvm/IR/InstrTypes.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include <deque>
@@ -34,15 +35,58 @@ static std::optional<APInt> shiftAmount(const APInt &Val, const APInt &Amt) {
   return Amt.zextOrTrunc(Val.getBitWidth());
 }
 
+/// The undefined behaviour of a division or remainder (OpProperties::
+/// MayTrap).
+static bool divisionTraps(bool IsSigned, const APInt &A, const APInt &B) {
+  return B.isZero() || (IsSigned && A.isMinSignedValue() && B.isAllOnes());
+}
+
+/// A bit count as a constant of \p Width bits.
+static std::optional<APInt> countToAPInt(unsigned Count, unsigned Width) {
+  if (!isUIntN(Width, Count))
+    return std::nullopt;
+  return APInt(Width, Count);
+}
+
+static std::optional<uint64_t> invertBranchAttr(uint64_t Attr) {
+  // Bit 1: the terminator can be inverted. Bit 0: this is the inverted form.
+  if (!(Attr & 2))
+    return std::nullopt;
+  return Attr ^ 1;
+}
+
 static std::vector<OpProperties> buildOpProperties() {
   using namespace TargetOpcode;
   std::vector<OpProperties> T;
-  auto Op = [&](unsigned Opc, const char *Name, const char *Short) {
+  auto Op = [&](unsigned Opc, const char *Name, const char *Short,
+                OpShape Shape = OpShape::Binary) {
     T.emplace_back();
     OpProperties &P = T.back();
     P.Opcode = Opc;
     P.Name = Name;
     P.ShortName = Short;
+    P.Shape = Shape;
+    switch (Shape) {
+    case OpShape::Binary:
+    case OpShape::Compare:
+    case OpShape::PtrAdd:
+      P.NumOperands = 2;
+      break;
+    case OpShape::Unary:
+    case OpShape::Cast:
+    case OpShape::BitCount:
+      P.NumOperands = 1;
+      break;
+    case OpShape::Select:
+      P.NumOperands = 3;
+      break;
+    case OpShape::Phi:
+      P.NumOperands = -1;
+      break;
+    case OpShape::Effect:
+      P.NumOperands = 0;
+      break;
+    }
     return &P;
   };
 
@@ -122,6 +166,157 @@ static std::vector<OpProperties> buildOpProperties() {
       return A.ashr(*Amt);
     return std::nullopt;
   };
+
+  // Division and remainder. All identities hold where the behaviour is
+  // defined; see OpProperties::MayTrap for how the rest is handled.
+  P = Op(G_UDIV, "G_UDIV", "udiv");
+  P->MayTrap = true;
+  P->RightIdentity = 1;
+  P->LeftAbsorbing = 0;
+  P->SelfValue = 1;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    if (divisionTraps(/*IsSigned=*/false, A, B))
+      return std::nullopt;
+    return A.udiv(B);
+  };
+
+  P = Op(G_SDIV, "G_SDIV", "sdiv");
+  P->MayTrap = P->IsSigned = true;
+  P->RightIdentity = 1;
+  P->LeftAbsorbing = 0;
+  P->SelfValue = 1;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    if (divisionTraps(/*IsSigned=*/true, A, B))
+      return std::nullopt;
+    return A.sdiv(B);
+  };
+
+  P = Op(G_UREM, "G_UREM", "urem");
+  P->MayTrap = true;
+  P->LeftAbsorbing = 0;
+  P->RightConstResult = {{1, 0}};
+  P->SelfValue = 0;
+  P->RemainderOf = G_UDIV;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    if (divisionTraps(/*IsSigned=*/false, A, B))
+      return std::nullopt;
+    return A.urem(B);
+  };
+
+  P = Op(G_SREM, "G_SREM", "srem");
+  P->MayTrap = P->IsSigned = true;
+  P->LeftAbsorbing = 0;
+  P->RightConstResult = {{1, 0}, {-1, 0}};
+  P->SelfValue = 0;
+  P->RemainderOf = G_SDIV;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    if (divisionTraps(/*IsSigned=*/true, A, B))
+      return std::nullopt;
+    return A.srem(B);
+  };
+
+  // Casts. All three are homomorphisms for the bitwise operators. trunc is
+  // also one for G_ADD, G_SUB and G_MUL, but those are not listed: hoisting
+  // makes the arithmetic wider, and narrow multiply-add patterns are lost
+  // (measured on AMDGPU). This is the same choice as the combiner's
+  // hoist_logic_op_with_same_opcode_hands.
+  P = Op(G_TRUNC, "G_TRUNC", "trunc", OpShape::Cast);
+  P->Cast = CastKind::Truncate;
+  P->ComposesTo = {{G_TRUNC, G_TRUNC}};
+  P->HomomorphicOver = {G_AND, G_OR, G_XOR};
+  P->FoldUnary = [](const APInt &A, unsigned W) -> std::optional<APInt> {
+    return A.trunc(W);
+  };
+  // Every constant has many preimages. The sign-extended one keeps -1 as
+  // -1, so that a NOT is still a NOT after hoisting.
+  P->Preimage = [](const APInt &C, unsigned W) -> std::optional<APInt> {
+    return C.sext(W);
+  };
+
+  P = Op(G_ZEXT, "G_ZEXT", "zext", OpShape::Cast);
+  P->Cast = CastKind::ZeroExtend;
+  P->ComposesTo = {{G_ZEXT, G_ZEXT}};
+  P->HomomorphicOver = {G_AND, G_OR, G_XOR};
+  P->FoldUnary = [](const APInt &A, unsigned W) -> std::optional<APInt> {
+    return A.zext(W);
+  };
+  P->Preimage = [](const APInt &C, unsigned W) -> std::optional<APInt> {
+    if (!C.isIntN(W))
+      return std::nullopt;
+    return C.trunc(W);
+  };
+
+  P = Op(G_SEXT, "G_SEXT", "sext", OpShape::Cast);
+  P->Cast = CastKind::SignExtend;
+  P->ComposesTo = {{G_SEXT, G_SEXT}, {G_ZEXT, G_ZEXT}};
+  P->HomomorphicOver = {G_AND, G_OR, G_XOR};
+  P->FoldUnary = [](const APInt &A, unsigned W) -> std::optional<APInt> {
+    return A.sext(W);
+  };
+  P->Preimage = [](const APInt &C, unsigned W) -> std::optional<APInt> {
+    if (!C.isSignedIntN(W))
+      return std::nullopt;
+    return C.trunc(W);
+  };
+
+  // Bit permutations: involutions and homomorphisms for the bitwise
+  // operators.
+  P = Op(G_BSWAP, "G_BSWAP", "bswap", OpShape::Unary);
+  P->Involution = true;
+  P->HomomorphicOver = {G_AND, G_OR, G_XOR};
+  P->FoldUnary = [](const APInt &A, unsigned W) -> std::optional<APInt> {
+    if (A.getBitWidth() % 16 != 0)
+      return std::nullopt;
+    return A.byteSwap();
+  };
+  P->Preimage = P->FoldUnary;
+
+  P = Op(G_BITREVERSE, "G_BITREVERSE", "bitreverse", OpShape::Unary);
+  P->Involution = true;
+  P->HomomorphicOver = {G_AND, G_OR, G_XOR};
+  P->FoldUnary = [](const APInt &A, unsigned W) -> std::optional<APInt> {
+    return A.reverseBits();
+  };
+  P->Preimage = P->FoldUnary;
+
+  // Bit counts. A population count does not depend on the positions of the
+  // bits; reversing the bits exchanges leading and trailing zeros.
+  P = Op(G_CTPOP, "G_CTPOP", "ctpop", OpShape::BitCount);
+  P->InvariantUnder = {G_BSWAP, G_BITREVERSE, G_ZEXT};
+  P->FoldUnary = [](const APInt &A, unsigned W) {
+    return countToAPInt(A.popcount(), W);
+  };
+
+  P = Op(G_CTLZ, "G_CTLZ", "ctlz", OpShape::BitCount);
+  P->ComposesTo = {{G_BITREVERSE, G_CTTZ}};
+  P->FoldUnary = [](const APInt &A, unsigned W) {
+    return countToAPInt(A.countl_zero(), W);
+  };
+
+  P = Op(G_CTTZ, "G_CTTZ", "cttz", OpShape::BitCount);
+  P->ComposesTo = {{G_BITREVERSE, G_CTLZ}};
+  P->FoldUnary = [](const APInt &A, unsigned W) {
+    return countToAPInt(A.countr_zero(), W);
+  };
+
+  // The predicate algebra of comparisons (swapped, inverse, reflexive)
+  // comes from CmpInst; see addCompareRulesFromProperties.
+  Op(G_ICMP, "G_ICMP", "icmp", OpShape::Compare);
+  Op(G_SELECT, "G_SELECT", "select", OpShape::Select);
+
+  P = Op(G_PTR_ADD, "G_PTR_ADD", "ptradd", OpShape::PtrAdd);
+  P->RightIdentity = 0;
+  P->ActsBy = G_ADD;
+
+  P = Op(G_PHI, "G_PHI", "phi", OpShape::Phi);
+  P->Idempotent = true;
+
+  // A conditional branch with its condition as the operand. The following
+  // unconditional branch, if any, is the other target.
+  P = Op(G_BRCOND, "G_BRCOND", "brcond", OpShape::Effect);
+  P->NumOperands = 1;
+  P->InvertAttr = invertBranchAttr;
+  Op(G_BR, "G_BR", "br", OpShape::Effect);
   return T;
 }
 
@@ -160,12 +355,26 @@ static bool isShift(unsigned Opc) {
   return P && P->IsShift;
 }
 
-/// Every operator in the property table is, without flags, poison iff an
-/// operand is poison (for shifts: provided the amount is a constant in
-/// range), and never produces undef from defined operands (see
-/// OpProperties).
-static bool isPoisonPropagatingOnly(unsigned Opc) {
-  return getOpProperties(Opc) != nullptr;
+/// True if the division or remainder \p N has defined behaviour for all
+/// values of its operands: the divisor is a constant other than zero (and
+/// other than -1 for a signed operation).
+static bool isDefinedDivision(const EGraph &G, const OpProperties &P,
+                              const ENode &N) {
+  const std::optional<APInt> &Divisor = G.getClass(N.Ops[1]).Const;
+  return Divisor && !Divisor->isZero() && !(P.IsSigned && Divisor->isAllOnes());
+}
+
+static StringRef getICmpPredicateName(uint64_t Attr) {
+  return CmpInst::getPredicateName(static_cast<CmpInst::Predicate>(Attr));
+}
+
+/// Print the attribute of an operation as it is written in patterns.
+static void printAttr(raw_ostream &OS, unsigned Opc, uint64_t Attr) {
+  const OpProperties *P = getOpProperties(Opc);
+  if (P && P->Shape == OpShape::Compare)
+    OS << ":" << getICmpPredicateName(Attr);
+  else if (Attr)
+    OS << ":" << Attr;
 }
 
 //===----------------------------------------------------------------------===//
@@ -192,18 +401,20 @@ ENode ENode::makeConstant(LLT Ty, const APInt &Val) {
 }
 
 ENode ENode::makeOp(unsigned Opcode, LLT Ty, ArrayRef<EClassId> Ops,
-                    uint32_t Flags) {
+                    uint32_t Flags, uint64_t Attr) {
   ENode N;
   N.Kind = ENodeKind::Operation;
   N.Opcode = Opcode;
   N.Ty = Ty;
   N.Flags = Flags;
+  N.Attr = Attr;
   N.Ops.assign(Ops.begin(), Ops.end());
   return N;
 }
 
 bool ENode::operator==(const ENode &O) const {
-  if (Kind != O.Kind || Opcode != O.Opcode || Flags != O.Flags || Ty != O.Ty)
+  if (Kind != O.Kind || Opcode != O.Opcode || Flags != O.Flags || Ty != O.Ty ||
+      Attr != O.Attr)
     return false;
   switch (Kind) {
   case ENodeKind::Input:
@@ -218,7 +429,7 @@ bool ENode::operator==(const ENode &O) const {
 
 hash_code llvm::egraph::hash_value(const ENode &N) {
   hash_code H = hash_combine(static_cast<unsigned>(N.Kind), N.Opcode, N.Flags,
-                             N.Ty.getUniqueRAWLLTData());
+                             N.Ty.getUniqueRAWLLTData(), N.Attr);
   switch (N.Kind) {
   case ENodeKind::Input:
     return hash_combine(H, N.InputIdx);
@@ -245,8 +456,8 @@ EClassId EGraph::addConstant(LLT Ty, const APInt &Val) {
 }
 
 EClassId EGraph::addOp(unsigned Opcode, LLT Ty, ArrayRef<EClassId> Ops,
-                       uint32_t Flags) {
-  return add(ENode::makeOp(Opcode, Ty, Ops, Flags));
+                       uint32_t Flags, uint64_t Attr) {
+  return add(ENode::makeOp(Opcode, Ty, Ops, Flags, Attr));
 }
 
 EClassId EGraph::find(EClassId Id) const {
@@ -272,10 +483,17 @@ ENode EGraph::canonicalize(const ENode &N) const {
   // a op b and b op a hash-cons to the same e-node immediately. rebuild()
   // re-canonicalizes after merges, which re-sorts operands whose ids changed.
   // The matcher compensates by trying both operand orders.
+  // A comparison is handled the same way, with the swapped predicate:
+  // a < b and b > a are the same e-node.
   if (C.isOperation() && C.Ops.size() == 2 && C.Ops[0] > C.Ops[1]) {
     const OpProperties *P = getOpProperties(C.Opcode);
-    if (P && P->Commutative)
+    if (P && P->Commutative) {
       std::swap(C.Ops[0], C.Ops[1]);
+    } else if (P && P->Shape == OpShape::Compare) {
+      std::swap(C.Ops[0], C.Ops[1]);
+      C.Attr =
+          CmpInst::getSwappedPredicate(static_cast<CmpInst::Predicate>(C.Attr));
+    }
   }
   return C;
 }
@@ -435,6 +653,30 @@ unsigned EGraph::canonicalizeAC(unsigned MaxLeaves, unsigned MaxNodes) {
   return Merges;
 }
 
+unsigned EGraph::collapseIdempotentPhis() {
+  assert(!Dirty && "rebuild() the e-graph before collapsing PHIs");
+  SmallVector<std::pair<EClassId, EClassId>, 4> Pending;
+  for (EClassId Id : getClassIds()) {
+    for (const ENode &N : Classes[Id].Nodes) {
+      if (!N.isOperation() || N.Ops.empty())
+        continue;
+      const OpProperties *P = getOpProperties(N.Opcode);
+      if (!P || P->Shape != OpShape::Phi || !P->Idempotent)
+        continue;
+      // The value on every incoming edge is the same class, so the PHI has
+      // exactly that value (including undef and poison).
+      EClassId First = find(N.Ops[0]);
+      if (First != Id &&
+          all_of(N.Ops, [&](EClassId Op) { return find(Op) == First; }))
+        Pending.push_back({Id, First});
+    }
+  }
+  unsigned Merges = 0;
+  for (auto [A, B] : Pending)
+    Merges += merge(A, B);
+  return Merges;
+}
+
 EClassId EGraph::add(ENode N) {
   N = canonicalize(N);
   auto It = Memo.find(N);
@@ -555,10 +797,13 @@ bool EGraph::computeNodeNotUndef(const ENode &N) const {
     return Inputs[N.InputIdx].NotUndef;
   case ENodeKind::Constant:
     return true;
-  case ENodeKind::Operation:
-    if (!isPoisonPropagatingOnly(N.Opcode))
+  case ENodeKind::Operation: {
+    // No supported operator produces undef from defined operands.
+    const OpProperties *P = getOpProperties(N.Opcode);
+    if (!P || !P->hasResult())
       return false;
     return all_of(N.Ops, [&](EClassId Op) { return getClass(Op).NotUndef; });
+  }
   }
   llvm_unreachable("bad kind");
 }
@@ -571,13 +816,19 @@ bool EGraph::computeNodeNotPoison(const ENode &N) const {
     return true;
   case ENodeKind::Operation: {
     // Any poison-generating flag may introduce poison.
-    if (N.Flags != 0 || !isPoisonPropagatingOnly(N.Opcode))
+    const OpProperties *P = getOpProperties(N.Opcode);
+    if (N.Flags != 0 || !P || !P->hasResult())
       return false;
-    if (isShift(N.Opcode)) {
+    if (P->IsShift) {
       const std::optional<APInt> &Amt = getClass(N.Ops[1]).Const;
       if (!Amt || Amt->uge(N.Ty.getScalarSizeInBits()))
         return false;
     }
+    // Undefined behaviour is treated like poison: a value that may trap is
+    // never dropped by an exact rewrite.
+    if (P->MayTrap && !isDefinedDivision(*this, *P, N))
+      return false;
+    // For a select or a PHI, requiring all operands is conservative.
     return all_of(N.Ops, [&](EClassId Op) { return getClass(Op).NotPoison; });
   }
   }
@@ -718,6 +969,7 @@ void EGraph::print(raw_ostream &OS) const {
         break;
       case ENodeKind::Operation:
         OS << getOpcodeName(N.Opcode);
+        printAttr(OS, N.Opcode, N.Attr);
         if (N.Flags)
           OS << " flags=" << N.Flags;
         for (EClassId Op : N.Ops)
@@ -785,20 +1037,25 @@ private:
     skipWS();
     PatNode N;
     if (Text.consume_front("(")) {
-      StringRef OpName = token();
+      auto [OpName, AttrName] = token().split(':');
       std::optional<unsigned> Opc = getOpcodeByName(OpName);
       if (!Opc)
         error(Twine("unknown opcode '") + OpName + "'");
+      const OpProperties *Props = getOpProperties(*Opc);
       N.Kind = PatNode::Op;
       N.Opcode = *Opc;
+      parseAttr(N, *Props, AttrName);
       while (true) {
         skipWS();
         if (Text.consume_front(")"))
           break;
         N.Children.push_back(parseNode(P));
       }
-      if (N.Children.size() != 2)
-        error("only binary operations are supported");
+      if (Props->NumOperands < 0)
+        error(Twine("'") + OpName + "' cannot be used in a pattern");
+      if (N.Children.size() != unsigned(Props->NumOperands))
+        error(Twine("'") + OpName + "' takes " + Twine(Props->NumOperands) +
+              " operands");
     } else {
       StringRef Tok = token();
       if (Tok.consume_front("?")) {
@@ -823,13 +1080,76 @@ private:
     return P.Nodes.size() - 1;
   }
 
+  void parseAttr(PatNode &N, const OpProperties &Props, StringRef AttrName) {
+    if (AttrName.empty()) {
+      // A created comparison needs a predicate.
+      if (IsRHS && Props.Shape == OpShape::Compare)
+        error("comparison without a predicate on the right-hand side");
+      return;
+    }
+    if (AttrName == "inverted") {
+      if (!IsRHS || !Props.InvertAttr)
+        error("':inverted' needs an invertible operator on the right-hand "
+              "side");
+      N.AttrKind = PatNode::InvertedRootAttr;
+      return;
+    }
+    if (Props.Shape != OpShape::Compare)
+      error(Twine("unexpected attribute '") + AttrName + "'");
+    for (unsigned Pred = CmpInst::FIRST_ICMP_PREDICATE;
+         Pred <= CmpInst::LAST_ICMP_PREDICATE; ++Pred) {
+      if (getICmpPredicateName(Pred) != AttrName)
+        continue;
+      N.AttrKind = PatNode::ExactAttr;
+      N.Attr = Pred;
+      return;
+    }
+    error(Twine("unknown predicate '") + AttrName + "'");
+  }
+
   StringRef RuleName;
   StringRef Text;
   bool IsRHS;
   std::vector<std::string> &VarNames;
   std::vector<std::string> &ConstNames;
 };
+
+/// The variables a pattern is poison for; see RewriteRule::MentionL.
+struct PoisonUse {
+  uint32_t Strict = 0, Mention = 0;
+};
 } // namespace
+
+static PoisonUse computePoisonUse(const Pattern &P, unsigned Idx) {
+  const PatNode &N = P.Nodes[Idx];
+  PoisonUse U;
+  if (N.Kind == PatNode::Var) {
+    U.Strict = U.Mention = 1u << N.Index;
+    return U;
+  }
+  if (N.Kind != PatNode::Op)
+    return U;
+  if (getOpProperties(N.Opcode)->Shape == OpShape::Select) {
+    PoisonUse Cond = computePoisonUse(P, N.Children[0]);
+    PoisonUse TrueArm = computePoisonUse(P, N.Children[1]);
+    PoisonUse FalseArm = computePoisonUse(P, N.Children[2]);
+    // With a constant condition only the selected arm matters. The condition
+    // is an s1, so the literal is true if its low bit is set.
+    const PatNode &CondNode = P.Nodes[N.Children[0]];
+    if (CondNode.Kind == PatNode::Literal)
+      return (CondNode.Value & 1) ? TrueArm : FalseArm;
+    U.Strict = Cond.Strict | (TrueArm.Strict & FalseArm.Strict);
+    U.Mention = Cond.Mention | TrueArm.Mention | FalseArm.Mention;
+    return U;
+  }
+  // All other operators are poison iff an operand is.
+  for (unsigned C : N.Children) {
+    PoisonUse Child = computePoisonUse(P, C);
+    U.Strict |= Child.Strict;
+    U.Mention |= Child.Mention;
+  }
+  return U;
+}
 
 static void countVarOccurrences(const Pattern &P,
                                 SmallVectorImpl<unsigned> &Occ) {
@@ -839,8 +1159,8 @@ static void countVarOccurrences(const Pattern &P,
 }
 
 RewriteRule::RewriteRule(StringRef Name, StringRef LHSText, StringRef RHSText,
-                         ApplyFn Fn)
-    : Name(Name.str()), Fn(std::move(Fn)) {
+                         ApplyFn Fn, bool PoisonExact)
+    : Name(Name.str()), PoisonExact(PoisonExact), Fn(std::move(Fn)) {
   LHS = PatternParser(Name, LHSText, /*IsRHS=*/false, VarNames, ConstNames)
             .parse();
   RHS = PatternParser(Name, RHSText, /*IsRHS=*/true, VarNames, ConstNames)
@@ -848,16 +1168,47 @@ RewriteRule::RewriteRule(StringRef Name, StringRef LHSText, StringRef RHSText,
   if (LHS.Nodes[LHS.Root].Kind != PatNode::Op)
     report_fatal_error(Twine("GIEGraph rule '") + Name +
                        "': left-hand side must be an operation");
+  if (VarNames.size() > 32)
+    report_fatal_error(Twine("GIEGraph rule '") + Name +
+                       "': too many variables");
   OccL.assign(VarNames.size(), 0);
   OccR.assign(VarNames.size(), 0);
   countVarOccurrences(LHS, OccL);
   countVarOccurrences(RHS, OccR);
+  PoisonUse L = computePoisonUse(LHS, LHS.Root);
+  PoisonUse R = computePoisonUse(RHS, RHS.Root);
+  MentionL = L.Mention;
+  StrictL = L.Strict;
+  MentionR = R.Mention;
+  StrictR = R.Strict;
+  if (PoisonExact && MentionL != MentionR)
+    report_fatal_error(Twine("GIEGraph rule '") + Name +
+                       "': a poison-exact rule must use the same variables "
+                       "on both sides");
+}
+
+bool RewriteRule::needsDefinedForRefinement(unsigned Var) const {
+  // RHS poison must imply LHS poison. The RHS can only be poison because of
+  // a variable it mentions, so this holds if the LHS is strict in each of
+  // them.
+  uint32_t Bit = 1u << Var;
+  return !PoisonExact && (MentionR & Bit) && !(StrictL & Bit);
+}
+
+bool RewriteRule::needsDefinedForExactness(unsigned Var) const {
+  // Additionally, LHS poison must imply RHS poison.
+  uint32_t Bit = 1u << Var;
+  return needsDefinedForRefinement(Var) ||
+         (!PoisonExact && (MentionL & Bit) && !(StrictR & Bit));
 }
 
 // Soundness of a rule instance (see the design document):
-//  * All operators appearing in the patterns are unflagged and propagate
-//    poison exactly (shift amounts are constants in range), so each side is
-//    poison iff one of the variables it mentions is poison.
+//  * All operators appearing in the patterns are unflagged and, except for
+//    the arms of a select, propagate poison exactly (shift amounts are
+//    constants in range). So a side is poison if a variable it is strict in
+//    is poison, and only if a variable it mentions is poison. Operations
+//    with undefined behaviour are only matched as refinements and only
+//    created if the matched pattern has the same undefined behaviour.
 //  * Each occurrence of an undef-carrying value may observe a different
 //    value. If a variable occurs exactly once on each side, the sets of
 //    possible results coincide. If it occurs several times on a side, the
@@ -897,11 +1248,11 @@ static BindingFacts getBindingFacts(const EGraph &G, const RuleMatch &M,
 bool RewriteRule::isExactFor(const EGraph &G, const RuleMatch &M) const {
   for (unsigned V = 0, E = VarNames.size(); V != E; ++V) {
     BindingFacts C = getBindingFacts(G, M, V);
+    // E.g. a dropped variable: LHS is poison when it is, RHS is not.
+    if (needsDefinedForExactness(V) && !C.NotPoison)
+      return false;
     unsigned L = OccL[V], R = OccR[V];
     if (R == 0) {
-      // The variable is dropped: LHS is poison when it is, RHS is not.
-      if (!C.NotPoison)
-        return false;
       if (L > 1 && !C.NotUndef)
         return false;
     } else if (!(L == 1 && R == 1) && !C.NotUndef) {
@@ -912,12 +1263,16 @@ bool RewriteRule::isExactFor(const EGraph &G, const RuleMatch &M) const {
 }
 
 bool RewriteRule::isRefinementFor(const EGraph &G, const RuleMatch &M) const {
-  // RHS variables are a subset of LHS variables, so RHS poison implies LHS
-  // poison. Using a variable at most once on the RHS picks one point of the
-  // diagonal of the LHS' possible values.
-  for (unsigned V = 0, E = VarNames.size(); V != E; ++V)
-    if (OccR[V] > 1 && !getBindingFacts(G, M, V).NotUndef)
+  // RHS variables are a subset of LHS variables. Using a variable at most
+  // once on the RHS picks one point of the diagonal of the LHS' possible
+  // values.
+  for (unsigned V = 0, E = VarNames.size(); V != E; ++V) {
+    BindingFacts C = getBindingFacts(G, M, V);
+    if (needsDefinedForRefinement(V) && !C.NotPoison)
       return false;
+    if (OccR[V] > 1 && !C.NotUndef)
+      return false;
+  }
   return true;
 }
 
@@ -940,6 +1295,10 @@ static void printPattern(raw_ostream &OS, const Pattern &P, unsigned Idx,
     return;
   case PatNode::Op:
     OS << "(" << getOpcodeName(N.Opcode);
+    if (N.AttrKind == PatNode::ExactAttr)
+      printAttr(OS, N.Opcode, N.Attr);
+    else if (N.AttrKind == PatNode::InvertedRootAttr)
+      OS << ":inverted";
     for (unsigned C : N.Children) {
       OS << " ";
       printPattern(OS, P, C, Vars, Consts);
@@ -954,6 +1313,21 @@ void RewriteRule::print(raw_ostream &OS) const {
   printPattern(OS, LHS, LHS.Root, VarNames, ConstNames);
   OS << " => ";
   printPattern(OS, RHS, RHS.Root, VarNames, ConstNames);
+  auto PrintVars = [&](StringRef Label, bool Exact) {
+    bool Any = false;
+    for (unsigned V = 0, E = VarNames.size(); V != E; ++V) {
+      // Variables needed for a refinement are not repeated for exactness.
+      bool Needed =
+          Exact ? needsDefinedForExactness(V) && !needsDefinedForRefinement(V)
+                : needsDefinedForRefinement(V);
+      if (!Needed)
+        continue;
+      OS << (Any ? " " : (" ; " + Label + ": ").str()) << VarNames[V];
+      Any = true;
+    }
+  };
+  PrintVars("refine-defined", /*Exact=*/false);
+  PrintVars("exact-defined", /*Exact=*/true);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1001,6 +1375,9 @@ public:
     Cur.VarSums.assign(R.getNumVars(), ACTerm());
     Cur.Consts.assign(R.getNumConstVars(), std::nullopt);
     Cur.Rest = ACTerm();
+    Cur.PatClasses.assign(R.getLHS().Nodes.size(), RuleMatch::NoClass);
+    Cur.RootAttr = 0;
+    Cur.Guards.clear();
     Cur.ViaRefinement = false;
     Seen.clear();
     const Pattern &P = R.getLHS();
@@ -1017,6 +1394,7 @@ private:
   static std::vector<uint64_t> key(const RuleMatch &M) {
     std::vector<uint64_t> K;
     K.push_back(M.ViaRefinement);
+    K.push_back(M.RootAttr);
     for (unsigned V = 0, E = M.Vars.size(); V != E; ++V) {
       K.push_back(M.Vars[V]);
       if (M.isSumBound(V)) {
@@ -1087,7 +1465,7 @@ private:
     bool IsRoot = PIdx == R.getLHS().Root;
     // Structural patterns: try the class itself, then (if allowed) the
     // classes it refines to.
-    matchStructural(PN, C, IsRoot, K);
+    matchStructural(PIdx, C, IsRoot, K);
     if (!AllowRefine)
       return;
     SmallVector<EClassId, 4> Closure = G.getRefinementClosure(C);
@@ -1096,7 +1474,7 @@ private:
     bool Saved = Cur.ViaRefinement;
     Cur.ViaRefinement = true;
     for (EClassId D : Closure)
-      matchStructural(PN, D, /*IsRoot=*/false, K);
+      matchStructural(PIdx, D, /*IsRoot=*/false, K);
     Cur.ViaRefinement = Saved;
   }
 
@@ -1215,8 +1593,9 @@ private:
     }
   }
 
-  void matchStructural(const PatNode &PN, EClassId C, bool IsRoot,
+  void matchStructural(unsigned PIdx, EClassId C, bool IsRoot,
                        function_ref<void()> K) {
+    const PatNode &PN = R.getLHS().Nodes[PIdx];
     const EClass &Cls = G.getClass(C);
     switch (PN.Kind) {
     case PatNode::Var:
@@ -1250,34 +1629,60 @@ private:
         matchAC(PN, C, /*AllowExtension=*/IsRoot, K);
         return;
       }
+      const OpProperties *P = getOpProperties(PN.Opcode);
       for (const ENode &N : Cls.Nodes) {
         if (full())
           return;
         if (!N.isOperation() || N.Opcode != PN.Opcode ||
             N.Ops.size() != PN.Children.size())
           continue;
+        // Commutative operations and comparisons are stored in one
+        // canonical operand order (see EGraph::canonicalize), so also match
+        // the other order; for a comparison, with the swapped predicate.
+        bool Direct = true;
+        bool Swapped = P->Commutative && N.Ops[0] != N.Ops[1];
+        if (PN.AttrKind == PatNode::ExactAttr) {
+          Direct = N.Attr == PN.Attr;
+          Swapped = P->Shape == OpShape::Compare && N.Ops[0] != N.Ops[1] &&
+                    CmpInst::getSwappedPredicate(
+                        static_cast<CmpInst::Predicate>(N.Attr)) == PN.Attr;
+          if (!Direct && !Swapped)
+            continue;
+        }
         if (isShift(N.Opcode)) {
           // Only shifts that cannot create poison are rewritten.
           const std::optional<APInt> &Amt = G.getClass(N.Ops[1]).Const;
           if (!Amt || Amt->uge(N.Ty.getScalarSizeInBits()))
             continue;
         }
-        // A flagged operation (nuw/nsw/exact/disjoint) is refined by the
+        // A flagged operation (nuw/nsw/exact/disjoint...) is refined by the
         // same operation without flags: the flags only add poison. Matching
         // it as the unflagged operator is therefore sound, but the result
         // can only justify a refinement, never a merge.
-        bool Saved = Cur.ViaRefinement;
+        bool SavedRefinement = Cur.ViaRefinement;
+        uint64_t SavedAttr = Cur.RootAttr;
         if (N.Flags)
           Cur.ViaRefinement = true;
-        matchChildren(PN, N, 0, /*Swap=*/false, K);
-        // Commutative operations are stored in one canonical operand order
-        // (see EGraph::canonicalize), so also match the other order.
-        if (N.Ops.size() == 2 && N.Ops[0] != N.Ops[1]) {
-          const OpProperties *P = getOpProperties(N.Opcode);
-          if (P && P->Commutative)
-            matchChildren(PN, N, 0, /*Swap=*/true, K);
+        // A division that may trap: the pattern operator is the total
+        // function, so again only a refinement is justified. Remember it;
+        // the right-hand side may repeat it.
+        bool Guarded = P->MayTrap && !isDefinedDivision(G, *P, N);
+        if (Guarded) {
+          Cur.ViaRefinement = true;
+          Cur.Guards.push_back({P->IsSigned, N.Ops[0], N.Ops[1]});
         }
-        Cur.ViaRefinement = Saved;
+        if (IsRoot)
+          Cur.RootAttr = N.Attr;
+        Cur.PatClasses[PIdx] = C;
+        if (Direct)
+          matchChildren(PN, N, 0, /*Swap=*/false, K);
+        if (Swapped)
+          matchChildren(PN, N, 0, /*Swap=*/true, K);
+        Cur.PatClasses[PIdx] = RuleMatch::NoClass;
+        if (Guarded)
+          Cur.Guards.pop_back();
+        Cur.RootAttr = SavedAttr;
+        Cur.ViaRefinement = SavedRefinement;
       }
       return;
     }
@@ -1329,77 +1734,234 @@ void llvm::egraph::matchRule(const EGraph &G, const RewriteRule &Rule,
 //===----------------------------------------------------------------------===//
 
 namespace {
-/// Instantiates a right-hand side. All non-amount positions have the root
-/// type; computed/literal constants get the type of their position.
+/// Instantiates a right-hand side. Types are derived from the operator
+/// shapes: build() gets the type its position must have (invalid if the
+/// position does not determine it, e.g. the operand of a cast), and
+/// inferType() gives the type a pattern has by itself. An instantiation that
+/// is not well-typed is rejected, which makes rules whose validity depends
+/// on the types (e.g. the compositions of casts) self-guarding.
 class Instantiator {
 public:
   Instantiator(EGraph &G, const RewriteRule &R, const RuleMatch &M,
                ArrayRef<APInt> Computed)
-      : G(G), R(R), M(M), Computed(Computed), Ty(G.getType(M.Root)) {}
+      : G(G), R(R), M(M), Computed(Computed) {}
 
-  std::optional<EClassId> build(unsigned PIdx, bool IsShiftAmount) {
+  std::optional<EClassId> build(unsigned PIdx, LLT Expected,
+                                bool IsShiftAmount = false) {
     const PatNode &PN = R.getRHS().Nodes[PIdx];
-    unsigned Width = Ty.getSizeInBits();
     switch (PN.Kind) {
     case PatNode::Var: {
       if (M.isSumBound(PN.Index)) {
         const ACTerm &T = M.VarSums[PN.Index];
-        if (G.getType(T.Leaves[0]) != Ty)
+        LLT Ty = G.getType(T.Leaves[0]);
+        if (Expected.isValid() && Ty != Expected)
           return std::nullopt;
         return G.addACTerm(T.Opcode, Ty, T.Leaves);
       }
       EClassId C = M.Vars[PN.Index];
-      if (!IsShiftAmount && G.getType(C) != Ty)
+      if (!IsShiftAmount && Expected.isValid() && G.getType(C) != Expected)
         return std::nullopt;
       return C;
     }
     case PatNode::Literal:
-      return G.addConstant(Ty, APInt(Width, PN.Value, /*isSigned=*/true,
-                                     /*implicitTrunc=*/true));
-    case PatNode::Computed:
-      if (PN.Index >= Computed.size() ||
-          Computed[PN.Index].getBitWidth() != Width)
+      if (!Expected.isValid() || !Expected.isScalar())
         return std::nullopt;
-      return G.addConstant(Ty, Computed[PN.Index]);
+      return G.addConstant(Expected,
+                           APInt(Expected.getSizeInBits(), PN.Value,
+                                 /*isSigned=*/true, /*implicitTrunc=*/true));
+    case PatNode::Computed:
+      if (PN.Index >= Computed.size())
+        return std::nullopt;
+      return buildConstant(Computed[PN.Index], Expected,
+                           /*MayResize=*/false);
     case PatNode::ConstVar: {
       const std::optional<APInt> &V = M.Consts[PN.Index];
       if (!V)
         return std::nullopt;
-      if (V->getBitWidth() != Width) {
-        // Only shift amounts may change width, and only if the value fits.
-        if (!IsShiftAmount || V->getActiveBits() > Width)
-          return std::nullopt;
-        return G.addConstant(Ty, V->zextOrTrunc(Width));
-      }
-      return G.addConstant(Ty, *V);
+      // Only shift amounts may change width, and only if the value fits.
+      return buildConstant(*V, Expected, /*MayResize=*/IsShiftAmount);
     }
-    case PatNode::Op: {
-      SmallVector<EClassId, 2> Ops;
-      for (unsigned I = 0, E = PN.Children.size(); I != E; ++I) {
-        bool Amt = isShift(PN.Opcode) && I == 1;
-        std::optional<EClassId> C = build(PN.Children[I], Amt);
-        if (!C)
-          return std::nullopt;
-        Ops.push_back(*C);
-      }
-      if (isShift(PN.Opcode)) {
-        // RHS shifts must not be able to create poison.
-        std::optional<APInt> Amt = G.getConstant(Ops[1]);
-        if (!Amt || Amt->uge(Width))
-          return std::nullopt;
-      }
-      return G.addOp(PN.Opcode, Ty, Ops);
-    }
+    case PatNode::Op:
+      return buildOp(PN, PIdx, Expected);
     }
     llvm_unreachable("bad pattern node");
   }
 
 private:
+  std::optional<EClassId> buildConstant(const APInt &V, LLT Expected,
+                                        bool MayResize) {
+    if (!Expected.isValid())
+      return G.addConstant(LLT::scalar(V.getBitWidth()), V);
+    if (!Expected.isScalar())
+      return std::nullopt;
+    unsigned Width = Expected.getSizeInBits();
+    if (V.getBitWidth() == Width)
+      return G.addConstant(Expected, V);
+    if (!MayResize || V.getActiveBits() > Width)
+      return std::nullopt;
+    return G.addConstant(Expected, V.zextOrTrunc(Width));
+  }
+
+  /// The type of pattern \p PIdx if it can be told without context, else an
+  /// invalid type.
+  LLT inferType(unsigned PIdx) const {
+    const PatNode &PN = R.getRHS().Nodes[PIdx];
+    switch (PN.Kind) {
+    case PatNode::Var:
+      if (M.isSumBound(PN.Index))
+        return G.getType(M.VarSums[PN.Index].Leaves[0]);
+      return G.getType(M.Vars[PN.Index]);
+    case PatNode::Literal:
+      return LLT();
+    case PatNode::Computed:
+      if (PN.Index >= Computed.size())
+        return LLT();
+      return LLT::scalar(Computed[PN.Index].getBitWidth());
+    case PatNode::ConstVar:
+      if (!M.Consts[PN.Index])
+        return LLT();
+      return LLT::scalar(M.Consts[PN.Index]->getBitWidth());
+    case PatNode::Op:
+      break;
+    }
+    const OpProperties *P = getOpProperties(PN.Opcode);
+    switch (P->Shape) {
+    case OpShape::Binary: {
+      LLT Ty = inferType(PN.Children[0]);
+      return Ty.isValid() || P->IsShift ? Ty : inferType(PN.Children[1]);
+    }
+    case OpShape::Unary:
+    case OpShape::PtrAdd:
+      return inferType(PN.Children[0]);
+    case OpShape::Compare:
+      return LLT::scalar(1);
+    case OpShape::Select: {
+      LLT Ty = inferType(PN.Children[1]);
+      return Ty.isValid() ? Ty : inferType(PN.Children[2]);
+    }
+    case OpShape::Cast:
+    case OpShape::BitCount:
+    case OpShape::Phi:
+    case OpShape::Effect:
+      break;
+    }
+    return LLT();
+  }
+
+  std::optional<EClassId> buildOp(const PatNode &PN, unsigned PIdx,
+                                  LLT Expected) {
+    const OpProperties *P = getOpProperties(PN.Opcode);
+    LLT Ty = Expected.isValid() ? Expected : inferType(PIdx);
+    SmallVector<EClassId, 3> Ops;
+    // Build operand \p I with the given type; false if that fails.
+    auto Operand = [&](unsigned I, LLT OpTy, bool IsShiftAmount = false) {
+      std::optional<EClassId> C = build(PN.Children[I], OpTy, IsShiftAmount);
+      if (C)
+        Ops.push_back(*C);
+      return C.has_value();
+    };
+
+    switch (P->Shape) {
+    case OpShape::Binary:
+      if (!Ty.isValid() || !Ty.isScalar() || !Operand(0, Ty) ||
+          !Operand(1, Ty, /*IsShiftAmount=*/P->IsShift))
+        return std::nullopt;
+      if (P->IsShift) {
+        // RHS shifts must not be able to create poison.
+        std::optional<APInt> Amt = G.getConstant(Ops[1]);
+        if (!Amt || Amt->uge(Ty.getSizeInBits()))
+          return std::nullopt;
+      }
+      break;
+    case OpShape::Unary:
+      if (!Ty.isValid() || !Ty.isScalar() || !Operand(0, Ty))
+        return std::nullopt;
+      break;
+    case OpShape::Cast:
+    case OpShape::BitCount: {
+      // The result type comes from the context, the source type from the
+      // operand.
+      if (!Ty.isValid() || !Ty.isScalar() || !Operand(0, LLT()))
+        return std::nullopt;
+      LLT SrcTy = G.getType(Ops[0]);
+      if (!SrcTy.isScalar())
+        return std::nullopt;
+      unsigned Width = Ty.getSizeInBits(), SrcWidth = SrcTy.getSizeInBits();
+      if (P->Cast == CastKind::Truncate
+              ? Width >= SrcWidth
+              : P->Cast != CastKind::None && Width <= SrcWidth)
+        return std::nullopt;
+      break;
+    }
+    case OpShape::Compare: {
+      if (Ty != LLT::scalar(1))
+        return std::nullopt;
+      LLT OpTy = inferType(PN.Children[0]);
+      if (!OpTy.isValid())
+        OpTy = inferType(PN.Children[1]);
+      if (!OpTy.isValid() || !Operand(0, OpTy) || !Operand(1, OpTy))
+        return std::nullopt;
+      break;
+    }
+    case OpShape::Select:
+      if (!Ty.isValid() || !Operand(0, LLT::scalar(1)) || !Operand(1, Ty) ||
+          !Operand(2, Ty))
+        return std::nullopt;
+      break;
+    case OpShape::PtrAdd: {
+      if (!Ty.isValid() || !Ty.isPointer() || !Operand(0, Ty))
+        return std::nullopt;
+      LLT OffsetTy = inferType(PN.Children[1]);
+      if (!OffsetTy.isValid())
+        OffsetTy = LLT::scalar(Ty.getSizeInBits());
+      if (!OffsetTy.isScalar() || !Operand(1, OffsetTy))
+        return std::nullopt;
+      break;
+    }
+    case OpShape::Phi:
+      return std::nullopt;
+    case OpShape::Effect:
+      if (Expected.isValid())
+        return std::nullopt;
+      Ty = LLT();
+      for (unsigned I = 0, E = PN.Children.size(); I != E; ++I)
+        if (!Operand(I, LLT()))
+          return std::nullopt;
+      break;
+    }
+
+    // A division is only created if it cannot trap, or if the matched
+    // pattern contains a division that traps in (at least) the same cases.
+    if (P->MayTrap && !isCoveredDivision(*P, Ops))
+      return std::nullopt;
+
+    uint64_t Attr = PN.Attr;
+    if (PN.AttrKind == PatNode::InvertedRootAttr) {
+      std::optional<uint64_t> Inverted = P->InvertAttr(M.RootAttr);
+      if (!Inverted)
+        return std::nullopt;
+      Attr = *Inverted;
+    }
+    return G.addOp(PN.Opcode, Ty, Ops, /*Flags=*/0, Attr);
+  }
+
+  bool isCoveredDivision(const OpProperties &P, ArrayRef<EClassId> Ops) const {
+    if (isDefinedDivision(G, P, ENode::makeOp(P.Opcode, LLT(), Ops)))
+      return true;
+    return any_of(M.Guards, [&](const RuleMatch::DivGuard &Guard) {
+      if (!G.equivalent(Guard.Divisor, Ops[1]))
+        return false;
+      // A zero divisor is the only way an unsigned division traps. A signed
+      // one also overflows, which depends on the dividend.
+      return !P.IsSigned ||
+             (Guard.Signed && G.equivalent(Guard.Dividend, Ops[0]));
+    });
+  }
+
   EGraph &G;
   const RewriteRule &R;
   const RuleMatch &M;
   ArrayRef<APInt> Computed;
-  LLT Ty;
 };
 } // namespace
 
@@ -1411,12 +1973,12 @@ ApplyResult llvm::egraph::applyMatch(EGraph &G, const RewriteRule &Rule,
   bool Exact = !M.ViaRefinement && Rule.isExactFor(G, M);
   if (!Exact && !Rule.isRefinementFor(G, M))
     return ApplyResult::Unsafe;
-  // Check shift amounts in the RHS before creating any node, so a rejected
-  // instantiation leaves the graph untouched as far as possible.
+  // An instantiation that is not well-typed, or that could create poison or
+  // undefined behaviour, is rejected.
+  LLT RootTy = G.getType(M.Root);
   std::optional<EClassId> New =
-      Instantiator(G, Rule, M, Computed)
-          .build(Rule.getRHS().Root, /*IsShiftAmount=*/false);
-  if (!New)
+      Instantiator(G, Rule, M, Computed).build(Rule.getRHS().Root, RootTy);
+  if (!New || G.getType(*New) != RootTy)
     return ApplyResult::Rejected;
   if (!M.Rest.empty()) {
     // The root is LHS op Rest, so it is related to RHS op Rest.
@@ -1442,7 +2004,15 @@ SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
       G.rebuild();
     }
   };
+  // Neither is op(a, ..., a) == a for PHIs.
+  auto CollapsePhis = [&] {
+    if (unsigned N = G.collapseIdempotentPhis()) {
+      Stats.PhiMerges += N;
+      G.rebuild();
+    }
+  };
   CanonicalizeAC();
+  CollapsePhis();
   SmallVector<unsigned, 32> TimesBanned(Rules.size(), 0);
   SmallVector<unsigned, 32> BannedUntil(Rules.size(), 0);
   for (unsigned Iter = 0; Iter < Limits.MaxIterations; ++Iter) {
@@ -1510,6 +2080,7 @@ SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
     }
     G.rebuild();
     CanonicalizeAC();
+    CollapsePhis();
     if (G.getNumClasses() + G.getNumNodes() != ClassesBefore)
       Changed = true;
     if (Stats.HitNodeLimit)
@@ -1546,8 +2117,13 @@ unsigned DefaultCostModel::getNodeCost(const ENode &N) const {
   case ENodeKind::Operation:
     break;
   }
-  unsigned Base = N.Opcode == TargetOpcode::G_MUL ? MulCost : SimpleOpCost;
-  if (ScaleByWidth)
+  const OpProperties *P = getOpProperties(N.Opcode);
+  unsigned Base = SimpleOpCost;
+  if (N.Opcode == TargetOpcode::G_MUL)
+    Base = MulCost;
+  else if (P && P->MayTrap)
+    Base = DivCost;
+  if (ScaleByWidth && N.Ty.isValid())
     Base *= std::max<unsigned>(1, (N.Ty.getSizeInBits() + 31) / 32);
   return std::max(1u, Base);
 }
@@ -1673,6 +2249,7 @@ void Extractor::printExpr(
     return;
   case ENodeKind::Operation:
     OS << "(" << getOpcodeName(N->Opcode);
+    printAttr(OS, N->Opcode, N->Attr);
     if (N->Flags)
       OS << "<flags:" << N->Flags << ">";
     for (EClassId Op : N->Ops) {

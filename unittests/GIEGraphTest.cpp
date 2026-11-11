@@ -9,6 +9,7 @@
 #include "llvm/CodeGen/GlobalISel/GIEGraph.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
+#include "llvm/IR/InstrTypes.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
@@ -586,6 +587,431 @@ TEST_F(GIEGraphTest, FactoringOfDefinedValuesIsExact) {
 //===----------------------------------------------------------------------===//
 // Coverage of existing GlobalISel integer_reassoc_combines (Combine.td).
 //===----------------------------------------------------------------------===//
+
+//===----------------------------------------------------------------------===//
+// Operators that are not binary operations of one type
+//===----------------------------------------------------------------------===//
+
+class GIEGraphOpsTest : public GIEGraphTest {
+protected:
+  const LLT S1 = LLT::scalar(1);
+  const LLT S8 = LLT::scalar(8);
+  const LLT S16 = LLT::scalar(16);
+  const LLT P0 = LLT::pointer(0, 64);
+
+  EClassId un(unsigned Opc, LLT Ty, EClassId A) {
+    return G.addOp(Opc, Ty, {A});
+  }
+  EClassId trunc(LLT Ty, EClassId A) {
+    return un(TargetOpcode::G_TRUNC, Ty, A);
+  }
+  EClassId zext(LLT Ty, EClassId A) { return un(TargetOpcode::G_ZEXT, Ty, A); }
+  EClassId sext(LLT Ty, EClassId A) { return un(TargetOpcode::G_SEXT, Ty, A); }
+  EClassId bswap(EClassId A) {
+    return un(TargetOpcode::G_BSWAP, G.getType(A), A);
+  }
+  EClassId bitreverse(EClassId A) {
+    return un(TargetOpcode::G_BITREVERSE, G.getType(A), A);
+  }
+  EClassId icmp(CmpInst::Predicate Pred, EClassId A, EClassId B) {
+    return G.addOp(TargetOpcode::G_ICMP, S1, {A, B}, /*Flags=*/0, Pred);
+  }
+  EClassId select(EClassId C, EClassId A, EClassId B) {
+    return G.addOp(TargetOpcode::G_SELECT, G.getType(A), {C, A, B});
+  }
+  EClassId boolean(bool V) { return cst(V ? -1 : 0, S1); }
+  EClassId notOf(EClassId A) {
+    return op(TargetOpcode::G_XOR, A, cst(-1, G.getType(A)));
+  }
+  EClassId udiv(EClassId A, EClassId B) {
+    return op(TargetOpcode::G_UDIV, A, B);
+  }
+  EClassId ptrAdd(EClassId P, EClassId Offset) {
+    return G.addOp(TargetOpcode::G_PTR_ADD, G.getType(P), {P, Offset});
+  }
+  EClassId phi(unsigned Site, ArrayRef<EClassId> Incoming) {
+    return G.addOp(TargetOpcode::G_PHI, G.getType(Incoming[0]), Incoming,
+                   /*Flags=*/0, Site);
+  }
+  /// A conditional branch. See OpShape::Effect for the attribute.
+  EClassId brCond(EClassId C, unsigned Site, bool Invertible,
+                  bool Inverted = false) {
+    return G.addOp(TargetOpcode::G_BRCOND, LLT(), {C}, /*Flags=*/0,
+                   (Site << 2) | (Invertible ? 2 : 0) | (Inverted ? 1 : 0));
+  }
+};
+
+TEST_F(GIEGraphOpsTest, CastsCompose) {
+  EClassId A = in(S8), B = in(S64);
+  EClassId ZZ = zext(S32, zext(S16, A));
+  EClassId SZ = sext(S32, zext(S16, A));
+  EClassId SS = sext(S32, sext(S16, A));
+  EClassId TT = trunc(S8, trunc(S32, B));
+  EClassId Z = zext(S32, A), S = sext(S32, A), T = trunc(S8, B);
+  runAll();
+  EXPECT_TRUE(G.equivalent(ZZ, Z));
+  EXPECT_TRUE(G.equivalent(SZ, Z));
+  EXPECT_TRUE(G.equivalent(SS, S));
+  EXPECT_TRUE(G.equivalent(TT, T));
+  EXPECT_FALSE(G.equivalent(Z, S));
+}
+
+TEST_F(GIEGraphOpsTest, TruncationOfExtensionDependsOnWidths) {
+  // The three rules have the same left-hand side; only the well-typed
+  // right-hand side applies.
+  EClassId A = in(S16);
+  EClassId Same = trunc(S16, zext(S64, A));
+  EClassId Narrow = trunc(S8, sext(S64, A));
+  EClassId Wide = trunc(S32, sext(S64, A));
+  EClassId TruncA = trunc(S8, A), SExtA = sext(S32, A);
+  runAll();
+  EXPECT_TRUE(G.equivalent(Same, A));
+  EXPECT_TRUE(G.equivalent(Narrow, TruncA));
+  EXPECT_TRUE(G.equivalent(Wide, SExtA));
+  EXPECT_EQ(G.getType(Wide), S32);
+}
+
+TEST_F(GIEGraphOpsTest, ZExtOfTruncIsAMask) {
+  EClassId A = in();
+  EClassId X = zext(S32, trunc(S8, A));
+  EClassId Y = op(TargetOpcode::G_AND, A, cst(255));
+  // Not applicable if the source and result types differ.
+  EClassId B = in(S64);
+  EClassId Z = zext(S32, trunc(S8, B));
+  runAll();
+  EXPECT_TRUE(G.equivalent(X, Y));
+  Extractor E(G, DefaultCostModel());
+  EXPECT_EQ(E.getChosenNode(Z)->Opcode, unsigned(TargetOpcode::G_ZEXT));
+}
+
+TEST_F(GIEGraphOpsTest, InvolutionsAndBitCounts) {
+  EClassId A = in();
+  EClassId BB = bswap(bswap(A)), RR = bitreverse(bitreverse(A));
+  EClassId PopSwapped = un(TargetOpcode::G_CTPOP, S32, bswap(A));
+  EClassId PopWide = un(TargetOpcode::G_CTPOP, S32, zext(S64, A));
+  EClassId Pop = un(TargetOpcode::G_CTPOP, S32, A);
+  EClassId LzReversed = un(TargetOpcode::G_CTLZ, S32, bitreverse(A));
+  EClassId Tz = un(TargetOpcode::G_CTTZ, S32, A);
+  EClassId Lz = un(TargetOpcode::G_CTLZ, S32, A);
+  runAll();
+  EXPECT_TRUE(G.equivalent(BB, A));
+  EXPECT_TRUE(G.equivalent(RR, A));
+  EXPECT_TRUE(G.equivalent(PopSwapped, Pop));
+  EXPECT_TRUE(G.equivalent(PopWide, Pop));
+  EXPECT_TRUE(G.equivalent(LzReversed, Tz));
+  EXPECT_FALSE(G.equivalent(Lz, Tz));
+}
+
+TEST_F(GIEGraphOpsTest, UnaryConstantFolding) {
+  EClassId Swapped = bswap(cst(0x11223344));
+  EClassId Pop = un(TargetOpcode::G_CTPOP, S8, cst(0xf0f0));
+  EClassId Lz = un(TargetOpcode::G_CTLZ, S32, cst(0));
+  EClassId Ext = sext(S64, cst(-2));
+  runAll();
+  EXPECT_EQ(G.getConstant(Swapped)->getZExtValue(), 0x44332211u);
+  EXPECT_EQ(G.getConstant(Pop)->getZExtValue(), 8u);
+  EXPECT_EQ(G.getConstant(Lz)->getZExtValue(), 32u);
+  EXPECT_EQ(G.getConstant(Ext)->getSExtValue(), -2);
+  EXPECT_EQ(G.getType(Ext), S64);
+}
+
+TEST_F(GIEGraphOpsTest, HomomorphismsAreHoisted) {
+  EClassId A = in(S8), B = in(S8), X = in(S64), Y = in(S64), C = in(), D = in();
+  auto And = [&](EClassId L, EClassId R) {
+    return op(TargetOpcode::G_AND, L, R);
+  };
+  EClassId AndOfZExt = And(zext(S32, A), zext(S32, B));
+  EClassId ZExtOfAnd = zext(S32, And(A, B));
+  EClassId XorOfTrunc = op(TargetOpcode::G_XOR, trunc(S32, X), trunc(S32, Y));
+  EClassId TruncOfXor = trunc(S32, op(TargetOpcode::G_XOR, X, Y));
+  // Arithmetic is not made wider.
+  EClassId AddOfTrunc = add(trunc(S32, X), trunc(S32, Y));
+  EClassId TruncOfAdd = trunc(S32, add(X, Y));
+  // The constant is sign-extended: a NOT stays a NOT.
+  EClassId NotOfTrunc = op(TargetOpcode::G_XOR, trunc(S32, X), cst(-1));
+  EClassId TruncOfNot = trunc(S32, op(TargetOpcode::G_XOR, X, cst(-1, S64)));
+  EClassId AndOfSwap = And(bswap(C), bswap(D));
+  EClassId SwapOfAnd = bswap(And(C, D));
+  // With a constant that has a preimage: zext(a) & 0xff == zext(a & 0xff),
+  // and a & 0xff == a for an s8.
+  EClassId Masked = And(zext(S32, A), cst(0xff));
+  // 0x100 is not the zero extension of an s8.
+  EClassId NotHoisted = op(TargetOpcode::G_OR, zext(S32, A), cst(0x100));
+  EClassId ZExtA = zext(S32, A);
+  runAll();
+  EXPECT_TRUE(G.equivalent(AndOfZExt, ZExtOfAnd));
+  EXPECT_TRUE(G.equivalent(XorOfTrunc, TruncOfXor));
+  EXPECT_FALSE(G.equivalent(AddOfTrunc, TruncOfAdd));
+  EXPECT_TRUE(G.equivalent(NotOfTrunc, TruncOfNot));
+  EXPECT_TRUE(G.equivalent(AndOfSwap, SwapOfAnd));
+  EXPECT_TRUE(G.equivalent(Masked, ZExtA));
+  Extractor E(G, DefaultCostModel());
+  EXPECT_EQ(E.getChosenNode(NotHoisted)->Opcode, unsigned(TargetOpcode::G_OR));
+}
+
+TEST_F(GIEGraphOpsTest, CompareOperandsAreCanonical) {
+  // a < b and b > a are the same e-node.
+  EClassId A = in(), B = in();
+  EXPECT_EQ(icmp(CmpInst::ICMP_ULT, A, B), icmp(CmpInst::ICMP_UGT, B, A));
+  EXPECT_EQ(icmp(CmpInst::ICMP_EQ, A, B), icmp(CmpInst::ICMP_EQ, B, A));
+  EXPECT_NE(icmp(CmpInst::ICMP_ULT, A, B), icmp(CmpInst::ICMP_ULT, B, A));
+  EXPECT_NE(icmp(CmpInst::ICMP_ULT, A, B), icmp(CmpInst::ICMP_SLT, A, B));
+}
+
+TEST_F(GIEGraphOpsTest, CompareWithItself) {
+  EClassId A = in(), F = in(/*Defined=*/true);
+  EClassId X = icmp(CmpInst::ICMP_ULE, A, A);
+  EClassId Y = icmp(CmpInst::ICMP_SLT, F, F);
+  runAll();
+  // A possibly undef or poison value: only a refinement.
+  EXPECT_FALSE(G.equivalent(X, boolean(true)));
+  EXPECT_TRUE(G.refinesTo(X, boolean(true)));
+  EXPECT_TRUE(G.equivalent(Y, boolean(false)));
+}
+
+TEST_F(GIEGraphOpsTest, NegatedCompareIsTheInversePredicate) {
+  EClassId A = in(), B = in();
+  EClassId X = notOf(icmp(CmpInst::ICMP_ULT, A, B));
+  EClassId Y = icmp(CmpInst::ICMP_UGE, A, B);
+  // Through the canonical operand order: !(b > a) is b <= a, i.e. a >= b.
+  EClassId Z = notOf(icmp(CmpInst::ICMP_SGT, B, A));
+  EClassId W = icmp(CmpInst::ICMP_SGE, A, B);
+  runAll();
+  EXPECT_TRUE(G.equivalent(X, Y));
+  EXPECT_TRUE(G.equivalent(Z, W));
+  EXPECT_FALSE(G.equivalent(X, W));
+}
+
+TEST_F(GIEGraphOpsTest, CompareWithConstants) {
+  EClassId F = in(/*Defined=*/true);
+  EClassId NeverBelowZero = icmp(CmpInst::ICMP_ULT, F, cst(0));
+  EClassId AlwaysAtMostMax = icmp(CmpInst::ICMP_SLE, F, cst(0x7fffffff));
+  EClassId Unknown = icmp(CmpInst::ICMP_ULT, F, cst(1));
+  EClassId Folded = icmp(CmpInst::ICMP_SLT, cst(-1), cst(0));
+  EClassId FoldedUnsigned = icmp(CmpInst::ICMP_ULT, cst(-1), cst(0));
+  EClassId A = in(), B = in();
+  EClassId DiffIsZero = icmp(CmpInst::ICMP_EQ, sub(A, B), cst(0));
+  EClassId Equal = icmp(CmpInst::ICMP_EQ, A, B);
+  runAll();
+  EXPECT_TRUE(G.equivalent(NeverBelowZero, boolean(false)));
+  EXPECT_TRUE(G.equivalent(AlwaysAtMostMax, boolean(true)));
+  EXPECT_FALSE(G.getConstant(Unknown).has_value());
+  EXPECT_TRUE(G.equivalent(Folded, boolean(true)));
+  EXPECT_TRUE(G.equivalent(FoldedUnsigned, boolean(false)));
+  EXPECT_TRUE(G.equivalent(DiffIsZero, Equal));
+}
+
+TEST_F(GIEGraphOpsTest, SelectWithConstantCondition) {
+  // The arm that is not selected does not matter, even if it is poison.
+  EClassId A = in(), B = in();
+  EClassId T = select(boolean(true), A, B);
+  EClassId F = select(boolean(false), A, B);
+  runAll();
+  EXPECT_TRUE(G.equivalent(T, A));
+  EXPECT_TRUE(G.equivalent(F, B));
+}
+
+TEST_F(GIEGraphOpsTest, SelectOfEqualArms) {
+  // select c, a, a is poison if c is; a is not.
+  EClassId C = in(S1), A = in();
+  EClassId X = select(C, A, A);
+  EClassId DC = in(S1, /*Defined=*/true), DA = in(/*Defined=*/true);
+  EClassId Y = select(DC, DA, DA);
+  runAll();
+  EXPECT_FALSE(G.equivalent(X, A));
+  EXPECT_TRUE(G.refinesTo(X, A));
+  EXPECT_FALSE(G.refinesTo(A, X));
+  EXPECT_TRUE(G.equivalent(Y, DA));
+}
+
+TEST_F(GIEGraphOpsTest, SelectOfNegatedCondition) {
+  // Exact for arbitrary operands: both sides are poison in the same cases.
+  EClassId C = in(S1), A = in(), B = in();
+  EClassId X = select(notOf(C), A, B);
+  EClassId Y = select(C, B, A);
+  runAll();
+  EXPECT_TRUE(G.equivalent(X, Y));
+}
+
+TEST_F(GIEGraphOpsTest, SelectOfBooleans) {
+  EClassId C = in(S1);
+  EClassId Bool = select(C, boolean(true), boolean(false));
+  EClassId Not = select(C, boolean(false), boolean(true));
+  EClassId ZExt = select(C, cst(1), cst(0));
+  EClassId SExt = select(C, cst(-1), cst(0));
+  EClassId NotC = notOf(C), ZExtC = zext(S32, C), SExtC = sext(S32, C);
+  runAll();
+  EXPECT_TRUE(G.equivalent(Bool, C));
+  EXPECT_TRUE(G.equivalent(Not, NotC));
+  EXPECT_TRUE(G.equivalent(ZExt, ZExtC));
+  EXPECT_TRUE(G.equivalent(SExt, SExtC));
+  EXPECT_FALSE(G.equivalent(ZExt, SExt));
+}
+
+TEST_F(GIEGraphOpsTest, ConstantsFoldThroughSelect) {
+  EClassId C = in(S1);
+  EClassId Arms = select(C, cst(1), cst(2));
+  EClassId Sum = add(Arms, cst(10));
+  EClassId Folded = select(C, cst(11), cst(12));
+  // (select c, 1, 2) == 1 is select c, true, false, which is c.
+  EClassId Cmp = icmp(CmpInst::ICMP_EQ, Arms, cst(1));
+  runAll();
+  EXPECT_TRUE(G.equivalent(Sum, Folded));
+  EXPECT_TRUE(G.equivalent(Cmp, C));
+}
+
+TEST_F(GIEGraphOpsTest, SelectFactorsACommonOperand) {
+  EClassId C = in(S1), A = in(/*Defined=*/true), X = in(), Y = in();
+  EClassId Sel = select(C, add(A, X), add(Y, A));
+  EClassId Factored = add(A, select(C, X, Y));
+  // With a possibly undef common operand, fewer uses are only a refinement.
+  EClassId U = in();
+  EClassId SelU = select(C, add(U, X), add(U, Y));
+  EClassId FactoredU = add(U, select(C, X, Y));
+  runAll();
+  EXPECT_TRUE(G.equivalent(Sel, Factored));
+  EXPECT_FALSE(G.equivalent(SelU, FactoredU));
+  EXPECT_TRUE(G.refinesTo(SelU, FactoredU));
+}
+
+TEST_F(GIEGraphOpsTest, DivisionByAConstant) {
+  // A division by a non-zero constant cannot trap, so these are exact.
+  EClassId A = in(/*Defined=*/true);
+  EClassId ByOne = udiv(A, cst(1));
+  EClassId ByEight = udiv(A, cst(8));
+  EClassId RemEight = op(TargetOpcode::G_UREM, A, cst(8));
+  EClassId RemOne = op(TargetOpcode::G_UREM, A, cst(1));
+  EClassId Shifted = op(TargetOpcode::G_LSHR, A, cst(3));
+  EClassId Masked = op(TargetOpcode::G_AND, A, cst(7));
+  EClassId Folded = udiv(cst(7), cst(2));
+  EClassId ByZero = udiv(cst(7), cst(0));
+  EClassId Overflow = op(TargetOpcode::G_SDIV, cst(INT32_MIN), cst(-1));
+  runAll();
+  EXPECT_TRUE(G.equivalent(ByOne, A));
+  EXPECT_TRUE(G.equivalent(ByEight, Shifted));
+  EXPECT_TRUE(G.equivalent(RemEight, Masked));
+  EXPECT_TRUE(G.equivalent(RemOne, cst(0)));
+  EXPECT_EQ(G.getConstant(Folded)->getZExtValue(), 3u);
+  // Undefined behaviour is never folded away to a value.
+  EXPECT_FALSE(G.getConstant(ByZero).has_value());
+  EXPECT_FALSE(G.getConstant(Overflow).has_value());
+}
+
+TEST_F(GIEGraphOpsTest, DivisionThatMayTrapIsOnlyRefined) {
+  // a / a traps for a == 0 even if a is not poison, so 1 only refines it.
+  EClassId A = in(/*Defined=*/true), B = in(/*Defined=*/true);
+  EClassId Self = udiv(A, A);
+  EClassId ZeroDividend = udiv(cst(0), B);
+  // Dropping the division drops its undefined behaviour.
+  EClassId Dropped = op(TargetOpcode::G_AND, udiv(A, B), cst(0));
+  runAll();
+  EXPECT_FALSE(G.equivalent(Self, cst(1)));
+  EXPECT_TRUE(G.refinesTo(Self, cst(1)));
+  EXPECT_FALSE(G.equivalent(ZeroDividend, cst(0)));
+  EXPECT_TRUE(G.refinesTo(ZeroDividend, cst(0)));
+  EXPECT_FALSE(G.equivalent(Dropped, cst(0)));
+  EXPECT_TRUE(G.refinesTo(Dropped, cst(0)));
+}
+
+TEST_F(GIEGraphOpsTest, RemainderFromDivision) {
+  // a - (a / b) * b is a % b. The remainder traps exactly when the matched
+  // division does, so it may be created.
+  EClassId A = in(), B = in();
+  EClassId X = sub(A, mul(udiv(A, B), B));
+  runAll();
+  EClassId Rem = lookup([&] { return op(TargetOpcode::G_UREM, A, B); });
+  EXPECT_TRUE(G.refinesTo(X, Rem));
+  Extractor E(G, DefaultCostModel());
+  EXPECT_EQ(E.getChosenNode(X)->Opcode, unsigned(TargetOpcode::G_UREM));
+}
+
+TEST_F(GIEGraphOpsTest, DivisionIsNotCreatedWithoutAGuard) {
+  // Not an identity; it only shows that a rule cannot introduce a division
+  // that may trap where the matched pattern has none.
+  RewriteRule Bad("bad", "(G_SUB ?a ?b)", "(G_UDIV ?a ?b)");
+  EClassId A = in(/*Defined=*/true), B = in(/*Defined=*/true);
+  sub(A, B);
+  sub(A, cst(4));
+  G.rebuild();
+  SmallVector<RuleMatch, 4> Matches;
+  matchRule(G, Bad, Matches);
+  ASSERT_EQ(Matches.size(), 2u);
+  unsigned Rejected = 0, Merged = 0;
+  for (const RuleMatch &M : Matches) {
+    ApplyResult Res = applyMatch(G, Bad, M);
+    Rejected += Res == ApplyResult::Rejected;
+    Merged += Res == ApplyResult::Merged;
+  }
+  // Only the division by the constant 4 is created.
+  EXPECT_EQ(Rejected, 1u);
+  EXPECT_EQ(Merged, 1u);
+}
+
+TEST_F(GIEGraphOpsTest, PointerArithmetic) {
+  EClassId P = in(P0), A = in(S64), B = in(S64);
+  EClassId X = ptrAdd(ptrAdd(P, A), B);
+  EClassId Y = ptrAdd(P, add(A, B));
+  EClassId Z = ptrAdd(P, cst(0, S64));
+  // inbounds may add poison: only a refinement.
+  EClassId Flagged = G.addOp(TargetOpcode::G_PTR_ADD, P0, {P, cst(0, S64)},
+                             MachineInstr::InBounds);
+  runAll();
+  EXPECT_TRUE(G.equivalent(X, Y));
+  EXPECT_TRUE(G.equivalent(Z, P));
+  EXPECT_EQ(G.getType(X), P0);
+  EXPECT_FALSE(G.equivalent(Flagged, P));
+  EXPECT_TRUE(G.refinesTo(Flagged, P));
+}
+
+TEST_F(GIEGraphOpsTest, PhiOfOneValue) {
+  EClassId X = in(), Y = in();
+  EClassId Same = phi(0, {X, X});
+  EClassId Different = phi(1, {X, Y});
+  EClassId Constant = phi(2, {cst(5), cst(5)});
+  // PHIs of different blocks are different nodes, PHIs of one block with
+  // the same incoming values are the same node.
+  EXPECT_NE(phi(3, {X, Y}), Different);
+  EXPECT_EQ(phi(1, {X, Y}), Different);
+  // Equal incoming values may only be found during saturation.
+  EClassId Later = phi(4, {X, add(X, cst(0))});
+  SaturationStats S = runAll();
+  EXPECT_TRUE(G.equivalent(Same, X));
+  EXPECT_TRUE(G.equivalent(Later, X));
+  EXPECT_FALSE(G.equivalent(Different, X));
+  EXPECT_EQ(G.getConstant(Constant)->getZExtValue(), 5u);
+  EXPECT_EQ(S.PhiMerges, 3u);
+}
+
+TEST_F(GIEGraphOpsTest, BranchOnNegatedCondition) {
+  EClassId C = in(S1);
+  EClassId Br = brCond(notOf(C), /*Site=*/0, /*Invertible=*/true);
+  // Without an unconditional branch after it the targets cannot be
+  // exchanged.
+  EClassId Fixed = brCond(notOf(C), /*Site=*/1, /*Invertible=*/false);
+  runAll();
+  EClassId Inverted = lookup([&] {
+    return brCond(C, /*Site=*/0, /*Invertible=*/true, /*Inverted=*/true);
+  });
+  EXPECT_TRUE(G.equivalent(Br, Inverted));
+  EXPECT_FALSE(G.equivalent(Br, Fixed));
+  Extractor E(G, DefaultCostModel());
+  EXPECT_EQ(E.getChosenNode(Br)->Attr & 1, 1u);
+  EXPECT_EQ(E.getTreeCost(Br), 1u);
+  EXPECT_EQ(E.getChosenNode(Fixed)->Attr & 1, 0u);
+  EXPECT_EQ(E.getTreeCost(Fixed), 2u);
+}
+
+TEST_F(GIEGraphOpsTest, PatternsAreChecked) {
+  // Arity and attributes come from the operator properties.
+  EXPECT_DEATH(RewriteRule("r", "(G_ZEXT ?a ?b)", "?a"), "takes 1 operands");
+  EXPECT_DEATH(RewriteRule("r", "(G_SELECT ?c ?a)", "?a"), "takes 3 operands");
+  EXPECT_DEATH(RewriteRule("r", "(G_ICMP:foo ?a ?b)", "?a"),
+               "unknown predicate");
+  EXPECT_DEATH(RewriteRule("r", "(G_AND ?a ?b)", "(G_ICMP ?a ?b)"),
+               "without a predicate");
+  EXPECT_DEATH(RewriteRule("r", "(G_PHI ?a ?b)", "?a"),
+               "cannot be used in a pattern");
+}
 
 struct CoverageCase {
   const char *Name;

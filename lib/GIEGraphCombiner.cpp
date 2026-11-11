@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 /// \file
-/// Experimental equality-saturation combiner for scalar integer gMIR. See
+/// Experimental equality-saturation combiner for scalar gMIR. See
 /// GIEGraphCombiner.h and llvm/docs/GlobalISel/GIEGraphCombiner-Design.md.
 //===----------------------------------------------------------------------===//
 
@@ -19,6 +19,7 @@
 #include "llvm/CodeGen/GlobalISel/GIEGraph.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
+#include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
@@ -31,6 +32,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
+#include <map>
 
 #define DEBUG_TYPE "gisel-egraph"
 
@@ -45,6 +47,7 @@ STATISTIC(NumEClasses, "Number of e-classes after saturation");
 STATISTIC(NumMatches, "Number of rewrite matches");
 STATISTIC(NumMerges, "Number of e-class merges from rewrites");
 STATISTIC(NumACMerges, "Number of e-class merges from AC canonicalization");
+STATISTIC(NumPhiMerges, "Number of e-class merges from PHIs of one value");
 STATISTIC(NumRefinements, "Number of refinement edges from rewrites");
 STATISTIC(NumUnsafe, "Number of matches rejected as unsound");
 STATISTIC(NumIterations, "Number of saturation iterations");
@@ -104,7 +107,8 @@ static cl::opt<bool>
 /// refinement (dropping the flag), never merged with an unflagged node.
 static constexpr uint32_t SemanticFlags =
     MachineInstr::NoUWrap | MachineInstr::NoSWrap | MachineInstr::IsExact |
-    MachineInstr::Disjoint;
+    MachineInstr::Disjoint | MachineInstr::NonNeg | MachineInstr::NoUSWrap |
+    MachineInstr::SameSign | MachineInstr::InBounds;
 
 static cl::opt<bool> PrintRules(
     "gisel-egraph-print-rules", cl::Hidden, cl::init(false),
@@ -119,40 +123,53 @@ static const std::vector<RewriteRule> &getRules() {
   return Rules;
 }
 
-static bool isSupportedOpcode(unsigned Opc) {
-  switch (Opc) {
-  case TargetOpcode::G_ADD:
-  case TargetOpcode::G_SUB:
-  case TargetOpcode::G_MUL:
-  case TargetOpcode::G_AND:
-  case TargetOpcode::G_OR:
-  case TargetOpcode::G_XOR:
-  case TargetOpcode::G_SHL:
-  case TargetOpcode::G_LSHR:
-  case TargetOpcode::G_ASHR:
-    return true;
-  default:
-    return false;
-  }
-}
-
-/// A region instruction: a supported, single-def, pure scalar operation whose
-/// operands are all virtual registers.
+/// A region instruction: a supported operation (see OpProperties) whose
+/// register operands are all virtual registers of scalar or pointer type.
+/// Booleans (comparison results, select and branch conditions) must be s1.
 static bool isCandidate(const MachineInstr &MI,
                         const MachineRegisterInfo &MRI) {
-  if (!isSupportedOpcode(MI.getOpcode()) || MI.getNumOperands() != 3)
+  const OpProperties *P = getOpProperties(MI.getOpcode());
+  if (!P || (MI.getFlags() & ~SemanticFlags))
     return false;
-  for (const MachineOperand &MO : MI.operands())
-    if (!MO.isReg() || !MO.getReg().isVirtual() || MO.isImplicit())
+  unsigned NumDefs = 0, NumUses = 0;
+  for (const MachineOperand &MO : MI.operands()) {
+    // Predicates and basic blocks are part of the e-node's attribute.
+    if (!MO.isReg())
+      continue;
+    if (!MO.getReg().isVirtual() || MO.isImplicit())
       return false;
-  if (!MI.getOperand(0).isDef())
+    LLT Ty = MRI.getType(MO.getReg());
+    if (!Ty.isValid() || Ty.isVector() || Ty.getSizeInBits() > 128)
+      return false;
+    ++(MO.isDef() ? NumDefs : NumUses);
+  }
+  if (NumDefs != (P->hasResult() ? 1u : 0u))
     return false;
-  LLT Ty = MRI.getType(MI.getOperand(0).getReg());
-  if (!Ty.isScalar() || Ty.getSizeInBits() > 128)
+  if (P->NumOperands >= 0 && NumUses != unsigned(P->NumOperands))
     return false;
-  if (MI.getFlags() & ~SemanticFlags)
-    return false;
-  return true;
+
+  const LLT S1 = LLT::scalar(1);
+  auto TypeOf = [&](unsigned I) {
+    return MRI.getType(MI.getOperand(I).getReg());
+  };
+  switch (P->Shape) {
+  case OpShape::Binary:
+  case OpShape::Unary:
+  case OpShape::Cast:
+  case OpShape::BitCount:
+    return TypeOf(0).isScalar();
+  case OpShape::Compare:
+    return TypeOf(0) == S1;
+  case OpShape::Select:
+    return TypeOf(1) == S1;
+  case OpShape::PtrAdd:
+    return TypeOf(0).isPointer();
+  case OpShape::Phi:
+    return true;
+  case OpShape::Effect:
+    return NumUses == 0 || TypeOf(0) == S1;
+  }
+  llvm_unreachable("bad shape");
 }
 
 /// Conservative definedness of a region input. We intentionally do not use
@@ -178,7 +195,8 @@ static InputInfo getInputInfo(Register Reg, const MachineRegisterInfo &MRI) {
 namespace {
 struct Region {
   SmallVector<MachineInstr *, 32> Instrs; // In block order.
-  SmallVector<MachineInstr *, 4> Roots;   // Instructions with external uses.
+  // Instructions with external uses, and terminators.
+  SmallVector<MachineInstr *, 4> Roots;
 };
 
 class EGraphCombinerImpl {
@@ -195,11 +213,19 @@ private:
   void numberBlock(MachineBasicBlock &MBB);
   Region formRegion(MachineInstr &Seed);
   bool processRegion(MachineBasicBlock &MBB, Region &R);
+  /// The dominator tree, computed on first use: it is only needed for
+  /// candidates that replace a PHI by one of its incoming values.
+  MachineDominatorTree &getDomTree() {
+    if (!MDT)
+      MDT.emplace(MF);
+    return *MDT;
+  }
 
   MachineFunction &MF;
   MachineRegisterInfo &MRI;
   bool CanRewrite;
   DefaultCostModel CM;
+  std::optional<MachineDominatorTree> MDT;
   DenseMap<const MachineInstr *, unsigned> Order;
   SmallPtrSet<const MachineInstr *, 32> Visited;
   SmallPtrSet<const MachineInstr *, 32> Erased;
@@ -226,15 +252,30 @@ Region EGraphCombinerImpl::formRegion(MachineInstr &Seed) {
     MachineInstr *MI = Work.pop_back_val();
     if (!In.insert(MI))
       continue;
-    for (unsigned I = 1; I < 3; ++I) {
-      MachineInstr *Def = MRI.getVRegDef(MI->getOperand(I).getReg());
+    for (const MachineOperand &MO : MI->operands()) {
+      if (!MO.isReg())
+        continue;
+      if (MO.isDef()) {
+        for (MachineInstr &User : MRI.use_nodbg_instructions(MO.getReg()))
+          if (Eligible(&User))
+            Work.push_back(&User);
+        continue;
+      }
+      // The incoming values of a PHI are values of other blocks, or of the
+      // previous iteration of this block. They are inputs.
+      if (MI->isPHI())
+        continue;
+      MachineInstr *Def = MRI.getVRegDef(MO.getReg());
       if (Eligible(Def))
         Work.push_back(Def);
     }
-    for (MachineInstr &User :
-         MRI.use_nodbg_instructions(MI->getOperand(0).getReg()))
-      if (Eligible(&User))
-        Work.push_back(&User);
+    // A conditional branch and the unconditional branch after it are one
+    // terminator with two targets.
+    if (MI->getOpcode() == TargetOpcode::G_BRCOND) {
+      MachineInstr *Next = MI->getNextNode();
+      if (Next && Next->getOpcode() == TargetOpcode::G_BR && Eligible(Next))
+        Work.push_back(Next);
+    }
   }
 
   Region R;
@@ -244,9 +285,12 @@ Region EGraphCombinerImpl::formRegion(MachineInstr &Seed) {
   });
   for (MachineInstr *MI : R.Instrs) {
     Visited.insert(MI);
+    // Terminators are always kept. A PHI of the region stays in place too,
+    // so its uses count as external.
     bool External =
+        !getOpProperties(MI->getOpcode())->hasResult() ||
         any_of(MRI.use_nodbg_instructions(MI->getOperand(0).getReg()),
-               [&](MachineInstr &U) { return !In.contains(&U); });
+               [&](MachineInstr &U) { return !In.contains(&U) || U.isPHI(); });
     if (External)
       R.Roots.push_back(MI);
   }
@@ -262,38 +306,115 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
 
   // 1. Translate the region into an e-graph.
   EGraph G;
-  DenseMap<Register, EClassId> RegClass;
+  // The class of a register's value in this block and, for a register that
+  // is defined in this block and used by a PHI of this block, the class of
+  // its value in the previous iteration.
+  DenseMap<Register, EClassId> RegClass, CarriedClass;
+  DenseMap<const MachineInstr *, EClassId> InstrClass;
+  // Per input: its register, whether it is a value of the previous
+  // iteration, and whether it is only known as the incoming value of a PHI
+  // (it then does not have to dominate this block).
   SmallVector<Register, 8> InputRegs;
+  SmallVector<bool, 8> InputIsCarried, InputIsPhiOnly;
+  DenseMap<Register, unsigned> InputIndex;
+  // The instructions that ENode::Attr of PHI and terminator nodes refers
+  // to. PHIs with the same incoming values share an entry.
+  SmallVector<MachineInstr *, 4> Sites;
+  std::map<std::vector<EClassId>, unsigned> PhiSites;
   SmallSetVector<MachineInstr *, 4> ConstDefs;
   uint64_t OldCost = 0;
+
+  auto GetOperandClass = [&](Register Reg, bool IsPhiOperand) {
+    MachineInstr *Def = MRI.getVRegDef(Reg);
+    bool Carried = IsPhiOperand && Def && Def->getParent() == &MBB;
+    DenseMap<Register, EClassId> &Map = Carried ? CarriedClass : RegClass;
+    auto It = Map.find(Reg);
+    if (It != Map.end()) {
+      // A use by another instruction of this block shows that the register
+      // is available here.
+      auto Idx = InputIndex.find(Reg);
+      if (!IsPhiOperand && Idx != InputIndex.end())
+        InputIsPhiOnly[Idx->second] = false;
+      return It->second;
+    }
+    EClassId Id;
+    LLT Ty = MRI.getType(Reg);
+    std::optional<APInt> C;
+    if (Ty.isScalar())
+      C = getIConstantVRegVal(Reg, MRI);
+    if (C) {
+      Id = G.addConstant(Ty, *C);
+      ConstDefs.insert(Def);
+    } else {
+      Id = G.addInput(getInputInfo(Reg, MRI));
+      if (!Carried)
+        InputIndex[Reg] = InputRegs.size();
+      InputRegs.push_back(Reg);
+      InputIsCarried.push_back(Carried);
+      InputIsPhiOnly.push_back(IsPhiOperand);
+    }
+    Map[Reg] = Id;
+    return Id;
+  };
+
   {
     NamedRegionTimer T("build", "Build e-graph", TimerGroupName, TimerGroupDesc,
                        TimePassesIsEnabled);
     for (MachineInstr *MI : R.Instrs) {
-      SmallVector<EClassId, 2> Ops;
-      for (unsigned I = 1; I < 3; ++I) {
-        Register Reg = MI->getOperand(I).getReg();
-        auto It = RegClass.find(Reg);
-        if (It != RegClass.end()) {
-          Ops.push_back(It->second);
-          continue;
-        }
-        EClassId Id;
-        if (std::optional<APInt> C = getIConstantVRegVal(Reg, MRI)) {
-          Id = G.addConstant(MRI.getType(Reg), *C);
-          ConstDefs.insert(MRI.getVRegDef(Reg));
-        } else {
-          Id = G.addInput(getInputInfo(Reg, MRI));
-          InputRegs.push_back(Reg);
-        }
-        RegClass[Reg] = Id;
-        Ops.push_back(Id);
+      const OpProperties *P = getOpProperties(MI->getOpcode());
+      SmallVector<EClassId, 3> Ops;
+      uint64_t Attr = 0;
+      switch (P->Shape) {
+      case OpShape::Phi: {
+        // One operand per predecessor, ordered by block number.
+        SmallVector<std::pair<int, EClassId>, 4> Incoming;
+        for (unsigned I = 1, E = MI->getNumOperands(); I < E; I += 2)
+          Incoming.push_back({MI->getOperand(I + 1).getMBB()->getNumber(),
+                              GetOperandClass(MI->getOperand(I).getReg(),
+                                              /*IsPhiOperand=*/true)});
+        llvm::stable_sort(Incoming, llvm::less_first());
+        for (auto [Pred, Class] : Incoming)
+          Ops.push_back(Class);
+        auto [It, Inserted] = PhiSites.try_emplace(
+            std::vector<EClassId>(Ops.begin(), Ops.end()), Sites.size());
+        if (Inserted)
+          Sites.push_back(MI);
+        Attr = It->second;
+        break;
       }
-      Register Dst = MI->getOperand(0).getReg();
-      ENode N = ENode::makeOp(MI->getOpcode(), MRI.getType(Dst), Ops,
-                              MI->getFlags() & SemanticFlags);
+      case OpShape::Effect: {
+        for (const MachineOperand &MO : MI->operands())
+          if (MO.isReg())
+            Ops.push_back(GetOperandClass(MO.getReg(), false));
+        // See OpShape::Effect: bit 1 is set if the two targets can be
+        // exchanged.
+        MachineInstr *Next = MI->getNextNode();
+        bool HasBr = MI->getOpcode() == TargetOpcode::G_BRCOND && Next &&
+                     Next->getOpcode() == TargetOpcode::G_BR &&
+                     is_contained(R.Instrs, Next);
+        Attr = (uint64_t(Sites.size()) << 2) | (HasBr ? 2 : 0);
+        Sites.push_back(MI);
+        break;
+      }
+      default:
+        for (const MachineOperand &MO : MI->operands()) {
+          if (MO.isReg() && MO.isUse())
+            Ops.push_back(GetOperandClass(MO.getReg(), false));
+          else if (MO.isPredicate())
+            Attr = MO.getPredicate();
+        }
+        break;
+      }
+      LLT Ty;
+      if (P->hasResult())
+        Ty = MRI.getType(MI->getOperand(0).getReg());
+      ENode N = ENode::makeOp(MI->getOpcode(), Ty, Ops,
+                              MI->getFlags() & SemanticFlags, Attr);
       OldCost += std::max(1u, CM.getNodeCost(N));
-      RegClass[Dst] = G.add(std::move(N));
+      EClassId Id = G.add(std::move(N));
+      InstrClass[MI] = Id;
+      if (P->hasResult())
+        RegClass[MI->getOperand(0).getReg()] = Id;
     }
   }
   unsigned OrigNodes = G.getNumNodes();
@@ -317,6 +438,7 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
   NumMatches += S.Matches;
   NumMerges += S.Merges;
   NumACMerges += S.ACMerges;
+  NumPhiMerges += S.PhiMerges;
   NumRefinements += S.Refinements;
   NumUnsafe += S.RejectedUnsafe;
   NumIterations += S.Iterations;
@@ -332,7 +454,7 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
   Extractor E(G, CM);
   SmallVector<EClassId, 4> RootClasses;
   for (MachineInstr *Root : R.Roots)
-    RootClasses.push_back(RegClass.lookup(Root->getOperand(0).getReg()));
+    RootClasses.push_back(InstrClass.lookup(Root));
   uint64_t NewCost = E.getDagCost(RootClasses);
   bool Profitable = NewCost < OldCost;
   if (Profitable) {
@@ -365,15 +487,24 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
         return false;
       }
       if (N->isInput()) {
+        // The value of a register in the previous iteration is not
+        // available as a register.
         const MachineInstr *Def = MRI.getVRegDef(InputRegs[N->InputIdx]);
-        if (!Def || (Def->getParent() == &MBB && Order.lookup(Def) >= Pos)) {
+        if (!Def || InputIsCarried[N->InputIdx] ||
+            (Def->getParent() == &MBB && Order.lookup(Def) >= Pos) ||
+            (InputIsPhiOnly[N->InputIdx] && Def->getParent() != &MBB &&
+             !getDomTree().dominates(Def->getParent(), &MBB))) {
           Blocker = "dominance";
           return false;
         }
       }
-      for (EClassId Op : N->Ops)
-        if (!Check(Op, Pos))
-          return false;
+      // A PHI is not emitted again: the original instruction is used.
+      bool IsPhi =
+          N->isOperation() && getOpProperties(N->Opcode)->Shape == OpShape::Phi;
+      if (!IsPhi)
+        for (EClassId Op : N->Ops)
+          if (!Check(Op, Pos))
+            return false;
       OnStack.erase(Rc);
       Done.insert(Rc);
       return true;
@@ -392,7 +523,8 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
         DoRewrite = false, Blocker = "reg-attrs";
   if (DoRewrite)
     for (MachineInstr *Root : R.Roots)
-      if (MRI.getRegClassOrRegBank(Root->getOperand(0).getReg()))
+      if (getOpProperties(Root->getOpcode())->hasResult() &&
+          MRI.getRegClassOrRegBank(Root->getOperand(0).getReg()))
         DoRewrite = false, Blocker = "reg-attrs";
 
   if (Report) {
@@ -408,9 +540,9 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
            : S.HitMatchLimit ? "match-limit"
                              : "iteration-limit")
        << " merges=" << S.Merges << " ac-merges=" << S.ACMerges
-       << " refinements=" << S.Refinements << " unsafe=" << S.RejectedUnsafe
-       << " cost=" << OldCost << "->" << NewCost
-       << (Profitable ? " profitable" : " not-profitable");
+       << " phi-merges=" << S.PhiMerges << " refinements=" << S.Refinements
+       << " unsafe=" << S.RejectedUnsafe << " cost=" << OldCost << "->"
+       << NewCost << (Profitable ? " profitable" : " not-profitable");
     if (Profitable)
       OS << (UsesRefinement ? " (refinement)" : " (equivalence)");
     if (Profitable)
@@ -423,8 +555,9 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
         OS << printReg(InputRegs[Idx], TRI);
       };
       for (unsigned I = 0, End = R.Roots.size(); I != End; ++I) {
-        OS << "  root " << printReg(R.Roots[I]->getOperand(0).getReg(), TRI)
-           << " = ";
+        OS << "  root ";
+        if (getOpProperties(R.Roots[I]->getOpcode())->hasResult())
+          OS << printReg(R.Roots[I]->getOperand(0).getReg(), TRI) << " = ";
         E.printExpr(OS, RootClasses[I], PrintInput);
         OS << "\n";
       }
@@ -441,10 +574,13 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
     return false;
 
   // 5. Emit the extracted expressions. Each root's expression is emitted
-  // immediately before the original root instruction; classes shared with
-  // earlier roots are reused.
+  // immediately before the original root instruction (after the PHIs if the
+  // root is a PHI); classes shared with earlier roots are reused. PHIs and
+  // terminators are not emitted again: a PHI that is still needed is kept,
+  // and a terminator is updated in place.
   MachineIRBuilder B(MF);
   DenseMap<EClassId, Register> Mat;
+  SmallPtrSet<const MachineInstr *, 4> Kept;
   std::function<Register(EClassId)> Materialize = [&](EClassId C) {
     EClassId Rc = E.resolve(C);
     auto It = Mat.find(Rc);
@@ -460,18 +596,38 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       Res = B.buildConstant(N->Ty, N->Imm).getReg(0);
       break;
     case ENodeKind::Operation: {
-      SmallVector<EClassId, 2> Ops(N->Ops.begin(), N->Ops.end());
-      // Operands of commutative nodes are ordered by class id; emit them in
-      // GlobalISel's canonical form instead (constant on the right).
       const OpProperties *P = getOpProperties(N->Opcode);
-      if (P && P->Commutative && Ops.size() == 2 &&
-          E.getChosenNode(Ops[0])->isConstant() &&
-          !E.getChosenNode(Ops[1])->isConstant())
-        std::swap(Ops[0], Ops[1]);
-      SmallVector<SrcOp, 2> Srcs;
+      assert(P->hasResult() && "terminator used as a value");
+      if (P->Shape == OpShape::Phi) {
+        MachineInstr *Phi = Sites[N->Attr];
+        Kept.insert(Phi);
+        Res = Phi->getOperand(0).getReg();
+        break;
+      }
+      SmallVector<EClassId, 3> Ops(N->Ops.begin(), N->Ops.end());
+      uint64_t Attr = N->Attr;
+      // Operands of commutative nodes and of comparisons are ordered by
+      // class id; emit them in GlobalISel's canonical form instead (constant
+      // on the right).
+      if (Ops.size() == 2 && E.getChosenNode(Ops[0])->isConstant() &&
+          !E.getChosenNode(Ops[1])->isConstant()) {
+        if (P->Commutative) {
+          std::swap(Ops[0], Ops[1]);
+        } else if (P->Shape == OpShape::Compare) {
+          std::swap(Ops[0], Ops[1]);
+          Attr = CmpInst::getSwappedPredicate(
+              static_cast<CmpInst::Predicate>(Attr));
+        }
+      }
+      SmallVector<SrcOp, 3> Srcs;
       for (EClassId Op : Ops)
         Srcs.push_back(Materialize(Op));
-      Res = B.buildInstr(N->Opcode, {N->Ty}, Srcs, N->Flags).getReg(0);
+      if (P->Shape == OpShape::Compare)
+        Res = B.buildICmp(static_cast<CmpInst::Predicate>(Attr), N->Ty, Srcs[0],
+                          Srcs[1], N->Flags)
+                  .getReg(0);
+      else
+        Res = B.buildInstr(N->Opcode, {N->Ty}, Srcs, N->Flags).getReg(0);
       break;
     }
     }
@@ -482,7 +638,31 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
   SmallVector<std::pair<Register, Register>, 4> Replacements;
   for (unsigned I = 0, End = R.Roots.size(); I != End; ++I) {
     MachineInstr *Root = R.Roots[I];
-    B.setInstrAndDebugLoc(*Root);
+    if (!getOpProperties(Root->getOpcode())->hasResult()) {
+      // A terminator: use the operands of the chosen form and, if that is
+      // the inverted form, exchange the targets of the conditional and the
+      // unconditional branch.
+      const ENode *N = E.getChosenNode(RootClasses[I]);
+      B.setInstrAndDebugLoc(*Root);
+      unsigned OpIdx = 0;
+      for (MachineOperand &MO : Root->operands())
+        if (MO.isReg())
+          MO.setReg(Materialize(N->Ops[OpIdx++]));
+      if (N->Attr & 1) {
+        MachineOperand &Taken = Root->getOperand(1);
+        MachineOperand &NotTaken = Root->getNextNode()->getOperand(0);
+        MachineBasicBlock *Tmp = Taken.getMBB();
+        Taken.setMBB(NotTaken.getMBB());
+        NotTaken.setMBB(Tmp);
+      }
+      continue;
+    }
+    if (Root->isPHI()) {
+      B.setInsertPt(MBB, MBB.SkipPHIsAndLabels(MBB.begin()));
+      B.setDebugLoc(Root->getDebugLoc());
+    } else {
+      B.setInstrAndDebugLoc(*Root);
+    }
     Replacements.push_back(
         {Root->getOperand(0).getReg(), Materialize(RootClasses[I])});
   }
@@ -497,8 +677,11 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
     for (MachineOperand &MO : make_early_inc_range(MRI.use_operands(Old)))
       MO.setReg(New);
 
-  // 6. Erase the old region (users before definitions).
+  // 6. Erase the old region (users before definitions), except for
+  // terminators and the PHIs that the new code uses.
   for (MachineInstr *MI : reverse(R.Instrs)) {
+    if (!getOpProperties(MI->getOpcode())->hasResult() || Kept.count(MI))
+      continue;
     Register Def = MI->getOperand(0).getReg();
     assert(MRI.use_nodbg_empty(Def) && "region value still used");
     salvageDebugInfo(MRI, *MI);
@@ -528,7 +711,10 @@ bool EGraphCombinerImpl::run() {
     for (MachineInstr &MI : MBB)
       Snapshot.push_back(&MI);
     for (MachineInstr *MI : Snapshot) {
-      if (Erased.count(MI) || Visited.count(MI) || !isCandidate(*MI, MRI))
+      // An unconditional branch has no operands; it only takes part in a
+      // region together with a conditional branch.
+      if (Erased.count(MI) || Visited.count(MI) || !isCandidate(*MI, MRI) ||
+          MI->getOpcode() == TargetOpcode::G_BR)
         continue;
       Region R = formRegion(*MI);
       Changed |= processRegion(MBB, R);

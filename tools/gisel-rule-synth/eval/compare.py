@@ -9,7 +9,8 @@ the output:
           for how much a dynamic search finds on the same code)
 
 All runs use -verify-machineinstrs. Per file it records the instruction
-count of the assembly, the .s size in bytes, per-mode user CPU time and, for
+count of the assembly, the .s size in bytes, per-mode user CPU time, the
+functions that fell back to SelectionDAG (-global-isel-abort=2) and, for
 the synth mode of an assertions build, how often each rule matched and how
 often it fired. The JSON is the input of `gi-rule-synth.py select --compare`.
 
@@ -88,6 +89,22 @@ def summarize(res, modes):
         print('%-7s crash=%d insns %d -> %d (%+d), files better=%d worse=%d,'
               ' asm bytes %+d' % (m, len(crash), b, n, n - b, better, worse,
                                   nb - bb))
+        # A function that falls back to SelectionDAG in only one of the two
+        # runs is compiled by different instruction selectors.
+        same = [p for p in both if res[p][m].get('fallback', []) ==
+                res[p]['base'].get('fallback', [])]
+        if len(same) != len(both):
+            d = sum(res[p][m]['insns'] - res[p]['base']['insns']
+                    for p in same)
+            fb = sum(len(res[p]['base'].get('fallback', [])) for p in both)
+            fm = sum(len(res[p][m].get('fallback', [])) for p in both)
+            print('        SelectionDAG fallbacks %d -> %d; %d files with the'
+                  ' same fallbacks: insns %+d, better=%d worse=%d' %
+                  (fb, fm, len(same), d,
+                   sum(res[p][m]['insns'] < res[p]['base']['insns']
+                       for p in same),
+                   sum(res[p][m]['insns'] > res[p]['base']['insns']
+                       for p in same)))
         if m == 'synth':
             fired = {}
             for p in both:

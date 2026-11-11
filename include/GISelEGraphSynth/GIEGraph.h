@@ -8,9 +8,12 @@
 /// \file
 /// An experimental, target-independent e-graph over Generic MIR operators.
 ///
-/// E-nodes reuse TargetOpcode::G_* opcodes and LLT types. The graph supports
-/// hash-consing, union-find with congruence closure, a small e-class analysis
-/// (constant value, "not undef", "not poison") and *refinement edges*.
+/// E-nodes reuse TargetOpcode::G_* opcodes and LLT types: scalar integer
+/// arithmetic, casts, comparisons, selects, bit operations, pointer
+/// arithmetic, PHIs and conditional branches (see OpProperties). The graph
+/// supports hash-consing, union-find with congruence closure, a small
+/// e-class analysis (constant value, "not undef", "not poison") and
+/// *refinement edges*.
 ///
 /// LLVM values may be undef or poison, so many textbook algebraic identities
 /// are only refinements (the right-hand side is "more defined" than the
@@ -80,12 +83,16 @@ struct ENode {
   unsigned InputIdx = 0;
   /// Value for ENodeKind::Constant (width == Ty.getSizeInBits()).
   APInt Imm;
+  /// Operator-specific immediate of an operation; part of the node identity.
+  /// For OpShape::Compare it is the CmpInst::Predicate. For OpShape::Phi and
+  /// OpShape::Effect it identifies the instruction (see OpProperties).
+  uint64_t Attr = 0;
   SmallVector<EClassId, 2> Ops;
 
   static ENode makeInput(LLT Ty, unsigned Idx);
   static ENode makeConstant(LLT Ty, const APInt &Val);
   static ENode makeOp(unsigned Opcode, LLT Ty, ArrayRef<EClassId> Ops,
-                      uint32_t Flags = 0);
+                      uint32_t Flags = 0, uint64_t Attr = 0);
 
   bool isInput() const { return Kind == ENodeKind::Input; }
   bool isConstant() const { return Kind == ENodeKind::Constant; }
@@ -154,7 +161,7 @@ public:
   EClassId addInput(const InputInfo &Info);
   EClassId addConstant(LLT Ty, const APInt &Val);
   EClassId addOp(unsigned Opcode, LLT Ty, ArrayRef<EClassId> Ops,
-                 uint32_t Flags = 0);
+                 uint32_t Flags = 0, uint64_t Attr = 0);
   /// Generic hash-consed node insertion. Operands are canonicalized.
   EClassId add(ENode N);
 
@@ -224,6 +231,12 @@ public:
   /// of merges. Stops adding nodes once the graph has \p MaxNodes nodes.
   unsigned canonicalizeAC(unsigned MaxLeaves, unsigned MaxNodes);
 
+  /// N-ary idempotence, op(a, ..., a) == a, as canonicalization: merge every
+  /// class containing a node of an idempotent OpShape::Phi operator whose
+  /// operands are all the same class with that class. Requires a clean
+  /// graph; returns the number of merges.
+  unsigned collapseIdempotentPhis();
+
   /// Flatten the AC node \p N of class \p Root into \p Leaves (see the
   /// implementation for the choices made). Returns false if the term has
   /// more than \p MaxLeaves leaves.
@@ -267,11 +280,19 @@ private:
 ///   #c                         : constant variable (matches a known constant)
 ///   0, -1, 1                   : literal, sign-extended/truncated to the width
 ///   $0                         : computed constant (RHS only)
+///   (G_ICMP:ult ?a ?b)         : operation with a given attribute (predicate)
+///   (G_BRCOND:inverted ?c)     : RHS only: the attribute of the matched LHS
+///                                root, transformed by OpProperties::InvertAttr
+/// An operation without an attribute matches a node with any attribute; on
+/// the RHS it is created with attribute 0.
 struct PatNode {
   enum KindTy : uint8_t { Var, ConstVar, Literal, Computed, Op } Kind;
+  enum AttrKindTy : uint8_t { AnyAttr, ExactAttr, InvertedRootAttr };
+  AttrKindTy AttrKind = AnyAttr;
   unsigned Opcode = 0;
   unsigned Index = 0;
   int64_t Value = 0;
+  uint64_t Attr = 0;
   SmallVector<unsigned, 2> Children;
 };
 
@@ -295,8 +316,25 @@ struct RuleMatch {
   /// The rule then relates the root to `RHS op Rest`.
   ACTerm Rest;
   SmallVector<std::optional<APInt>, 2> Consts;
+  /// The class matched by each operation node of the LHS pattern (indexed
+  /// like Pattern::Nodes); NoClass for other nodes and for operations matched
+  /// modulo AC.
+  static constexpr EClassId NoClass = ~0u;
+  SmallVector<EClassId, 8> PatClasses;
+  /// ENode::Attr of the node matched by the LHS root.
+  uint64_t RootAttr = 0;
+  /// A division or remainder matched by the LHS pattern that may have
+  /// undefined behaviour. The original program executes it, so the RHS may
+  /// contain a division with the same undefined behaviour.
+  struct DivGuard {
+    bool Signed;
+    EClassId Dividend, Divisor;
+  };
+  SmallVector<DivGuard, 1> Guards;
   /// True if some structural part of the match was found by following a
-  /// refinement edge. Such a match only justifies a refinement.
+  /// refinement edge, or matched an operation that is more defined than the
+  /// pattern operator assumes (flags, possible undefined behaviour). Such a
+  /// match only justifies a refinement.
   bool ViaRefinement = false;
 
   bool isSumBound(unsigned V) const { return Vars[V] == SumBound; }
@@ -307,15 +345,19 @@ class ACViewCache;
 class RewriteRule {
 public:
   /// Optional precondition / constant computation hook. Returns false to
-  /// reject the match. May append computed constants ($0, $1, ...). The
-  /// computed constants must have the bit width of the root type.
+  /// reject the match. May append computed constants ($0, $1, ...). A
+  /// computed constant must have the bit width of the position it is used
+  /// in.
   using ApplyFn = std::function<bool(const EGraph &, const RuleMatch &,
                                      SmallVectorImpl<APInt> &)>;
 
   /// Parse a rule. Reports a fatal error on malformed patterns (rules are
-  /// compiled-in).
+  /// compiled-in). \p PoisonExact asserts that LHS and RHS are poison under
+  /// exactly the same conditions for every binding, even though that does
+  /// not follow from the syntactic classification (see isExactFor); such
+  /// rules are checked offline (verify_rules.py).
   RewriteRule(StringRef Name, StringRef LHS, StringRef RHS,
-              ApplyFn Fn = nullptr);
+              ApplyFn Fn = nullptr, bool PoisonExact = false);
 
   StringRef getName() const { return Name; }
   const Pattern &getLHS() const { return LHS; }
@@ -333,13 +375,26 @@ public:
   /// by RHS).
   bool isRefinementFor(const EGraph &G, const RuleMatch &M) const;
 
+  /// Prints 'name: LHS => RHS', followed by the definedness requirements of
+  /// the soundness classification: '; refine-defined: a b' lists the
+  /// variables that must not be poison for RHS to refine LHS, and
+  /// '; exact-defined: c' those that additionally must not be poison for the
+  /// two sides to be equivalent.
   void print(raw_ostream &OS) const;
 
 private:
+  bool needsDefinedForRefinement(unsigned Var) const;
+  bool needsDefinedForExactness(unsigned Var) const;
+
   std::string Name;
   Pattern LHS, RHS;
   std::vector<std::string> VarNames, ConstNames;
   SmallVector<unsigned, 4> OccL, OccR;
+  /// Per side, bit V is set if variable V is mentioned (the side may be
+  /// poison because V is) and if it is strict (the side is poison whenever V
+  /// is). They differ for the arms of a select.
+  uint32_t MentionL = 0, StrictL = 0, MentionR = 0, StrictR = 0;
+  bool PoisonExact = false;
   ApplyFn Fn;
 };
 
@@ -347,18 +402,54 @@ private:
 // Operator properties
 //===----------------------------------------------------------------------===//
 
-/// Algebraic properties of a supported generic operator. The generic part of
-/// the rule library (commutativity, associativity, identities, absorbing
-/// elements, self-application, distributivity/factoring and constant
-/// folding) is derived from these properties by addRulesFromProperties(), so
-/// supporting a new operator, or a new fact about an existing one, is a table
-/// entry rather than a set of hand-written rules.
+/// How the operands and the result of an operator are typed, and how its
+/// result depends on poison operands.
+enum class OpShape : uint8_t {
+  /// T = op(T, T). Poison iff an operand is poison. For shifts the second
+  /// operand is an amount of any scalar type.
+  Binary,
+  /// T = op(T). Poison iff the operand is poison.
+  Unary,
+  /// T2 = op(T1): a conversion between scalars of different widths (see
+  /// OpProperties::Cast). Poison iff the operand is poison.
+  Cast,
+  /// T2 = op(T1): a bit count. The result type is independent of the source
+  /// type. Poison iff the operand is poison.
+  BitCount,
+  /// s1 = op(T, T) with a CmpInst::Predicate in ENode::Attr. Poison iff an
+  /// operand is poison.
+  Compare,
+  /// T = op(s1, T, T). Poison iff the condition or the selected arm is
+  /// poison.
+  Select,
+  /// P = op(P, I): a pointer plus an integer offset. Poison iff an operand
+  /// is poison.
+  PtrAdd,
+  /// T = op(T, ..., T) with one operand per predecessor block, in a fixed
+  /// order. ENode::Attr identifies the instruction, so two nodes are only
+  /// congruent if they belong to the same block. Poison iff the incoming
+  /// value is poison.
+  Phi,
+  /// A terminator: no result. Its class has no type, is never an operand
+  /// and is only ever merged with another form of the same terminator.
+  /// ENode::Attr identifies the instruction in bits 2 and up; bit 1 is set
+  /// if the terminator can be inverted and bit 0 if this node is the
+  /// inverted form.
+  Effect,
+};
+
+enum class CastKind : uint8_t { None, Truncate, ZeroExtend, SignExtend };
+
+/// Properties of a supported generic operator. The generic part of the rule
+/// library is derived from these properties (see the add*RulesFromProperties
+/// functions), so supporting a new operator, or a new fact about an existing
+/// one, is a table entry rather than a set of hand-written rules.
 ///
-/// Every operator in the table must be a binary scalar operation that,
-/// without flags, is poison exactly when an operand is poison (for shifts:
-/// when the amount is a constant in range) and never produces undef from
-/// defined operands. The soundness classification of rule matches
-/// (RewriteRule::isExactFor) relies on this.
+/// The Shape gives the typing and poison behaviour of the unflagged
+/// operator; no operator produces undef from defined operands. Operators
+/// with MayTrap additionally have undefined behaviour for some operands. The
+/// soundness classification of rule matches (RewriteRule::isExactFor)
+/// relies on this.
 ///
 /// Constants are integer literals sign-extended or truncated to the type
 /// width, so -1 is all-ones.
@@ -368,8 +459,18 @@ struct OpProperties {
   const char *Name = nullptr;
   /// Short name used in generated rule names, e.g. "add".
   const char *ShortName = nullptr;
+  OpShape Shape = OpShape::Binary;
   /// The second operand is a shift amount (poison if out of range).
   bool IsShift = false;
+  /// Division and remainder: undefined behaviour if the second operand is
+  /// zero and, if IsSigned, for the minimum value divided by -1. Such a node
+  /// is only matched as a refinement, and a rule only creates one if a
+  /// division with the same operands was matched (RuleMatch::Guards) or the
+  /// divisor is a constant for which the behaviour is defined.
+  bool MayTrap = false;
+  bool IsSigned = false;
+
+  //===--- Binary operators -----------------------------------------------===//
 
   /// a op b == b op a. Not a rewrite rule: e-nodes of commutative operators
   /// are canonicalized by sorting their operand classes, and the matcher
@@ -380,14 +481,22 @@ struct OpProperties {
   /// (EGraph::canonicalizeAC) and patterns are matched modulo AC. Otherwise
   /// the two associativity rules are generated.
   bool Associative = false;
-  /// a op a == a
+  /// a op a == a. For OpShape::Phi: op(a, ..., a) == a, enforced by
+  /// EGraph::collapseIdempotentPhis instead of a rule.
   bool Idempotent = false;
   /// a op e == a. For a commutative operator this is also a left identity.
   std::optional<int64_t> RightIdentity;
   /// a op z == z (z is absorbing / an annihilator).
   std::optional<int64_t> RightAbsorbing;
+  /// z op a == z.
+  std::optional<int64_t> LeftAbsorbing;
+  /// a op c == r for each listed pair (c, r), e.g. a urem 1 == 0.
+  SmallVector<std::pair<int64_t, int64_t>, 2> RightConstResult;
   /// a op a == c (e.g. a - a == 0, a ^ a == 0).
   std::optional<int64_t> SelfValue;
+  /// This operator is the remainder of the division D:
+  ///   a - (a D b) * b == a op b
+  unsigned RemainderOf = 0;
   /// Left distributivity over each listed operator I:
   ///   a op (b I c) == (a op b) I (a op c)
   /// Only the factoring direction is generated, never the expansion:
@@ -400,10 +509,56 @@ struct OpProperties {
   /// right operand (used for shifts, whose amount must stay a constant):
   ///   (a op #k) I (b op #k)  =>  (a I b) op #k
   SmallVector<unsigned, 4> RightDistributesOverConst;
-  /// Constant folding; returns std::nullopt if the result is poison (e.g. an
-  /// out-of-range shift). The result must have the width of the first
-  /// operand.
+  /// Constant folding; returns std::nullopt if the result is poison or the
+  /// behaviour undefined (e.g. an out-of-range shift, a division by zero).
+  /// The result must have the width of the first operand.
   std::optional<APInt> (*Fold)(const APInt &, const APInt &) = nullptr;
+
+  //===--- Unary operators, casts and bit counts --------------------------===//
+
+  /// op(op(a)) == a.
+  bool Involution = false;
+  /// The kind of conversion of an OpShape::Cast operator. The compositions
+  /// of a truncation with an extension are derived from the kinds:
+  ///   trunc(ext(a)) == a, trunc(a) or ext(a), depending on the widths.
+  CastKind Cast = CastKind::None;
+  /// op(g(a)) == h(a) for each listed pair (g, h), e.g.
+  /// sext(zext(a)) == zext(a) and ctlz(bitreverse(a)) == cttz(a).
+  SmallVector<std::pair<unsigned, unsigned>, 2> ComposesTo;
+  /// op(g(a)) == op(a) for each listed operator g.
+  SmallVector<unsigned, 2> InvariantUnder;
+  /// The operator is a homomorphism for each listed binary operator I:
+  ///   op(a I b) == op(a) I op(b)
+  /// Only the hoisting direction is generated:
+  ///   op(a) I op(b)  =>  op(a I b)
+  /// and, if a constant c has a preimage p (op(p) == c, see Preimage):
+  ///   op(a) I c  =>  op(a I p)
+  SmallVector<unsigned, 4> HomomorphicOver;
+  /// Constant folding of a unary operator to a constant of \p ResultWidth
+  /// bits; returns std::nullopt if the operation is not defined for the
+  /// operand width or the result does not fit.
+  std::optional<APInt> (*FoldUnary)(const APInt &,
+                                    unsigned ResultWidth) = nullptr;
+  /// A constant p of \p SrcWidth bits with op(p) == \p C, if there is one.
+  std::optional<APInt> (*Preimage)(const APInt &C, unsigned SrcWidth) = nullptr;
+
+  //===--- Pointer arithmetic ---------------------------------------------===//
+
+  /// The operator is an action of the listed binary operator A on its first
+  /// operand: (p op a) op b == p op (a A b).
+  unsigned ActsBy = 0;
+
+  //===--- Terminators ----------------------------------------------------===//
+
+  /// The operator has an inverted form: op(~c) with attribute A is the same
+  /// terminator as op(c) with attribute InvertAttr(A). Returns std::nullopt
+  /// if the node cannot be inverted.
+  std::optional<uint64_t> (*InvertAttr)(uint64_t) = nullptr;
+
+  /// The number of operands, or -1 if it varies (OpShape::Phi).
+  int NumOperands = 2;
+
+  bool hasResult() const { return Shape != OpShape::Effect; }
 };
 
 /// The properties of all supported operators, in a fixed order.
@@ -413,13 +568,33 @@ const OpProperties *getOpProperties(unsigned Opcode);
 
 /// Append the rules implied by \p Props (see OpProperties) to \p Rules.
 /// Rules of one kind are emitted together for all operators, in table order:
-/// associativity, identities, absorbing elements,
-/// self-application, then (via addFactoringRulesFromProperties) factoring,
-/// and (via addFoldingRulesFromProperties) constant folding.
+/// associativity, identities, absorbing elements, constant results,
+/// self-application and remainders; then (via the functions below) unary
+/// operators and casts, comparisons, selects, factoring, and constant
+/// folding.
 void addAlgebraRulesFromProperties(ArrayRef<OpProperties> Props,
                                    std::vector<RewriteRule> &Rules);
+/// Rules of unary operators, casts and bit counts: involutions,
+/// compositions, invariance, hoisting out of a homomorphic operator, and the
+/// compositions of truncations with extensions.
+void addUnaryRulesFromProperties(ArrayRef<OpProperties> Props,
+                                 std::vector<RewriteRule> &Rules);
+/// Rules of OpShape::Compare operators, per predicate: comparison of a value
+/// with itself, negation of the result, comparison with a constant that no
+/// value or every value satisfies.
+void addCompareRulesFromProperties(ArrayRef<OpProperties> Props,
+                                   std::vector<RewriteRule> &Rules);
+/// Rules of OpShape::Select operators: constant and inverted conditions,
+/// equal arms, boolean arms, and factoring an operator out of both arms.
+void addSelectRulesFromProperties(ArrayRef<OpProperties> Props,
+                                  std::vector<RewriteRule> &Rules);
+/// Rules of pointer arithmetic (OpProperties::ActsBy) and of terminators
+/// (OpProperties::InvertAttr).
+void addStructuralRulesFromProperties(ArrayRef<OpProperties> Props,
+                                      std::vector<RewriteRule> &Rules);
 /// Identities that hold by \p Props but are enforced by canonicalization
-/// instead of rewriting (commutativity, and associativity of AC operators).
+/// instead of rewriting (commutativity, associativity of AC operators, and
+/// swapping the operands of a comparison).
 /// They are never applied; they exist so that the properties can be checked
 /// offline like the rules
 /// (-gisel-egraph-print-rules, verify_rules.py).
@@ -492,6 +667,8 @@ struct SaturationStats {
   unsigned Merges = 0;
   /// Merges made by AC canonicalization.
   unsigned ACMerges = 0;
+  /// Merges made by EGraph::collapseIdempotentPhis.
+  unsigned PhiMerges = 0;
   unsigned Refinements = 0;
   unsigned RejectedUnsafe = 0;
   bool Saturated = false;
@@ -526,8 +703,9 @@ class DefaultCostModel : public CostModel {
 public:
   unsigned ConstantCost = 0;
   unsigned InputCost = 0;
-  unsigned SimpleOpCost = 1; // add/sub/and/or/xor/shifts
+  unsigned SimpleOpCost = 1; // add/sub/and/or/xor/shifts, casts, compares...
   unsigned MulCost = 2;
+  unsigned DivCost = 16; // division and remainder
   /// Multiply operation cost by ceil(width / 32) when set.
   bool ScaleByWidth = true;
   unsigned getNodeCost(const ENode &N) const override;
