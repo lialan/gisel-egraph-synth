@@ -16,7 +16,8 @@ from . import ir
 class Instance:
     """A concrete expression with concrete input facts."""
 
-    def __init__(self, expr, vw, facts, consts, interior_uses, flags, prov):
+    def __init__(self, expr, vw, facts, consts, interior_uses, flags, prov,
+                 sub_facts=None):
         self.expr = expr            # ir expression; leaves are ('var', i)
         self.vw = tuple(vw)         # variable widths
         self.facts = tuple(facts)   # per variable (known_zero, known_one)
@@ -24,6 +25,16 @@ class Instance:
         self.interior_uses = tuple(interior_uses)  # pre-order, below root
         self.flags = tuple(flags)   # flags seen on any node of the tree
         self.prov = prov            # list of (file, fn, root)
+        # Known bits of the operation nodes below the root, by subexpression
+        # (what GISelValueTracking reports for that register).
+        self.sub_facts = sub_facts or {}
+
+    def facts_of(self, e):
+        """Known bits (zero, one) of a variable or of an operation node of
+        the expression, or None if they were not recorded."""
+        if ir.is_var(e):
+            return self.facts[e[1]]
+        return self.sub_facts.get(e)
 
     def key(self):
         """Deduplication key: same shape, widths and facts."""
@@ -44,7 +55,8 @@ def _count_regs(node, counts):
             _count_regs(a, counts)
 
 
-def _convert(node, inputs, interior_uses, flags, shared, root=False):
+def _convert(node, inputs, interior_uses, flags, shared, root=False,
+             sub=None):
     """``shared`` maps interior registers that occur more than once in the
     tree to an input index: the tree is really a DAG there, and counting
     the shared instruction twice would overstate the source cost."""
@@ -57,8 +69,12 @@ def _convert(node, inputs, interior_uses, flags, shared, root=False):
     for a in node['args']:
         if 'op' in a and a['reg'] not in shared:
             interior_uses.append(a.get('uses', 1))
-        args.append(_convert(a, inputs, interior_uses, flags, shared))
-    return (node['op'], node['w']) + tuple(args)
+        args.append(_convert(a, inputs, interior_uses, flags, shared,
+                             sub=sub))
+    e = (node['op'], node['w']) + tuple(args)
+    if sub is not None and not root and 'zero' in node:
+        sub.append((e, (int(node['zero'], 16), int(node['one'], 16))))
+    return e
 
 
 def parse_record(rec, source=''):
@@ -78,10 +94,14 @@ def parse_record(rec, source=''):
         shared[reg] = len(inputs)
         inputs.append({'reg': reg, 'w': node['w'], 'zero': node['zero'],
                        'one': node['one'], 'def': node['op']})
-    expr = _convert(rec['expr'], inputs, uses, flags, shared, root=True)
+    sub = []
+    expr = _convert(rec['expr'], inputs, uses, flags, shared, root=True,
+                    sub=sub)
     # Renumber inputs by first occurrence so equal trees get equal keys.
     order = ir.variables(expr)
-    expr = ir.rename(expr, {o: n for n, o in enumerate(order)})
+    renum = {o: n for n, o in enumerate(order)}
+    expr = ir.rename(expr, renum)
+    sub_facts = {ir.rename(e, renum): f for e, f in sub}
     inputs = [inputs[o] for o in order]
     vw, facts, consts = [], [], []
     for inp in inputs:
@@ -95,7 +115,7 @@ def parse_record(rec, source=''):
     if not ir.well_typed(expr, vw):
         return None
     return Instance(expr, vw, facts, consts, uses, sorted(flags),
-                    [(source, rec['fn'], rec['root'])])
+                    [(source, rec['fn'], rec['root'])], sub_facts)
 
 
 def _find(node, reg):

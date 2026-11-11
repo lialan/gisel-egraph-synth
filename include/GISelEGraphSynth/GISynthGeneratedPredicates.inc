@@ -16,785 +16,431 @@
 // `emit --check` stays byte-exact.
 // clang-format off
 
-/// (G_AND:s32 x0 x1) -> 0:s32
-/// if all(KZ(x0) | KZ(x1))
-/// Proved for widths (x0..x1, root): 32,32,32; 8,8,8; 16,16,16; 64,64,64.
-inline bool guard_synth_and_742e13c7(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{32, 32, 32}, {8, 8, 8}, {16, 16, 16}, {64, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K0 = VT->getKnownBits(X0);
-  KnownBits K1 = VT->getKnownBits(X1);
-  if (!((K0.Zero | K1.Zero).isAllOnes()))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_742e13c7\n");
-  return true;
-}
-
-/// (G_AND:s32 x0 x1) -> x0
-/// if all(KZ(x0) | KO(x1))
-/// Proved for widths (x0..x1, root): 32,32,32; 8,8,8; 16,16,16; 64,64,64.
-inline bool guard_synth_and_f7f40adc(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{32, 32, 32}, {8, 8, 8}, {16, 16, 16}, {64, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K0 = VT->getKnownBits(X0);
-  KnownBits K1 = VT->getKnownBits(X1);
-  if (!((K0.Zero | K1.One).isAllOnes()))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_f7f40adc\n");
-  return true;
-}
-
-/// (G_ASHR:s32 x0 x1) -> 0:s32
-/// if activebits(umax(x0)) <= umin(x1)
-/// Proved for widths (x0..x1, root): 32,32,32; 8,8,8; 16,16,16; 64,64,64.
-inline bool guard_synth_ashr_fbdb48c8(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{32, 32, 32}, {8, 8, 8}, {16, 16, 16}, {64, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K0 = VT->getKnownBits(X0);
-  KnownBits K1 = VT->getKnownBits(X1);
-  if (!(K1.getMinValue().uge(K0.countMaxActiveBits())))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_ashr_fbdb48c8\n");
-  return true;
-}
-
-/// (G_LSHR:s32 x0 x1) -> 0:s32
-/// if activebits(umax(x0)) <= umin(x1)
-/// Proved for widths (x0..x1, root): 32,32,32; 8,8,8; 16,16,16; 64,64,64.
-inline bool guard_synth_lshr_5e2dbee7(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{32, 32, 32}, {8, 8, 8}, {16, 16, 16}, {64, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K0 = VT->getKnownBits(X0);
-  KnownBits K1 = VT->getKnownBits(X1);
-  if (!(K1.getMinValue().uge(K0.countMaxActiveBits())))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_lshr_5e2dbee7\n");
-  return true;
-}
-
-/// (G_OR:s32 x0 x1) -> x0
-/// if all(KO(x0) | KZ(x1))
-/// Proved for widths (x0..x1, root): 32,32,32; 8,8,8; 16,16,16; 64,64,64.
-inline bool guard_synth_or_69635546(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{32, 32, 32}, {8, 8, 8}, {16, 16, 16}, {64, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K0 = VT->getKnownBits(X0);
-  KnownBits K1 = VT->getKnownBits(X1);
-  if (!((K0.One | K1.Zero).isAllOnes()))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_69635546\n");
-  return true;
-}
-
-/// (G_TRUNC:s16 x0) -> 0:s16
-/// if low(KZ(x0), bitwidth(root))
-/// Proved for widths (x0..x0, root): 64,16; 16,8; 32,8; 64,8; 32,16; 64,32.
-inline bool guard_synth_trunc_2a60e3c4(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0) {
-  static constexpr uint16_t Verified[][2] = {{64, 16}, {16, 8}, {32, 8}, {64, 8}, {32, 16}, {64, 32}};
-  unsigned W[2];
-  if (!getScalarWidths(MRI, {X0, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  [[maybe_unused]] unsigned WRoot = W[1];
-  KnownBits K0 = VT->getKnownBits(X0);
-  if (!(K0.Zero.countr_one() >= WRoot))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_trunc_2a60e3c4\n");
-  return true;
-}
-
-/// (G_XOR:s8 x0 x1) -> x0
-/// if all(KZ(x1))
-/// Proved for widths (x0..x1, root): 8,8,8; 16,16,16; 32,32,32; 64,64,64.
-inline bool guard_synth_xor_224ee13e(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{8, 8, 8}, {16, 16, 16}, {32, 32, 32}, {64, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K1 = VT->getKnownBits(X1);
-  if (!(K1.Zero.isAllOnes()))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_xor_224ee13e\n");
-  return true;
-}
-
-/// (G_ZEXT:s32 x0) -> 0:s32
-/// if all(KZ(x0))
-/// Proved for widths (x0..x0, root): 1,32; 1,8; 1,16; 1,64; 8,16; 8,32; 8,64; 16,32.
-inline bool guard_synth_zext_58e6e4bc(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0) {
-  static constexpr uint16_t Verified[][2] = {{1, 32}, {1, 8}, {1, 16}, {1, 64}, {8, 16}, {8, 32}, {8, 64}, {16, 32}};
-  unsigned W[2];
-  if (!getScalarWidths(MRI, {X0, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K0 = VT->getKnownBits(X0);
-  if (!(K0.Zero.isAllOnes()))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_zext_58e6e4bc\n");
-  return true;
-}
-
-/// (G_ADD:s32 (G_ZEXT:s32 x0) x1) -> (G_SHL:s32 x1 x0)
-/// if umax(x0) <=u umin(x1) && high(KZ(x1), bitwidth(x0))
-/// Proved for widths (x0..x1, root): 1,32,32.
-inline bool guard_synth_add_b85c2904(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{1, 32, 32}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  [[maybe_unused]] unsigned W0 = W[0];
-  [[maybe_unused]] unsigned W1 = W[1];
-  KnownBits K0 = VT->getKnownBits(X0);
-  KnownBits K1 = VT->getKnownBits(X1);
-  if (!(umaxULEUmin(K0, K1) &&
-        K1.Zero.countl_one() >= W1 - W0))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_add_b85c2904\n");
-  return true;
-}
-
-/// (G_AND:s32 (G_SHL:s32 x0 x1) x2) -> 0:s32
-/// if activebits(umax(x2)) <= umin(x1)
-/// Proved for widths (x0..x2, root): 32,32,32,32; 8,8,8,8; 16,16,16,16; 64,64,64,64.
-inline bool guard_synth_and_317730fd(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2) {
-  static constexpr uint16_t Verified[][4] = {{32, 32, 32, 32}, {8, 8, 8, 8}, {16, 16, 16, 16}, {64, 64, 64, 64}};
-  unsigned W[4];
-  if (!getScalarWidths(MRI, {X0, X1, X2, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K1 = VT->getKnownBits(X1);
-  KnownBits K2 = VT->getKnownBits(X2);
-  if (!(K1.getMinValue().uge(K2.countMaxActiveBits())))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_317730fd\n");
-  return true;
-}
-
-/// (G_AND:s32 (G_ADD:s32 x0 x1) x2) -> (G_AND:s32 x0 x2)
-/// if trailing(KZ(x1)) >= umax(x2)
-/// Proved for widths (x0..x2, root): 32,32,32,32; 8,8,8,8; 16,16,16,16; 64,64,64,64.
-inline bool guard_synth_and_33dbefd0(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2) {
-  static constexpr uint16_t Verified[][4] = {{32, 32, 32, 32}, {8, 8, 8, 8}, {16, 16, 16, 16}, {64, 64, 64, 64}};
-  unsigned W[4];
-  if (!getScalarWidths(MRI, {X0, X1, X2, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K1 = VT->getKnownBits(X1);
-  KnownBits K2 = VT->getKnownBits(X2);
-  if (!(K2.getMaxValue().ule(K1.Zero.countr_one())))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_33dbefd0\n");
-  return true;
-}
-
-/// (G_AND:s32 (G_OR:s32 x0 x1) x0) -> x0
+/// (G_OR:s32 (G_AND:s32 (G_AND:s32 x0 x1) x2) x0) -> x0
 /// if true
-/// Proved for widths (x0..x1, root): 32,32,32; 8,8,8; 16,16,16; 64,64,64.
-inline bool guard_synth_and_456f5120(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{32, 32, 32}, {8, 8, 8}, {16, 16, 16}, {64, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
+/// Proved for widths (x0, x1, x2, t0, t1, root): 8,8,8,8,8,8; 16,16,16,16,16,16; 32,32,32,32,32,32; 64,64,64,64,64,64.
+inline bool guard_synth_or_d54b7fbe(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0, Register T1) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_or_d54b7fbe\n");
+  unsigned W[6];
+  if (!getScalarWidths(MRI, {X0, X1, X2, T0, T1, Dst}, W))
     return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_456f5120\n");
-  return true;
-}
-
-/// (G_AND:s32 (G_OR:s32 x0 x1) x2) -> x2
-/// if all(KO(x1) | KZ(x2))
-/// Proved for widths (x0..x2, root): 32,32,32,32; 8,8,8,8; 16,16,16,16; 64,64,64,64.
-inline bool guard_synth_and_59b58204(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2) {
-  static constexpr uint16_t Verified[][4] = {{32, 32, 32, 32}, {8, 8, 8, 8}, {16, 16, 16, 16}, {64, 64, 64, 64}};
-  unsigned W[4];
-  if (!getScalarWidths(MRI, {X0, X1, X2, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
+  static constexpr uint16_t V0[][6] = {{8, 8, 8, 8, 8, 8}, {16, 16, 16, 16, 16, 16}, {32, 32, 32, 32, 32, 32}, {64, 64, 64, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
     return false;
-  if (!VT)
+  bool Pass = true;
+  if (!Pass)
     return false;
-  KnownBits K1 = VT->getKnownBits(X1);
-  KnownBits K2 = VT->getKnownBits(X2);
-  if (!((K1.One | K2.Zero).isAllOnes()))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_59b58204\n");
-  return true;
-}
-
-/// (G_AND:s32 (G_OR:s32 x0 x1) x2) -> (G_AND:s32 x0 x2)
-/// if all(KZ(x1) | KZ(x2))
-/// Proved for widths (x0..x2, root): 32,32,32,32; 8,8,8,8; 16,16,16,16; 64,64,64,64.
-inline bool guard_synth_and_5d2e7cbe(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2) {
-  static constexpr uint16_t Verified[][4] = {{32, 32, 32, 32}, {8, 8, 8, 8}, {16, 16, 16, 16}, {64, 64, 64, 64}};
-  unsigned W[4];
-  if (!getScalarWidths(MRI, {X0, X1, X2, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K1 = VT->getKnownBits(X1);
-  KnownBits K2 = VT->getKnownBits(X2);
-  if (!((K1.Zero | K2.Zero).isAllOnes()))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_5d2e7cbe\n");
-  return true;
-}
-
-/// (G_AND:s8 (G_XOR:s8 x0 x1) x2) -> (G_SUB:s8 x2 x0)
-/// if all(KZ(x0) | KO(x2)) && all(KO(x1) | KZ(x2))
-/// Proved for widths (x0..x2, root): 8,8,8,8; 16,16,16,16; 32,32,32,32; 64,64,64,64.
-inline bool guard_synth_and_6429c785(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2) {
-  static constexpr uint16_t Verified[][4] = {{8, 8, 8, 8}, {16, 16, 16, 16}, {32, 32, 32, 32}, {64, 64, 64, 64}};
-  unsigned W[4];
-  if (!getScalarWidths(MRI, {X0, X1, X2, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K0 = VT->getKnownBits(X0);
-  KnownBits K1 = VT->getKnownBits(X1);
-  KnownBits K2 = VT->getKnownBits(X2);
-  if (!((K0.Zero | K2.One).isAllOnes() &&
-        (K1.One | K2.Zero).isAllOnes()))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_6429c785\n");
-  return true;
-}
-
-/// (G_AND:s32 (G_SEXT:s32 x0) x1) -> (G_ZEXT:s32 x0)
-/// if high(KZ(x1), bitwidth(x0)) && low(KO(x1), bitwidth(x0))
-/// Proved for widths (x0..x1, root): 8,32,32; 8,16,16; 8,64,64; 16,32,32; 16,64,64; 32,64,64.
-inline bool guard_synth_and_dbfbac0a(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{8, 32, 32}, {8, 16, 16}, {8, 64, 64}, {16, 32, 32}, {16, 64, 64}, {32, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  [[maybe_unused]] unsigned W0 = W[0];
-  [[maybe_unused]] unsigned W1 = W[1];
-  KnownBits K1 = VT->getKnownBits(X1);
-  if (!(K1.Zero.countl_one() >= W1 - W0 &&
-        K1.One.countr_one() >= W0))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_dbfbac0a\n");
-  return true;
-}
-
-/// (G_ASHR:s32 (G_ZEXT:s32 x0) x1) -> 0:s32
-/// if activebits(umax(x0)) <= umin(x1)
-/// Proved for widths (x0..x1, root): 16,32,32; 8,16,16; 8,32,32; 8,64,64; 16,64,64; 32,64,64.
-inline bool guard_synth_ashr_44e62d99(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{16, 32, 32}, {8, 16, 16}, {8, 32, 32}, {8, 64, 64}, {16, 64, 64}, {32, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K0 = VT->getKnownBits(X0);
-  KnownBits K1 = VT->getKnownBits(X1);
-  if (!(K1.getMinValue().uge(K0.countMaxActiveBits())))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_ashr_44e62d99\n");
-  return true;
-}
-
-/// (G_LSHR:s32 (G_SHL:s32 x0 x1) x1) -> x0
-/// if leading(KZ(x0)) >= umax(x1)
-/// Proved for widths (x0..x1, root): 32,32,32; 8,8,8; 16,16,16; 64,64,64.
-inline bool guard_synth_lshr_9bb739f4(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{32, 32, 32}, {8, 8, 8}, {16, 16, 16}, {64, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K0 = VT->getKnownBits(X0);
-  KnownBits K1 = VT->getKnownBits(X1);
-  if (!(K1.getMaxValue().ule(K0.Zero.countl_one())))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_lshr_9bb739f4\n");
-  return true;
-}
-
-/// (G_LSHR:s32 (G_ZEXT:s32 x0) x1) -> 0:s32
-/// if activebits(umax(x0)) <= umin(x1)
-/// Proved for widths (x0..x1, root): 16,32,32; 8,16,16; 8,32,32; 8,64,64; 16,64,64; 32,64,64.
-inline bool guard_synth_lshr_d8945da0(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{16, 32, 32}, {8, 16, 16}, {8, 32, 32}, {8, 64, 64}, {16, 64, 64}, {32, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K0 = VT->getKnownBits(X0);
-  KnownBits K1 = VT->getKnownBits(X1);
-  if (!(K1.getMinValue().uge(K0.countMaxActiveBits())))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_lshr_d8945da0\n");
-  return true;
-}
-
-/// (G_OR:s32 (G_AND:s32 x0 x1) x2) -> (G_OR:s32 x0 x2)
-/// if all(KO(x1) | KO(x2))
-/// Proved for widths (x0..x2, root): 32,32,32,32; 8,8,8,8; 16,16,16,16; 64,64,64,64.
-inline bool guard_synth_or_23c398b3(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2) {
-  static constexpr uint16_t Verified[][4] = {{32, 32, 32, 32}, {8, 8, 8, 8}, {16, 16, 16, 16}, {64, 64, 64, 64}};
-  unsigned W[4];
-  if (!getScalarWidths(MRI, {X0, X1, X2, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K1 = VT->getKnownBits(X1);
-  KnownBits K2 = VT->getKnownBits(X2);
-  if (!((K1.One | K2.One).isAllOnes()))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_23c398b3\n");
-  return true;
-}
-
-/// (G_OR:s32 (G_ADD:s32 x0 x1) x0) -> (G_XOR:s32 x0 x1)
-/// if all(KZ(x0) | KZ(x1))
-/// Proved for widths (x0..x1, root): 32,32,32; 8,8,8; 16,16,16; 64,64,64.
-inline bool guard_synth_or_290ca691(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{32, 32, 32}, {8, 8, 8}, {16, 16, 16}, {64, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K0 = VT->getKnownBits(X0);
-  KnownBits K1 = VT->getKnownBits(X1);
-  if (!((K0.Zero | K1.Zero).isAllOnes()))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_290ca691\n");
-  return true;
-}
-
-/// (G_OR:s32 (G_AND:s32 x0 x1) x0) -> x0
-/// if true
-/// Proved for widths (x0..x1, root): 32,32,32; 8,8,8; 16,16,16; 64,64,64.
-inline bool guard_synth_or_34d0cc5c(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{32, 32, 32}, {8, 8, 8}, {16, 16, 16}, {64, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_34d0cc5c\n");
-  return true;
-}
-
-/// (G_OR:s32 (G_ADD:s32 x0 x1) x0) -> (G_OR:s32 x0 x1)
-/// if all(KZ(x0) | KZ(x1))
-/// Proved for widths (x0..x1, root): 32,32,32; 8,8,8; 16,16,16; 64,64,64.
-inline bool guard_synth_or_4488cb30(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{32, 32, 32}, {8, 8, 8}, {16, 16, 16}, {64, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K0 = VT->getKnownBits(X0);
-  KnownBits K1 = VT->getKnownBits(X1);
-  if (!((K0.Zero | K1.Zero).isAllOnes()))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_4488cb30\n");
-  return true;
-}
-
-/// (G_OR:s32 (G_XOR:s32 x0 x1) x0) -> (G_OR:s32 x0 x1)
-/// if true
-/// Proved for widths (x0..x1, root): 32,32,32; 8,8,8; 16,16,16; 64,64,64.
-inline bool guard_synth_or_6619c15b(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{32, 32, 32}, {8, 8, 8}, {16, 16, 16}, {64, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_6619c15b\n");
-  return true;
-}
-
-/// (G_SHL:s64 x0 (G_ZEXT:s64 x1)) -> (G_SHL:s64 x0 x1)
-/// if true
-/// Proved for widths (x0..x1, root): 64,32,64; 16,8,16; 32,8,32; 64,8,64; 32,16,32; 64,16,64.
-inline bool guard_synth_shl_0b734752(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{64, 32, 64}, {16, 8, 16}, {32, 8, 32}, {64, 8, 64}, {32, 16, 32}, {64, 16, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_shl_0b734752\n");
-  return true;
-}
-
-/// (G_TRUNC:s8 (G_AND:s32 x0 x1)) -> (G_TRUNC:s8 x0)
-/// if low(KO(x1), bitwidth(root))
-/// Proved for widths (x0..x1, root): 32,32,8; 16,16,8; 64,64,8; 32,32,16; 64,64,16; 64,64,32.
-inline bool guard_synth_trunc_086403ef(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{32, 32, 8}, {16, 16, 8}, {64, 64, 8}, {32, 32, 16}, {64, 64, 16}, {64, 64, 32}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  [[maybe_unused]] unsigned WRoot = W[2];
-  KnownBits K1 = VT->getKnownBits(X1);
-  if (!(K1.One.countr_one() >= WRoot))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_trunc_086403ef\n");
-  return true;
-}
-
-/// (G_TRUNC:s8 (G_TRUNC:s16 x0)) -> (G_TRUNC:s8 x0)
-/// if true
-/// Proved for widths (x0..x0, root): 32,8; 64,8; 64,8; 64,16.
-inline bool guard_synth_trunc_3a5f46f4(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0) {
-  static constexpr uint16_t Verified[][2] = {{32, 8}, {64, 8}, {64, 8}, {64, 16}};
-  unsigned W[2];
-  if (!getScalarWidths(MRI, {X0, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_trunc_3a5f46f4\n");
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_d54b7fbe\n");
   return true;
 }
 
 /// (G_XOR:s1 (G_XOR:s1 x0 x1) x0) -> x1
 /// if true
-/// Proved for widths (x0..x1, root): 1,1,1; 8,8,8; 16,16,16; 32,32,32; 64,64,64.
-inline bool guard_synth_xor_eff2651b(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{1, 1, 1}, {8, 8, 8}, {16, 16, 16}, {32, 32, 32}, {64, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_xor_eff2651b\n");
-  return true;
-}
-
-/// (G_ADD:s32 (G_AND:s32 x0 x1) (G_OR:s32 x0 x1)) -> (G_ADD:s32 x0 x1)
-/// if true
-/// Proved for widths (x0..x1, root): 32,32,32; 8,8,8; 16,16,16; 64,64,64.
-inline bool guard_synth_add_a2b57bb6(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{32, 32, 32}, {8, 8, 8}, {16, 16, 16}, {64, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_add_a2b57bb6\n");
-  return true;
-}
-
-/// (G_AND:s32 (G_XOR:s32 x0 x1) (G_XOR:s32 x0 x2)) -> (G_AND:s32 (G_SUB:s32 x1 x0) x2)
-/// if all(KZ(x0) | KO(x1))
-/// Proved for widths (x0..x2, root): 32,32,32,32; 8,8,8,8; 16,16,16,16; 64,64,64,64.
-inline bool guard_synth_and_c34d9061(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2) {
-  static constexpr uint16_t Verified[][4] = {{32, 32, 32, 32}, {8, 8, 8, 8}, {16, 16, 16, 16}, {64, 64, 64, 64}};
+/// Proved for widths (x0, x1, t0, root): 1,1,1,1; 8,8,8,8; 16,16,16,16; 32,32,32,32; 64,64,64,64.
+inline bool guard_synth_xor_66308b8b(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_xor_66308b8b\n");
   unsigned W[4];
-  if (!getScalarWidths(MRI, {X0, X1, X2, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
+  if (!getScalarWidths(MRI, {X0, X1, T0, Dst}, W))
     return false;
-  if (!VT)
+  static constexpr uint16_t V0[][4] = {{1, 1, 1, 1}, {8, 8, 8, 8}, {16, 16, 16, 16}, {32, 32, 32, 32}, {64, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
     return false;
-  KnownBits K0 = VT->getKnownBits(X0);
-  KnownBits K1 = VT->getKnownBits(X1);
-  if (!((K0.Zero | K1.One).isAllOnes()))
+  bool Pass = true;
+  if (!Pass)
     return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_c34d9061\n");
-  return true;
-}
-
-/// (G_OR:s64 (G_ASHR:s64 x0 x1) (G_ASHR:s64 x2 x1)) -> (G_ASHR:s64 (G_OR:s64 x0 x2) x1)
-/// if true
-/// Proved for widths (x0..x2, root): 64,64,64,64; 8,8,8,8; 16,16,16,16; 32,32,32,32.
-inline bool guard_synth_or_55eb2416(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2) {
-  static constexpr uint16_t Verified[][4] = {{64, 64, 64, 64}, {8, 8, 8, 8}, {16, 16, 16, 16}, {32, 32, 32, 32}};
-  unsigned W[4];
-  if (!getScalarWidths(MRI, {X0, X1, X2, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_55eb2416\n");
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_xor_66308b8b\n");
   return true;
 }
 
 /// (G_OR:s32 (G_SUB:s32 x0 x1) (G_XOR:s32 x1 x2)) -> (G_XOR:s32 x0 x1)
 /// if all(KO(x0) | KZ(x2)) && all(KZ(x1) | KO(x2))
-/// Proved for widths (x0..x2, root): 32,32,32,32; 8,8,8,8; 16,16,16,16; 64,64,64,64.
-inline bool guard_synth_or_63806fc3(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2) {
-  static constexpr uint16_t Verified[][4] = {{32, 32, 32, 32}, {8, 8, 8, 8}, {16, 16, 16, 16}, {64, 64, 64, 64}};
-  unsigned W[4];
-  if (!getScalarWidths(MRI, {X0, X1, X2, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
+/// Proved for widths (x0, x1, x2, t0, t1, root): 8,8,8,8,8,8; 16,16,16,16,16,16; 32,32,32,32,32,32; 64,64,64,64,64,64.
+inline bool guard_synth_or_d7cb9f3c(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0, Register T1) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_or_d7cb9f3c\n");
+  unsigned W[6];
+  if (!getScalarWidths(MRI, {X0, X1, X2, T0, T1, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][6] = {{8, 8, 8, 8, 8, 8}, {16, 16, 16, 16, 16, 16}, {32, 32, 32, 32, 32, 32}, {64, 64, 64, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
     return false;
   if (!VT)
     return false;
   KnownBits K0 = VT->getKnownBits(X0);
   KnownBits K1 = VT->getKnownBits(X1);
   KnownBits K2 = VT->getKnownBits(X2);
-  if (!((K0.One | K2.Zero).isAllOnes() &&
-        (K1.Zero | K2.One).isAllOnes()))
+  bool Pass = (K0.One | K2.Zero).isAllOnes() &&
+      (K1.Zero | K2.One).isAllOnes();
+  if (!Pass)
     return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_63806fc3\n");
-  return true;
-}
-
-/// (G_OR:s32 (G_AND:s32 x0 x1) (G_XOR:s32 x2 x3)) -> (G_OR:s32 (G_SUB:s32 x2 x3) x0)
-/// if all(KO(x2)) && all(KO(x1) | KZ(x3))
-/// Proved for widths (x0..x3, root): 32,32,32,32,32; 8,8,8,8,8; 16,16,16,16,16; 64,64,64,64,64.
-inline bool guard_synth_or_6963baaa(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register X3) {
-  static constexpr uint16_t Verified[][5] = {{32, 32, 32, 32, 32}, {8, 8, 8, 8, 8}, {16, 16, 16, 16, 16}, {64, 64, 64, 64, 64}};
-  unsigned W[5];
-  if (!getScalarWidths(MRI, {X0, X1, X2, X3, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  if (!VT)
-    return false;
-  KnownBits K1 = VT->getKnownBits(X1);
-  KnownBits K2 = VT->getKnownBits(X2);
-  KnownBits K3 = VT->getKnownBits(X3);
-  if (!(K2.One.isAllOnes() &&
-        (K1.One | K3.Zero).isAllOnes()))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_6963baaa\n");
-  return true;
-}
-
-/// (G_OR:s32 (G_AND:s32 x0 x1) (G_AND:s32 x0 x2)) -> (G_AND:s32 (G_OR:s32 x1 x2) x0)
-/// if true
-/// Proved for widths (x0..x2, root): 32,32,32,32; 8,8,8,8; 16,16,16,16; 64,64,64,64.
-inline bool guard_synth_or_85cfbf52(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2) {
-  static constexpr uint16_t Verified[][4] = {{32, 32, 32, 32}, {8, 8, 8, 8}, {16, 16, 16, 16}, {64, 64, 64, 64}};
-  unsigned W[4];
-  if (!getScalarWidths(MRI, {X0, X1, X2, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
-    return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_85cfbf52\n");
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_d7cb9f3c\n");
   return true;
 }
 
 /// (G_SUB:s32 (G_ADD:s32 x0 x1) (G_ADD:s32 x0 x2)) -> (G_SUB:s32 x1 x2)
 /// if true
-/// Proved for widths (x0..x2, root): 32,32,32,32; 8,8,8,8; 16,16,16,16; 64,64,64,64.
-inline bool guard_synth_sub_482baaf6(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2) {
-  static constexpr uint16_t Verified[][4] = {{32, 32, 32, 32}, {8, 8, 8, 8}, {16, 16, 16, 16}, {64, 64, 64, 64}};
-  unsigned W[4];
-  if (!getScalarWidths(MRI, {X0, X1, X2, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
+/// Proved for widths (x0, x1, x2, t0, t1, root): 8,8,8,8,8,8; 16,16,16,16,16,16; 32,32,32,32,32,32; 64,64,64,64,64,64.
+inline bool guard_synth_sub_c1235ab0(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0, Register T1) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_sub_c1235ab0\n");
+  unsigned W[6];
+  if (!getScalarWidths(MRI, {X0, X1, X2, T0, T1, Dst}, W))
     return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_sub_482baaf6\n");
+  static constexpr uint16_t V0[][6] = {{8, 8, 8, 8, 8, 8}, {16, 16, 16, 16, 16, 16}, {32, 32, 32, 32, 32, 32}, {64, 64, 64, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  bool Pass = true;
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_sub_c1235ab0\n");
   return true;
 }
 
-/// (G_SUB:s32 (G_OR:s32 x0 x1) (G_AND:s32 x0 x1)) -> (G_XOR:s32 x0 x1)
-/// if true
-/// Proved for widths (x0..x1, root): 32,32,32; 8,8,8; 16,16,16; 64,64,64.
-inline bool guard_synth_sub_bbc8b67b(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{32, 32, 32}, {8, 8, 8}, {16, 16, 16}, {64, 64, 64}};
+/// (G_XOR:s8 x0 x1) -> x0
+/// if all(KZ(x1))
+/// Proved for widths (x0, x1, root): 8,8,8; 16,16,16; 32,32,32; 64,64,64.
+inline bool guard_synth_xor_535a60d9(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_xor_535a60d9\n");
   unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
+  if (!getScalarWidths(MRI, {X0, X1, Dst}, W))
     return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_sub_bbc8b67b\n");
+  static constexpr uint16_t V0[][3] = {{8, 8, 8}, {16, 16, 16}, {32, 32, 32}, {64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!VT)
+    return false;
+  KnownBits K1 = VT->getKnownBits(X1);
+  bool Pass = K1.Zero.isAllOnes();
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_xor_535a60d9\n");
   return true;
 }
 
-/// (G_XOR:s32 (G_ASHR:s32 x0 x1) (G_ASHR:s32 x2 x1)) -> (G_ASHR:s32 (G_XOR:s32 x0 x2) x1)
-/// if true
-/// Proved for widths (x0..x2, root): 32,32,32,32; 8,8,8,8; 16,16,16,16; 64,64,64,64.
-inline bool guard_synth_xor_5445c926(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2) {
-  static constexpr uint16_t Verified[][4] = {{32, 32, 32, 32}, {8, 8, 8, 8}, {16, 16, 16, 16}, {64, 64, 64, 64}};
+/// (G_AND:s32 (G_ASHR:s32 x0 x1) x2) -> (G_LSHR:s32 x0 x1)
+/// if leading(KZ(x2)) >= umax(x1) && trailing(KO(x2)) >= bitwidth - umin(x1)
+/// Proved for widths (x0, x1, x2, t0, root): 8,8,8,8,8; 16,16,16,16,16; 32,32,32,32,32; 64,64,64,64,64.
+inline bool guard_synth_and_83abd1ae(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_and_83abd1ae\n");
+  unsigned W[5];
+  if (!getScalarWidths(MRI, {X0, X1, X2, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][5] = {{8, 8, 8, 8, 8}, {16, 16, 16, 16, 16}, {32, 32, 32, 32, 32}, {64, 64, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!VT)
+    return false;
+  KnownBits K1 = VT->getKnownBits(X1);
+  KnownBits K2 = VT->getKnownBits(X2);
+  bool Pass = K1.getMaxValue().ule(K2.Zero.countl_one()) &&
+      coversLowAfterShift(K2.One, K1);
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_83abd1ae\n");
+  return true;
+}
+
+/// (G_AND:s32 (G_SEXT:s32 x0) x1) -> (G_ZEXT:s32 x0)
+/// if high(KZ(x1), bitwidth(x0)) && low(KO(x1), bitwidth(x0))
+/// Proved for widths (x0, x1, t0, root): 8,16,16,16; 8,32,32,32; 8,64,64,64; 16,32,32,32; 16,64,64,64; 32,64,64,64.
+inline bool guard_synth_and_b1e9087f(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_and_b1e9087f\n");
   unsigned W[4];
-  if (!getScalarWidths(MRI, {X0, X1, X2, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
+  if (!getScalarWidths(MRI, {X0, X1, T0, Dst}, W))
     return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_xor_5445c926\n");
+  static constexpr uint16_t V0[][4] = {{8, 16, 16, 16}, {8, 32, 32, 32}, {8, 64, 64, 64}, {16, 32, 32, 32}, {16, 64, 64, 64}, {32, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  [[maybe_unused]] unsigned W0 = W[0];
+  [[maybe_unused]] unsigned W1 = W[1];
+  if (!VT)
+    return false;
+  KnownBits K1 = VT->getKnownBits(X1);
+  bool Pass = K1.Zero.countl_one() >= W1 - W0 &&
+      K1.One.countr_one() >= W0;
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_b1e9087f\n");
   return true;
 }
 
-/// (G_XOR:s32 (G_AND:s32 x0 x1) (G_OR:s32 x0 x1)) -> (G_XOR:s32 x0 x1)
+/// (G_AND:s64 (G_ASHR:s64 x0 x1) x2) -> (G_LSHR:s64 x0 x1)
+/// if leading(KZ(x2)) >= umax(x1) && trailing(KO(x2)) >= bitwidth - umin(x1)
+/// Proved for widths (x0, x1, x2, t0, root): 16,8,16,16,16; 32,8,32,32,32; 32,16,32,32,32; 64,8,64,64,64; 64,16,64,64,64; 64,32,64,64,64.
+inline bool guard_synth_and_d05a2340(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_and_d05a2340\n");
+  unsigned W[5];
+  if (!getScalarWidths(MRI, {X0, X1, X2, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][5] = {{16, 8, 16, 16, 16}, {32, 8, 32, 32, 32}, {32, 16, 32, 32, 32}, {64, 8, 64, 64, 64}, {64, 16, 64, 64, 64}, {64, 32, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!VT)
+    return false;
+  KnownBits K1 = VT->getKnownBits(X1);
+  KnownBits K2 = VT->getKnownBits(X2);
+  bool Pass = K1.getMaxValue().ule(K2.Zero.countl_one()) &&
+      coversLowAfterShift(K2.One, K1);
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_d05a2340\n");
+  return true;
+}
+
+/// (G_LSHR:s32 (G_ASHR:s32 x0 x1) x2) -> (G_LSHR:s32 x0 x2)
+/// if trailing(KO(x2)) >= umax(x1) && trailing(KZ(x1)) >= bitwidth - umin(x2)
+/// Proved for widths (x0, x1, x2, t0, root): 8,8,8,8,8; 16,16,16,16,16; 32,32,32,32,32; 64,64,64,64,64.
+inline bool guard_synth_lshr_c497647d(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_lshr_c497647d\n");
+  unsigned W[5];
+  if (!getScalarWidths(MRI, {X0, X1, X2, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][5] = {{8, 8, 8, 8, 8}, {16, 16, 16, 16, 16}, {32, 32, 32, 32, 32}, {64, 64, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!VT)
+    return false;
+  KnownBits K1 = VT->getKnownBits(X1);
+  KnownBits K2 = VT->getKnownBits(X2);
+  bool Pass = K1.getMaxValue().ule(K2.One.countr_one()) &&
+      coversLowAfterShift(K1.Zero, K2);
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_lshr_c497647d\n");
+  return true;
+}
+
+/// (G_OR:s32 (G_XOR:s32 x0 x1) x0) -> (G_OR:s32 x0 x1)
 /// if true
-/// Proved for widths (x0..x1, root): 32,32,32; 8,8,8; 16,16,16; 64,64,64.
-inline bool guard_synth_xor_a3aaa280(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1) {
-  static constexpr uint16_t Verified[][3] = {{32, 32, 32}, {8, 8, 8}, {16, 16, 16}, {64, 64, 64}};
-  unsigned W[3];
-  if (!getScalarWidths(MRI, {X0, X1, Dst}, W) ||
-      !isVerifiedSchedule(W, Verified))
+/// Proved for widths (x0, x1, t0, root): 8,8,8,8; 16,16,16,16; 32,32,32,32; 64,64,64,64.
+inline bool guard_synth_or_9c2e7958(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_or_9c2e7958\n");
+  unsigned W[4];
+  if (!getScalarWidths(MRI, {X0, X1, T0, Dst}, W))
     return false;
-  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_xor_a3aaa280\n");
+  static constexpr uint16_t V0[][4] = {{8, 8, 8, 8}, {16, 16, 16, 16}, {32, 32, 32, 32}, {64, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  bool Pass = true;
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_9c2e7958\n");
   return true;
 }
 
-/// Names of all synthesized rules, for enabling them as a group.
-inline constexpr const char *SynthRuleNames[] = {
-    "synth_and_742e13c7",
-    "synth_and_742e13c7_c1",
-    "synth_and_f7f40adc",
-    "synth_and_f7f40adc_c1",
-    "synth_ashr_fbdb48c8",
-    "synth_lshr_5e2dbee7",
-    "synth_or_69635546",
-    "synth_or_69635546_c1",
-    "synth_trunc_2a60e3c4",
-    "synth_xor_224ee13e",
-    "synth_xor_224ee13e_c1",
-    "synth_zext_58e6e4bc",
-    "synth_add_b85c2904",
-    "synth_add_b85c2904_c1",
-    "synth_and_317730fd",
-    "synth_and_317730fd_c1",
-    "synth_and_33dbefd0",
-    "synth_and_33dbefd0_c1",
-    "synth_and_33dbefd0_c2",
-    "synth_and_33dbefd0_c3",
-    "synth_and_456f5120",
-    "synth_and_456f5120_c1",
-    "synth_and_456f5120_c2",
-    "synth_and_456f5120_c3",
-    "synth_and_59b58204",
-    "synth_and_59b58204_c1",
-    "synth_and_59b58204_c2",
-    "synth_and_59b58204_c3",
-    "synth_and_5d2e7cbe",
-    "synth_and_5d2e7cbe_c1",
-    "synth_and_5d2e7cbe_c2",
-    "synth_and_5d2e7cbe_c3",
-    "synth_and_6429c785",
-    "synth_and_6429c785_c1",
-    "synth_and_6429c785_c2",
-    "synth_and_6429c785_c3",
-    "synth_and_dbfbac0a",
-    "synth_and_dbfbac0a_c1",
-    "synth_ashr_44e62d99",
-    "synth_lshr_9bb739f4",
-    "synth_lshr_d8945da0",
-    "synth_or_23c398b3",
-    "synth_or_23c398b3_c1",
-    "synth_or_23c398b3_c2",
-    "synth_or_23c398b3_c3",
-    "synth_or_290ca691",
-    "synth_or_290ca691_c1",
-    "synth_or_290ca691_c2",
-    "synth_or_290ca691_c3",
-    "synth_or_34d0cc5c",
-    "synth_or_34d0cc5c_c1",
-    "synth_or_34d0cc5c_c2",
-    "synth_or_34d0cc5c_c3",
-    "synth_or_4488cb30",
-    "synth_or_4488cb30_c1",
-    "synth_or_4488cb30_c2",
-    "synth_or_4488cb30_c3",
-    "synth_or_6619c15b",
-    "synth_or_6619c15b_c1",
-    "synth_or_6619c15b_c2",
-    "synth_or_6619c15b_c3",
-    "synth_shl_0b734752",
-    "synth_trunc_086403ef",
-    "synth_trunc_086403ef_c1",
-    "synth_trunc_3a5f46f4",
-    "synth_xor_eff2651b",
-    "synth_xor_eff2651b_c1",
-    "synth_xor_eff2651b_c2",
-    "synth_xor_eff2651b_c3",
-    "synth_add_a2b57bb6",
-    "synth_add_a2b57bb6_c1",
-    "synth_add_a2b57bb6_c2",
-    "synth_add_a2b57bb6_c3",
-    "synth_add_a2b57bb6_c4",
-    "synth_add_a2b57bb6_c5",
-    "synth_add_a2b57bb6_c6",
-    "synth_add_a2b57bb6_c7",
-    "synth_and_c34d9061",
-    "synth_and_c34d9061_c1",
-    "synth_and_c34d9061_c2",
-    "synth_and_c34d9061_c3",
-    "synth_and_c34d9061_c4",
-    "synth_and_c34d9061_c5",
-    "synth_and_c34d9061_c6",
-    "synth_and_c34d9061_c7",
-    "synth_or_55eb2416",
-    "synth_or_55eb2416_c1",
-    "synth_or_63806fc3",
-    "synth_or_63806fc3_c1",
-    "synth_or_63806fc3_c2",
-    "synth_or_63806fc3_c3",
-    "synth_or_6963baaa",
-    "synth_or_6963baaa_c1",
-    "synth_or_6963baaa_c2",
-    "synth_or_6963baaa_c3",
-    "synth_or_6963baaa_c4",
-    "synth_or_6963baaa_c5",
-    "synth_or_6963baaa_c6",
-    "synth_or_6963baaa_c7",
-    "synth_or_85cfbf52",
-    "synth_or_85cfbf52_c1",
-    "synth_or_85cfbf52_c2",
-    "synth_or_85cfbf52_c3",
-    "synth_or_85cfbf52_c4",
-    "synth_or_85cfbf52_c5",
-    "synth_or_85cfbf52_c6",
-    "synth_or_85cfbf52_c7",
-    "synth_sub_482baaf6",
-    "synth_sub_482baaf6_c1",
-    "synth_sub_482baaf6_c2",
-    "synth_sub_482baaf6_c3",
-    "synth_sub_bbc8b67b",
-    "synth_sub_bbc8b67b_c1",
-    "synth_sub_bbc8b67b_c2",
-    "synth_sub_bbc8b67b_c3",
-    "synth_xor_5445c926",
-    "synth_xor_5445c926_c1",
-    "synth_xor_a3aaa280",
-    "synth_xor_a3aaa280_c1",
-    "synth_xor_a3aaa280_c2",
-    "synth_xor_a3aaa280_c3",
-    "synth_xor_a3aaa280_c4",
-    "synth_xor_a3aaa280_c5",
-    "synth_xor_a3aaa280_c6",
-    "synth_xor_a3aaa280_c7",
+/// (G_OR:s32 (G_ADD:s32 x0 x1) x0) -> (G_XOR:s32 x0 x1)
+/// if all(KZ(x0) | KZ(x1))
+/// Proved for widths (x0, x1, t0, root): 8,8,8,8; 16,16,16,16; 32,32,32,32; 64,64,64,64.
+inline bool guard_synth_or_d4ad0f19(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_or_d4ad0f19\n");
+  unsigned W[4];
+  if (!getScalarWidths(MRI, {X0, X1, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][4] = {{8, 8, 8, 8}, {16, 16, 16, 16}, {32, 32, 32, 32}, {64, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!VT)
+    return false;
+  KnownBits K0 = VT->getKnownBits(X0);
+  KnownBits K1 = VT->getKnownBits(X1);
+  bool Pass = (K0.Zero | K1.Zero).isAllOnes();
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_d4ad0f19\n");
+  return true;
+}
+
+/// (G_SHL:s64 x0 (G_ZEXT:s64 x1)) -> (G_SHL:s64 x0 x1)
+/// if true
+/// Proved for widths (x0, x1, t0, root): 16,8,16,16; 32,8,32,32; 32,16,32,32; 64,8,64,64; 64,16,64,64; 64,32,64,64.
+inline bool guard_synth_shl_a7bba6d0(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_shl_a7bba6d0\n");
+  unsigned W[4];
+  if (!getScalarWidths(MRI, {X0, X1, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][4] = {{16, 8, 16, 16}, {32, 8, 32, 32}, {32, 16, 32, 32}, {64, 8, 64, 64}, {64, 16, 64, 64}, {64, 32, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  bool Pass = true;
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_shl_a7bba6d0\n");
+  return true;
+}
+
+/// (G_SHL:s32 (G_AND:s32 x0 x1) x2) -> (G_SHL:s32 x0 x2)
+/// if trailing(KO(x1)) >= bitwidth - umin(x2)
+/// Proved for widths (x0, x1, x2, t0, root): 8,8,8,8,8; 16,16,16,16,16; 32,32,32,32,32; 64,64,64,64,64.
+inline bool guard_synth_shl_edbd16af(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_shl_edbd16af\n");
+  unsigned W[5];
+  if (!getScalarWidths(MRI, {X0, X1, X2, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][5] = {{8, 8, 8, 8, 8}, {16, 16, 16, 16, 16}, {32, 32, 32, 32, 32}, {64, 64, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!VT)
+    return false;
+  KnownBits K1 = VT->getKnownBits(X1);
+  KnownBits K2 = VT->getKnownBits(X2);
+  bool Pass = coversLowAfterShift(K1.One, K2);
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_shl_edbd16af\n");
+  return true;
+}
+
+/// (G_TRUNC:s8 (G_TRUNC:s16 x0)) -> (G_TRUNC:s8 x0)
+/// if true
+/// Proved for widths (x0, t0, root): 16,8,1; 32,16,1; 32,16,4; 32,16,7; 32,16,8; 32,16,9; 32,16,11; 32,16,12; 32,16,13; 64,16,8; 64,32,8; 64,32,16; 64,55,32.
+inline bool guard_synth_trunc_110bd23a(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_trunc_110bd23a\n");
+  unsigned W[3];
+  if (!getScalarWidths(MRI, {X0, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][3] = {{16, 8, 1}, {32, 16, 1}, {32, 16, 4}, {32, 16, 7}, {32, 16, 8}, {32, 16, 9}, {32, 16, 11}, {32, 16, 12}, {32, 16, 13}, {64, 16, 8}, {64, 32, 8}, {64, 32, 16}, {64, 55, 32}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  bool Pass = true;
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_trunc_110bd23a\n");
+  return true;
+}
+
+/// (G_AND:s32 (G_XOR:s32 x0 x1) (G_XOR:s32 x0 x2)) -> (G_AND:s32 (G_XOR:s32 x0 x1) x2)
+/// if all(KZ(x0) | KO(x1))
+/// Proved for widths (x0, x1, x2, t0, t1, root): 8,8,8,8,8,8; 16,16,16,16,16,16; 32,32,32,32,32,32; 64,64,64,64,64,64.
+inline bool guard_synth_and_5466e589(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0, Register T1) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_and_5466e589\n");
+  unsigned W[6];
+  if (!getScalarWidths(MRI, {X0, X1, X2, T0, T1, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][6] = {{8, 8, 8, 8, 8, 8}, {16, 16, 16, 16, 16, 16}, {32, 32, 32, 32, 32, 32}, {64, 64, 64, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!VT)
+    return false;
+  KnownBits K0 = VT->getKnownBits(X0);
+  KnownBits K1 = VT->getKnownBits(X1);
+  bool Pass = (K0.Zero | K1.One).isAllOnes();
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_5466e589\n");
+  return true;
+}
+
+/// (G_OR:s32 (G_AND:s32 x0 x1) (G_AND:s32 x0 x2)) -> (G_AND:s32 (G_OR:s32 x1 x2) x0)
+/// if true
+/// Proved for widths (x0, x1, x2, t0, t1, root): 8,8,8,8,8,8; 16,16,16,16,16,16; 32,32,32,32,32,32; 64,64,64,64,64,64.
+inline bool guard_synth_or_ecb7e28d(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0, Register T1) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_or_ecb7e28d\n");
+  unsigned W[6];
+  if (!getScalarWidths(MRI, {X0, X1, X2, T0, T1, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][6] = {{8, 8, 8, 8, 8, 8}, {16, 16, 16, 16, 16, 16}, {32, 32, 32, 32, 32, 32}, {64, 64, 64, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  bool Pass = true;
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_ecb7e28d\n");
+  return true;
+}
+
+/// (G_XOR:s32 (G_AND:s32 x0 x1) (G_AND:s32 x0 x2)) -> (G_AND:s32 (G_XOR:s32 x1 x2) x0)
+/// if true
+/// Proved for widths (x0, x1, x2, t0, t1, root): 8,8,8,8,8,8; 16,16,16,16,16,16; 32,32,32,32,32,32; 64,64,64,64,64,64.
+inline bool guard_synth_xor_70267483(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0, Register T1) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_xor_70267483\n");
+  unsigned W[6];
+  if (!getScalarWidths(MRI, {X0, X1, X2, T0, T1, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][6] = {{8, 8, 8, 8, 8, 8}, {16, 16, 16, 16, 16, 16}, {32, 32, 32, 32, 32, 32}, {64, 64, 64, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  bool Pass = true;
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_xor_70267483\n");
+  return true;
+}
+
+/// Records of the rules selected for AArch64, for enabling them as a group.
+[[maybe_unused]] inline constexpr const char *SynthRuleNamesAArch64[] = {
+    "synth_xor_66308b8b",
+    "synth_xor_66308b8b_c1",
+    "synth_xor_66308b8b_c2",
+    "synth_xor_66308b8b_c3",
+    "synth_sub_c1235ab0",
+    "synth_sub_c1235ab0_c1",
+    "synth_sub_c1235ab0_c2",
+    "synth_sub_c1235ab0_c3",
+    "synth_and_83abd1ae",
+    "synth_and_83abd1ae_c1",
+    "synth_lshr_c497647d",
+    "synth_shl_a7bba6d0",
+    "synth_shl_edbd16af",
+    "synth_shl_edbd16af_c1",
+    "synth_or_ecb7e28d",
+    "synth_or_ecb7e28d_c1",
+    "synth_or_ecb7e28d_c2",
+    "synth_or_ecb7e28d_c3",
 };
+
+/// Records of the rules selected for AMDGPU, for enabling them as a group.
+[[maybe_unused]] inline constexpr const char *SynthRuleNamesAMDGPU[] = {
+    "synth_or_d54b7fbe",
+    "synth_or_d54b7fbe_c1",
+    "synth_or_d54b7fbe_c2",
+    "synth_or_d54b7fbe_c3",
+    "synth_or_d54b7fbe_c4",
+    "synth_or_d54b7fbe_c5",
+    "synth_or_d54b7fbe_c6",
+    "synth_or_d54b7fbe_c7",
+    "synth_xor_66308b8b",
+    "synth_xor_66308b8b_c1",
+    "synth_xor_66308b8b_c2",
+    "synth_xor_66308b8b_c3",
+    "synth_or_d7cb9f3c",
+    "synth_or_d7cb9f3c_c1",
+    "synth_or_d7cb9f3c_c2",
+    "synth_or_d7cb9f3c_c3",
+    "synth_sub_c1235ab0",
+    "synth_sub_c1235ab0_c1",
+    "synth_sub_c1235ab0_c2",
+    "synth_sub_c1235ab0_c3",
+    "synth_xor_535a60d9",
+    "synth_xor_535a60d9_c1",
+    "synth_and_b1e9087f",
+    "synth_and_b1e9087f_c1",
+    "synth_and_d05a2340",
+    "synth_and_d05a2340_c1",
+    "synth_lshr_c497647d",
+    "synth_or_9c2e7958",
+    "synth_or_9c2e7958_c1",
+    "synth_or_9c2e7958_c2",
+    "synth_or_9c2e7958_c3",
+    "synth_or_d4ad0f19",
+    "synth_or_d4ad0f19_c1",
+    "synth_or_d4ad0f19_c2",
+    "synth_or_d4ad0f19_c3",
+    "synth_shl_a7bba6d0",
+    "synth_trunc_110bd23a",
+    "synth_and_5466e589",
+    "synth_and_5466e589_c1",
+    "synth_and_5466e589_c2",
+    "synth_and_5466e589_c3",
+    "synth_and_5466e589_c4",
+    "synth_and_5466e589_c5",
+    "synth_and_5466e589_c6",
+    "synth_and_5466e589_c7",
+    "synth_or_ecb7e28d",
+    "synth_or_ecb7e28d_c1",
+    "synth_or_ecb7e28d_c2",
+    "synth_or_ecb7e28d_c3",
+    "synth_xor_70267483",
+    "synth_xor_70267483_c1",
+    "synth_xor_70267483_c2",
+    "synth_xor_70267483_c3",
+};
+
 // clang-format on

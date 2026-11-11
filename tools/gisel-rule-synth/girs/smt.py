@@ -37,10 +37,17 @@ class Z3Backend:
 
     def check(self, formula, want_model_of=None):
         """Checks satisfiability of ``formula``. ``want_model_of`` is a list
-        of z3 bitvector terms whose values are returned for 'sat'."""
-        s = z3.SolverFor('QF_BV')
+        of z3 bitvector terms whose values are returned for 'sat'.
+
+        The formula is copied into a fresh z3 context first. Term numbering
+        in the shared context depends on everything built before, and it
+        shows in the SMT-LIB text and in the models the solver picks; in a
+        fresh context both depend on the formula alone, so a run is
+        reproducible."""
+        ctx = z3.Context()
+        s = z3.SolverFor('QF_BV', ctx=ctx)
         s.set('timeout', self.timeout_ms)
-        s.add(formula)
+        s.add(formula.translate(ctx))
         t0 = time.monotonic()
         r = s.check()
         dt = time.monotonic() - t0
@@ -53,7 +60,8 @@ class Z3Backend:
             m = s.model()
             vals = None
             if want_model_of is not None:
-                vals = [m.eval(t, model_completion=True).as_long()
+                vals = [m.eval(t.translate(ctx),
+                               model_completion=True).as_long()
                         for t in want_model_of]
             return Result('sat', model=vals, smt2=smt2, seconds=dt)
         return Result('unknown', smt2=smt2, seconds=dt)

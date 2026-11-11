@@ -151,28 +151,18 @@ def _sext(v, w):
     return v - (1 << w) if v >> (w - 1) & 1 else v
 
 
-def evaluate(e, vw, env):
-    """Concrete value of ``e`` under variable assignment ``env``.
-
-    Returns None for poison."""
-    if is_var(e):
-        return env[e[1]]
-    if is_lit(e):
-        return lit_value(e[1], e[2])
-    op, w = e[0], e[1]
-    vals = [evaluate(a, vw, env) for a in e[2:]]
-    if any(v is None for v in vals):
+def apply_op(op, w, sw, a, b=None):
+    """Concrete value of one operation of width ``w`` on operand values
+    (``sw`` is the operand width of a cast). None is poison."""
+    if a is None or (b is None and op not in CASTS):
         return None
     m = mask(w)
-    if op in CASTS:
-        sw = width(e[2], vw)
-        v = vals[0]
-        if op == 'G_TRUNC':
-            return v & m
-        if op == 'G_ZEXT':
-            return v
-        return _sext(v, sw) & m
-    a, b = vals
+    if op == 'G_TRUNC':
+        return a & m
+    if op == 'G_ZEXT':
+        return a
+    if op == 'G_SEXT':
+        return _sext(a, sw) & m
     if op == 'G_ADD':
         return (a + b) & m
     if op == 'G_SUB':
@@ -192,6 +182,18 @@ def evaluate(e, vw, env):
     if op == 'G_LSHR':
         return a >> b
     return (_sext(a, w) >> b) & m
+
+
+def evaluate(e, vw, env):
+    """Concrete value of ``e`` under variable assignment ``env``.
+
+    Returns None for poison."""
+    if is_var(e):
+        return env[e[1]]
+    if is_lit(e):
+        return lit_value(e[1], e[2])
+    vals = [evaluate(a, vw, env) for a in e[2:]]
+    return apply_op(e[0], e[1], width(e[2], vw), *vals)
 
 
 def rename(e, mapping):

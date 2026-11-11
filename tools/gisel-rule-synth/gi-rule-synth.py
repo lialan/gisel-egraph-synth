@@ -3,13 +3,18 @@
 GlobalISel combine rules. See README.md.
 
     gi-rule-synth.py extract --llc BUILD/bin/llc -o CORPUS_DIR [--mir F...]
-                             [--ll F...]
-    gi-rule-synth.py synth CORPUS.jsonl... [-o rules.json]
-    gi-rule-synth.py emit [rules.json] [--check]
+                             [--ll F...] [--target T] [--depth N]
+    gi-rule-synth.py synth CORPUS... [--compose-corpus DEEP_CORPUS...]
+    gi-rule-synth.py emit [rules.json] [--check] [--all-candidates]
+    gi-rule-synth.py select --target T [--llc BUILD/bin/llc]
+                            [--corpus CORPUS...] [--compare CMP.json]
+                            [--keep-unmeasured]
+    gi-rule-synth.py report [--target T]
     gi-rule-synth.py recheck [rules.json]
     gi-rule-synth.py all --llc BUILD/bin/llc
 
-`synth` and `recheck` need the z3 Python module; `extract` and `emit` do not.
+`synth` and `recheck` need the z3 and numpy Python modules; the other
+commands do not.
 """
 
 import argparse
@@ -33,24 +38,43 @@ DEFAULT_INC = os.path.join(LLVM, 'include', 'llvm', 'CodeGen', 'GlobalISel',
                            'GISynthGeneratedPredicates.inc')
 SEED_MIR = os.path.join(HERE, 'corpus', 'seed.mir')
 
-LL_FLAGS = ['-mtriple=amdgcn-amd-amdhsa', '-mcpu=gfx1100', '-O2',
-            '-global-isel', '-global-isel-abort=2', '-amdgpu-gisel-synth-corpus']
-
 
 # ------------------------------------------------------------ extract ---
 
-def _extract_one(llc, path, out_dir, kind):
+EXTRACT_TIMEOUT = 120  # seconds per llc run
+
+
+def _extract_one(llc, path, out_dir, kind, target, extra=()):
     h = hashlib.sha256(os.path.abspath(path).encode()).hexdigest()[:10]
     out = os.path.join(out_dir, '%s.%s.jsonl' % (os.path.basename(path), h))
-    if kind == 'mir':
-        cmd = [llc, '-mtriple=amdgcn-amd-amdhsa', '-mcpu=gfx1100',
-               '-run-pass=gisel-synth-corpus', path, '-o', os.devnull]
-    else:
-        cmd = [llc] + LL_FLAGS + [path, '-o', os.devnull]
-    cmd += ['-gisel-synth-corpus-out=' + out]
-    r = subprocess.run(cmd, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
-    if r.returncode != 0:
+    tail = ['-gisel-synth-corpus-out=' + out] + list(extra)
+    run_pass = [llc] + target.triple_flags + ['-run-pass=gisel-synth-corpus']
+    quiet = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                 timeout=EXTRACT_TIMEOUT)
+    try:
+        if kind == 'mir':
+            rc = subprocess.run(run_pass + [path, '-o', os.devnull] + tail,
+                                **quiet).returncode
+        elif target.corpus_flag:
+            rc = subprocess.run([llc] + target.ll_flags +
+                                [target.corpus_flag, path, '-o', os.devnull]
+                                + tail, **quiet).returncode
+        else:
+            # No extractor in this target's pipeline: take the MIR after
+            # its pre-legalizer combiner and run the extractor pass on it.
+            p1 = subprocess.run([llc] + target.ll_flags +
+                                ['-stop-after=' + target.combiner, path,
+                                 '-o', '-'], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL,
+                                timeout=EXTRACT_TIMEOUT)
+            rc = p1.returncode
+            if rc == 0:
+                rc = subprocess.run(run_pass + ['-x', 'mir', '-', '-o',
+                                                os.devnull] + tail,
+                                    input=p1.stdout, **quiet).returncode
+    except subprocess.TimeoutExpired:
+        rc = -1
+    if rc != 0:
         if os.path.exists(out):
             os.remove(out)
         return path, None
@@ -58,15 +82,22 @@ def _extract_one(llc, path, out_dir, kind):
 
 
 def cmd_extract(args):
+    from girs import targets
+    target = targets.get(args.target)
     os.makedirs(args.o, exist_ok=True)
     jobs = [(p, 'mir') for p in args.mir] + [(p, 'll') for p in args.ll]
     if args.ll_list:
         with open(args.ll_list) as f:
             jobs += [(l.strip(), 'll') for l in f if l.strip()]
+    extra = []
+    if args.depth:
+        extra.append('-gisel-synth-corpus-max-depth=%d' % args.depth)
+    if args.max_trees:
+        extra.append('-gisel-synth-corpus-max-trees=%d' % args.max_trees)
     ok = fail = 0
     with concurrent.futures.ThreadPoolExecutor(args.j) as ex:
-        futs = [ex.submit(_extract_one, args.llc, p, args.o, k)
-                for p, k in jobs]
+        futs = [ex.submit(_extract_one, args.llc, p, args.o, k, target,
+                          extra) for p, k in jobs]
         for fu in concurrent.futures.as_completed(futs):
             _, out = fu.result()
             if out:
@@ -86,110 +117,172 @@ def _git_head():
         return 'unknown'
 
 
-def cmd_synth(args):
-    from girs import corpus, discover, smt, synth
-
+def _corpus_files(paths):
     files = []
-    for p in args.corpus:
+    for p in paths:
         if os.path.isdir(p):
             files += sorted(os.path.join(p, f) for f in os.listdir(p)
                             if f.endswith('.jsonl'))
         else:
             files.append(p)
+    return files
+
+
+def _sha(files):
+    h = hashlib.sha256()
+    for f in files:
+        with open(f, 'rb') as fh:
+            h.update(fh.read())
+    return h.hexdigest()
+
+
+def cmd_synth(args):
+    from girs import compose, corpus, discover, ir, smt, synth
+
     t0 = time.monotonic()
+    files = _corpus_files(args.corpus)
     insts, cstats = corpus.load(files)
+    # Most valuable first: occurrences times the instructions at stake.
+    insts.sort(key=lambda i: (-len(i.prov) * ir.cost(i.expr),
+                              ir.to_sexpr(i.expr), i.vw, i.facts))
     if args.max_instances:
         insts = insts[:args.max_instances]
     backend = smt.Z3Backend(timeout_ms=args.timeout_ms)
     dlim = discover.Limits(seed=args.seed)
     slim = synth.SynthLimits(max_atoms=args.max_atoms)
+    ctx = discover.Context(dlim)
     sy = synth.Synthesizer(backend, slim, proof_dir=args.proofs)
-    dstats = {'instances': 0, 'with_candidates': 0, 'candidates': 0,
-              'terms': 0, 'fingerprint_matches': 0, 'smt_refuted': 0,
-              'smt_unknown': 0}
-    equal_cost = {}
-    t_disc = 0.0
+    dstats = {'instances': 0, 'with_candidates': 0, 'candidates': 0}
+    dstats.update(discover.new_stats())
+    seconds = {}
+    t = time.monotonic()
+    t_synth = 0.0
     for inst in insts:
         dstats['instances'] += 1
-        td = time.monotonic()
-        cands, st = discover.discover(inst, backend, dlim)
-        t_disc += time.monotonic() - td
-        for k in ('terms', 'fingerprint_matches', 'smt_refuted',
-                  'smt_unknown'):
+        cands, st = discover.discover(inst, backend, dlim, ctx)
+        for k in st:
             dstats[k] += st[k]
         if cands:
             dstats['with_candidates'] += 1
+        ts = time.monotonic()
         for c in cands:
             dstats['candidates'] += 1
             sy.add(inst, c['tgt'])
-    dropped = sy.finalize()
+        t_synth += time.monotonic() - ts
+    seconds['discovery'] = round(time.monotonic() - t - t_synth, 2)
+    seconds['generalization'] = round(t_synth, 2)
 
-    rules, eq = [], []
-    for rid in sorted(sy.rules):
-        r = dict(sy.rules[rid])
-        r.pop('_pred')
-        for p in r['semantic_status']['proofs']:
-            p.pop('seconds', None)
+    # Composition: verified rules as rewrite steps on deeper corpus trees.
+    cfiles = _corpus_files(args.compose_corpus or [])
+    cinsts, ccstats = [], {}
+    pstats = {'instances': 0, 'proposals': 0, 'proved': 0, 'macro_rules': 0}
+    pstats.update(discover.new_stats())
+    if cfiles:
+        t = time.monotonic()
+        clim = compose.Limits(max_steps=args.compose_steps)
+        seen = {i.key() for i in insts}
+        cinsts, ccstats = corpus.load(cfiles)
+        deep = [i for i in cinsts if i.key() not in seen and
+                ir.cost(i.expr) >= clim.min_cost]
+        # Smallest sources first: a macro rule found on a small source is
+        # a single step on every larger source that contains it.
+        deep.sort(key=lambda i: (ir.cost(i.expr), -len(i.prov),
+                                 ir.to_sexpr(i.expr), i.vw, i.facts))
+        index = compose.Index(sy.rules.values())
+        before = set(sy.rules)
+        for inst in deep:
+            pstats['instances'] += 1
+            envs = discover.instance_envs(inst, dlim, ctx)
+            props = compose.propose(inst, index, envs, clim)
+            if not props:
+                continue
+            pstats['proposals'] += len(props)
+            steps = dict(props)
+            st = discover.new_stats()
+            proved = discover.prove_candidates(inst, [e for e, _ in props],
+                                               backend, dlim, ctx, st, envs)
+            for k in st:
+                pstats[k] += st[k]
+            for c in proved:
+                pstats['proved'] += 1
+                rid = sy.add(inst, c['tgt'], provenance={
+                    'discovery': 'composition',
+                    'composed_from': steps[c['tgt']]})
+                if rid:
+                    index.add(sy.rules[rid])
+        pstats['macro_rules'] = len(set(sy.rules) - before)
+        seconds['composition'] = round(time.monotonic() - t, 2)
+
+    t = time.monotonic()
+    known = {i.key() for i in insts}
+    fstats = sy.finalize(insts + [i for i in cinsts
+                                  if i.key() not in known])
+    seconds['selection_of_disjuncts'] = round(time.monotonic() - t, 2)
+
+    rules = [synth.strip_private(sy.rules[rid]) for rid in sorted(sy.rules)]
+    for r in rules:
         r['support']['examples'].sort(key=lambda e: (e['file'], e['fn'],
                                                      e['root']))
-        if r['cost']['replacement'] >= r['cost']['source']:
-            r['selection'] = 'not_emitted_equal_cost'
-            eq.append(r)
-        elif r['widens_operation']:
-            r['selection'] = 'not_emitted_widens_operation'
-            eq.append(r)
-        else:
-            r['selection'] = 'emitted'
-            rules.append(r)
-    rejected = sorted(sy.rejected.values(),
+    rejected = sorted((synth.strip_private(r)
+                       for r in sy.rejected.values()),
                       key=lambda r: (r['source'], r['replacement']))
-    corpus_hash = hashlib.sha256()
-    for f in files:
-        with open(f, 'rb') as fh:
-            corpus_hash.update(fh.read())
     db = {
-        'format': 'gi-rule-synth-db-v1',
+        'format': 'gi-rule-synth-library-v2',
         'semantic_model': synth.SEMANTIC_MODEL,
         'solver': '%s %s' % (backend.name, backend.version),
         'widths': list(synth.WIDTHS),
         'limits': {'discovery': vars(dlim), 'synthesis': vars(slim),
                    'timeout_ms': args.timeout_ms},
-        'corpus': {'files': len(files), 'sha256': corpus_hash.hexdigest(),
+        'corpus': {'files': len(files), 'sha256': _sha(files),
                    'records': cstats['records'],
                    'distinct_instances': cstats['distinct'],
-                   'searched_instances': len(insts)},
+                   'searched_instances': len(insts),
+                   'compose_files': len(cfiles),
+                   'compose_sha256': _sha(cfiles) if cfiles else None,
+                   'compose_instances': pstats['instances']},
         'rules': rules,
-        'equal_cost': eq,   # verified, not emitted (see 'selection')
         'rejected': rejected,
-        'subsumed': sorted(dropped),
     }
     with open(args.o, 'w') as f:
         json.dump(db, f, indent=1, sort_keys=True)
         f.write('\n')
-    stats = {'llvm_commit': _git_head(), 'seconds_total':
-             round(time.monotonic() - t0, 2),
-             'seconds_discovery': round(t_disc, 2),
+    by_class = {}
+    for r in rules:
+        by_class[r['class']] = by_class.get(r['class'], 0) + 1
+    seconds['total'] = round(time.monotonic() - t0, 2)
+    stats = {'llvm_commit': _git_head(), 'seconds': seconds,
              'solver_calls': backend.calls,
              'solver_seconds': round(backend.seconds, 2),
-             'discovery': dstats, 'synthesis': sy.stats,
+             'discovery': dstats, 'enumeration': ctx.stats(),
+             'composition': pstats, 'synthesis': sy.stats,
+             'disjuncts': fstats, 'rules_by_class': by_class,
              'corpus': cstats}
     with open(args.stats or os.path.splitext(args.o)[0] + '.stats.json',
               'w') as f:
         json.dump(stats, f, indent=1, sort_keys=True)
         f.write('\n')
-    print('synth: %d instances, %d discoveries -> %d emitted rules, %d '
-          'equal-cost, %d rejected (%.1fs, %d solver calls)' %
-          (len(insts), dstats['candidates'], len(rules), len(eq),
+    print('synth: %d instances, %d discoveries, %d compositions -> %d rules '
+          '(%s), %d rejected (%.1fs, %d solver calls)' %
+          (len(insts), dstats['candidates'], pstats['proved'], len(rules),
+           ', '.join('%d %s' % (n, c) for c, n in sorted(by_class.items())),
            len(rejected), time.monotonic() - t0, backend.calls))
 
 
 # --------------------------------------------------------------- emit ---
 
+def _load_db(path):
+    with open(path) as f:
+        db = json.load(f)
+    if db.get('format') != 'gi-rule-synth-library-v2':
+        sys.exit('%s: not a v2 rule library (rerun synth)' % path)
+    return db
+
+
 def cmd_emit(args):
     from girs import emit
-    with open(args.db) as f:
-        db = json.load(f)
-    td, inc = emit.emit(db)
+    db = _load_db(args.db)
+    profiles = emit.load_profiles(args.profiles)
+    td, inc, info = emit.emit(db, profiles, args.all_candidates)
     stale = []
     for path, text in ((args.td, td), (args.inc, inc)):
         if args.check:
@@ -207,86 +300,126 @@ def cmd_emit(args):
             return 1
         print('emit --check: generated files are up to date')
         return 0
-    print('emit: wrote %s and %s' % (args.td, args.inc))
+    print('emit: %d rules, %d records (%d commuted forms before removing '
+          'symmetric duplicates); %s' % (
+              info['rules'], info['records'], info['forms_before_dedup'],
+              ', '.join('%s: %d rules / %d records' % (
+                  t, v['rules'], v['records'])
+                  for t, v in sorted(info['targets'].items()))))
     return 0
 
 
 # ------------------------------------------------------------ recheck ---
 
 def cmd_recheck(args):
-    """Re-proves every rule in the database from its JSON form."""
+    """Re-proves every rule in the library from its JSON form: every
+    disjunct for each of its width schedules, and the emitted disjunction
+    as a whole."""
     from girs import ir, precond, smt, synth
-    with open(args.db) as f:
-        db = json.load(f)
+    db = _load_db(args.db)
     backend = smt.Z3Backend(timeout_ms=args.timeout_ms)
-    bad = 0
-    for r in db['rules'] + db['equal_cost']:
+    bad = n = 0
+    for r in db['rules']:
         src = ir.from_json(r['source_json'])
         tgt = ir.from_json(r['replacement_json'])
-        pred = tuple(precond.atom_from_json(a)
-                     for a in r['precondition_json'])
-        vw = tuple(r['vw'])
-        sched = []
-        for p in r['semantic_status']['proofs']:
-            m = dict(p['width_map'])
-            sched.append((ir.map_widths(src, m), ir.map_widths(tgt, m),
-                          tuple(m[w] for w in vw), m))
         ok = (set(ir.variables(tgt)) <= set(ir.variables(src)) and
               ir.is_linear(tgt))
-        status, _ = synth.verify(sched, pred, backend) if ok else \
-            ('structural', None)
+        status = 'valid' if ok else 'structural'
+        checks = []
+        for d in r['disjuncts'] + r.get('unselected_disjuncts', []):
+            pred = tuple(precond.atom_from_json(a) for a in d['pred_json'])
+            checks.append((d['width_maps'], [pred]))
+        maps = {}
+        for d in r['disjuncts']:
+            for m in d['width_maps']:
+                maps.setdefault(tuple(map(tuple, m)), []).append(tuple(
+                    precond.atom_from_json(a) for a in d['pred_json']))
+        checks += [([list(map(list, m))], dnf) for m, dnf in maps.items()]
+        for wmaps, dnf in checks:
+            if status != 'valid':
+                break
+            n += 1
+            status, _ = synth.verify(synth.rule_schedules(r, wmaps), dnf,
+                                     backend)
         if status != 'valid':
             bad += 1
             print('FAIL %s: %s' % (r['id'], status))
-    n = len(db['rules']) + len(db['equal_cost'])
-    print('recheck: %d/%d rules re-proved' % (n - bad, n))
+    print('recheck: %d/%d rules re-proved (%d proof obligations, %d solver '
+          'calls)' % (len(db['rules']) - bad, len(db['rules']), n,
+                      backend.calls))
     return 1 if bad else 0
 
 
-# ----------------------------------------------------------- feedback ---
+# ------------------------------------------------------------- select ---
 
-def cmd_feedback(args):
-    """Profitability feedback from measured code. A rule is demoted when it
-    fired in at least one file and every file in which it fired got more
-    ISA instructions with the synthesized rules than without. The evidence
-    is kept in the database; run `emit` afterwards."""
-    with open(args.db) as f:
-        db = json.load(f)
-    with open(args.compare) as f:
-        cmp = json.load(f)
-    seen = {}
-    for path, r in sorted(cmp.items()):
-        if r['base']['rc'] or r['synth']['rc']:
-            continue
-        d = r['synth']['insns'] - r['base']['insns']
-        for rid in r['synth'].get('fired', []):
-            seen.setdefault(rid, []).append((path, d))
-    demoted = []
-    keep = []
-    for r in db['rules']:
-        ev = seen.get(r['id'], [])
-        r['measured'] = {'files_fired': len(ev),
-                         'files_better': sum(d < 0 for _, d in ev),
-                         'files_worse': sum(d > 0 for _, d in ev),
-                         'corpus': os.path.basename(args.compare)}
-        if ev and all(d > 0 for _, d in ev):
-            r['selection'] = 'not_emitted_measured_regression'
-            r['measured']['evidence'] = [os.path.basename(p) + ': %+d' % d
-                                         for p, d in ev]
-            demoted.append(r)
-        else:
-            keep.append(r)
-    db['rules'] = keep
-    db['equal_cost'] = sorted(db['equal_cost'] + demoted,
-                              key=lambda r: r['id'])
-    with open(args.db, 'w') as f:
-        json.dump(db, f, indent=1, sort_keys=True)
+def cmd_select(args):
+    """Writes the target profile: coverage, novelty, redundancy, measured
+    effect, ranking and the selection of emitted rules."""
+    from girs import corpus, select, targets
+    target = targets.get(args.target)
+    db = _load_db(args.db)
+    insts = None
+    if args.corpus:
+        insts, _ = corpus.load(_corpus_files(args.corpus))
+    compare = None
+    if args.compare:
+        with open(args.compare) as f:
+            compare = json.load(f)
+    prof = select.select(db, target, insts, args.llc, compare, args.j,
+                         keep_unmeasured=args.keep_unmeasured)
+    prof['evidence']['corpus_files'] = len(_corpus_files(args.corpus or []))
+    prof['evidence']['compare'] = os.path.basename(args.compare) \
+        if args.compare else None
+    out = args.o or target.profile_path
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, 'w') as f:
+        json.dump(prof, f, indent=1, sort_keys=True)
         f.write('\n')
-    for r in demoted:
-        print('demoted %s: %s -> %s (%s)' % (r['id'], r['source'],
-                                             r['replacement'], ', '.join(
-                                                 r['measured']['evidence'])))
-    print('feedback: %d rules kept, %d demoted' % (len(keep), len(demoted)))
+    print('select %s: %s -> %s' % (target.name, ', '.join(
+        '%d %s' % (n, k) for k, n in prof['summary'].items()), out))
+    ss = prof.get('selected_set')
+    if ss:
+        print('selected set on the measured files: %+d instructions, %d '
+              'files better, %d worse, %d applications, %d guard '
+              'evaluations' % (ss['insns_delta'], ss['files_better'],
+                               ss['files_worse'], ss['applications'],
+                               ss['guard_evaluations']))
+
+
+# ------------------------------------------------------------- report ---
+
+def cmd_report(args):
+    """Prints the rules of a target profile, best first."""
+    from girs import targets
+    target = targets.get(args.target)
+    db = _load_db(args.db)
+    with open(args.profile or target.profile_path) as f:
+        prof = json.load(f)
+    by_id = {r['id']: r for r in db['rules']}
+    rows = sorted(prof['rules'].items(),
+                  key=lambda kv: (kv[1].get('rank', 10 ** 6),
+                                  kv[1]['selection'], kv[0]))
+    print('%s: %s' % (target.name, ', '.join(
+        '%d %s' % (n, k) for k, n in prof['summary'].items())))
+    print('%-4s %-28s %-9s %6s %6s %6s %6s %5s %4s %5s  %s' % (
+        'rank', 'selection', 'novelty', 'match', 'pass', 'fired', 'insns',
+        'recs', 'pat', 'guard', 'rule'))
+    for rid, p in rows:
+        r = by_id.get(rid)
+        if r is None:
+            continue
+        c = p.get('corpus', {})
+        o = p.get('online', {})
+        m = p.get('in_set') or p.get('marginal', {})
+        print('%-4s %-28s %-9s %6s %6s %6s %6s %5s %4s %5s  %s: %s -> %s  '
+              'if %s' % (
+                  p.get('rank', '-'), p['selection'],
+                  p.get('novelty', {}).get('class', '-'),
+                  c.get('match_occurrences', '-'),
+                  c.get('pass_occurrences', '-'), o.get('fired', '-'),
+                  m.get('insns', '-'), p.get('records', '-'),
+                  p.get('pattern_nodes', '-'), p.get('guard_cost', '-'),
+                  rid, r['source'], r['replacement'], r['precondition']))
 
 
 # ---------------------------------------------------------------- all ---
@@ -294,14 +427,17 @@ def cmd_feedback(args):
 def cmd_all(args):
     corpus_dir = args.corpus_dir
     a = argparse.Namespace(llc=args.llc, o=corpus_dir, mir=[SEED_MIR],
-                           ll=args.ll, ll_list=args.ll_list, j=args.j)
+                           ll=args.ll, ll_list=args.ll_list, j=args.j,
+                           target='AMDGPU', depth=None, max_trees=None)
     cmd_extract(a)
     cmd_synth(argparse.Namespace(
         corpus=[corpus_dir], o=args.db, proofs=args.proofs, stats=None,
         timeout_ms=args.timeout_ms, seed=0, max_atoms=2,
-        max_instances=args.max_instances))
+        max_instances=args.max_instances, compose_corpus=[],
+        compose_steps=3))
     return cmd_emit(argparse.Namespace(db=args.db, td=DEFAULT_TD,
-                                       inc=DEFAULT_INC, check=False))
+                                       inc=DEFAULT_INC, check=False,
+                                       profiles=None, all_candidates=False))
 
 
 def main():
@@ -316,6 +452,11 @@ def main():
     p.add_argument('--ll', nargs='*', default=[])
     p.add_argument('--ll-list', help='file with one .ll path per line')
     p.add_argument('-j', type=int, default=os.cpu_count())
+    p.add_argument('--depth', type=int,
+                   help='maximum tree depth (extractor default: 2)')
+    p.add_argument('--max-trees', type=int,
+                   help='maximum trees per root (extractor default: 16)')
+    p.add_argument('--target', default='AMDGPU')
     p.set_defaults(fn=cmd_extract)
 
     p = sub.add_parser('synth', help='discover, generalize and verify')
@@ -327,6 +468,10 @@ def main():
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--max-atoms', type=int, default=2)
     p.add_argument('--max-instances', type=int, default=0)
+    p.add_argument('--compose-corpus', nargs='*', default=[],
+                   help='deeper corpus (extract --depth 3) for rule '
+                   'composition and coverage')
+    p.add_argument('--compose-steps', type=int, default=3)
     p.set_defaults(fn=cmd_synth)
 
     p = sub.add_parser('emit', help='generate TableGen and C++')
@@ -335,6 +480,11 @@ def main():
     p.add_argument('--inc', default=DEFAULT_INC)
     p.add_argument('--check', action='store_true',
                    help='fail if the generated files are stale')
+    p.add_argument('--profiles', help='directory with target profiles '
+                   '(default: targets/)')
+    p.add_argument('--all-candidates', action='store_true',
+                   help='ignore the profiles and emit every candidate for '
+                   'every target (the build `select` measures)')
     p.set_defaults(fn=cmd_emit)
 
     p = sub.add_parser('recheck', help='re-prove every rule in the database')
@@ -342,12 +492,26 @@ def main():
     p.add_argument('--timeout-ms', type=int, default=60000)
     p.set_defaults(fn=cmd_recheck)
 
-    p = sub.add_parser('feedback',
-                       help='demote rules measured to regress (eval/compare.py'
-                       ' output)')
-    p.add_argument('compare', help='JSON written by eval/compare.py')
+    p = sub.add_parser('select', help='write a target profile: coverage, '
+                       'novelty, ranking and selection')
+    p.add_argument('--target', required=True)
     p.add_argument('--db', default=DEFAULT_DB)
-    p.set_defaults(fn=cmd_feedback)
+    p.add_argument('--llc', help='llc built with `emit --all-candidates`')
+    p.add_argument('--corpus', nargs='*', default=[])
+    p.add_argument('--compare', help='JSON written by eval/compare.py for '
+                   'the same llc')
+    p.add_argument('--keep-unmeasured', action='store_true',
+                   help='keep rules that query known bits but remove no '
+                   'instruction on the measured files')
+    p.add_argument('-o', help='profile file (default: targets/<T>.json)')
+    p.add_argument('-j', type=int, default=os.cpu_count())
+    p.set_defaults(fn=cmd_select)
+
+    p = sub.add_parser('report', help='print the ranked rules of a target')
+    p.add_argument('--target', default='AMDGPU')
+    p.add_argument('--db', default=DEFAULT_DB)
+    p.add_argument('--profile')
+    p.set_defaults(fn=cmd_report)
 
     p = sub.add_parser('all', help='extract (seed corpus) + synth + emit')
     p.add_argument('--llc', required=True)

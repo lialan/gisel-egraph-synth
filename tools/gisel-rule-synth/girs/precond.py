@@ -20,6 +20,12 @@ Atoms:
     ('hiones', t, j)   t covers bits [W(j), W(t))      cross-width masks
     ('lead', t, j)     t covers its top umax(j) bits   shifted-out bits
     ('trail', t, j)    t covers its low umax(j) bits   shifted-out bits
+    ('leadc', t, j)    t covers its top W - umin(j) bits   bits kept by lshr
+    ('trailc', t, j)   t covers its low W - umin(j) bits   bits kept by shl
+    ('ugew', i, j)     umin(i) >=u bitwidth(j)         shifted out of j
+
+A precondition of a rule is a *disjunction* of such conjunctions (DNF). Each
+disjunct is proved sufficient on its own, so the disjunction is sufficient.
 
 ``j`` may be 'r', meaning the bit width of the source root.
 
@@ -30,8 +36,8 @@ from the C++ check at an edge case, the C++ check is the stronger one, so a
 guard that passes at run time implies the verified condition.
 
 umax / umin are the bounds of ConstantRange::fromKnownBits (unsigned): umax =
-~Zero, umin = One. Wider grammars (disjunctions, signed ranges, sign bits)
-can be added by extending ATOM_KINDS together with eval / z3 / C++ rendering.
+~Zero, umin = One. Wider grammars (signed ranges, sign bits) can be added by
+extending the atoms together with their eval / z3 / C++ rendering.
 """
 
 import itertools
@@ -75,11 +81,24 @@ def atom_str(a):
         return 'leading(%s) >= umax(x%d)' % (term_str(a[1]), a[2])
     if k == 'trail':
         return 'trailing(%s) >= umax(x%d)' % (term_str(a[1]), a[2])
+    if k == 'leadc':
+        return 'leading(%s) >= bitwidth - umin(x%d)' % (term_str(a[1]), a[2])
+    if k == 'trailc':
+        return 'trailing(%s) >= bitwidth - umin(x%d)' % (term_str(a[1]),
+                                                         a[2])
+    if k == 'ugew':
+        return 'umin(x%d) >=u bitwidth(%s)' % (a[1], _vstr(a[2]))
     raise ValueError(a)
 
 
 def pred_str(p):
     return ' && '.join(atom_str(a) for a in p) if p else 'true'
+
+
+def dnf_str(d):
+    if len(d) == 1:
+        return pred_str(d[0])
+    return ' || '.join('(%s)' % pred_str(p) for p in d)
 
 
 def _w(j, vw, rw):
@@ -125,6 +144,15 @@ def enumerate_atoms(vw, rw=None):
             if j != t[1]:
                 out.append(('lead', t, j))
                 out.append(('trail', t, j))
+    for t in ts:
+        for j in range(n):
+            if j != t[1]:
+                out.append(('leadc', t, j))
+                out.append(('trailc', t, j))
+    for i in range(n):
+        for j in js:
+            if j != i and _w(j, vw, rw) < vw[i]:
+                out.append(('ugew', i, j))
     return out
 
 
@@ -185,6 +213,14 @@ def eval_atom(a, facts, vw, rw=None):
         umax = ~facts[j][0] & ir.mask(vw[j])
         n = _clo(t, wt) if k == 'lead' else _cro(t, wt)
         return n >= umax
+    if k in ('leadc', 'trailc'):
+        wt = vw[a[1][1]]
+        t = _cterm(a[1], facts)
+        need = max(0, wt - facts[a[2]][1])
+        n = _clo(t, wt) if k == 'leadc' else _cro(t, wt)
+        return n >= need
+    if k == 'ugew':
+        return facts[a[1]][1] >= _w(a[2], vw, rw)
     raise ValueError(a)
 
 
@@ -254,7 +290,31 @@ def z3_atom(a, enc):
         # u > wt can never be covered (the C++ check fails as well).
         return z3.And((~t & need) == 0,
                       z3.ULE(u, z3.BitVecVal(wt, w)))
+    if k in ('leadc', 'trailc'):
+        t = _zterm(a[1], enc)
+        u = enc.ko[a[2]]
+        t, u = _zext_to(t, u)
+        wt = vw[a[1][1]]
+        w = t.size()
+        ones = z3.BitVecVal(ir.mask(wt), w)
+        # A shift by u >= w gives 0 in SMT-LIB, so nothing is needed then.
+        if k == 'leadc':
+            need = ones & (ones << u)
+        else:
+            need = z3.If(z3.ULT(u, z3.BitVecVal(wt, w)),
+                         z3.LShR(ones, u), z3.BitVecVal(0, w))
+        return (~t & need) == 0
+    if k == 'ugew':
+        umin = enc.ko[a[1]]
+        wj = _w(a[2], vw, enc.rw)
+        if wj >= (1 << umin.size()):
+            return z3.BoolVal(False)
+        return z3.UGE(umin, z3.BitVecVal(wj, umin.size()))
     raise ValueError(a)
+
+
+def z3_dnf(d, enc):
+    return z3.Or([z3_pred(p, enc) for p in d])
 
 
 def z3_pred(p, enc):
@@ -295,6 +355,12 @@ def cpp_atom(a):
     if k == 'trail':
         return 'K%d.getMaxValue().ule(%s.countr_one())' % (a[2],
                                                           _cpp_term(a[1]))
+    if k == 'leadc':
+        return 'coversHighAfterShift(%s, K%d)' % (_cpp_term(a[1]), a[2])
+    if k == 'trailc':
+        return 'coversLowAfterShift(%s, K%d)' % (_cpp_term(a[1]), a[2])
+    if k == 'ugew':
+        return 'K%d.getMinValue().uge(%s)' % (a[1], _cpp_w(a[2]))
     raise ValueError(a)
 
 
@@ -302,9 +368,38 @@ def _cpp_w(j):
     return 'WRoot' if j == 'r' else 'W%d' % j
 
 
+_TERM_VAR = ('lowones', 'hiones', 'lead', 'trail', 'leadc', 'trailc')
+
+
+def atom_vars(a):
+    """Variables whose known bits the atom reads."""
+    k = a[0]
+    if k in ('all', 'msb'):
+        return [a[1][1]]
+    if k == 'all2':
+        return [a[1][1], a[2][1]]
+    if k in ('lowones', 'hiones'):
+        return [a[1][1]]
+    if k in ('lead', 'trail', 'leadc', 'trailc'):
+        return [a[1][1], a[2]]
+    if k == 'ugew':
+        return [a[1]]
+    return [a[1], a[2]]
+
+
+def pred_vars(p):
+    return sorted({i for a in p for i in atom_vars(a)})
+
+
+def pred_cost(p, have=()):
+    """Run-time cost estimate of a conjunction: a GISelValueTracking query
+    per variable not in ``have`` dominates, an atom is a few APInt ops."""
+    return 4 * len(set(pred_vars(p)) - set(have)) + len(p)
+
+
 def atom_to_json(a):
     k = a[0]
-    if k in ('lowones', 'hiones', 'lead', 'trail'):
+    if k in _TERM_VAR:
         return [k, list(a[1]), a[2]]
     if k in ('all', 'msb'):
         return [k, list(a[1])]
@@ -315,7 +410,7 @@ def atom_to_json(a):
 
 def atom_from_json(j):
     k = j[0]
-    if k in ('lowones', 'hiones', 'lead', 'trail'):
+    if k in _TERM_VAR:
         return (k, tuple(j[1]), j[2])
     if k in ('all', 'msb'):
         return (k, tuple(j[1]))
@@ -326,7 +421,7 @@ def atom_from_json(j):
 
 def rename_atom(a, m):
     k = a[0]
-    if k in ('lowones', 'hiones', 'lead', 'trail'):
+    if k in _TERM_VAR:
         return (k, (a[1][0], m[a[1][1]]), a[2] if a[2] == 'r' else m[a[2]])
     if k in ('all', 'msb'):
         return (k, (a[1][0], m[a[1][1]]))
@@ -334,6 +429,8 @@ def rename_atom(a, m):
         t1 = (a[1][0], m[a[1][1]])
         t2 = (a[2][0], m[a[2][1]])
         return (k,) + tuple(sorted([t1, t2], key=lambda t: (t[1], t[0])))
+    if k == 'ugew':
+        return (k, m[a[1]], a[2] if a[2] == 'r' else m[a[2]])
     return (k, m[a[1]], m[a[2]])
 
 
@@ -341,7 +438,25 @@ def canonical_pred(p):
     return tuple(sorted(set(p), key=repr))
 
 
+def canonical_dnf(d):
+    return tuple(sorted({canonical_pred(p) for p in d}, key=repr))
+
+
+def eval_dnf(d, facts, vw, rw=None):
+    return any(eval_pred(p, facts, vw, rw) for p in d)
+
+
 # ------------------------------------------------------ implication ---
+
+def implies_dnf(p, dnf, vw, backend, rw=None):
+    """True iff, for every consistent fact assignment, the conjunction p
+    implies the disjunction ``dnf`` (a list of conjunctions)."""
+    from .smt import Encoder
+    enc = Encoder(vw, rw)
+    f = z3.And(enc.fact_consistency(), z3_pred(p, enc),
+               z3.Not(z3_dnf(dnf, enc)))
+    return backend.check(f).status == 'unsat'
+
 
 def implies(p, q, vw, backend, rw=None):
     """True iff, for every consistent fact assignment, p => q (facts only,

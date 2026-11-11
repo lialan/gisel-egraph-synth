@@ -1,67 +1,42 @@
 #!/usr/bin/env python3
-"""Compiles a list of .ll files for AMDGPU three ways and compares ISA:
+"""Compiles a list of .ll files for one target several ways and compares
+the output:
 
   base    plain GlobalISel (-global-isel)
-  synth   + -amdgpu-gisel-synth-combines (the generated rules)
-  egraph  + -amdgpu-gisel-egraph -gisel-egraph-mode=rewrite (the run-time
-          equality-saturation combiner, used here as an oracle for how much
-          a dynamic search finds on the same code)
+  synth   + the target's -*-gisel-synth-combines flag (the generated rules)
+  egraph  AMDGPU only: + -amdgpu-gisel-egraph -gisel-egraph-mode=rewrite
+          (the run-time equality-saturation combiner, used here as an oracle
+          for how much a dynamic search finds on the same code)
 
-All runs use -verify-machineinstrs. Per file it records the ISA instruction
-count (lines starting with s_/v_ in the assembly), the .s size in bytes, and
-SGPR/VGPR counts from the kernel metadata, plus per-mode user CPU time.
+All runs use -verify-machineinstrs. Per file it records the instruction
+count of the assembly, the .s size in bytes, per-mode user CPU time and, for
+the synth mode of an assertions build, how often each rule matched and how
+often it fired. The JSON is the input of `gi-rule-synth.py select --compare`.
 
   compare.py --llc BUILD/bin/llc --list FILES.txt -o OUT.json [-j N]
+             [--target AMDGPU|AArch64] [--modes base,synth]
 """
 
 import argparse
 import concurrent.futures
 import json
 import os
-import re
-import resource
-import subprocess
-import tempfile
+import sys
 
-BASE = ['-mtriple=amdgcn-amd-amdhsa', '-mcpu=gfx1100', '-O2', '-global-isel',
-        '-global-isel-abort=2', '-verify-machineinstrs']
-MODES = {
-    'base': [],
-    # -debug-only needs an assertions build; it lists the rules that fired.
-    'synth': ['-amdgpu-gisel-synth-combines', '-debug-only=gisel-synth'],
-    'egraph': ['-amdgpu-gisel-egraph', '-gisel-egraph-mode=rewrite'],
-}
-INSN = re.compile(r'^\s+[sv]_[a-z0-9_]+', re.M)
-SGPR = re.compile(r'^\s+\.sgpr_count:\s+(\d+)', re.M)
-VGPR = re.compile(r'^\s+\.vgpr_count:\s+(\d+)', re.M)
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+
+from girs import measure, targets  # noqa: E402
+
+EGRAPH = ['-amdgpu-gisel-egraph', '-gisel-egraph-mode=rewrite']
 
 
-def run(llc, path, mode, extra):
-    with tempfile.NamedTemporaryFile(suffix='.s', delete=False) as tf:
-        out = tf.name
-    cmd = [llc] + BASE + MODES[mode] + extra + [path, '-o', out]
-    r0 = resource.getrusage(resource.RUSAGE_CHILDREN)
-    p = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                       text=True)
-    r1 = resource.getrusage(resource.RUSAGE_CHILDREN)
-    res = {'rc': p.returncode}
-    fired = re.findall(r'gisel-synth: guard passed: (\w+)', p.stderr)
-    if fired:
-        res['fired'] = sorted(set(fired))
-    if p.returncode == 0:
-        s = open(out).read()
-        res.update(insns=len(INSN.findall(s)), bytes=len(s),
-                   sgpr=sum(map(int, SGPR.findall(s))),
-                   vgpr=sum(map(int, VGPR.findall(s))))
-    else:
-        res['err'] = p.stderr[-400:]
-    os.remove(out)
-    res['user'] = r1.ru_utime - r0.ru_utime  # approximate under threads
-    return res
-
-
-def one(llc, path, modes, extra):
-    return path, {m: run(llc, path, m, extra) for m in modes}
+def run(llc, target, path, mode, extra, count_rules):
+    if mode == 'synth':
+        return measure.compile_ll(llc, target, path, extra, synth=True,
+                                  count_rules=count_rules)
+    flags = list(extra) + (EGRAPH if mode == 'egraph' else [])
+    return measure.compile_ll(llc, target, path, flags)
 
 
 def main():
@@ -70,15 +45,24 @@ def main():
     ap.add_argument('--list', required=True)
     ap.add_argument('-o', required=True)
     ap.add_argument('-j', type=int, default=os.cpu_count())
+    ap.add_argument('--target', default='AMDGPU')
     ap.add_argument('--modes', default='base,synth,egraph')
     ap.add_argument('--extra', default='')
+    ap.add_argument('--no-rule-counters', action='store_true',
+                    help='do not pass -debug-only=gisel-synth (for timing, '
+                    'or for a build without assertions)')
     a = ap.parse_args()
+    target = targets.get(a.target)
     files = [l.strip() for l in open(a.list) if l.strip()]
     modes = a.modes.split(',')
     extra = a.extra.split() if a.extra else []
     res = {}
+
+    def one(path):
+        return path, {m: run(a.llc, target, path, m, extra,
+                             not a.no_rule_counters) for m in modes}
     with concurrent.futures.ThreadPoolExecutor(a.j) as ex:
-        for path, r in ex.map(lambda f: one(a.llc, f, modes, extra), files):
+        for path, r in ex.map(one, files):
             res[path] = r
     with open(a.o, 'w') as f:
         json.dump(res, f, indent=0, sort_keys=True)
@@ -104,6 +88,13 @@ def summarize(res, modes):
         print('%-7s crash=%d insns %d -> %d (%+d), files better=%d worse=%d,'
               ' asm bytes %+d' % (m, len(crash), b, n, n - b, better, worse,
                                   nb - bb))
+        if m == 'synth':
+            fired = {}
+            for p in both:
+                for rid, k in res[p][m].get('passed', {}).items():
+                    fired[rid] = fired.get(rid, 0) + k
+            print('        rules fired: %d distinct, %d applications' %
+                  (len(fired), sum(fired.values())))
 
 
 if __name__ == '__main__':

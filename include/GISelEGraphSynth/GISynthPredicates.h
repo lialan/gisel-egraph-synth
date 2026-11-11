@@ -73,6 +73,20 @@ inline bool umaxULTWidth(const KnownBits &A, unsigned Width) {
   return A.getMaxValue().ult(Width);
 }
 
+/// True if \p Mask has ones in every bit that survives a logical right shift
+/// by \p Amt: bits [umin(Amt), width).
+inline bool coversHighAfterShift(const APInt &Mask, const KnownBits &Amt) {
+  unsigned W = Mask.getBitWidth();
+  return Mask.countl_one() >= W - Amt.getMinValue().getLimitedValue(W);
+}
+
+/// True if \p Mask has ones in every bit that survives a left shift by
+/// \p Amt: bits [0, width - umin(Amt)).
+inline bool coversLowAfterShift(const APInt &Mask, const KnownBits &Amt) {
+  unsigned W = Mask.getBitWidth();
+  return Mask.countr_one() >= W - Amt.getMinValue().getLimitedValue(W);
+}
+
 #include "llvm/CodeGen/GlobalISel/GISynthGeneratedPredicates.inc"
 
 } // end namespace gisynth
