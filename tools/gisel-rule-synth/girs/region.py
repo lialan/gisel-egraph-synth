@@ -312,18 +312,11 @@ def structural(rule):
     """True if the replacements of a rule with a region have the form
     that the proof needs: only inputs of the source, each read once."""
     pairs = pairs_of(rule)
-    have = set(ir.variables(pairs[0][0]))
+    # The inputs of the tree, and the ones that only another root reads
+    # (sibling.py, which has the conditions on those roots).
+    have = set(ir.variables(pairs[0][0])) | \
+        set(rule['region'].get('sibling_vars', ()))
     tgts = [t for _, t in pairs]
-    # A second root is one instruction over inputs of the first, no root
-    # has a G_FREEZE, and a second root that is replaced has one result.
-    for s in rule['region'].get('siblings', ()):
-        b = ir.from_json(s['source_json'])
-        if not (ir.is_op(b) and all(ir.is_var(x) for x in b[2:]) and
-                set(ir.variables(b)) <= have and
-                not ir.freeze_terms(b) and
-                not ir.freeze_terms(pairs[0][0]) and
-                (s['stays'] or ops.parse(b[0])[0].results == 1)):
-            return False
     return all(set(ir.variables(t)) <= have for t in tgts) and \
         all(c <= 1 for c in joint_reads(tgts).values())
 
@@ -405,6 +398,9 @@ def _make(sy, base, outs, proved, inst):
             continue
         saved = synth.save_proofs(proofs, sy.proof_dir)
         rule['disjuncts'].append({
+            # The example of the base rule: the source tree is the same.
+            **({'example': copy.deepcopy(d['example'])}
+               if 'example' in d else {}),
             'pred': d['pred'], 'pred_json': copy.deepcopy(d['pred_json']),
             'width_maps': [p['width_map'] for p in saved],
             'proofs': saved,

@@ -123,6 +123,10 @@ def build_mir(rule, example, name, target):
     whose bits are all known becomes a G_CONSTANT)."""
     src = ir.from_json(rule['source_json'])
     m = dict(zip(_pattern_widths(rule), _example_widths(rule, example)))
+    region = rule.get('region') or {}
+    if region:
+        # The other roots can have widths that the tree does not have.
+        m.update(_example_map(rule, example))
     src = ir.map_widths(src, m)
     vw = example['vw']
     facts = [(int(f[0], 16), int(f[1], 16)) for f in example['facts']]
@@ -148,6 +152,9 @@ def build_mir(rule, example, name, target):
         xs.append(r)
 
     several = {}
+    # The register of each node of the tree: the root is the node 0, and a
+    # node below it has its pre-order index plus 1 (ir.interior_nodes).
+    node_reg = []
 
     def walk(e):
         if ir.is_var(e):
@@ -155,8 +162,16 @@ def build_mir(rule, example, name, target):
         if not ir.is_op(e):
             return fn.emit(e[1], 'G_CONSTANT i%d %d' % (e[1],
                                                        ir.leaf_value(e)))
+        k = len(node_reg)
+        node_reg.append(None)
+        node_reg[k] = instr(e, [walk(a) for a in e[2:]])
+        return node_reg[k]
+
+    def instr(e, args):
+        """The instruction of the root operator of ``e`` with the operand
+        registers ``args``. Returns the register of the result that ``e``
+        is."""
         info, attr, res = ops.parse(e[0])
-        args = [walk(a) for a in e[2:]]
         # The attribute of the operator is an operand of the instruction.
         if info.attr == 'pred':
             text = '%s intpred(%s), %s' % (info.name, attr, ', '.join(args))
@@ -179,21 +194,43 @@ def build_mir(rule, example, name, target):
         if text not in several:
             several[text] = fn.emit_results(ws, text)
         return several[text][res]
-    root = walk(src)
-    w = src[1]
-    if w < 32:
-        root = fn.emit(32, 'G_ANYEXT %s' % root)
-        w = 32
-    elif 32 < w < 64:
-        root = fn.emit(64, 'G_ANYEXT %s' % root)
-        w = 64
-    out = target.arg32(0) if w == 32 else target.arg64(0)
+    # The outputs of the function: the root, and for a rule with a region
+    # each other value that has a user outside the region.
+    outs = [(walk(src), src[1])]
+    for o in region.get('outputs', ())[1:]:
+        outs.append((node_reg[o['node']],
+                     ir.interior_nodes(src)[o['node'] - 1][1]))
+    sib_reg = []
+    for sib in region.get('siblings', ()):
+        # A second root: one instruction that reads values of the region.
+        b = ir.map_widths(ir.from_json(sib['source_json']), m)
+        args = [xs[x['var']] if 'var' in x else
+                node_reg[x['node']] if 'node' in x else
+                sib_reg[x['sibling']] for x in _sibling_operands(rule, sib)]
+        sib_reg.append(instr(b, args))
+        outs.append((sib_reg[-1], b[1]))
+    copies, slot = [], 0
+    for r, w in outs:
+        if w < 32:
+            r = fn.emit(32, 'G_ANYEXT %s' % r)
+            w = 32
+        elif 32 < w < 64:
+            r = fn.emit(64, 'G_ANYEXT %s' % r)
+            w = 64
+        if w == 32:
+            phys = target.arg32(slot)
+            slot += 1
+        else:
+            phys = target.arg64(slot)
+            slot += 2 if target.name == 'AMDGPU' else 1
+        copies.append((phys, r))
     body = ['---', 'name: %s' % name, 'tracksRegLiveness: true', 'body: |',
             '  bb.0:']
     if live:
         body.append('    liveins: ' + ', '.join(live))
-    body += fn.lines + ['    %s = COPY %s' % (out, root),
-                        '    ' + target.ret(out), '...']
+    body += fn.lines + ['    %s = COPY %s' % c for c in copies] + [
+        '    ' + target.ret(', implicit '.join(p for p, _ in copies)),
+        '...']
     return '\n'.join(body)
 
 
@@ -216,6 +253,29 @@ def _example_widths(rule, example):
     return ws
 
 
+def _example_map(rule, example):
+    """The proved width map (pattern width -> width) that agrees with the
+    variable widths of the example, or {}."""
+    for d in rule['disjuncts'] + rule.get('unselected_disjuncts', []):
+        for wm in d['width_maps']:
+            wm = dict(wm)
+            if [wm[w] for w in rule['vw']] == list(example['vw']):
+                return wm
+    return {}
+
+
+def _sibling_operands(rule, sib):
+    """The value that each operand of the sibling ``sib`` of ``rule`` is:
+    {'var': i}, {'node': k} or {'sibling': j} (sibling.operand_refs)."""
+    if 'operands' in sib:
+        return sib['operands']
+    from . import sibling
+    a = ir.from_json(rule['source_json'])
+    sibs, _ = sibling.rule_siblings(rule)
+    j = rule['region']['siblings'].index(sib)
+    return [sibling._ref_json(x) for x in sibling.operand_refs(a, sibs)[j]]
+
+
 def count(mir_out):
     """Generic instructions other than constants, per function. The
     instructions that set up the inputs are the same in every run."""
@@ -224,7 +284,9 @@ def count(mir_out):
         if line.startswith('name:'):
             name = line.split()[1]
             res[name] = 0
-        m = re.match(r'\s+%\d+:_\(\S+\) = (G_\w+)', line)
+        # An instruction with several results is one instruction.
+        m = re.match(r'\s+%\d+:_\(\S+\)(?:, %\d+:_\(\S+\))* = (G_\w+)',
+                     line)
         if m and name and m.group(1) not in ('G_CONSTANT',
                                              'G_IMPLICIT_DEF'):
             res[name] += 1
@@ -352,7 +414,9 @@ def compile_failures(llc, target, compare, rules, jobs, log=print):
         that, while the file fails), then each one is enabled again if
         the file still compiles."""
         off = []
-        for _ in range(4):
+        # Each round adds at least one rule, so the number of rules is the
+        # limit: many rules with the same defect fail one after the other.
+        for _ in range(len(by_id)):
             names = [n for i in off for n in emit.record_names(by_id[i])]
             more = sorted({of_name[n] for n in measure.failing_rules(
                 llc, target, path, disabled=names, every=True)

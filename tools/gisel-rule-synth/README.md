@@ -267,57 +267,98 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
      The replacements read each input once in all.
    - *Generated code*: the guard also checks that each replaced value has
      another user, is in the block of the root, and that no input of the
-     replacement is defined after the first of them (`isJointRegion`). The
-     apply function builds the replacement before that first value and
-     erases the old instructions.
+     replacement is defined after the first of them (`isJointRegion`). It
+     puts that position in the plan of the rule (`RegionPlan`, the match
+     data of the combine rule). The apply function builds the replacement
+     at the position of the plan and erases the old instructions. Each
+     instruction that the rule replaces first gives its results new
+     registers (`releaseResults`), so that an old register has only the
+     definition of the new instruction when a later new instruction reads
+     it (the builder reads that definition when it folds constants).
    - *Limits*: one basic block; the other outputs are below the root (step
-     6 has two roots that share only operands); a value that occurs twice
-     in the source and a result of an instruction with several results are
+     6 has roots that are not in one tree); a value that occurs twice in
+     the source and a result of an instruction with several results are
      not replaced; no computed constants.
 
-6. **Regions with two roots** (`sibling.py`, `synth --siblings`). The
-   second root (the sibling) is not in the tree of the first: it is one
-   instruction of the same block that reads only inputs of that tree.
+6. **Regions with several roots** (`sibling.py`, `synth --siblings`). The
+   other roots (the siblings, at most two) are not in the tree of the
+   primary root: each is one instruction of the same block that reads a
+   value of the region.
 
    ```
-   %d = G_SUB %x, %y                ; the sibling
+   %d = G_SUB %x, %y                ; a sibling
+   %l = G_ICMP ult, %x, %y          ; a sibling
    %c = G_ICMP uge, %x, %y
    %r = G_SELECT %c, %a, %b         ; the primary root
    ->
-   %d, %o = G_USUBO %x, %y
-   %r = G_SELECT %o, %b, %a
+   %d, %l = G_USUBO %x, %y
+   %r = G_SELECT %l, %b, %a
    ```
 
-   - *Pairs*: the corpus has one tree per root. `sibling.load_pairs` pairs
-     the records of one basic block by their registers: each tree with each
-     record of one instruction whose inputs are inputs of the tree. An
-     instruction of the tree, another result of such an instruction and the
-     definition of an input are not siblings.
-   - *Candidates*: no rewrite is given. The values of instructions that a
-     replacement can read for no added cost are leaves of the term bank,
-     next to the inputs: the results of the sibling if it stays, or the
-     other results of a new instruction with several results of which one
-     result has the samples of the sibling (the sibling is then replaced by
-     that result). A term with the samples of the primary root that reads a
-     leaf is a candidate; the leaf is replaced by its definition. A
-     candidate must be cheaper than the two roots and than the rules of the
-     primary root alone.
-   - *Proof*: the joint query of step 5 with the two roots, with a
+   - *Values of the region*: each has an identity. An input is a variable:
+     of the tree, or one that only a sibling reads (a constant in the
+     corpus; `region.sibling_vars`). A value below the primary root is one
+     matched instruction (`node k`, pre-order); a value that occurs twice
+     in the tree is two instructions with one model term, so no sibling
+     reads it. The result of an earlier sibling is a value too. The rule
+     has the value of each operand of each sibling
+     (`region.siblings[].operands`: `var`, `node` or `sibling`).
+   - *Groups*: the corpus has one tree per root. `sibling.load_pairs` makes
+     the groups from the records of one basic block by their registers:
+     each tree with the root instructions of the other records that read
+     an input or a value below the root of that tree, one or two of them.
+     An instruction of the tree, the definition of an input and a second
+     result of one instruction are not siblings.
+   - *Candidates*: no rewrite is given. The values that a replacement can
+     read for no added cost are leaves of the term bank, next to the
+     inputs: the results of a sibling that stays, the other results of a
+     new instruction with several results of which one result has the
+     samples of a sibling (the sibling is then replaced by that result),
+     and the values below the primary root. A term with the samples of the
+     primary root that reads a leaf is a candidate; the leaf is replaced by
+     its definition. A sibling that stays and that no replacement reads
+     is replaced by a value of a new instruction, or the candidate is
+     dropped.
+   - *Cost*: an instruction that several roots have counts once. A value
+     below the primary root with a user outside the region stays, and its
+     cost counts. A sibling that the rule replaces is not such a user. A
+     candidate must be cheaper than the roots as they are and than the
+     rules of the primary root alone.
+   - *Proof*: the joint query of step 5 with all roots, with a
      precondition from the same grammar and the same width schedules. A
      sibling that stays is its own replacement. The source has undefined
-     behaviour if one of the roots has.
-   - *Rule*: `region.siblings` has the sibling, `stays` and its
-     replacement. The combine rule matches the primary tree.
-   - *Generated code*: `sibling_<id>` finds the sibling among the first
-     users of its first operand (`findSiblingRoot`). The guard checks the
-     widths of its results with the widths of the pattern, and that the two
-     roots are near in one block (`siblingInsertPoint`). The apply function
-     builds the replacement before the first of the two roots; a sibling
-     that stays and that is after the root is moved before it (its operands
-     are inputs of the tree).
-   - *Limits*: one basic block and one sibling; the sibling is one
-     instruction; a sibling that is replaced has one result; no `G_FREEZE`
-     in a root; a sibling that can trap is not emitted.
+     behaviour if one of the roots has. The replacements, with the
+     instructions that stay, read each input once in all.
+   - *Rule*: `region.siblings` has each sibling, `stays` and its
+     replacement. `region.dead_nodes` has the values below the primary
+     root that must have no user outside the region: the rule has them if
+     it has more new instructions than roots that it replaces. A rule with
+     as many new instructions as replaced roots has no such condition:
+     the generic cost does not say what the target makes of the new
+     instructions, and the selection measures the rule. The combine rule
+     matches the primary tree.
+   - *Generated code*: the match step makes every check and fills the plan
+     of the rule (`RegionPlan`, the match data of the combine rule); the
+     apply step only executes the plan. The guard finds each sibling among
+     the first users of a value that the tree or an earlier sibling has
+     (`findSiblingRoot`), with its operator and its operands by register,
+     and takes the registers of the inputs that only a sibling reads. It
+     then checks the widths of the results of the siblings with the widths
+     of the pattern, the users of the values of `dead_nodes` (`hasNUses`),
+     the precondition, and the position (`planRegion`): the replacement is
+     built before the first instruction that the rule replaces, each value
+     that a new instruction or a sibling that stays reads is defined before
+     that position, and a sibling that stays and that is after it is moved
+     before it. The apply function does not build an instruction that the
+     pattern matched or that stays; it reads their registers. The root
+     and each sibling that the rule replaces release their registers
+     before the replacement is built (`releaseResults`, see step 5).
+   - *Limits*: one basic block; at most two siblings; a sibling is one
+     instruction; a sibling that is replaced has one result; a sibling that
+     stays does not read one that is replaced; an input that only a sibling
+     reads is a constant in the corpus; no `G_FREEZE` term twice; a sibling
+     that can trap and that stays is not emitted (the apply step can move
+     it); no computed constants.
 
 A replacement can have a *computed constant*: a constant that the source
 does not have. The importer looks for a recipe, an expression over the
@@ -355,7 +396,9 @@ profile records
   how many pass the guard (offline, no compiler);
 - **novelty**: the rule alone against the target's existing combiner, on a
   MIR function built from its own training example (`new`, `covered`,
-  `worse`, `not_fired`). The run has a time limit. If the combiner does
+  `worse`, `not_fired`). For a rule with a region the function has every
+  root, and each output has a user outside the region. An instruction with
+  several results counts as one. The run has a time limit. If the combiner does
   not end (the rule loops with an existing combine), the class is `loop`
   and the rule is never selected (`probe_loop`). If llc fails, the class is
   `error`: the novelty is not known, and the rule is not a new rule;
@@ -399,7 +442,7 @@ takes its place.
 | `girs/discover.py` | grammars, term banks, fingerprints, concrete SMT proof |
 | `girs/kernels.py` | sample kernels of operators (speed only; the evaluator of the registry is the reference) |
 | `girs/region.py` | rules with several outputs: candidates, joint proof |
-| `girs/sibling.py` | rules for two roots: pairs from the corpus, candidates, rule creation |
+| `girs/sibling.py` | rules for several roots: groups from the corpus, candidates, rule creation |
 | `girs/mine.py` | the complete run: stages, state, resume, export |
 | `girs/report.py` | the report of a run and the comparison of runs |
 | `girs/precond.py` | precondition grammar (eval / z3 / C++), implication |

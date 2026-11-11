@@ -126,7 +126,45 @@ TEST_F(AArch64GISelMITest, FindSiblingRootOtherBlock) {
   EXPECT_EQ(findSiblingRoot(*MRI, *Select, Copies[0], IsSub), nullptr);
 }
 
-TEST_F(AArch64GISelMITest, SiblingInsertPointSiblingFirst) {
+TEST_F(AArch64GISelMITest, FindSiblingRootNotTheTreeAndNotASibling) {
+  StringRef MIRString = "  %3:_(s64) = G_SUB %0, %1\n"
+                        "  %4:_(s64) = G_SUB %0, %1\n"
+                        "  %5:_(s64) = G_SUB %0, %2\n"
+                        "  %6:_(s64) = G_ADD %5, %1\n";
+  setUp(MIRString);
+  if (!TM)
+    GTEST_SKIP();
+  MachineInstr *Sub0 = findOpcode(*MF, TargetOpcode::G_SUB);
+  MachineInstr *Sub1 = findOpcode(*MF, TargetOpcode::G_SUB, 1);
+  MachineInstr *Sub2 = findOpcode(*MF, TargetOpcode::G_SUB, 2);
+  MachineInstr *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  auto IsSub = [](const MachineInstr &MI) {
+    return MI.getOpcode() == TargetOpcode::G_SUB;
+  };
+  // An instruction of the tree of the root (%5) is not a sibling.
+  Register Tree[] = {Sub2->getOperand(0).getReg()};
+  EXPECT_EQ(findSiblingRoot(*MRI, *Add, Copies[2], IsSub), Sub2);
+  EXPECT_EQ(findSiblingRoot(*MRI, *Add, Copies[2], IsSub, 8, Tree), nullptr);
+  // A sibling that the plan has is not found again.
+  EXPECT_EQ(findSiblingRoot(*MRI, *Add, Copies[1], IsSub, 8, Tree), Sub0);
+  MachineInstr *Others[] = {Sub0};
+  EXPECT_EQ(findSiblingRoot(*MRI, *Add, Copies[1], IsSub, 8, Tree, Others),
+            Sub1);
+}
+
+TEST_F(AArch64GISelMITest, HasNUses) {
+  setUp(SiblingFirst);
+  if (!TM)
+    GTEST_SKIP();
+  MachineInstr *ICmp = findOpcode(*MF, TargetOpcode::G_ICMP);
+  // %0: G_SUB, G_ADD and G_ICMP.
+  EXPECT_TRUE(hasNUses(*MRI, Copies[0], 3));
+  EXPECT_FALSE(hasNUses(*MRI, Copies[0], 2));
+  EXPECT_FALSE(hasNUses(*MRI, Copies[0], 4));
+  EXPECT_TRUE(hasNUses(*MRI, ICmp->getOperand(0).getReg(), 1));
+}
+
+TEST_F(AArch64GISelMITest, PlanRegionSiblingFirst) {
   setUp(SiblingFirst);
   if (!TM)
     GTEST_SKIP();
@@ -134,43 +172,55 @@ TEST_F(AArch64GISelMITest, SiblingInsertPointSiblingFirst) {
   MachineInstr *Add = findOpcode(*MF, TargetOpcode::G_ADD);
   MachineInstr *Select = findOpcode(*MF, TargetOpcode::G_SELECT);
   Register AddReg = Add->getOperand(0).getReg();
+  RegionPlan Plan;
+  Plan.Sibs.push_back(Sub);
 
-  // The sibling stays: the replacement of the root is built before the root.
-  EXPECT_EQ(siblingInsertPoint(*Select, *Sub, {Copies[0], Copies[1], AddReg},
-                               /*SibStays=*/true, /*Move=*/true),
-            Select);
-  EXPECT_TRUE(isBefore(*Sub, *Select));
+  // The sibling stays: the replacement of the root is built before the
+  // root, and the sibling is before that position.
+  EXPECT_TRUE(
+      planRegion(*Select, Plan, /*Stays=*/1, {Copies[0], Copies[1], AddReg}));
+  EXPECT_EQ(Plan.InsertPt, Select);
+  EXPECT_TRUE(Plan.Move.empty());
   // The two roots are replaced: before the sibling, which is the first.
-  EXPECT_EQ(siblingInsertPoint(*Select, *Sub, {Copies[0], Copies[1]},
-                               /*SibStays=*/false),
-            Sub);
+  EXPECT_TRUE(planRegion(*Select, Plan, /*Stays=*/0, {Copies[0], Copies[1]}));
+  EXPECT_EQ(Plan.InsertPt, Sub);
+  EXPECT_TRUE(Plan.Move.empty());
+  EXPECT_EQ(&applyRegionPlan(Plan), Sub);
   // An input of the replacement is defined after the sibling.
-  EXPECT_EQ(siblingInsertPoint(*Select, *Sub, {Copies[0], AddReg},
-                               /*SibStays=*/false),
-            nullptr);
+  EXPECT_FALSE(planRegion(*Select, Plan, /*Stays=*/0, {Copies[0], AddReg}));
 }
 
-TEST_F(AArch64GISelMITest, SiblingInsertPointRootFirst) {
+TEST_F(AArch64GISelMITest, PlanRegionRootFirst) {
   setUp(RootFirst);
   if (!TM)
     GTEST_SKIP();
   MachineInstr *Sub = findOpcode(*MF, TargetOpcode::G_SUB);
   MachineInstr *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  MachineInstr *Mul = findOpcode(*MF, TargetOpcode::G_MUL);
   MachineInstr *Select = findOpcode(*MF, TargetOpcode::G_SELECT);
   Register AddReg = Add->getOperand(0).getReg();
+  RegionPlan Plan;
+  Plan.Sibs.push_back(Sub);
 
   // The two roots are replaced: before the root, where every input of its
   // tree is defined.
-  EXPECT_EQ(siblingInsertPoint(*Select, *Sub, {Copies[0], Copies[1], AddReg},
-                               /*SibStays=*/false),
-            Select);
-  // The sibling stays. The check does not move it.
-  EXPECT_EQ(siblingInsertPoint(*Select, *Sub, {}, /*SibStays=*/true), Select);
+  EXPECT_TRUE(
+      planRegion(*Select, Plan, /*Stays=*/0, {Copies[0], Copies[1], AddReg}));
+  EXPECT_EQ(Plan.InsertPt, Select);
+  EXPECT_TRUE(Plan.Move.empty());
+  // An input that is defined after the root, and one that the root defines.
+  EXPECT_FALSE(planRegion(*Select, Plan, /*Stays=*/0,
+                          {Copies[0], Mul->getOperand(0).getReg()}));
+  EXPECT_FALSE(planRegion(*Select, Plan, /*Stays=*/0,
+                          {Copies[0], Select->getOperand(0).getReg()}));
+  // The sibling stays. The match step does not move it.
+  EXPECT_TRUE(planRegion(*Select, Plan, /*Stays=*/1, {Copies[0], Copies[1]}));
+  EXPECT_EQ(Plan.InsertPt, Select);
+  ASSERT_EQ(Plan.Move.size(), 1u);
+  EXPECT_EQ(Plan.Move[0], Sub);
   EXPECT_TRUE(isBefore(*Select, *Sub));
-  // The apply function moves it before the root.
-  EXPECT_EQ(siblingInsertPoint(*Select, *Sub, {}, /*SibStays=*/true,
-                               /*Move=*/true),
-            Select);
+  // The apply step moves it before the root.
+  EXPECT_EQ(&applyRegionPlan(Plan), Select);
   EXPECT_TRUE(isBefore(*Sub, *Select));
   EXPECT_EQ(Sub->getParent(), Select->getParent());
   EXPECT_EQ(std::next(Sub->getIterator()), Select->getIterator());
@@ -178,7 +228,59 @@ TEST_F(AArch64GISelMITest, SiblingInsertPointRootFirst) {
                          /*AbortOnError=*/false));
 }
 
-TEST_F(AArch64GISelMITest, SiblingInsertPointTooFar) {
+TEST_F(AArch64GISelMITest, PlanRegionSeveralSiblings) {
+  // A sibling that the rule replaces is before the root. Two siblings
+  // that stay are after the root, and the second reads the first.
+  StringRef MIRString = "  %3:_(s64) = G_SUB %0, %1\n"
+                        "  %5:_(s1) = G_ICMP intpred(uge), %0(s64), %1\n"
+                        "  %6:_(s64) = G_SELECT %5(s1), %2, %0\n"
+                        "  %7:_(s64) = G_MUL %6, %6\n"
+                        "  %8:_(s64) = G_XOR %0, %1\n"
+                        "  %9:_(s64) = G_AND %8, %1\n";
+  setUp(MIRString);
+  if (!TM)
+    GTEST_SKIP();
+  MachineInstr *Sub = findOpcode(*MF, TargetOpcode::G_SUB);
+  MachineInstr *Select = findOpcode(*MF, TargetOpcode::G_SELECT);
+  MachineInstr *Xor = findOpcode(*MF, TargetOpcode::G_XOR);
+  MachineInstr *And = findOpcode(*MF, TargetOpcode::G_AND);
+  RegionPlan Plan;
+  // Not in the order of the block.
+  Plan.Sibs.push_back(And);
+  Plan.Sibs.push_back(Sub);
+  Plan.Sibs.push_back(Xor);
+
+  // The position is the sibling that the rule replaces. The siblings that
+  // stay are moved before it, in the order of the block.
+  EXPECT_TRUE(planRegion(*Select, Plan, /*Stays=*/0b101,
+                         {Copies[0], Copies[1], Copies[2]}));
+  EXPECT_EQ(Plan.InsertPt, Sub);
+  ASSERT_EQ(Plan.Move.size(), 2u);
+  EXPECT_EQ(Plan.Move[0], Xor);
+  EXPECT_EQ(Plan.Move[1], And);
+  EXPECT_EQ(&applyRegionPlan(Plan), Sub);
+  EXPECT_EQ(std::next(Xor->getIterator()), And->getIterator());
+  EXPECT_EQ(std::next(And->getIterator()), Sub->getIterator());
+  EXPECT_TRUE(MF->verify(nullptr, "after the move", &errs(),
+                         /*AbortOnError=*/false));
+
+  // No sibling is replaced: the position is the root, and the sibling
+  // that is before it does not move.
+  setUp(MIRString);
+  Sub = findOpcode(*MF, TargetOpcode::G_SUB);
+  Select = findOpcode(*MF, TargetOpcode::G_SELECT);
+  Xor = findOpcode(*MF, TargetOpcode::G_XOR);
+  Plan = RegionPlan();
+  Plan.Sibs.push_back(Sub);
+  Plan.Sibs.push_back(Xor);
+  EXPECT_TRUE(planRegion(*Select, Plan, /*Stays=*/0b11,
+                         {Copies[0], Copies[1], Copies[2]}));
+  EXPECT_EQ(Plan.InsertPt, Select);
+  ASSERT_EQ(Plan.Move.size(), 1u);
+  EXPECT_EQ(Plan.Move[0], Xor);
+}
+
+TEST_F(AArch64GISelMITest, PlanRegionTooFar) {
   // 70 instructions between the two roots: more than the limit of the
   // search.
   std::string MIR = "  %3:_(s64) = G_SUB %0, %1\n";
@@ -191,8 +293,91 @@ TEST_F(AArch64GISelMITest, SiblingInsertPointTooFar) {
     GTEST_SKIP();
   MachineInstr *Sub = findOpcode(*MF, TargetOpcode::G_SUB);
   MachineInstr *Select = findOpcode(*MF, TargetOpcode::G_SELECT);
-  EXPECT_EQ(siblingInsertPoint(*Select, *Sub, {}, /*SibStays=*/true), nullptr);
-  EXPECT_EQ(siblingInsertPoint(*Select, *Sub, {}, /*SibStays=*/false), nullptr);
+  RegionPlan Plan;
+  Plan.Sibs.push_back(Sub);
+  EXPECT_FALSE(planRegion(*Select, Plan, /*Stays=*/1, {}));
+  EXPECT_FALSE(planRegion(*Select, Plan, /*Stays=*/0, {}));
+  EXPECT_TRUE(planRegion(*Select, Plan, /*Stays=*/0, {},
+                         /*MaxDistance=*/100));
+}
+
+TEST_F(AArch64GISelMITest, IsJointRegionFillsThePlan) {
+  StringRef MIRString = "  %3:_(s64) = G_ADD %0, %1\n"
+                        "  %4:_(s64) = G_MUL %3, %2\n"
+                        "  %5:_(s1) = G_ICMP intpred(ult), %3(s64), %0\n"
+                        "  %6:_(s64) = G_ZEXT %5\n";
+  setUp(MIRString);
+  if (!TM)
+    GTEST_SKIP();
+  MachineInstr *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  MachineInstr *ICmp = findOpcode(*MF, TargetOpcode::G_ICMP);
+  MachineInstr *ZExt = findOpcode(*MF, TargetOpcode::G_ZEXT);
+  Register AddReg = Add->getOperand(0).getReg();
+  Register CmpReg = ICmp->getOperand(0).getReg();
+  RegionPlan Plan;
+  // The sum has a user outside the tree of the comparison.
+  EXPECT_TRUE(
+      isJointRegion(*MRI, CmpReg, {AddReg}, {Copies[0], Copies[1]}, Plan));
+  EXPECT_EQ(Plan.InsertPt, Add);
+  EXPECT_TRUE(Plan.Sibs.empty());
+  EXPECT_EQ(&applyRegionPlan(Plan), Add);
+  // The comparison has one user: the rule for the root alone applies.
+  EXPECT_FALSE(isJointRegion(*MRI, ZExt->getOperand(0).getReg(), {CmpReg},
+                             {Copies[0]}, Plan));
+}
+
+TEST_F(AArch64GISelMITest, ReleaseResults) {
+  // Three roots become one G_USUBO and one G_XOR that reads its borrow.
+  StringRef MIRString = "  %3:_(s64) = G_SUB %0, %1\n"
+                        "  %4:_(s1) = G_ICMP intpred(ult), %0(s64), %1\n"
+                        "  %5:_(s1) = G_ICMP intpred(uge), %0(s64), %1\n"
+                        "  %6:_(s64) = G_ZEXT %4\n"
+                        "  %7:_(s64) = G_ZEXT %5\n"
+                        "  %8:_(s64) = G_ADD %3, %6\n"
+                        "  %9:_(s64) = G_ADD %8, %7\n"
+                        "  $x0 = COPY %9\n";
+  setUp(MIRString);
+  if (!TM)
+    GTEST_SKIP();
+  MachineInstr *Sub = findOpcode(*MF, TargetOpcode::G_SUB);
+  MachineInstr *ULT = findOpcode(*MF, TargetOpcode::G_ICMP);
+  MachineInstr *UGE = &*std::next(ULT->getIterator());
+  ASSERT_EQ(UGE->getOpcode(), TargetOpcode::G_ICMP);
+  Register Diff = Sub->getOperand(0).getReg();
+  Register Borrow = ULT->getOperand(0).getReg();
+  Register Dst = UGE->getOperand(0).getReg();
+  RegionPlan Plan;
+  Plan.Sibs.push_back(Sub);
+  Plan.Sibs.push_back(ULT);
+  ASSERT_TRUE(planRegion(*UGE, Plan, /*Stays=*/0, {Copies[0], Copies[1]}));
+
+  B.setInstrAndDebugLoc(applyRegionPlan(Plan));
+  releaseResults(*MRI, *Sub);
+  releaseResults(*MRI, *ULT);
+  releaseResults(*MRI, *UGE);
+  // The old registers have their types and their users, and no
+  // definition. The old instructions define other registers.
+  EXPECT_TRUE(MRI->def_empty(Diff));
+  EXPECT_TRUE(MRI->def_empty(Borrow));
+  EXPECT_TRUE(MRI->def_empty(Dst));
+  EXPECT_FALSE(MRI->use_nodbg_empty(Diff));
+  EXPECT_NE(Sub->getOperand(0).getReg(), Diff);
+  EXPECT_EQ(MRI->getType(Sub->getOperand(0).getReg()), LLT::scalar(64));
+  EXPECT_EQ(MRI->getType(ULT->getOperand(0).getReg()), LLT::scalar(1));
+
+  auto USubO = B.buildInstr(TargetOpcode::G_USUBO, {Diff, Borrow},
+                            {Copies[0], Copies[1]});
+  // A register of a replaced sibling has one definition: the new
+  // instruction. A builder that folds constants reads it.
+  EXPECT_EQ(MRI->getVRegDef(Borrow), &*USubO);
+  auto One = B.buildConstant(LLT::scalar(1), 1);
+  B.buildInstr(TargetOpcode::G_XOR, {Dst}, {Borrow, One.getReg(0)});
+  Sub->eraseFromParent();
+  ULT->eraseFromParent();
+  UGE->eraseFromParent();
+  EXPECT_EQ(MRI->getVRegDef(Diff), &*USubO);
+  EXPECT_TRUE(MF->verify(nullptr, "after the replacement", &errs(),
+                         /*AbortOnError=*/false));
 }
 
 } // namespace

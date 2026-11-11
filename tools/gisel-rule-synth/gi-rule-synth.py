@@ -649,8 +649,8 @@ def cmd_synth(args):
         t = time.monotonic()
         rstats = region.extend(sy, joint, backend, dlim, ctx)
         seconds['regions'] = round(time.monotonic() - t, 2)
-    # Rules for two roots: the root of a tree and a second instruction of
-    # the block that reads inputs of the tree.
+    # Rules for several roots: the root of a tree and other instructions
+    # of the block that read values of the region.
     sstats = {}
     if args.siblings:
         t = time.monotonic()
@@ -775,7 +775,7 @@ def cmd_recheck(args):
     """Re-proves every rule in the library from its JSON form: every
     disjunct for each of its width schedules, and the emitted disjunction
     as a whole."""
-    from girs import ir, precond, region, smt, synth
+    from girs import ir, precond, region, sibling, smt, synth
     db = _load_db(args.db)
     backend = smt.Z3Backend(timeout_ms=args.timeout_ms)
     bad = n = 0
@@ -783,11 +783,15 @@ def cmd_recheck(args):
         src = ir.from_json(r['source_json'])
         tgt = ir.from_json(r['replacement_json'])
         cv = tuple(r.get('const_vars', ()))
-        ok = (set(ir.variables(tgt)) <= set(ir.variables(src)) and
-              ir.is_linear_in(tgt, cv))
         if r.get('region'):
-            # Every output in one query, for each width map.
-            ok = ok and not cv and region.structural(r)
+            # Every output in one query, for each width map. The
+            # replacements read inputs of the region only, each once.
+            ok = not cv and (
+                sibling.structural(r) if r['region'].get('siblings')
+                else region.structural(r))
+        else:
+            ok = (set(ir.variables(tgt)) <= set(ir.variables(src)) and
+                  ir.is_linear_in(tgt, cv))
         status = 'valid' if ok else 'structural'
         checks = []
         for d in r['disjuncts'] + r.get('unselected_disjuncts', []):
@@ -1052,11 +1056,12 @@ def build_parser():
                         'and the values below it that have other users '
                         '(girs/region.py)')
     p.add_argument('--siblings', action='store_true',
-                   help='also search rules for two roots: the root of a '
-                        'tree and a second instruction of the block that '
-                        'reads inputs of the tree (girs/sibling.py)')
+                   help='also search rules for several roots: the root of '
+                        'a tree and one or two other instructions of the '
+                        'block that read values of the region '
+                        '(girs/sibling.py)')
     p.add_argument('--max-pairs', type=int, default=0,
-                   help='budget: pairs of roots that --siblings searches '
+                   help='budget: groups of roots that --siblings searches '
                         '(0: all)')
     p.add_argument('--explore-share', type=float, default=0.2,
                    help='the part of the search order that goes to the '

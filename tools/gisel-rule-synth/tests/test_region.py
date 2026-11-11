@@ -240,17 +240,45 @@ class EmitTest(unittest.TestCase):
         self.assertIsNone(emit.why_not_emittable(r))
         self.assertIsNone(emit.one_use_variant(r))
         guard = emit._cpp_guard(r)
-        self.assertIn('isJointRegion(MRI, Dst, {T0}, {X0, X1})', guard)
+        # The match step finds the position and puts it in the plan.
+        self.assertIn('isJointRegion(MRI, Dst, {T0}, {X0, X1}, Plan)', guard)
         apply = emit._cpp_apply(r)
         # One instruction defines the old register of the sum and the
         # root, before the old sum; then the old instructions go.
         self.assertIn('MachineInstr *Old0 = MRI.getVRegDef(T0);', apply)
-        self.assertIn('firstRegionOutput(Root, {T0}, {X0, X1})', apply)
+        self.assertIn('B.setInstrAndDebugLoc(applyRegionPlan(Plan));', apply)
+        self.assertNotIn('firstRegionOutput', apply)
+        td, _, _ = emit.emit({'rules': [r]}, all_candidates=True)
+        self.assertIn('(defs root:$dst, gisynth_region_plan:$plan),', td)
         self.assertIn('B.buildInstr(TargetOpcode::G_UADDO, {T0, Dst}, '
                       '{X0, X1})', apply)
         self.assertLess(apply.index('buildInstr'),
                         apply.index('Old0->eraseFromParent()'))
         self.assertEqual(apply.count('buildInstr'), 1)
+        # The old instructions release their registers before the new
+        # instruction defines them: no register has two definitions.
+        for rel in ('releaseResults(MRI, *Old0);',
+                    'releaseResults(MRI, Root);'):
+            self.assertLess(apply.index('Old0 = MRI.getVRegDef(T0)'),
+                            apply.index(rel))
+            self.assertLess(apply.index(rel), apply.index('buildInstr'))
+
+    def test_the_example_function_has_a_user_of_each_output(self):
+        from girs import select, targets
+        sy, _ = run([(ADD_CMP, (32, 32), (2,))])
+        r = region_rules(sy)[0]
+        # The example of the rule of the root.
+        name, ex = select.examples(r)[0]
+        mir = select.build_mir(r, ex, name, targets.get('AMDGPU'))
+        lines = [ln.strip() for ln in mir.splitlines()]
+        add = [ln for ln in lines if '= G_ADD ' in ln]
+        self.assertEqual(len(add), 1)
+        reg = add[0].split(':')[0]
+        # The sum has the comparison and a second user.
+        self.assertEqual(len([ln for ln in lines if '= G_ICMP ' in ln and
+                              reg + ',' in ln]), 1)
+        self.assertIn('$vgpr1 = COPY ' + reg, lines)
+        self.assertIn('SI_RETURN implicit $vgpr0, implicit $vgpr1', lines)
 
     def test_the_region_rule_comes_before_the_rule_of_the_root(self):
         sy, _ = run([(ADD_CMP, (32, 32), (2,))])

@@ -46,6 +46,10 @@ class Instance:
         # The register of each variable in the record that the instance
         # was read from (sibling.py pairs records by them), or None.
         self.regs = None
+        # The register of each node below the root, in pre-order (the
+        # order of ``interior_uses``), and the type name of each variable.
+        self.node_regs = None
+        self.input_types = None
 
     def facts_of(self, e):
         """Known bits (zero, one) of a variable or of an operation node of
@@ -83,10 +87,12 @@ def _count_regs(node, counts):
 
 
 def _convert(node, inputs, interior_uses, flags, shared, root=False,
-             sub=None):
+             sub=None, regs=None):
     """``shared`` maps interior registers that occur more than once in the
     tree to an input index: the tree is really a DAG there, and counting
-    the shared instruction twice would overstate the source cost."""
+    the shared instruction twice would overstate the source cost.
+    ``regs`` receives the register of each node below the root, in the
+    order of ``interior_uses``."""
     if 'in' in node:
         return ('var', node['in'])
     if not root and node['reg'] in shared:
@@ -96,8 +102,10 @@ def _convert(node, inputs, interior_uses, flags, shared, root=False,
     for a in node['args']:
         if 'op' in a and a['reg'] not in shared:
             interior_uses.append(a.get('uses', 1))
+            if regs is not None:
+                regs.append(a['reg'])
         args.append(_convert(a, inputs, interior_uses, flags, shared,
-                             sub=sub))
+                             sub=sub, regs=regs))
     e = (node_key(node), node['w']) + tuple(args)
     if sub is not None and not root and 'zero' in node:
         sub.append((e, (int(node['zero'], 16), int(node['one'], 16))))
@@ -131,8 +139,9 @@ def parse_record(rec, source='', why=None):
                        'noundef': node.get('noundef', False),
                        'one': node['one'], 'def': node['op']})
     sub = []
+    node_regs = []
     expr = _convert(rec['expr'], inputs, uses, flags, shared, root=True,
-                    sub=sub)
+                    sub=sub, regs=node_regs)
     # Renumber inputs by first occurrence so equal trees get equal keys.
     order = ir.variables(expr)
     renum = {o: n for n, o in enumerate(order)}
@@ -170,6 +179,8 @@ def parse_record(rec, source='', why=None):
     inst = Instance(expr, vw, facts, consts, uses, sorted(flags),
                     [(source, rec['fn'], rec['root'])], sub_facts, kinds)
     inst.regs = tuple(inp['reg'] for inp in inputs)
+    inst.node_regs = tuple(node_regs)
+    inst.input_types = tuple(inp.get('type', '') for inp in inputs)
     return inst
 
 

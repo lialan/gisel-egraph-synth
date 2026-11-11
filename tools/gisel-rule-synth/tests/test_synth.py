@@ -737,6 +737,14 @@ class SelectTest(unittest.TestCase):
         self.assertIn(r['source_json']['op'], mir)
         self.assertEqual(select.count(mir)[name] > 0, True)
 
+    def test_count_has_instructions_with_several_results(self):
+        mir = ('name: f\n'
+               '    %0:_(s32) = COPY $vgpr0\n'
+               '    %1:_(s32) = G_CONSTANT i32 1\n'
+               '    %2:_(s32), %3:_(s1) = G_UADDO %0, %1\n'
+               '    %4:_(s32) = G_ZEXT %3(s1)\n')
+        self.assertEqual(select.count(mir), {'f': 2})
+
 
 class EmitTest(unittest.TestCase):
     def setUp(self):
