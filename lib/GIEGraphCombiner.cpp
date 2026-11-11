@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/GlobalISel/GIEGraphCombiner.h"
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -24,6 +25,7 @@
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
+#include "llvm/CodeGen/LowLevelTypeUtils.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
@@ -31,6 +33,7 @@
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/PassTimingInfo.h"
 #include "llvm/InitializePasses.h"
@@ -217,6 +220,10 @@ static bool isCandidate(const MachineInstr &MI,
     case CastKind::IntToPtr:
       return Uses[0].isScalar() && Defs[0].isPointer();
     default:
+      // The conversions with a floating-point format are checked in full:
+      // their rules and folds use the format of the type.
+      if (isFPCast(P->Cast))
+        return isValidCast(*P, Defs[0], Uses[0], /*Attr=*/0);
       return Uses[0].isScalar() && Defs[0].isScalar();
     }
   case OpShape::BitCount:
@@ -402,7 +409,8 @@ private:
                     SmallVectorImpl<LLT> &Types) const {
     if (N.isConstant()) {
       Types.push_back(N.Ty);
-      return TargetOpcode::G_CONSTANT;
+      return N.Ty.isFloat() ? TargetOpcode::G_FCONSTANT
+                            : TargetOpcode::G_CONSTANT;
     }
     const OpProperties *P = getOpProperties(N.Opcode);
     unsigned Opc = getInstrOpcode(N);
@@ -648,12 +656,18 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
     std::optional<APInt> C;
     if (Ty.isScalar())
       C = getIConstantVRegVal(Reg, MRI);
+    // A floating-point constant is its bit pattern. It is only a constant
+    // here if its type tells it from an integer with the same bits.
+    if (!C && Ty.isFloat() && hasFPFormat(Ty))
+      if (const ConstantFP *FP = getConstantFPVRegVal(Reg, MRI))
+        C = FP->getValueAPF().bitcastToAPInt();
     if (C) {
       Id = G.addConstant(Ty, *C);
       if (Exporting)
         ExportConsts.push_back({Id, *C});
       ConstDefs.insert(Def);
-      if (Def->getOpcode() == TargetOpcode::G_CONSTANT)
+      if (Def->getOpcode() == TargetOpcode::G_CONSTANT ||
+          Def->getOpcode() == TargetOpcode::G_FCONSTANT)
         OrigDefs.push_back({Id, Def, 0});
       CM.addOriginal(G, ENode::makeConstant(Ty, *C));
     } else {
@@ -998,6 +1012,9 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
               J.attribute("uses", uint64_t(range_size(
                                       MRI.use_nodbg_instructions(Reg))));
               KnownBitsOf(J, Reg);
+              const EClass &C = G.getClass(EN.Class);
+              J.attribute("not_undef", C.NotUndef);
+              J.attribute("not_poison", C.NotPoison);
             }
             J.attributeArray("args", [&] {
               for (EClassId Op : EN.N.Ops)
@@ -1125,13 +1142,19 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
     case ENodeKind::Constant: {
       for (auto [MI, DefIdx] : ClassDefs.lookup(Rc)) {
         Register Def = MI->getOperand(0).getReg();
-        if (MI->getOpcode() != TargetOpcode::G_CONSTANT ||
-            MRI.getType(Def) != N->Ty || !IsAvailable(MI))
+        unsigned ConstOpc = N->Ty.isFloat() ? TargetOpcode::G_FCONSTANT
+                                            : TargetOpcode::G_CONSTANT;
+        if (MI->getOpcode() != ConstOpc || MRI.getType(Def) != N->Ty ||
+            !IsAvailable(MI))
           continue;
         MoveBeforeInsertPt(MI);
         Res = Def;
         break;
       }
+      if (!Res && N->Ty.isFloat())
+        Res = B.buildFConstant(N->Ty,
+                               APFloat(getFltSemanticForLLT(N->Ty), N->Imm))
+                  .getReg(0);
       if (!Res)
         Res = B.buildConstant(N->Ty, N->Imm).getReg(0);
       break;

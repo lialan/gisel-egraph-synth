@@ -12,10 +12,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/GlobalISel/GIEGraph.h"
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/CodeGen/LowLevelTypeUtils.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -105,6 +108,86 @@ static std::optional<uint64_t> invertBranchAttr(uint64_t Attr) {
   if (!(Attr & 2))
     return std::nullopt;
   return Attr ^ 1;
+}
+
+bool llvm::egraph::isFPCast(CastKind K) {
+  switch (K) {
+  case CastKind::FPExtend:
+  case CastKind::FPTruncate:
+  case CastKind::FPToSInt:
+  case CastKind::FPToUInt:
+  case CastKind::FPToSIntSat:
+  case CastKind::FPToUIntSat:
+  case CastKind::SIntToFP:
+  case CastKind::UIntToFP:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool llvm::egraph::hasFPFormat(LLT Ty) {
+  if (!Ty.isValid())
+    return false;
+  if (Ty.isFloat())
+    return Ty.isFloatIEEE() || Ty.isFloat(APFloat::S_BFloat);
+  if (!Ty.isAnyScalar())
+    return false;
+  unsigned Size = Ty.getSizeInBits();
+  return Size == 16 || Size == 32 || Size == 64 || Size == 128;
+}
+
+bool llvm::egraph::isExactIntToFP(bool Signed, unsigned Width, LLT FPTy) {
+  const fltSemantics &Sem = getFltSemanticForLLT(FPTy);
+  // The magnitude of a signed integer has one bit less. The minimum, a
+  // power of two, needs no more precision but the largest exponent.
+  int Bits = Signed ? Width - 1 : Width;
+  return Bits <= int(APFloat::semanticsPrecision(Sem)) &&
+         Bits <= APFloat::semanticsMaxExponent(Sem);
+}
+
+/// Constant folding of the conversion \p K of \p A from \p SrcTy to
+/// \p DstTy. The value of a NaN result is the one that APFloat gives; the
+/// payload of a NaN is not specified.
+static std::optional<APInt> foldFPConversion(CastKind K, const APInt &A,
+                                             LLT SrcTy, LLT DstTy) {
+  switch (K) {
+  case CastKind::SIntToFP:
+  case CastKind::UIntToFP: {
+    APFloat F(getFltSemanticForLLT(DstTy));
+    F.convertFromAPInt(A, /*IsSigned=*/K == CastKind::SIntToFP,
+                       APFloat::rmNearestTiesToEven);
+    return F.bitcastToAPInt();
+  }
+  case CastKind::FPExtend:
+  case CastKind::FPTruncate: {
+    APFloat F(getFltSemanticForLLT(SrcTy), A);
+    bool LosesInfo;
+    F.convert(getFltSemanticForLLT(DstTy), APFloat::rmNearestTiesToEven,
+              &LosesInfo);
+    return F.bitcastToAPInt();
+  }
+  case CastKind::FPToSInt:
+  case CastKind::FPToUInt:
+  case CastKind::FPToSIntSat:
+  case CastKind::FPToUIntSat: {
+    bool Signed = K == CastKind::FPToSInt || K == CastKind::FPToSIntSat;
+    bool Saturates = K == CastKind::FPToSIntSat || K == CastKind::FPToUIntSat;
+    APFloat F(getFltSemanticForLLT(SrcTy), A);
+    APSInt R(DstTy.getSizeInBits(), /*isUnsigned=*/!Signed);
+    bool IsExact;
+    // An invalid conversion gives the nearest value of the range, and 0 for
+    // a NaN: the saturating result. Without saturation it is poison.
+    if (F.convertToInteger(R, APFloat::rmTowardZero, &IsExact) ==
+            APFloat::opInvalidOp &&
+        !Saturates)
+      return std::nullopt;
+    return APInt(R);
+  }
+  default:
+    break;
+  }
+  llvm_unreachable("not a floating-point conversion");
 }
 
 static std::vector<OpProperties> buildOpProperties() {
@@ -621,6 +704,64 @@ static std::vector<OpProperties> buildOpProperties() {
   P->Cast = CastKind::IntToPtr;
   P->InverseOf = G_PTRTOINT;
 
+  // Conversions with a floating-point operand or result. An extension to a
+  // wider format is exact: two extensions are one, and a conversion to an
+  // integer gives the same result with and without it. More rules, which
+  // depend on the types, are in addUnaryRulesFromProperties.
+  P = Op(G_FPEXT, "G_FPEXT", "fpext", OpShape::Cast);
+  P->Cast = CastKind::FPExtend;
+  P->ComposesTo = {{G_FPEXT, G_FPEXT}};
+  P->FoldCast = [](const APInt &A, LLT SrcTy, LLT DstTy) {
+    return foldFPConversion(CastKind::FPExtend, A, SrcTy, DstTy);
+  };
+  P = Op(G_FPTRUNC, "G_FPTRUNC", "fptrunc", OpShape::Cast);
+  P->Cast = CastKind::FPTruncate;
+  P->FoldCast = [](const APInt &A, LLT SrcTy, LLT DstTy) {
+    return foldFPConversion(CastKind::FPTruncate, A, SrcTy, DstTy);
+  };
+  // An integer extension does not change the number that is converted.
+  P = Op(G_SITOFP, "G_SITOFP", "sitofp", OpShape::Cast);
+  P->Cast = CastKind::SIntToFP;
+  P->ComposesTo = {{G_SEXT, G_SITOFP}, {G_ZEXT, G_UITOFP}};
+  P->FoldCast = [](const APInt &A, LLT SrcTy, LLT DstTy) {
+    return foldFPConversion(CastKind::SIntToFP, A, SrcTy, DstTy);
+  };
+  P = Op(G_UITOFP, "G_UITOFP", "uitofp", OpShape::Cast);
+  P->Cast = CastKind::UIntToFP;
+  P->ComposesTo = {{G_ZEXT, G_UITOFP}};
+  P->FoldCast = [](const APInt &A, LLT SrcTy, LLT DstTy) {
+    return foldFPConversion(CastKind::UIntToFP, A, SrcTy, DstTy);
+  };
+  P = Op(G_FPTOSI_SAT, "G_FPTOSI_SAT", "fptosisat", OpShape::Cast);
+  P->Cast = CastKind::FPToSIntSat;
+  P->InvariantUnder = {G_FPEXT};
+  P->FoldCast = [](const APInt &A, LLT SrcTy, LLT DstTy) {
+    return foldFPConversion(CastKind::FPToSIntSat, A, SrcTy, DstTy);
+  };
+  P = Op(G_FPTOUI_SAT, "G_FPTOUI_SAT", "fptouisat", OpShape::Cast);
+  P->Cast = CastKind::FPToUIntSat;
+  P->InvariantUnder = {G_FPEXT};
+  P->FoldCast = [](const APInt &A, LLT SrcTy, LLT DstTy) {
+    return foldFPConversion(CastKind::FPToUIntSat, A, SrcTy, DstTy);
+  };
+  // Without saturation, a value outside of the range of the result gives
+  // poison. The rules with these operators on the right-hand side are
+  // poison-exact.
+  P = Op(G_FPTOSI, "G_FPTOSI", "fptosi", OpShape::Cast);
+  P->Cast = CastKind::FPToSInt;
+  P->MayBePoison = true;
+  P->InvariantUnder = {G_FPEXT};
+  P->FoldCast = [](const APInt &A, LLT SrcTy, LLT DstTy) {
+    return foldFPConversion(CastKind::FPToSInt, A, SrcTy, DstTy);
+  };
+  P = Op(G_FPTOUI, "G_FPTOUI", "fptoui", OpShape::Cast);
+  P->Cast = CastKind::FPToUInt;
+  P->MayBePoison = true;
+  P->InvariantUnder = {G_FPEXT};
+  P->FoldCast = [](const APInt &A, LLT SrcTy, LLT DstTy) {
+    return foldFPConversion(CastKind::FPToUInt, A, SrcTy, DstTy);
+  };
+
   // The sign extension of the low Attr bits.
   P = Op(G_SEXT_INREG, "G_SEXT_INREG", "sextinreg", OpShape::Unary);
   P->ImmAttr = true;
@@ -863,6 +1004,54 @@ const OpProperties *llvm::egraph::getOpPropertiesForInstr(unsigned MIOpcode,
   return nullptr;
 }
 
+bool llvm::egraph::isValidCast(const OpProperties &P, LLT Ty, LLT SrcTy,
+                               uint64_t Attr) {
+  if (!Ty.isValid() || !SrcTy.isValid())
+    return false;
+  switch (P.Cast) {
+  case CastKind::PtrToInt:
+    return Ty.isScalar() && SrcTy.isPointer();
+  case CastKind::IntToPtr:
+    return Ty.isPointer() && SrcTy.isScalar();
+  default:
+    break;
+  }
+  if (!Ty.isScalar() || !SrcTy.isScalar())
+    return false;
+  unsigned Width = Ty.getSizeInBits(), SrcWidth = SrcTy.getSizeInBits();
+  // An integer is a scalar that is not known to be a floating-point value.
+  bool IsInt = !Ty.isFloat(), SrcIsInt = !SrcTy.isFloat();
+  switch (P.Cast) {
+  case CastKind::None:
+    return true;
+  case CastKind::Truncate:
+  case CastKind::SatTruncate:
+    return IsInt && SrcIsInt && Width < SrcWidth;
+  case CastKind::ZeroExtend:
+  case CastKind::SignExtend:
+  case CastKind::AnyExtend:
+    return IsInt && SrcIsInt && Width > SrcWidth;
+  case CastKind::Extract:
+    return IsInt && SrcIsInt && Width < SrcWidth && Attr + Width <= SrcWidth;
+  case CastKind::FPExtend:
+    return hasFPFormat(Ty) && hasFPFormat(SrcTy) && Width > SrcWidth;
+  case CastKind::FPTruncate:
+    return hasFPFormat(Ty) && hasFPFormat(SrcTy) && Width < SrcWidth;
+  case CastKind::FPToSInt:
+  case CastKind::FPToUInt:
+  case CastKind::FPToSIntSat:
+  case CastKind::FPToUIntSat:
+    return IsInt && hasFPFormat(SrcTy);
+  case CastKind::SIntToFP:
+  case CastKind::UIntToFP:
+    return hasFPFormat(Ty) && SrcIsInt;
+  case CastKind::PtrToInt:
+  case CastKind::IntToPtr:
+    break;
+  }
+  llvm_unreachable("bad cast kind");
+}
+
 APInt llvm::egraph::getLiteralValue(int64_t V, unsigned Width) {
   if (V == OpProperties::SignedMin)
     return APInt::getSignedMinValue(Width);
@@ -1008,6 +1197,22 @@ static StringRef getCastKindName(CastKind K) {
     return "inttoptr";
   case CastKind::Extract:
     return "extract";
+  case CastKind::FPExtend:
+    return "fpext";
+  case CastKind::FPTruncate:
+    return "fptrunc";
+  case CastKind::FPToSInt:
+    return "fptosi";
+  case CastKind::FPToUInt:
+    return "fptoui";
+  case CastKind::FPToSIntSat:
+    return "fptosi-sat";
+  case CastKind::FPToUIntSat:
+    return "fptoui-sat";
+  case CastKind::SIntToFP:
+    return "sitofp";
+  case CastKind::UIntToFP:
+    return "uitofp";
   }
   llvm_unreachable("unknown cast kind");
 }
@@ -1060,7 +1265,7 @@ static void printOpSamples(json::OStream &J, const OpProperties &P, unsigned W,
   switch (P.Shape) {
   case OpShape::Cast:
     if (P.Cast == CastKind::PtrToInt || P.Cast == CastKind::IntToPtr ||
-        P.Cast == CastKind::Extract)
+        P.Cast == CastKind::Extract || isFPCast(P.Cast))
       return;
     if (P.Cast == CastKind::Truncate || P.Cast == CastKind::SatTruncate)
       OpWidths[0] = W2;
@@ -1138,6 +1343,87 @@ static void printOpSamples(json::OStream &J, const OpProperties &P, unsigned W,
   }
 }
 
+/// Sample bit patterns of the floating-point format of \p W bits: zeros,
+/// values near the limits of the integer types, the limits of the format,
+/// infinities and NaNs.
+static SmallVector<APInt, 8> getFPSampleValues(unsigned W) {
+  const fltSemantics &Sem = getFltSemanticForLLT(LLT::scalar(W));
+  SmallVector<APInt, 8> Vals;
+  auto Add = [&](APFloat F) {
+    APInt V = F.bitcastToAPInt();
+    if (!is_contained(Vals, V))
+      Vals.push_back(V);
+  };
+  static const double Numbers[] = {0.0,
+                                   0.5,
+                                   1.0,
+                                   1.5,
+                                   2.5,
+                                   127.0,
+                                   127.5,
+                                   128.0,
+                                   128.5,
+                                   255.0,
+                                   255.5,
+                                   256.0,
+                                   2047.0,
+                                   2048.0,
+                                   2049.0,
+                                   32767.5,
+                                   32768.0,
+                                   65535.5,
+                                   65536.0,
+                                   16777217.0,
+                                   2147483647.0,
+                                   2147483648.0,
+                                   4294967295.0,
+                                   4294967296.0,
+                                   9.2233720368547748e18,
+                                   9.2233720368547758e18,
+                                   1.8446744073709552e19,
+                                   1e30,
+                                   1e-30};
+  for (double D : Numbers) {
+    for (double Signed : {D, -D}) {
+      APFloat F(Signed);
+      bool LosesInfo;
+      F.convert(Sem, APFloat::rmNearestTiesToEven, &LosesInfo);
+      Add(F);
+    }
+  }
+  for (bool Negative : {false, true}) {
+    Add(APFloat::getLargest(Sem, Negative));
+    Add(APFloat::getSmallest(Sem, Negative));
+    Add(APFloat::getInf(Sem, Negative));
+    Add(APFloat::getQNaN(Sem, Negative));
+  }
+  Add(APFloat::getSNaN(Sem));
+  return Vals;
+}
+
+/// Write the samples of the floating-point conversion \p P from \p SrcW to
+/// \p DstW bits.
+static void printFPCastSamples(json::OStream &J, const OpProperties &P,
+                               unsigned SrcW, unsigned DstW) {
+  bool FromFP = P.Cast != CastKind::SIntToFP && P.Cast != CastKind::UIntToFP;
+  for (const APInt &V : FromFP ? getFPSampleValues(SrcW)
+                               : getSampleValues(SrcW, /*Few=*/false)) {
+    std::optional<APInt> Out =
+        P.FoldCast(V, LLT::scalar(SrcW), LLT::scalar(DstW));
+    J.object([&] {
+      J.attribute("w", DstW);
+      J.attributeArray("ops", [&] {
+        J.value(std::to_string(SrcW) + ":0x" +
+                toString(V, 16, /*Signed=*/false));
+      });
+      if (Out)
+        J.attribute("out", "0x" + toString(*Out, 16, /*Signed=*/false));
+      else
+        J.attribute("out", nullptr);
+    });
+  }
+}
+
 void llvm::egraph::printOpPropertiesJSON(raw_ostream &OS, bool WithSamples) {
   json::OStream J(OS, /*IndentSize=*/1);
   J.object([&] {
@@ -1174,7 +1460,7 @@ void llvm::egraph::printOpPropertiesJSON(raw_ostream &OS, bool WithSamples) {
           Flag("may_be_poison", P.MayBePoison);
           Flag("may_trap", P.MayTrap);
           Flag("signed", P.IsSigned);
-          Flag("has_fold", P.Fold || P.FoldUnary || P.FoldN);
+          Flag("has_fold", P.Fold || P.FoldUnary || P.FoldN || P.FoldCast);
           if (P.PoisonVariant == TargetOpcode::G_CTLZ_ZERO_POISON)
             J.attribute("poison_variant", "G_CTLZ_ZERO_POISON");
           else if (P.PoisonVariant == TargetOpcode::G_CTTZ_ZERO_POISON)
@@ -1185,6 +1471,34 @@ void llvm::egraph::printOpPropertiesJSON(raw_ostream &OS, bool WithSamples) {
             J.attributeArray("samples", [&] {
               printOpSamples(J, P, 8, 32);
               printOpSamples(J, P, 32, 64);
+            });
+          if (WithSamples && P.FoldCast)
+            J.attributeArray("samples", [&] {
+              // An integer of each width with each format.
+              const unsigned Formats[] = {16, 32, 64};
+              const unsigned Ints[] = {1, 8, 16, 32, 64};
+              switch (P.Cast) {
+              case CastKind::FPExtend:
+              case CastKind::FPTruncate:
+                for (unsigned Narrow : Formats)
+                  for (unsigned Wide : Formats)
+                    if (Narrow < Wide)
+                      P.Cast == CastKind::FPExtend
+                          ? printFPCastSamples(J, P, Narrow, Wide)
+                          : printFPCastSamples(J, P, Wide, Narrow);
+                break;
+              case CastKind::SIntToFP:
+              case CastKind::UIntToFP:
+                for (unsigned Int : Ints)
+                  for (unsigned Format : Formats)
+                    printFPCastSamples(J, P, Int, Format);
+                break;
+              default:
+                for (unsigned Format : Formats)
+                  for (unsigned Int : Ints)
+                    printFPCastSamples(J, P, Format, Int);
+                break;
+              }
             });
         });
       }
@@ -2203,6 +2517,8 @@ void RewriteRule::print(raw_ostream &OS) const {
   };
   PrintVars("refine-defined", /*Exact=*/false);
   PrintVars("exact-defined", /*Exact=*/true);
+  if (PoisonExact)
+    OS << " ; poison-exact";
 }
 
 //===----------------------------------------------------------------------===//
@@ -2249,6 +2565,7 @@ public:
     Cur.Vars.assign(R.getNumVars(), Unbound);
     Cur.VarSums.assign(R.getNumVars(), ACTerm());
     Cur.Consts.assign(R.getNumConstVars(), std::nullopt);
+    Cur.ConstClasses.assign(R.getNumConstVars(), RuleMatch::NoClass);
     Cur.Rest = ACTerm();
     Cur.PatClasses.assign(R.getLHS().Nodes.size(), RuleMatch::NoClass);
     Cur.PatAttrs.assign(R.getLHS().Nodes.size(), 0);
@@ -2491,6 +2808,7 @@ private:
       std::optional<APInt> &Slot = Cur.Consts[PN.Index];
       if (!Slot) {
         Slot = *Cls.Const;
+        Cur.ConstClasses[PN.Index] = C;
         K();
         Slot.reset();
       } else if (Slot->getBitWidth() == Cls.Const->getBitWidth() &&
@@ -2538,6 +2856,10 @@ private:
         bool SavedRefinement = Cur.ViaRefinement;
         uint64_t SavedAttr = Cur.RootAttr;
         if (N.Flags)
+          Cur.ViaRefinement = true;
+        // The pattern operator is poison for some operands. Only a rule
+        // whose sides are poison for the same operands is exact.
+        if (P->MayBePoison && !R.isPoisonExact())
           Cur.ViaRefinement = true;
         // A division that may trap: the pattern operator is the total
         // function, so again only a refinement is justified. Remember it;
@@ -2641,7 +2963,8 @@ public:
       return C;
     }
     case PatNode::Literal:
-      if (!Expected.isValid() || !Expected.isScalar())
+      // A literal is an integer.
+      if (!Expected.isValid() || !Expected.isScalar() || Expected.isFloat())
         return std::nullopt;
       return G.addConstant(Expected,
                            getLiteralValue(PN.Value, Expected.getSizeInBits()));
@@ -2762,46 +3085,15 @@ private:
     llvm_unreachable("bad attribute kind");
   }
 
-  /// True if a cast of kind \p P from \p SrcTy to \p Ty is well-typed.
-  static bool isValidCast(const OpProperties &P, LLT Ty, LLT SrcTy,
-                          uint64_t Attr) {
-    if (!Ty.isValid() || !SrcTy.isValid())
-      return false;
-    switch (P.Cast) {
-    case CastKind::PtrToInt:
-      return Ty.isScalar() && SrcTy.isPointer();
-    case CastKind::IntToPtr:
-      return Ty.isPointer() && SrcTy.isScalar();
-    default:
-      break;
-    }
-    if (!Ty.isScalar() || !SrcTy.isScalar())
-      return false;
-    unsigned Width = Ty.getSizeInBits(), SrcWidth = SrcTy.getSizeInBits();
-    switch (P.Cast) {
-    case CastKind::None:
-      return true;
-    case CastKind::Truncate:
-    case CastKind::SatTruncate:
-      return Width < SrcWidth;
-    case CastKind::ZeroExtend:
-    case CastKind::SignExtend:
-    case CastKind::AnyExtend:
-      return Width > SrcWidth;
-    case CastKind::Extract:
-      return Width < SrcWidth && Attr + Width <= SrcWidth;
-    case CastKind::PtrToInt:
-    case CastKind::IntToPtr:
-      break;
-    }
-    llvm_unreachable("bad cast kind");
-  }
-
   std::optional<EClassId> buildOp(const PatNode &PN, unsigned PIdx,
                                   LLT Expected) {
     const OpProperties *P = getOpProperties(PN.Opcode);
     // The nodes of such an operator belong to instructions.
-    if (P->StopsPoison || P->MayBePoison)
+    if (P->StopsPoison)
+      return std::nullopt;
+    // A new node of this operator can be poison although the operands are
+    // not; see OpProperties::MayBePoison.
+    if (P->MayBePoison && !R.isPoisonExact())
       return std::nullopt;
     std::optional<uint64_t> Attr = getAttr(PN, *P);
     if (!Attr)
@@ -2930,6 +3222,17 @@ private:
         if (!Operand(I, LLT()))
           return std::nullopt;
       break;
+    }
+
+    // Only the conversions (checked by isValidCast), G_SELECT and G_PHI take
+    // floating-point values.
+    if (P->Shape != OpShape::Cast && P->Shape != OpShape::Select &&
+        P->Shape != OpShape::Phi) {
+      if (Ty.isValid() && Ty.isFloat())
+        return std::nullopt;
+      for (EClassId Op : Ops)
+        if (G.getType(Op).isFloat())
+          return std::nullopt;
     }
 
     // The right-hand side must not be able to create poison: a shift amount

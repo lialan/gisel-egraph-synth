@@ -6,6 +6,7 @@ properties, see OpProperties in GIEGraph.h), by running
 `llc -gisel-egraph-print-rules`. Each line is
 
     name: LHS => RHS [; refine-defined: a b] [; exact-defined: c]
+                     [; poison-exact]
 
 where the two optional lists are the variables that the C++ soundness
 classification (RewriteRule::isRefinementFor / isExactFor) requires not to be
@@ -18,7 +19,19 @@ variables and casts, this script proves with Z3 that
      then the RHS has defined behaviour, is not poison, and LHS == RHS;
 
   2. exactness: if additionally the `exact-defined` variables are not poison,
-     the LHS is poison whenever the RHS is.
+     the LHS is poison whenever the RHS is;
+
+  3. for a `poison-exact` rule: an operation of the RHS has a defined result
+     only if the operations of the LHS have (a conversion of a
+     floating-point value to an integer gives poison if the value is not in
+     the range of the result). The compiler takes a match of such a rule as
+     an equivalence, also if the LHS has such an operation.
+
+A floating-point value is its bit pattern, and its format follows from its
+width (IEEE half, single and double; quad and bfloat are not checked). Two
+floating-point results are equal if they have the same bits or if both are a
+NaN: LLVM does not specify the payload of a NaN result, and an operation can
+take a signaling NaN as a quiet NaN.
 
 It also checks the structural properties the classification relies on (RHS
 variables are a subset of LHS variables, LHS root is an operation) and that
@@ -78,6 +91,15 @@ UNARY = {"G_BSWAP", "G_BITREVERSE", "G_ABS", "G_SEXT_INREG", "G_FREEZE"}
 TRUNCS = {"G_TRUNC", "G_TRUNC_SSAT_S", "G_TRUNC_SSAT_U", "G_TRUNC_USAT_U"}
 EXTS = {"G_ZEXT", "G_SEXT", "G_ANYEXT"}
 CASTS = TRUNCS | EXTS | {"G_EXTRACT", "G_PTRTOINT", "G_INTTOPTR"}
+# Conversions with a floating-point operand or result.
+FP_TO_INT = {"G_FPTOSI", "G_FPTOUI", "G_FPTOSI_SAT", "G_FPTOUI_SAT"}
+INT_TO_FP = {"G_SITOFP", "G_UITOFP"}
+FP_RESULT = INT_TO_FP | {"G_FPEXT", "G_FPTRUNC"}
+FP_CASTS = FP_TO_INT | FP_RESULT
+# The result is poison if the exact result is not in the range of the type.
+MAY_BE_POISON = {"G_FPTOSI", "G_FPTOUI", "G_SMULFIX", "G_UMULFIX"}
+# width -> (exponent bits, significand bits with the hidden bit)
+FP_FORMATS = {16: (5, 11), 32: (8, 24), 64: (11, 53)}
 BITCOUNTS = {"G_CTPOP", "G_CTLZ", "G_CTTZ", "G_CTLS"}
 THREE_WAY = {"G_SCMP", "G_UCMP"}
 FUNNEL = {"G_FSHL", "G_FSHR"}
@@ -85,7 +107,8 @@ BITFIELDS = {"G_UBFX", "G_SBFX"}
 OVERFLOW = {"G_UADDO", "G_SADDO", "G_USUBO", "G_SSUBO", "G_UMULO", "G_SMULO"}
 CARRY = {"G_UADDE", "G_SADDE", "G_USUBE", "G_SSUBE"}
 # Operators whose result type is not determined by their operands.
-FREE_RESULT = CASTS | BITCOUNTS | THREE_WAY | {"G_UNMERGE_VALUES"}
+FREE_RESULT = CASTS | FP_CASTS | BITCOUNTS | THREE_WAY | {
+    "G_UNMERGE_VALUES"}
 # Operators with an immediate operand, and with several results. A pattern
 # without an attribute matches every immediate and every result.
 IMMEDIATE = {"G_SEXT_INREG", "G_EXTRACT", "G_INSERT"} | FIXED
@@ -97,7 +120,8 @@ SLOW = DIVS | DIVREMS | {"G_CLMUL", "G_CLMULR", "G_CLMULH", "G_UMULH",
 # Short operator names in rule names that are not the opcode in lower case.
 SHORT_NAMES = {"truncssats": "G_TRUNC_SSAT_S", "truncssatu": "G_TRUNC_SSAT_U",
                "truncusatu": "G_TRUNC_USAT_U", "sextinreg": "G_SEXT_INREG",
-               "merge": "G_MERGE_VALUES", "unmerge": "G_UNMERGE_VALUES"}
+               "merge": "G_MERGE_VALUES", "unmerge": "G_UNMERGE_VALUES",
+               "fptosisat": "G_FPTOSI_SAT", "fptouisat": "G_FPTOUI_SAT"}
 PREDICATES = ["eq", "ne", "ugt", "uge", "ult", "ule", "sgt", "sge", "slt",
               "sle"]
 # Rules that never apply because no constant satisfies their precondition.
@@ -144,16 +168,18 @@ def nodes(p, pred):
 
 
 def parse_dump(text):
-    """Parse 'name: LHS => RHS ; refine-defined: .. ; exact-defined: ..'."""
+    """Parse 'name: LHS => RHS ; refine-defined: .. ; exact-defined: ..
+    ; poison-exact'."""
     rules = []
     for line in text.splitlines():
         m = re.match(r"^([A-Za-z0-9_.-]+): (.*?) => (.*?)"
                      r"(?: ; refine-defined: ([^;]*?))?"
-                     r"(?: ; exact-defined: ([^;]*?))?$", line.strip())
+                     r"(?: ; exact-defined: ([^;]*?))?"
+                     r"( ; poison-exact)?$", line.strip())
         if m:
             rules.append((m.group(1), m.group(2), m.group(3),
                           (m.group(4) or "").split(),
-                          (m.group(5) or "").split()))
+                          (m.group(5) or "").split(), bool(m.group(6))))
     return rules
 
 
@@ -399,6 +425,94 @@ def unop(op, x, w):
                          "G_CTLS": ctls}[op](x), w)
 
 
+# --- Floating-point conversions ----------------------------------------------
+
+def fp_sort(w):
+    if w not in FP_FORMATS:
+        raise IllTyped("no floating-point format of this width")
+    return z3.FPSort(FP_FORMATS[w][0], FP_FORMATS[w][1])
+
+
+def to_fp(x):
+    """The floating-point value with the bit pattern x."""
+    if z3.is_app_of(x, z3.Z3_OP_FPA_TO_IEEE_BV):
+        return x.arg(0)
+    return z3.fpBVToFP(x, fp_sort(x.size()))
+
+
+def fp_pow2(k, sort, negative=False):
+    """The value 2**k or -(2**k), or None if the format does not have it."""
+    eb, sb = sort.ebits(), sort.sbits()
+    bias = (1 << (eb - 1)) - 1
+    if k > bias:
+        return None
+    return z3.fpFP(z3.BitVecVal(int(negative), 1),
+                   z3.BitVecVal(k + bias, eb), z3.BitVecVal(0, sb - 1))
+
+
+def exact_int_to_fp(signed, iw, fw):
+    """Every integer of iw bits has an exact value in the format of fw bits.
+    The magnitude of a signed integer has one bit less; its minimum is a
+    power of two."""
+    eb, precision = FP_FORMATS[fw]
+    bits = iw - 1 if signed else iw
+    return bits <= precision and bits <= (1 << (eb - 1)) - 1
+
+
+def fp_to_int(f, w, signed, saturate):
+    """f rounded toward zero as a w-bit integer; (defined, value). Without
+    saturation the result is poison (not defined) for a NaN and for a value
+    outside of the range. With saturation a NaN gives 0."""
+    sort = f.sort()
+    r = z3.fpRoundToIntegral(z3.RTZ(), f)
+    neg_inf = z3.And(z3.fpIsInf(f), z3.fpIsNegative(f))
+    pos_inf = z3.And(z3.fpIsInf(f), z3.fpIsPositive(f))
+    if signed:
+        lo = fp_pow2(w - 1, sort, negative=True)
+        below = z3.fpLT(r, lo) if lo is not None else neg_inf
+        hi = fp_pow2(w - 1, sort)
+    else:
+        # -0.0 is not less than 0.
+        below = z3.fpLT(r, z3.FPVal(0.0, sort))
+        hi = fp_pow2(w, sort)
+    above = z3.fpGEQ(r, hi) if hi is not None else pos_inf
+    conv = (z3.fpToSBV if signed else z3.fpToUBV)(
+        z3.RTZ(), f, z3.BitVecSort(w))
+    if not saturate:
+        return z3.And(z3.Not(z3.fpIsNaN(f)), z3.Not(below),
+                      z3.Not(above)), conv
+    lowest = smin(w) if signed else bv(0, w)
+    highest = smax(w) if signed else ones(w)
+    return z3.BoolVal(True), z3.If(
+        z3.fpIsNaN(f), bv(0, w),
+        z3.If(below, lowest, z3.If(above, highest, conv)))
+
+
+def fp_cast(op, x, w):
+    """A conversion of the bits x to w bits; (defined, value)."""
+    true = z3.BoolVal(True)
+    if op in FP_TO_INT:
+        return fp_to_int(to_fp(x), w, op.startswith("G_FPTOSI"),
+                         op.endswith("_SAT"))
+    sort = fp_sort(w)
+    if op == "G_SITOFP":
+        res = z3.fpSignedToFP(z3.RNE(), x, sort)
+    elif op == "G_UITOFP":
+        res = z3.fpUnsignedToFP(z3.RNE(), x, sort)
+    else:
+        if (op == "G_FPEXT" and w <= x.size()) or (
+                op == "G_FPTRUNC" and w >= x.size()):
+            raise IllTyped("conversion does not change the format")
+        res = z3.fpFPToFP(z3.RNE(), to_fp(x), sort)
+    return true, z3.fpToIEEEBV(res)
+
+
+def same_value(l, r, is_fp):
+    if not is_fp:
+        return l == r
+    return z3.Or(l == r, z3.And(z3.fpIsNaN(to_fp(l)), z3.fpIsNaN(to_fp(r))))
+
+
 # --- Typing ------------------------------------------------------------------
 
 class Typing:
@@ -525,6 +639,15 @@ class Side:
                 raise IllTyped("bad width for a bit permutation")
             x, poison = self.build(args[0], w)
             val = unop(op, x, w)[1]
+        elif op in FP_CASTS:
+            if not self.is_rhs:
+                w = self.t.casts[id(p)]
+                self.expect(w, expected)
+            if w is None:
+                raise IllTyped("conversion without a result type")
+            x, poison = self.build(args[0], None)
+            ok, val = fp_cast(op, x, w)
+            self.defined.append(ok)
         elif op in CASTS or op in BITCOUNTS:
             if not self.is_rhs:
                 w = self.t.casts[id(p)]
@@ -738,6 +861,23 @@ def computed_constants(name, t, lhs, left, lhs_value):
         if t.casts[id(lhs[2][0])] != t.root:
             raise IllTyped("the integer is not as wide as the pointer")
         return true, []
+    m = re.match(r"^(?:fpext|fptrunc)-of-([su])itofp$", name)
+    if m:
+        # The first format has every value of the integer type.
+        if not exact_int_to_fp(m.group(1) == "s", t.vars["?a"],
+                               t.casts[id(lhs[2][0])]):
+            raise IllTyped("the first conversion is not exact")
+        return true, []
+    m = re.match(r"^fpto[su]i(sat)?-of-([su])itofp-(?:same|narrow|wide)$",
+                 name)
+    if m:
+        fw = t.casts[id(lhs[2][0])]
+        exact = exact_int_to_fp(m.group(2) == "s", t.vars["?a"], fw)
+        # Without saturation, a number with more bits than the precision is
+        # also outside of a range of at most that many bits.
+        if not exact and (m.group(1) or t.root > FP_FORMATS[fw][1]):
+            raise IllTyped("the first conversion is not exact")
+        return true, []
     if re.match(r"^merge-of-unmerge-\d$", name):
         if t.vars["?a"] != t.root:
             raise IllTyped("the split has more results")
@@ -838,7 +978,8 @@ def solve(*constraints):
     return res, (s.model() if res == z3.sat else None)
 
 
-def check_rule(name, lhs_s, rhs_s, refine_defined, exact_defined):
+def check_rule(name, lhs_s, rhs_s, refine_defined, exact_defined,
+               poison_exact=False):
     """Returns (errors, number of typings verified)."""
     lhs, rhs = parse(tokenize(lhs_s)), parse(tokenize(rhs_s))
     errors = []
@@ -855,6 +996,10 @@ def check_rule(name, lhs_s, rhs_s, refine_defined, exact_defined):
         rhs, lambda n: n[0] in SLOW) or "div" in name or "rem" in name
     verified, satisfiable = 0, False
     is_effect = lhs[0] == "G_BRCOND"
+    is_fp = lhs[0] in FP_RESULT
+    # An unselected operand of a select can be poison, so the check that the
+    # operations are defined together is for these operators only.
+    may_be_poison = bool(nodes(lhs, lambda n: n[0] in MAY_BE_POISON))
     widths = DIV_WIDTHS if slow else WIDTHS
     # If the LHS does not determine its own type (a select of literals), the
     # type of the matched class does.
@@ -890,7 +1035,7 @@ def check_rule(name, lhs_s, rhs_s, refine_defined, exact_defined):
         res, model = solve(*assumptions, *not_poison(refine_defined),
                            z3.Not(pl),
                            z3.Or(z3.Not(z3.And(*right.defined, True)), pr,
-                                 l != r))
+                                 z3.Not(same_value(l, r, is_fp))))
         if res != z3.unsat:
             errors.append("refinement, %s: %s %s" % (where, res, model or ""))
             continue
@@ -901,6 +1046,14 @@ def check_rule(name, lhs_s, rhs_s, refine_defined, exact_defined):
         if res != z3.unsat:
             errors.append("exactness, %s: %s %s" % (where, res, model or ""))
             continue
+        # 3. The operations of the two sides are defined together.
+        if poison_exact and may_be_poison:
+            res, model = solve(pre, *right.defined,
+                               z3.Not(z3.And(*left.defined, True)))
+            if res != z3.unsat:
+                errors.append("poison-exact, %s: %s %s" % (
+                    where, res, model or ""))
+                continue
         verified += 1
     if not verified and not errors:
         errors.append("no well-typed instance")
@@ -921,9 +1074,9 @@ def main():
         print("no rules found")
         return 1
     failed = 0
-    for name, l, r, refine_defined, exact_defined in rules:
+    for name, l, r, refine_defined, exact_defined, poison_exact in rules:
         errors, verified = check_rule(name, l, r, refine_defined,
-                                      exact_defined)
+                                      exact_defined, poison_exact)
         status = "FAIL" if errors else "ok"
         print("%-28s %-4s %3d  %s => %s" % (name, status, verified, l, r))
         for e in errors:

@@ -1656,4 +1656,152 @@ TEST_F(GIEGraphIntegerOpsTest, FixedPointOverflowIsPoison) {
   EXPECT_TRUE(G.getClass(Sat).NotPoison);
 }
 
+/// Conversions between integers and floating-point values. A plain scalar
+/// of 16, 32 or 64 bits has the IEEE format of that size.
+class GIEGraphFPConversionTest : public GIEGraphIntegerOpsTest {
+protected:
+  EClassId flt(float F) {
+    return cst(APFloat(F).bitcastToAPInt().getZExtValue(), S32);
+  }
+  EClassId dbl(double D) {
+    return cst(APFloat(D).bitcastToAPInt().getZExtValue(), S64);
+  }
+  /// The bit pattern that constant folding gives op(X).
+  std::optional<uint64_t> foldedBits(unsigned Opc, LLT Ty, EClassId X) {
+    EClassId C = un(Opc, Ty, X);
+    runAll();
+    std::optional<APInt> V = G.getConstant(C);
+    if (!V)
+      return std::nullopt;
+    return V->getZExtValue();
+  }
+  static uint64_t bits(float F) {
+    return APFloat(F).bitcastToAPInt().getZExtValue();
+  }
+  static uint64_t bits(double D) {
+    return APFloat(D).bitcastToAPInt().getZExtValue();
+  }
+};
+
+TEST_F(GIEGraphFPConversionTest, FoldIntegerToFloat) {
+  EXPECT_EQ(foldedBits(T::G_SITOFP, S32, cst(-3, S32)), bits(-3.0f));
+  EXPECT_EQ(foldedBits(T::G_UITOFP, S32, cst(-3, S8)), bits(253.0f));
+  EXPECT_EQ(foldedBits(T::G_SITOFP, S64, cst(-3, S8)), bits(-3.0));
+  // 2^24 + 1 is rounded to nearest, ties to even.
+  EXPECT_EQ(foldedBits(T::G_UITOFP, S32, cst(16777217, S32)),
+            bits(16777216.0f));
+  EXPECT_EQ(foldedBits(T::G_UITOFP, S32, cst(16777219, S32)),
+            bits(16777220.0f));
+}
+
+TEST_F(GIEGraphFPConversionTest, FoldFloatToInteger) {
+  // Rounded toward zero.
+  EXPECT_EQ(folded(T::G_FPTOSI, S32, {flt(2.75f)}), 2);
+  EXPECT_EQ(folded(T::G_FPTOSI, S32, {flt(-2.75f)}), -2);
+  EXPECT_EQ(folded(T::G_FPTOUI, S32, {flt(-0.5f)}), 0);
+  EXPECT_EQ(folded(T::G_FPTOSI, S8, {dbl(-128.9)}), -128);
+  // Outside of the range of the result: poison, so no constant.
+  EXPECT_EQ(folded(T::G_FPTOUI, S32, {flt(-1.0f)}), std::nullopt);
+  EXPECT_EQ(folded(T::G_FPTOSI, S8, {flt(128.0f)}), std::nullopt);
+  EXPECT_EQ(folded(T::G_FPTOSI, S32, {flt(1e10f)}), std::nullopt);
+  EXPECT_EQ(
+      folded(T::G_FPTOSI, S32, {flt(std::numeric_limits<float>::quiet_NaN())}),
+      std::nullopt);
+}
+
+TEST_F(GIEGraphFPConversionTest, FoldSaturatingFloatToInteger) {
+  float Inf = std::numeric_limits<float>::infinity();
+  EXPECT_EQ(folded(T::G_FPTOSI_SAT, S8, {flt(2.75f)}), 2);
+  EXPECT_EQ(folded(T::G_FPTOSI_SAT, S8, {flt(1000.0f)}), 127);
+  EXPECT_EQ(folded(T::G_FPTOSI_SAT, S8, {flt(-1000.0f)}), -128);
+  EXPECT_EQ(folded(T::G_FPTOSI_SAT, S8, {flt(Inf)}), 127);
+  EXPECT_EQ(folded(T::G_FPTOUI_SAT, S8, {flt(-Inf)}), 0);
+  EXPECT_EQ(folded(T::G_FPTOUI_SAT, S8, {flt(-1.0f)}), 0);
+  EXPECT_EQ(folded(T::G_FPTOUI_SAT, S8, {flt(1000.0f)}), -1); // 255
+  EXPECT_EQ(folded(T::G_FPTOSI_SAT, S32,
+                   {flt(std::numeric_limits<float>::quiet_NaN())}),
+            0);
+}
+
+TEST_F(GIEGraphFPConversionTest, FoldFormatConversions) {
+  EXPECT_EQ(foldedBits(T::G_FPEXT, S64, flt(1.5f)), bits(1.5));
+  EXPECT_EQ(foldedBits(T::G_FPTRUNC, S32, dbl(0.1)), bits(0.1f));
+  // Too large for a float: infinity.
+  EXPECT_EQ(foldedBits(T::G_FPTRUNC, S32, dbl(1e300)),
+            bits(std::numeric_limits<float>::infinity()));
+}
+
+TEST_F(GIEGraphFPConversionTest, IntegerThroughAFormatThatHasIt) {
+  EClassId A = in(S16, /*Defined=*/true);
+  EClassId F = un(T::G_SITOFP, S32, A);
+  EClassId Same = un(T::G_FPTOSI, S16, F);
+  EClassId Wide = un(T::G_FPTOSI, S32, F);
+  EClassId SatSame = un(T::G_FPTOSI_SAT, S16, F);
+  EClassId SatWide = un(T::G_FPTOSI_SAT, S32, F);
+  EClassId Double = un(T::G_FPEXT, S64, F);
+  runAll();
+  // G_FPTOSI can be poison, so a match of it is a refinement.
+  EXPECT_TRUE(G.refinesTo(Same, A));
+  EXPECT_TRUE(G.refinesTo(Wide, sext(S32, A)));
+  EXPECT_TRUE(G.equivalent(SatSame, A));
+  EXPECT_TRUE(G.equivalent(SatWide, sext(S32, A)));
+  EXPECT_TRUE(G.equivalent(Double, un(T::G_SITOFP, S64, A)));
+}
+
+TEST_F(GIEGraphFPConversionTest, IntegerThroughAFormatThatDoesNotHaveIt) {
+  // A float has 24 bits of precision.
+  EClassId A = in(S32, /*Defined=*/true);
+  EClassId F = un(T::G_SITOFP, S32, A);
+  EClassId Same = un(T::G_FPTOSI, S32, F);
+  EClassId Narrow = un(T::G_FPTOSI, S16, F);
+  EClassId SatNarrow = un(T::G_FPTOSI_SAT, S16, F);
+  EClassId Double = un(T::G_FPEXT, S64, F);
+  EClassId Direct = un(T::G_SITOFP, S64, A);
+  runAll();
+  EXPECT_FALSE(G.refinesTo(Same, A));
+  // An integer that the float does not have is outside of the range of
+  // an s16, where G_FPTOSI gives poison.
+  EXPECT_TRUE(G.refinesTo(Narrow, trunc(S16, A)));
+  EXPECT_FALSE(G.equivalent(Narrow, trunc(S16, A)));
+  EXPECT_FALSE(G.refinesTo(SatNarrow, trunc(S16, A)));
+  EXPECT_FALSE(G.equivalent(Double, Direct));
+}
+
+TEST_F(GIEGraphFPConversionTest, ExtensionIsExact) {
+  EClassId H = in(S16, /*Defined=*/true), X = in(S32, /*Defined=*/true);
+  EClassId D = un(T::G_FPEXT, S64, X);
+  EClassId Back = un(T::G_FPTRUNC, S32, D);
+  EClassId Half = un(T::G_FPTRUNC, S16, D);
+  EClassId Twice = un(T::G_FPEXT, S64, un(T::G_FPEXT, S32, H));
+  EClassId Int = un(T::G_FPTOSI, S32, D);
+  EClassId IntDirect = un(T::G_FPTOSI, S32, X);
+  // A truncation is not exact.
+  EClassId Y = in(S64, /*Defined=*/true);
+  EClassId Lossy = un(T::G_FPEXT, S64, un(T::G_FPTRUNC, S32, Y));
+  runAll();
+  EXPECT_TRUE(G.equivalent(Back, X));
+  EXPECT_TRUE(G.equivalent(Half, un(T::G_FPTRUNC, S16, X)));
+  EXPECT_TRUE(G.equivalent(Twice, un(T::G_FPEXT, S64, H)));
+  // The two conversions are poison for the same values.
+  EXPECT_TRUE(G.equivalent(Int, IntDirect));
+  EXPECT_FALSE(G.equivalent(Lossy, Y));
+  EXPECT_FALSE(G.getClass(Int).NotPoison);
+  EXPECT_TRUE(G.getClass(un(T::G_FPTOSI_SAT, S32, X)).NotPoison);
+  EXPECT_TRUE(G.getClass(D).NotPoison);
+}
+
+TEST_F(GIEGraphFPConversionTest, IntegerExtensionBeforeConversion) {
+  EClassId A = in(S16, /*Defined=*/true);
+  EClassId SS = un(T::G_SITOFP, S32, sext(S32, A));
+  EClassId SZ = un(T::G_SITOFP, S32, zext(S32, A));
+  EClassId UZ = un(T::G_UITOFP, S32, zext(S32, A));
+  EClassId US = un(T::G_UITOFP, S32, sext(S32, A));
+  runAll();
+  EXPECT_TRUE(G.equivalent(SS, un(T::G_SITOFP, S32, A)));
+  EXPECT_TRUE(G.equivalent(SZ, un(T::G_UITOFP, S32, A)));
+  EXPECT_TRUE(G.equivalent(UZ, un(T::G_UITOFP, S32, A)));
+  EXPECT_FALSE(G.equivalent(US, un(T::G_UITOFP, S32, A)));
+  EXPECT_FALSE(G.equivalent(US, un(T::G_SITOFP, S32, A)));
+}
+
 } // namespace

@@ -33,8 +33,10 @@
 /// only matches as a refinement, and so does a division that may trap.
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/CodeGen/GlobalISel/GIEGraph.h"
+#include "llvm/CodeGen/LowLevelTypeUtils.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/Instructions.h"
@@ -343,8 +345,8 @@ void llvm::egraph::addAlgebraRulesFromProperties(
 void llvm::egraph::addUnaryRulesFromProperties(
     ArrayRef<OpProperties> Props, std::vector<RewriteRule> &Rules) {
   auto Add = [&](const Twine &Name, const std::string &L, const std::string &R,
-                 RewriteRule::ApplyFn Fn = nullptr) {
-    Rules.emplace_back(Name.str(), L, R, std::move(Fn));
+                 RewriteRule::ApplyFn Fn = nullptr, bool PoisonExact = false) {
+    Rules.emplace_back(Name.str(), L, R, std::move(Fn), PoisonExact);
   };
   // Involutions: op(op(a)) == a.
   for (const OpProperties &P : Props)
@@ -355,9 +357,12 @@ void llvm::egraph::addUnaryRulesFromProperties(
     for (auto [Inner, Result] : P.ComposesTo)
       Add(Twine(P.ShortName) + "-of-" + propsOf(Inner).ShortName,
           un(P, un(propsOf(Inner), "?a")), un(propsOf(Result), "?a"));
+    // If op can give poison for a defined operand, it does so for the same
+    // values of a on both sides.
     for (unsigned Inner : P.InvariantUnder)
       Add(Twine(P.ShortName) + "-of-" + propsOf(Inner).ShortName,
-          un(P, un(propsOf(Inner), "?a")), un(P, "?a"));
+          un(P, un(propsOf(Inner), "?a")), un(P, "?a"), nullptr,
+          /*PoisonExact=*/P.MayBePoison);
   }
   // A truncation of an extension is the value itself, a truncation or an
   // extension, depending on the widths. The three rules have the same
@@ -378,6 +383,101 @@ void llvm::egraph::addUnaryRulesFromProperties(
       // related.
       if (E.Cast != CastKind::AnyExtend)
         Add(Name + "-wide", L, un(E, "?a"));
+    }
+  }
+  // The same for a floating-point truncation of an extension, because the
+  // extension is exact.
+  for (const OpProperties &T : Props) {
+    if (T.Cast != CastKind::FPTruncate)
+      continue;
+    for (const OpProperties &E : Props) {
+      if (E.Cast != CastKind::FPExtend)
+        continue;
+      std::string Name = (Twine(T.ShortName) + "-of-" + E.ShortName).str();
+      std::string L = un(T, un(E, "?a"));
+      Add(Name + "-same", L, "?a");
+      Add(Name + "-narrow", L, un(T, "?a"));
+      Add(Name + "-wide", L, un(E, "?a"));
+    }
+  }
+  // The type of the inner operation of the pattern op(g(?a)), and the width
+  // of ?a.
+  auto InnerType = [](const EGraph &G, const RuleMatch &M) {
+    return G.getType(M.PatClasses[1]);
+  };
+  for (const OpProperties &I : Props) {
+    if (I.Cast != CastKind::SIntToFP && I.Cast != CastKind::UIntToFP)
+      continue;
+    bool ISigned = I.Cast == CastKind::SIntToFP;
+    // The first format holds every value of the integer type: a conversion
+    // to another format rounds the same number.
+    RewriteRule::ApplyFn Exact = [=](const EGraph &G, const RuleMatch &M,
+                                     Computed &) {
+      return !M.isSumBound(0) &&
+             isExactIntToFP(ISigned, varWidth(G, M, 0), InnerType(G, M));
+    };
+    for (const OpProperties &C : Props)
+      if (C.Cast == CastKind::FPExtend || C.Cast == CastKind::FPTruncate)
+        Add(Twine(C.ShortName) + "-of-" + I.ShortName, un(C, un(I, "?a")),
+            un(I, "?a"), Exact);
+    // An integer that goes to a floating-point format and back to an
+    // integer type. The extension has the signedness of the first
+    // conversion; the three rules have one left-hand side, and the types
+    // select the right-hand side.
+    const OpProperties &Ext =
+        propsOf(ISigned ? TargetOpcode::G_SEXT : TargetOpcode::G_ZEXT);
+    const OpProperties &ZExt = propsOf(TargetOpcode::G_ZEXT);
+    const OpProperties &Trunc = propsOf(TargetOpcode::G_TRUNC);
+    for (const OpProperties &F : Props) {
+      std::string Name = (Twine(F.ShortName) + "-of-" + I.ShortName).str();
+      std::string L = un(F, un(I, "?a"));
+      switch (F.Cast) {
+      case CastKind::FPToSInt:
+      case CastKind::FPToUInt: {
+        // The result is poison if the number is not in the range of the
+        // result, so each right-hand side is a refinement. If the first
+        // conversion is not exact, the number has more bits than the
+        // precision; then it is also outside of a range of at most that
+        // many bits.
+        RewriteRule::ApplyFn Fits = [=](const EGraph &G, const RuleMatch &M,
+                                        Computed &) {
+          if (M.isSumBound(0))
+            return false;
+          LLT FPTy = InnerType(G, M);
+          return isExactIntToFP(ISigned, varWidth(G, M, 0), FPTy) ||
+                 rootWidth(G, M) <=
+                     APFloat::semanticsPrecision(getFltSemanticForLLT(FPTy));
+        };
+        bool FSigned = F.Cast == CastKind::FPToSInt;
+        Add(Name + "-same", L, "?a", Fits);
+        Add(Name + "-narrow", L, un(Trunc, "?a"), Fits);
+        Add(Name + "-wide", L, un(ISigned && FSigned ? Ext : ZExt, "?a"), Fits);
+        break;
+      }
+      case CastKind::FPToSIntSat:
+      case CastKind::FPToUIntSat: {
+        bool FSigned = F.Cast == CastKind::FPToSIntSat;
+        // With saturation every result is defined, so the first conversion
+        // must be exact. The number is then clamped to the result type.
+        if (ISigned == FSigned) {
+          Add(Name + "-same", L, "?a", Exact);
+          Add(Name + "-wide", L, un(Ext, "?a"), Exact);
+          Add(Name + "-narrow", L,
+              un(propsOf(ISigned ? TargetOpcode::G_TRUNC_SSAT_S
+                                 : TargetOpcode::G_TRUNC_USAT_U),
+                 "?a"),
+              Exact);
+        } else if (ISigned) {
+          Add(Name + "-narrow", L,
+              un(propsOf(TargetOpcode::G_TRUNC_SSAT_U), "?a"), Exact);
+        } else {
+          Add(Name + "-wide", L, un(ZExt, "?a"), Exact);
+        }
+        break;
+      }
+      default:
+        break;
+      }
     }
   }
   // Homomorphisms: op(a) I op(b)  =>  op(a I b), and with a constant c that
@@ -679,6 +779,22 @@ void llvm::egraph::addFoldingRulesFromProperties(
             Out.push_back(*R);
             return true;
           });
+    } else if (P.FoldCast) {
+      // The fold gives no value if the result is poison, so the two sides
+      // are poison for the same operands.
+      Rules.emplace_back(
+          Name, un(P, "#a"), "$0",
+          [Fold = P.FoldCast](const EGraph &G, const RuleMatch &M,
+                              Computed &Out) {
+            LLT SrcTy = G.getType(M.ConstClasses[0]);
+            LLT DstTy = G.getType(M.Root);
+            std::optional<APInt> R = Fold(*M.Consts[0], SrcTy, DstTy);
+            if (!R || R->getBitWidth() != DstTy.getSizeInBits())
+              return false;
+            Out.push_back(*R);
+            return true;
+          },
+          /*PoisonExact=*/P.MayBePoison);
     } else if (P.Shape == OpShape::Compare) {
       for (CmpInst::Predicate Pred : icmpPredicates())
         Rules.emplace_back(
@@ -707,7 +823,7 @@ void llvm::egraph::addFoldingRulesFromProperties(
         Rules.emplace_back(Name,
                            "(" + std::string(P.Name) +
                                operandList('#', P.NumOperands) + ")",
-                           "$0", Fn);
+                           "$0", Fn, /*PoisonExact=*/P.MayBePoison);
         continue;
       }
       // A variable number of operands: one rule per number.

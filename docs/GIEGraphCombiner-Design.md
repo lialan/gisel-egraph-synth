@@ -68,7 +68,7 @@ remove 196 and 183.
 | File | Contents |
 |------|----------|
 | `include/llvm/CodeGen/GlobalISel/GIEGraph.h`, `lib/CodeGen/GlobalISel/GIEGraph.cpp` | Target-independent e-graph: e-nodes, e-classes, hash-consing, union-find, congruence closure, analyses, refinement edges, pattern parser and matcher, saturation, extraction, cost model. Depends only on `Support` and `LLT`. |
-| `lib/CodeGen/GlobalISel/GIEGraphRules.cpp` | The rule library: rules generated from operator properties plus the hand-written cross-operator rules (529 rules applied; commutativity and associativity are implicit). |
+| `lib/CodeGen/GlobalISel/GIEGraphRules.cpp` | The rule library: rules generated from operator properties plus the hand-written cross-operator rules (572 rules applied; commutativity and associativity are implicit). |
 | `include/llvm/CodeGen/GlobalISel/GIEGraphCombiner.h`, `lib/CodeGen/GlobalISel/GIEGraphCombiner.cpp` | The `MachineFunctionPass`: region discovery, MIR -> e-graph, shadow report, MIR re-emission, statistics, timers. |
 | `lib/Target/AMDGPU/AMDGPUTargetMachine.cpp` | `-amdgpu-gisel-egraph` pipeline hook. |
 | `unittests/CodeGen/GlobalISel/GIEGraphTest.cpp` | Unit tests of the engine and of coverage of existing combines. |
@@ -253,9 +253,11 @@ refinements; with frozen inputs they become equivalences (see the
   Right-hand sides that would create such a shift are rejected.
 * Shift amount types may differ from the value type (`G_SHL s64, s32`); a
   constant amount is re-materialized at the value width only if it fits.
-* Only scalar types are supported (any width up to 128). Vectors, pointers,
-  floating point, memory, PHIs, multi-def instructions and anything with
-  implicit operands are region boundaries.
+* Only scalar types are supported (any width up to 128). Vectors, memory,
+  floating-point arithmetic and anything with implicit operands are region
+  boundaries. Floating-point values are in a region only as operands and
+  results of the conversions, of `G_SELECT`, of `G_PHI` and of `G_FREEZE`
+  (see [Floating-point conversions](#floating-point-conversions)).
 * Regions never cross basic blocks.
 
 ## Rewrite rules
@@ -293,7 +295,7 @@ The current table:
 | `G_LSHR`, `G_ASHR` | | | 0 | | | |
 
 That table shows the binary operators of one type, with which the PoC
-started. The property table now has 91 generic opcodes (and the
+started. The property table now has 99 generic opcodes (and the
 `*_ZERO_POISON` forms of `G_CTLZ` and `G_CTTZ` as flagged variants of the
 same operator). Each entry has an `OpShape`, which gives the typing rule and
 the poison rule of the operator:
@@ -302,7 +304,7 @@ the poison rule of the operator:
 |-------|-----------|
 | `Binary` | arithmetic, bitwise, shifts, rotates, division and remainder, min/max, saturating arithmetic, `G_UMULH`/`G_SMULH`, averages, absolute differences, `G_CLMUL` |
 | `Unary` | `G_ABS`, `G_BSWAP`, `G_BITREVERSE`, `G_FREEZE` |
-| `Cast` | `G_TRUNC`, `G_ZEXT`, `G_SEXT`, `G_ANYEXT`, saturating truncations, `G_PTRTOINT`, `G_INTTOPTR` |
+| `Cast` | `G_TRUNC`, `G_ZEXT`, `G_SEXT`, `G_ANYEXT`, saturating truncations, `G_PTRTOINT`, `G_INTTOPTR`, and the conversions with a floating-point operand or result: `G_FPEXT`, `G_FPTRUNC`, `G_SITOFP`, `G_UITOFP`, `G_FPTOSI`, `G_FPTOUI`, `G_FPTOSI_SAT`, `G_FPTOUI_SAT` |
 | `BitCount` | `G_CTPOP`, `G_CTLZ`, `G_CTTZ`, `G_CTLS` |
 | `Compare`, `Select` | `G_ICMP` (predicate in `Attr`), `G_SELECT` |
 | `PtrAdd` | `G_PTR_ADD`, `G_PTRMASK` |
@@ -316,6 +318,50 @@ remainder): the operator is never introduced unless the region has it with
 the same operands. `PoisonVariant`: the `*_ZERO_POISON` opcode of a bit
 count, selected by a flag of the node. `StopsPoison` (`G_FREEZE`): the node
 is tied to its instruction, so two freezes of one value are not merged.
+
+### Floating-point conversions
+
+A floating-point value is its bit pattern, and the format is the format of
+its type (`hasFPFormat`: IEEE half, single, double and quad, and bfloat).
+Where the target does not tell integers from floating-point values in its
+types, a plain scalar of 16, 32, 64 or 128 bits has the IEEE format of that
+size. Only the conversions, `G_SELECT`, `G_PHI` and `G_FREEZE` take
+floating-point values; there is no floating-point arithmetic. A
+`G_FCONSTANT` is a constant if its type is a floating-point type, and the
+pass writes a floating-point constant as `G_FCONSTANT`.
+
+| Operator | Model |
+|----------|-------|
+| `G_FPEXT` | exact |
+| `G_FPTRUNC`, `G_SITOFP`, `G_UITOFP` | rounded to nearest, ties to even |
+| `G_FPTOSI`, `G_FPTOUI` | rounded toward zero; poison for a NaN and for a number outside of the range of the result (`MayBePoison`) |
+| `G_FPTOSI_SAT`, `G_FPTOUI_SAT` | rounded toward zero and clamped to the range of the result; a NaN gives 0 |
+
+The 43 rules of these operators are generated from the table:
+
+* `G_FPEXT` is exact, so two extensions are one, a truncation of an
+  extension is the value or one conversion, and a conversion to an integer
+  does not need the extension.
+* An integer extension does not change the number that is converted
+  (`sitofp (sext x) -> sitofp x`, the same for `zext` with either
+  conversion).
+* A conversion of an integer to a format that has every value of the integer
+  type (`isExactIntToFP`) is exact. A change of the format after it is then
+  one conversion, and a conversion back to an integer is the integer, its
+  extension or its (saturating) truncation. The guard reads the types.
+* Constants fold with `APFloat`; a conversion that gives poison does not
+  fold.
+
+A node of a `MayBePoison` operator can be poison although its operands are
+not. A match of such a node justifies only a refinement, and a rule creates
+such a node only if the rule is *poison-exact*: its two sides are poison for
+the same operands (`fptosi (fpext x) -> fptosi x`). `G_FPTOSI` is not
+rewritten to `G_FPTOSI_SAT` or the reverse.
+
+LLVM does not specify the payload of a NaN that a conversion makes. The
+rules never depend on it, and `verify_rules.py` compares two NaN results of
+a conversion as equal. Its semantics of these operators use the
+floating-point theory of Z3 and are independent of `APFloat`.
 
 Deliberately not in the table: `G_ASSERT_ZEXT`, `G_ASSERT_SEXT`,
 `G_ASSERT_ALIGN` (hints, not operations), `G_CONSTANT_FOLD_BARRIER`, `G_BRJT`
@@ -574,8 +620,9 @@ applied rewrites and estimated cost saved. `-time-passes` adds
 
 ## Known limitations
 
-* Regions are single-block, scalar only (integers, and pointers for the
-  pointer operators), and capped at 32 instructions; larger connected
+* Regions are single-block, scalar only (integers, pointers for the
+  pointer operators, and floating-point values for the conversions), and
+  capped at 32 instructions; larger connected
   components are split by the cap.
 * Inputs are almost never provably defined in real code, so most profitable
   candidates are refinements. They are still sound to apply.

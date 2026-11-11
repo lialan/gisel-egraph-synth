@@ -16,7 +16,7 @@
 # CHECK-SAME: "cost":{"original":6,"optimized":2}
 # CHECK-SAME: "inputs":[{"id":0,"in":0,"reg":"%0","type":"s32","zero":"0x0","one":"0x0","def":"COPY"
 # CHECK-SAME: "constants":[{"id":1,"type":"s32","value":"0xFF"},{"id":3,"type":"s32","value":"0xF"}]
-# CHECK-SAME: "original":[{"id":2,"op":"G_AND","best":2,"instr":3,"reg":"%3","type":"s32","uses":1,"zero":"0xFFFFFF00","one":"0x0","args":[0,1]}
+# CHECK-SAME: "original":[{"id":2,"op":"G_AND","best":2,"instr":3,"reg":"%3","type":"s32","uses":1,"zero":"0xFFFFFF00","one":"0x0","not_undef":false,"not_poison":false,"args":[0,1]}
 # CHECK-SAME: {"id":8,"op":"G_ICMP","pred":"ult",
 # CHECK-SAME: "optimized":[
 # CHECK-SAME: {"id":4,"op":"G_AND","type":"s32","args":[0,3]},{"id":11,"op":"G_UMIN","type":"s32","args":[5,4]}

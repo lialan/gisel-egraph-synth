@@ -334,6 +334,9 @@ struct RuleMatch {
   /// The rule then relates the root to `RHS op Rest`.
   ACTerm Rest;
   SmallVector<std::optional<APInt>, 2> Consts;
+  /// The class that each constant variable was first matched with (its type
+  /// is the type of the constant).
+  SmallVector<EClassId, 2> ConstClasses;
   /// The class matched by each operation node of the LHS pattern (indexed
   /// like Pattern::Nodes); NoClass for other nodes and for operations matched
   /// modulo AC.
@@ -391,6 +394,10 @@ public:
   unsigned getLHSOccurrences(unsigned Var) const { return OccL[Var]; }
   unsigned getRHSOccurrences(unsigned Var) const { return OccR[Var]; }
   const ApplyFn &getApplyFn() const { return Fn; }
+  /// True if the rule asserts that its sides are poison under exactly the
+  /// same conditions. Only such a rule creates a node of an operator with
+  /// OpProperties::MayBePoison.
+  bool isPoisonExact() const { return PoisonExact; }
 
   /// True if, for this binding, LHS and RHS denote exactly the same value
   /// (including undef and poison behaviour), so the classes may be merged.
@@ -403,7 +410,8 @@ public:
   /// the soundness classification: '; refine-defined: a b' lists the
   /// variables that must not be poison for RHS to refine LHS, and
   /// '; exact-defined: c' those that additionally must not be poison for the
-  /// two sides to be equivalent.
+  /// two sides to be equivalent. '; poison-exact' follows for a rule that
+  /// isPoisonExact().
   void print(raw_ostream &OS) const;
 
 private:
@@ -491,7 +499,36 @@ enum class CastKind : uint8_t {
   IntToPtr,
   /// The bits [Attr, Attr + result width) of the operand.
   Extract,
+  /// The conversions with a floating-point operand or result. The format of
+  /// a floating-point type is the format of its LLT (hasFPFormat).
+  /// A conversion to a wider format; it is exact.
+  FPExtend,
+  /// A conversion to a narrower format, rounded to nearest (ties to even).
+  FPTruncate,
+  /// To an integer, rounded toward zero. The result is poison if the
+  /// rounded value does not fit (OpProperties::MayBePoison).
+  FPToSInt,
+  FPToUInt,
+  /// To an integer, rounded toward zero and clamped to the range of the
+  /// result. A NaN gives 0.
+  FPToSIntSat,
+  FPToUIntSat,
+  /// From an integer, rounded to nearest (ties to even).
+  SIntToFP,
+  UIntToFP,
 };
+
+/// True if \p K is a conversion with a floating-point operand or result.
+bool isFPCast(CastKind K);
+/// True if \p Ty has a floating-point format that the conversions are
+/// modeled for (IEEE half, single, double, quad, and bfloat): a
+/// floating-point type or, if the types do not tell integers from
+/// floating-point values (LLT::getUseExtended), a plain scalar of 16, 32, 64
+/// or 128 bits.
+bool hasFPFormat(LLT Ty);
+/// True if every integer of \p Width bits (signed if \p Signed) has an
+/// exact value in the format of \p FPTy.
+bool isExactIntToFP(bool Signed, unsigned Width, LLT FPTy);
 
 /// The type of an operand or a result of an OpShape::Typed operator.
 enum class TypeKind : uint8_t {
@@ -548,8 +585,10 @@ struct OpProperties {
   /// and width are constants that select bits inside the value.
   bool IsBitField = false;
   /// The result can be poison although no operand is, e.g. because the exact
-  /// result does not fit (non-saturating fixed-point arithmetic). Rules do
-  /// not create such nodes.
+  /// result does not fit (non-saturating fixed-point arithmetic, a
+  /// floating-point value converted to an integer). A match of such a node
+  /// only justifies a refinement, and a rule does not create such a node,
+  /// unless the rule is poison-exact (RewriteRule::isPoisonExact).
   bool MayBePoison = false;
   /// The opcode of the variant that is poison for some operands and equal to
   /// this operator otherwise (G_CTLZ_ZERO_POISON for G_CTLZ). An instruction
@@ -680,6 +719,11 @@ struct OpProperties {
   /// operand width or the result does not fit.
   std::optional<APInt> (*FoldUnary)(const APInt &,
                                     unsigned ResultWidth) = nullptr;
+  /// Constant folding of a conversion that depends on the types (a
+  /// floating-point constant is its bit pattern); returns std::nullopt if
+  /// the result is poison.
+  std::optional<APInt> (*FoldCast)(const APInt &, LLT SrcTy,
+                                   LLT DstTy) = nullptr;
   /// A constant p of \p SrcWidth bits with op(p) == \p C, if there is one.
   std::optional<APInt> (*Preimage)(const APInt &C, unsigned SrcWidth) = nullptr;
   /// Constant folding of any other operator: the operands, ENode::Attr and
@@ -713,6 +757,10 @@ struct OpProperties {
   /// True if the second operand is an amount of any scalar type.
   bool hasAmount() const { return IsShift || IsRotate; }
 };
+
+/// True if a cast with the properties \p P from \p SrcTy to \p Ty is
+/// well-typed. \p Attr is the immediate of a CastKind::Extract.
+bool isValidCast(const OpProperties &P, LLT Ty, LLT SrcTy, uint64_t Attr);
 
 /// The value of the pattern literal \p V at \p Width bits (see
 /// OpProperties::SignedMin).
