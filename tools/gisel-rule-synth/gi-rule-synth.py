@@ -190,7 +190,7 @@ def cmd_capabilities(args):
         print()
         return 0
     short = {'yes': 'yes', 'enumerative+egraph': 'enum+egraph',
-             'egraph': 'egraph'}
+             'enumerative-source+egraph': 'enum-src+egraph'}
     print('| Operator | Shape | ' + ' | '.join(
         s.capitalize() for s in ops.STAGES) + ' |')
     print('|---|---|' + '---|' * len(ops.STAGES))
@@ -348,7 +348,7 @@ def cmd_synth(args):
     if args.max_instances:
         insts = insts[:args.max_instances]
     backend = smt.Z3Backend(timeout_ms=args.timeout_ms)
-    dlim = discover.Limits(seed=args.seed)
+    dlim = discover.Limits(seed=args.seed, grammar=args.grammar)
     slim = synth.SynthLimits(max_atoms=args.max_atoms)
     ctx = discover.Context(dlim)
     sy = synth.Synthesizer(backend, slim, proof_dir=args.proofs)
@@ -480,6 +480,9 @@ def cmd_synth(args):
                    'timeout_ms': args.timeout_ms},
         'corpus': {'files': len(files), 'sha256': _sha(files),
                    'records': cstats['records'],
+                   'unsupported_records': cstats['unsupported'],
+                   'unsupported_reasons': cstats['unsupported_reasons'],
+                   'operators': cstats['operators'],
                    'distinct_instances': cstats['distinct'],
                    'searched_instances': len(insts),
                    'compose_files': len(cfiles),
@@ -719,6 +722,12 @@ def main():
     p.add_argument('--stats')
     p.add_argument('--timeout-ms', type=int, default=10000)
     p.add_argument('--seed', type=int, default=0)
+    p.add_argument('--grammar', choices=('base', 'source', 'all'),
+                   default='source',
+                   help='operators of the replacement terms of the '
+                        'enumerative search next to the base grammar: '
+                        'none, the operators of the source (default), or '
+                        'every operator with a sample kernel')
     p.add_argument('--max-atoms', type=int, default=2)
     p.add_argument('--max-instances', type=int, default=0)
     p.add_argument('--compose-corpus', nargs='*', default=[],

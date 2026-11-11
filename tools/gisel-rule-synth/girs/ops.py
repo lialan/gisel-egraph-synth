@@ -822,10 +822,25 @@ _NO_SEMANTICS = {
     'G_INTTOPTR': 'pointer values are not modeled',
 }
 
-# Operators the enumerative search builds terms from. Every other operator
-# with semantics is found only through the e-graph candidates.
+# The base grammar of the enumerative search: the operators it builds
+# replacement terms from for every corpus instance.
 ENUMERATED = ('G_ADD', 'G_SUB', 'G_MUL', 'G_AND', 'G_OR', 'G_XOR', 'G_SHL',
               'G_LSHR', 'G_ASHR', 'G_TRUNC', 'G_ZEXT', 'G_SEXT')
+
+# Operators the search can also build terms from (discover.py has a
+# sample kernel for each). Which of them a term bank has is a limit of the
+# search (discover.Limits.grammar): by default the operators of the source.
+ENUMERATED_BINARY = (
+    'G_SMIN', 'G_SMAX', 'G_UMIN', 'G_UMAX', 'G_ABDS', 'G_ABDU',
+    'G_UADDSAT', 'G_SADDSAT', 'G_USUBSAT', 'G_SSUBSAT', 'G_UMULH',
+    'G_SMULH', 'G_UAVGFLOOR', 'G_UAVGCEIL', 'G_SAVGFLOOR', 'G_SAVGCEIL',
+    'G_USHLSAT', 'G_SSHLSAT', 'G_ROTL', 'G_ROTR')
+ENUMERATED_UNARY = ('G_ABS', 'G_BSWAP', 'G_BITREVERSE')
+ENUMERATED_COUNT = ('G_CTPOP', 'G_CTLZ', 'G_CTLZ_ZERO_POISON', 'G_CTTZ',
+                    'G_CTTZ_ZERO_POISON', 'G_CTLS')
+ENUMERATED_NARROW = ('G_TRUNC_SSAT_S', 'G_TRUNC_SSAT_U', 'G_TRUNC_USAT_U')
+ENUMERATED_EXTRA = ENUMERATED_BINARY + ENUMERATED_UNARY + \
+    ENUMERATED_COUNT + ENUMERATED_NARROW
 
 # Shapes the emitter can write as a match pattern and as a replacement.
 _EMIT_SHAPES = ('binary', 'unary', 'cast', 'bitcount', 'compare', 'select',
@@ -912,11 +927,19 @@ _load_generic()
 
 def capability(info, stage):
     """'yes', or the reason why ``stage`` is not supported. The discovery
-    stage also says which engine finds the operator."""
+    stage also says which engine finds the operator:
+    'enumerative+egraph' if the enumerative search matches the operator in
+    a source and builds replacements with it, 'enumerative-source+egraph'
+    if it only matches the operator in a source."""
     if stage in info.unsupported:
         return info.unsupported[stage]
     if stage == 'discovery':
-        return 'enumerative+egraph' if info.name in ENUMERATED else 'egraph'
+        # Every operator with a model can be in the source of a corpus
+        # instance and of an e-graph candidate. The enumerative search
+        # builds replacement terms only from the operators of its grammar.
+        if info.name in ENUMERATED or info.name in ENUMERATED_EXTRA:
+            return 'enumerative+egraph'
+        return 'enumerative-source+egraph'
     return 'yes'
 
 

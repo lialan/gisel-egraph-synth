@@ -82,9 +82,34 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
 
 ## How a rule gets into the library
 
+0. **Corpus** (`GISynthCorpusExtractor`, `corpus.py`). The extractor pass
+   has no list of opcodes: it writes a tree for each scalar instruction that
+   is an operator of the operator table of the e-graph combiner (GIEGraph.h,
+   `OpProperties`), except the pointer operators, `G_PHI` and the
+   terminators. A node has the opcode (`op`), the predicate of a comparison
+   (`pred`), a trailing immediate (`imm`), the index of the result if the
+   instruction has several results (`res`), and the type name (`type`); a
+   tree is written for each result. `corpus.py` accepts a tree if every
+   operator has a model in the registry (`ops.py`) and counts the other
+   trees by reason (`corpus.unsupported_reasons` in `rules.stats.json`,
+   next to the occurrences of each operator, `corpus.operators`). A new
+   operator of the table with a model needs no change in these two places.
 1. **Discovery** (`discover.py`). Enumerative search for a cheaper
    expression that agrees with the source on samples, then an SMT proof under
-   the instance's concrete known bits. The enumeration is done once per
+   the instance's concrete known bits. The source can have every operator
+   with a model. The replacement terms are built from the base grammar
+   (`ops.ENUMERATED`: the nine arithmetic and bit operations and the three
+   integer casts) and, with `synth --grammar`, from the operators of
+   `ops.ENUMERATED_EXTRA` (min/max, absolute difference, saturating
+   arithmetic, high multiplication, averages, rotations, `G_ABS`,
+   `G_BSWAP`, `G_BITREVERSE`, the bit counts and the saturating
+   truncations): `source` (default) adds the operators of this list that
+   the source has, so the search of a source of the base grammar does not
+   change; `all` adds the full list; `base` adds none. The operators with
+   an attribute, with several results or with three operands, the
+   conversions with a floating-point value, and the operators that a rule
+   must not create are only in sources (`enum-src+egraph` in
+   `capabilities`); the e-graph candidates give replacements with them. The enumeration is done once per
    *signature* (width class of every input), in a term bank pruned by
    observational equivalence, and reused by every instance with that
    signature whatever its shape or bit widths. Instances are visited by
@@ -129,8 +154,9 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
 
 A replacement can have a *computed constant*: a constant that the source
 does not have. The importer looks for a recipe, an expression over the
-constants of the source (`G_ADD`, `G_SUB`, `G_MUL`, `G_AND`, `G_OR`, `G_XOR`
-and the shifts) or the mask of the low bits of a narrower type of the source
+constants of the source (`G_ADD`, `G_SUB`, `G_MUL`, `G_AND`, `G_OR`, `G_XOR`,
+the shifts, min/max and the saturating addition and subtraction;
+`ir.RECIPE_OPS`) or the mask of the low bits of a narrower type of the source
 (`G_ZEXT` of the literal -1), and tries at most three recipes. The rule then
 matches the variables of the recipe only as constants (`const_vars`), and
 the proof holds for every value of them. The generated guard reads the

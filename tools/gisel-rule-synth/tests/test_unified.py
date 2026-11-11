@@ -72,9 +72,9 @@ class OpsTest(unittest.TestCase):
             # An operator without a model is not a discovery or emission
             # candidate.
             if r['smt'] != 'yes':
-                self.assertNotIn(r['discovery'], ('egraph',
-                                                  'enumerative+egraph'),
-                                 r['name'])
+                self.assertNotIn(r['discovery'],
+                                 ('enumerative-source+egraph',
+                                  'enumerative+egraph'), r['name'])
                 self.assertNotEqual(r['emit'], 'yes', r['name'])
 
     def test_enumerated_operators_keep_their_models(self):

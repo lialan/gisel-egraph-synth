@@ -18,7 +18,7 @@ sys.path.insert(0, ROOT)
 import z3  # noqa: E402
 
 from girs import (compose, corpus, discover, emit, ir, match,  # noqa
-                  precond, select, smt, synth, targets)
+                  ops, precond, select, smt, synth, targets)
 
 
 def V(i):
@@ -151,6 +151,108 @@ class DiscoveryTest(unittest.TestCase):
                  [(0, 0), (0x80000000, 0x7fffffff)], [None, 0x7fffffff])
         r = discover.prove_concrete(i, V(0), self.be)
         self.assertEqual(r.status, 'sat')
+
+
+class GrammarTest(unittest.TestCase):
+    """The operators next to the base grammar of the enumerative search."""
+
+    def test_kernels_match_the_evaluator(self):
+        rng = random.Random(1)
+        U64 = discover.U64
+        for op in ops.ENUMERATED + ops.ENUMERATED_EXTRA:
+            info = ops.parse(op)[0]
+            unary = op in ir.CASTS or (op in ops.ENUMERATED_EXTRA and
+                                       op not in ops.ENUMERATED_BINARY)
+            checked = 0
+            for w in (1, 8, 16, 32, 33, 64):
+                for wa in (1, 8, 16, 32, 33, 64):
+                    for wb in ((None,) if unary else (wa, 8)):
+                        ws = [wa] if unary else [wa, wb]
+                        if not info.typecheck(w, ws, None, 0):
+                            continue
+                        a = discover._special(wa) + \
+                            [rng.getrandbits(wa) for _ in range(40)]
+                        a = [x & ir.mask(wa) for x in a]
+                        b = None if unary else \
+                            [discover._draw(wb, rng) & ir.mask(wb)
+                             for _ in a]
+                        v, bad = discover.kernel(
+                            op, w, wa, discover.np.array(a, U64),
+                            None if unary else discover.np.array(b, U64))
+                        for i, x in enumerate(a):
+                            ref = ir.apply_op(op, w, ws,
+                                              [x] if unary else [x, b[i]])
+                            got = None if bad is not None and bad[i] \
+                                else int(v[i])
+                            self.assertEqual(got, ref, (op, w, ws, x, b))
+                            checked += 1
+            self.assertGreater(checked, 0, op)
+
+    def test_base_bank_does_not_change_with_the_default_grammar(self):
+        lim = discover.Limits()
+        i = inst(('G_AND', 32, V(0), V(1)), (32, 32), [(0, 0), (0, 0)])
+        self.assertEqual(discover.grammar_extras(i, lim), ())
+
+    def test_source_operator_is_in_the_grammar(self):
+        # umin(zext x, zext y) -> zext(umin(x, y)): the replacement needs
+        # G_UMIN.
+        be = smt.Z3Backend()
+        lim = discover.Limits()
+        src = ('G_UMIN', 32, ('G_ZEXT', 32, V(0)), ('G_ZEXT', 32, V(1)))
+        i = inst(src, (8, 8), [(0, 0), (0, 0)])
+        self.assertEqual(discover.grammar_extras(i, lim), ('G_UMIN',))
+        cands, _ = discover.discover(i, be, lim)
+        self.assertIn(('G_ZEXT', 32, ('G_UMIN', 8, V(0), V(1))),
+                      [t for c in cands
+                       for t in ir.commuted_variants(c['tgt'])])
+        # The base grammar does not have the operator.
+        cands, _ = discover.discover(i, be, discover.Limits(grammar='base'))
+        self.assertEqual(cands, [])
+
+    def test_all_grammar_finds_another_operator(self):
+        # select(x ult y, x, y) -> umin(x, y): G_UMIN is not in the source.
+        be = smt.Z3Backend()
+        src = ('G_SELECT', 32, ('G_ICMP:ult', 1, V(0), V(1)), V(0), V(1))
+        i = inst(src, (32, 32), [(0, 0), (0, 0)])
+        cands, _ = discover.discover(i, be, discover.Limits())
+        self.assertEqual(cands, [])
+        cands, _ = discover.discover(i, be, discover.Limits(grammar='all'))
+        self.assertIn(('G_UMIN', 32, V(0), V(1)),
+                      [t for c in cands
+                       for t in ir.commuted_variants(c['tgt'])])
+
+    def test_corpus_record_with_attribute_and_result_index(self):
+        def leaf(i):
+            return {'in': i}
+
+        def node(op, w, args, **kw):
+            return dict({'op': op, 'w': w, 'reg': '%%%d' % id(args),
+                         'zero': '0x0', 'one': '0x0', 'uses': 1,
+                         'flags': [], 'args': args}, **kw)
+        inp = [{'reg': '%0', 'w': 32, 'zero': '0x0', 'one': '0x0',
+                'def': 'COPY'},
+               {'reg': '%1', 'w': 32, 'zero': '0x0', 'one': '0x0',
+                'def': 'COPY'}]
+        rec = {'fn': 'f', 'bb': 0, 'root': '%9', 'interior': 2,
+               'inputs': inp,
+               'expr': node('G_SELECT', 32, [
+                   node('G_ICMP', 1, [leaf(0), leaf(1)], pred='ult'),
+                   leaf(0), leaf(1)])}
+        i = corpus.parse_record(rec)
+        self.assertEqual(i.expr, ('G_SELECT', 32,
+                                  ('G_ICMP:ult', 1, V(0), V(1)), V(0),
+                                  V(1)))
+        rec['expr'] = node('G_UADDO', 1, [leaf(0), leaf(1)], res=1)
+        self.assertEqual(corpus.parse_record(rec).expr,
+                         ('G_UADDO#1', 1, V(0), V(1)))
+        rec['expr'] = node('G_SEXT_INREG', 32, [leaf(0)], imm=8)
+        self.assertEqual(corpus.parse_record(rec).expr,
+                         ('G_SEXT_INREG:8', 32, V(0)))
+        # An operator without a model is rejected with the reason.
+        why = []
+        rec['expr'] = node('G_CLMUL', 32, [leaf(0), leaf(1)])
+        self.assertIsNone(corpus.parse_record(rec, why=why))
+        self.assertIn('G_CLMUL', why[0])
 
 
 class PreconditionTest(unittest.TestCase):

@@ -10,7 +10,9 @@ GISelValueTracking at the actual match site.
 
 import json
 
+from . import fp
 from . import ir
+from . import ops
 
 
 class Instance:
@@ -52,6 +54,14 @@ class Instance:
         }
 
 
+def node_key(node):
+    """The operator key of a corpus node: the opcode with its attribute
+    (the predicate of a comparison, a trailing immediate) and, for an
+    instruction with several results, the index of the result."""
+    return ops.make_key(node['op'], node.get('pred', node.get('imm')),
+                        node.get('res', 0))
+
+
 def _count_regs(node, counts):
     if 'op' in node:
         counts[node['reg']] = counts.get(node['reg'], 0) + 1
@@ -75,17 +85,23 @@ def _convert(node, inputs, interior_uses, flags, shared, root=False,
             interior_uses.append(a.get('uses', 1))
         args.append(_convert(a, inputs, interior_uses, flags, shared,
                              sub=sub))
-    e = (node['op'], node['w']) + tuple(args)
+    e = (node_key(node), node['w']) + tuple(args)
     if sub is not None and not root and 'zero' in node:
         sub.append((e, (int(node['zero'], 16), int(node['one'], 16))))
     return e
 
 
-def parse_record(rec, source=''):
-    """Returns an Instance, or None if the record uses unsupported opcodes."""
+def parse_record(rec, source='', why=None):
+    """Returns an Instance, or None if the record cannot be used. ``why``
+    (a list) receives the reason."""
     flags = set()
     uses = []
-    if not _supported(rec['expr']):
+    why = [] if why is None else why
+    r = _unsupported(rec['expr'])
+    if r is None:
+        r = next((x for x in map(_bad_type, rec['inputs']) if x), None)
+    if r is not None:
+        why.append(r)
         return None
     counts = {}
     _count_regs(rec['expr'], counts)
@@ -94,7 +110,8 @@ def parse_record(rec, source=''):
     for reg in sorted(r for r, c in counts.items() if c > 1):
         node = _find(rec['expr'], reg)
         if 'zero' not in node:
-            return None  # corpus written by an older extractor
+            why.append('corpus written by an older extractor')
+            return None
         shared[reg] = len(inputs)
         inputs.append({'reg': reg, 'w': node['w'], 'zero': node['zero'],
                        'one': node['one'], 'def': node['op']})
@@ -117,6 +134,8 @@ def parse_record(rec, source=''):
         facts.append((z, o))
         consts.append(int(inp['const'], 16) if 'const' in inp else None)
     if not ir.well_typed(expr, vw):
+        why.append('not well typed for the model: %s' %
+                   ops.base(expr[0]))
         return None
     return Instance(expr, vw, facts, consts, uses, sorted(flags),
                     [(source, rec['fn'], rec['root'])], sub_facts)
@@ -134,17 +153,52 @@ def _find(node, reg):
     return None
 
 
-def _supported(node):
+def _bad_type(node):
+    """The reason why the type of a value has no model, or None. A corpus
+    of an older extractor has no type names: every value is an integer.
+    A floating-point value is its bit pattern, and its type must have the
+    IEEE format of its width."""
+    t = node.get('type', '')
+    if t.startswith(('f', 'bf', 'ppcf', 'x86')) and \
+            not (t == 'f%d' % node['w'] and fp.is_format(node['w'])):
+        return 'type %s has no model' % t
+    return None
+
+
+def _unsupported(node):
+    """The reason why the synthesizer cannot use the tree, or None. The
+    registry (ops.py) decides: every operator with an evaluator and an SMT
+    model is accepted, so a new model needs no change here."""
     if 'in' in node:
-        return True
-    return node['op'] in ir.SUPPORTED and all(_supported(a)
-                                              for a in node['args'])
+        return None
+    key = node_key(node)
+    if not ops.known(key):
+        return 'operator %s is not in the registry' % node['op']
+    info = ops.parse(key)[0]
+    if info.smt is None:
+        return 'operator %s: %s' % (info.name, info.unsupported['smt'])
+    r = _bad_type(node)
+    if r is not None:
+        return r
+    for a in node['args']:
+        r = _unsupported(a)
+        if r is not None:
+            return r
+    return None
+
+
+def _count_ops(e, counts, n):
+    if ir.is_op(e):
+        name = ops.base(e[0])
+        counts[name] = counts.get(name, 0) + n
+        for a in e[2:]:
+            _count_ops(a, counts, n)
 
 
 def load(paths):
     """Loads and deduplicates corpus files. Returns (instances, stats)."""
     by_key = {}
-    stats = {'records': 0, 'unsupported': 0}
+    stats = {'records': 0, 'unsupported': 0, 'unsupported_reasons': {}}
     for path in paths:
         with open(path) as f:
             for line in f:
@@ -152,9 +206,12 @@ def load(paths):
                 if not line:
                     continue
                 stats['records'] += 1
-                inst = parse_record(json.loads(line), path)
+                why = []
+                inst = parse_record(json.loads(line), path, why)
                 if inst is None:
                     stats['unsupported'] += 1
+                    r = stats['unsupported_reasons']
+                    r[why[0]] = r.get(why[0], 0) + 1
                     continue
                 k = inst.key()
                 if k in by_key:
@@ -166,4 +223,9 @@ def load(paths):
                    key=lambda i: (-len(i.prov), ir.to_sexpr(i.expr), i.vw,
                                   i.facts))
     stats['distinct'] = len(insts)
+    # Occurrences of each operator in the records that were read.
+    counts = {}
+    for i in insts:
+        _count_ops(i.expr, counts, len(i.prov))
+    stats['operators'] = dict(sorted(counts.items()))
     return insts, stats

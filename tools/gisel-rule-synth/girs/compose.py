@@ -31,6 +31,7 @@ visits at most ``max_states`` expressions per instance.
 """
 
 from . import ir
+from . import ops
 from . import match
 from . import precond
 from . import synth
@@ -128,6 +129,16 @@ class Step:
 AXIOM_WIDTH = 32
 
 
+def associative_ops():
+    """The operators that the operator table says are commutative and
+    associative and that have a model, in table order. The table is only
+    a source of proposals: a macro rule is proved like every other rule."""
+    return [name for name, info in ops.REGISTRY.items()
+            if info.namespace == 'generic' and info.shape == 'binary' and
+            info.commutative and info.meta.get('associative') and
+            info.smt is not None]
+
+
 def axioms():
     """Equal-cost identities that move parentheses: associativity of the
     commutative operations, and the forms of it with a subtraction. The
@@ -146,7 +157,7 @@ def axioms():
         return (o, AXIOM_WIDTH, x, y)
     out = [('axiom:assoc-%s' % o[2:].lower(),
             op(o, op(o, a, b), c), op(o, a, op(o, b, c)))
-           for o in ir.COMMUTATIVE]
+           for o in associative_ops()]
     add, sub = 'G_ADD', 'G_SUB'
     out += [
         ('axiom:add-sub', op(sub, op(add, a, b), c), op(add, a, op(sub, b, c))),

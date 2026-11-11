@@ -278,7 +278,15 @@ _CPP_APINT = {'G_ADD': '(%s + %s)', 'G_SUB': '(%s - %s)',
               'G_MUL': '(%s * %s)', 'G_AND': '(%s & %s)',
               'G_OR': '(%s | %s)', 'G_XOR': '(%s ^ %s)',
               'G_SHL': '%s.shl(%s)', 'G_LSHR': '%s.lshr(%s)',
-              'G_ASHR': '%s.ashr(%s)'}
+              'G_ASHR': '%s.ashr(%s)',
+              'G_SMIN': 'APIntOps::smin(%s, %s)',
+              'G_SMAX': 'APIntOps::smax(%s, %s)',
+              'G_UMIN': 'APIntOps::umin(%s, %s)',
+              'G_UMAX': 'APIntOps::umax(%s, %s)',
+              'G_UADDSAT': '%s.uadd_sat(%s)',
+              'G_SADDSAT': '%s.sadd_sat(%s)',
+              'G_USUBSAT': '%s.usub_sat(%s)',
+              'G_SSUBSAT': '%s.ssub_sat(%s)'}
 assert set(_CPP_APINT) == set(ir.RECIPE_OPS)
 
 

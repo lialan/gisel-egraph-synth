@@ -33,21 +33,21 @@ from . import ops
 
 UB = ops.UB
 
+# The base grammar of the enumerative search (ops.ENUMERATED). These lists
+# do not say which operators the synthesizer supports: that is the
+# registry (ops.py), and every operator with a model can be in a source.
 BINOPS = ('G_ADD', 'G_SUB', 'G_MUL', 'G_AND', 'G_OR', 'G_XOR',
           'G_SHL', 'G_LSHR', 'G_ASHR')
 CASTS = ('G_TRUNC', 'G_ZEXT', 'G_SEXT')
-SHIFTS = ('G_SHL', 'G_LSHR', 'G_ASHR')
-COMMUTATIVE = ('G_ADD', 'G_MUL', 'G_AND', 'G_OR', 'G_XOR')
-SUPPORTED = BINOPS + CASTS
+assert BINOPS + CASTS == ops.ENUMERATED
 LITERALS = ('0', '1', '-1')
-
-# Generic instruction cost used for discovery and profitability filtering.
-# Leaves (inputs and constants) cost nothing. This is a filter, not a
-# target cost model; real code-size effects are measured on AMDGPU.
-OP_COST = {op: ops.cost(op) for op in SUPPORTED}
 
 
 def op_cost(op):
+    """Generic instruction cost used for discovery and profitability
+    filtering. Leaves (inputs and constants) cost nothing. This is a
+    filter, not a target cost model; real code-size effects are measured
+    on AMDGPU."""
     return ops.cost(op)
 
 
@@ -125,9 +125,13 @@ def is_linear_in(e, const_vars=()):
 
 # The operators of a computed constant. Their only poison is a shift
 # amount that is not smaller than the width, so the generated guard can
-# check that a computed constant is defined.
-RECIPE_OPS = ('G_ADD', 'G_SUB', 'G_MUL', 'G_AND', 'G_OR', 'G_XOR', 'G_SHL',
-              'G_LSHR', 'G_ASHR')
+# check that a computed constant is defined. The emitter has the APInt
+# expression of each (emit._CPP_APINT).
+BASE_RECIPE_OPS = ('G_ADD', 'G_SUB', 'G_MUL', 'G_AND', 'G_OR', 'G_XOR',
+                   'G_SHL', 'G_LSHR', 'G_ASHR')
+RECIPE_OPS = BASE_RECIPE_OPS + (
+    'G_SMIN', 'G_SMAX', 'G_UMIN', 'G_UMAX', 'G_UADDSAT', 'G_SADDSAT',
+    'G_USUBSAT', 'G_SSUBSAT')
 SHIFT_OPS = ('G_SHL', 'G_LSHR', 'G_ASHR')
 # G_ZEXT of the literal -1 is the mask of the low bits of a narrower type.
 CONST_OPS = RECIPE_OPS + ('G_ZEXT',)

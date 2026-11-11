@@ -268,7 +268,9 @@ def recipes(value, w, consts, vw, prefer=(), widths=()):
 
     def rank(e):
         return (ir.cost(e), -len(ir.variables(e)),
-                0 if e[0] in prefer else 1, ir.to_sexpr(e))
+                0 if e[0] in prefer else 1,
+                0 if e[0] in ir.BASE_RECIPE_OPS + ('G_ZEXT',) else 1,
+                ir.to_sexpr(e))
     out = []
     for e in sorted(found, key=rank):
         if e not in out:

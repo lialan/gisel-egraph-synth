@@ -11,7 +11,8 @@ filter. There is no table of rewrite rules anywhere in the search.
 The enumeration is split in two so that most of it is shared:
 
 * A ``Bank`` holds the terms of one *signature* (the width class of every
-  variable plus the number of width classes). It is built once, bottom-up by
+  variable plus the number of width classes) and one grammar (the base
+  operators plus the operators that ``Limits.grammar`` adds). It is built once, bottom-up by
   cost, and pruned by observational equivalence on unconstrained samples (as
   in Ruler / enumerative superoptimizers): of two terms that agree on every
   sample only the first, cheapest one is kept. Because the samples are
@@ -36,6 +37,7 @@ import numpy as np
 import z3
 
 from . import ir
+from . import ops
 from . import smt
 
 U64 = np.uint64
@@ -49,8 +51,15 @@ CANON_WIDTHS = {1: (64,), 2: (32, 64), 3: (16, 32, 64), 4: (8, 16, 32, 64)}
 class Limits:
     def __init__(self, samples=48, max_terms=50000, max_candidates=6,
                  equal_cost_max=1, max_proofs=48, seed=0, bank_samples=64,
-                 max_cex_samples=16):
+                 max_cex_samples=16, grammar='source'):
         self.samples = samples
+        # The operators of a term bank next to the base grammar
+        # (ops.ENUMERATED): 'base' for none, 'source' for the operators of
+        # the instance (so a bank of an instance of the base grammar does
+        # not change), 'all' for every operator with a sample kernel
+        # (ops.ENUMERATED_EXTRA).
+        assert grammar in ('base', 'source', 'all')
+        self.grammar = grammar
         self.max_terms = max_terms          # per bank
         self.max_candidates = max_candidates  # proved candidates per instance
         self.max_proofs = max_proofs  # concrete SMT checks per instance
@@ -110,10 +119,165 @@ def _m(w):
     return U64(ir.mask(w))
 
 
+def _signed(v, w):
+    """The signed value of a w-bit pattern, as int64."""
+    s = U64(1 << (w - 1))
+    return ((v ^ s) - s).astype(np.int64)
+
+
+def _ashr(v, amt, w):
+    sign = (v >> U64(w - 1)) & U64(1)
+    m = _m(w)
+    return (v >> amt) | (sign * (m ^ (m >> amt)))
+
+
+def _popcount(x):
+    x = x - ((x >> U64(1)) & U64(0x5555555555555555))
+    x = (x & U64(0x3333333333333333)) + \
+        ((x >> U64(2)) & U64(0x3333333333333333))
+    x = (x + (x >> U64(4))) & U64(0x0f0f0f0f0f0f0f0f)
+    return (x * U64(0x0101010101010101)) >> U64(56)
+
+
+def _bit_length(x):
+    for k in (1, 2, 4, 8, 16, 32):
+        x = x | (x >> U64(k))
+    return _popcount(x)
+
+
+def _swap64(x, masks):
+    """Swaps the adjacent groups of k bits for each (k, mask)."""
+    for k, mk in masks:
+        x = ((x >> U64(k)) & U64(mk)) | ((x & U64(mk)) << U64(k))
+    return x
+
+
+_BYTES = ((8, 0x00ff00ff00ff00ff), (16, 0x0000ffff0000ffff),
+          (32, 0x00000000ffffffff))
+_BITS = ((1, 0x5555555555555555), (2, 0x3333333333333333),
+         (4, 0x0f0f0f0f0f0f0f0f)) + _BYTES
+
+
+def _mulhu(a, b, w):
+    """The high w bits of the 2w-bit product."""
+    if w <= 32:
+        return (a * b) >> U64(w)
+    # (a * b) >> w is the high half of the 128-bit product (a << (64 - w))
+    # * b.
+    a = a << U64(64 - w)
+    lo = U64(0xffffffff)
+    s = U64(32)
+    al, ah, bl, bh = a & lo, a >> s, b & lo, b >> s
+    lh, hl = al * bh, ah * bl
+    mid = ((al * bl) >> s) + (lh & lo) + (hl & lo)
+    return ah * bh + (lh >> s) + (hl >> s) + (mid >> s)
+
+
+def _sat_signed(r, neg, ovf, w):
+    return np.where(ovf, np.where(neg, U64(1 << (w - 1)),
+                                  U64((1 << (w - 1)) - 1)), r)
+
+
+def _k_count(op, w, wa, va):
+    if op == 'G_CTPOP':
+        n = _popcount(va)
+    elif op.startswith('G_CTLZ'):
+        n = U64(wa) - _bit_length(va)
+    elif op.startswith('G_CTTZ'):
+        # The bits below the lowest set bit; all wa bits for 0.
+        n = _popcount(((va & (U64(0) - va)) - U64(1)) & _m(wa))
+    else:  # G_CTLS
+        if wa == 1:
+            n = np.zeros_like(va)
+        else:
+            neg = (va >> U64(wa - 1)) & U64(1)
+            n = U64(wa - 1) - _bit_length(va ^ (neg * _m(wa)))
+    bad = (va == U64(0)) if op.endswith('_ZERO_POISON') else None
+    return n & _m(w), bad
+
+
+def _k_extra(op, w, wa, va, vb):
+    """The operators of ops.ENUMERATED_EXTRA. ``ops.EVAL`` is the reference
+    (tests/test_synth.py compares the two)."""
+    m = _m(w)
+    if op in ops.ENUMERATED_COUNT:
+        return _k_count(op, w, wa, va)
+    if op == 'G_TRUNC_USAT_U':
+        return np.minimum(va, m), None
+    if op == 'G_TRUNC_SSAT_U':
+        return np.where(_signed(va, wa) < 0, U64(0), np.minimum(va, m)), None
+    if op == 'G_TRUNC_SSAT_S':
+        lo, hi = -(1 << (w - 1)), (1 << (w - 1)) - 1
+        return np.clip(_signed(va, wa), lo, hi).astype(U64) & m, None
+    if op == 'G_ABS':
+        return np.where(_signed(va, w) < 0, (U64(0) - va) & m, va), None
+    if op == 'G_BSWAP':
+        return _swap64(va, _BYTES) >> U64(64 - w), None
+    if op == 'G_BITREVERSE':
+        return _swap64(va, _BITS) >> U64(64 - w), None
+    if op == 'G_UMIN':
+        return np.minimum(va, vb), None
+    if op == 'G_UMAX':
+        return np.maximum(va, vb), None
+    if op == 'G_ABDU':
+        return np.where(va > vb, va - vb, vb - va), None
+    if op == 'G_UADDSAT':
+        r = (va + vb) & m
+        return np.where(r < va, m, r), None
+    if op == 'G_USUBSAT':
+        return np.where(va > vb, va - vb, U64(0)), None
+    if op == 'G_UMULH':
+        return _mulhu(va, vb, w), None
+    if op == 'G_UAVGFLOOR':
+        return (va & vb) + ((va ^ vb) >> U64(1)), None
+    if op == 'G_UAVGCEIL':
+        return (va | vb) - ((va ^ vb) >> U64(1)), None
+    if op == 'G_SAVGFLOOR':
+        return ((va & vb) + _ashr(va ^ vb, U64(1), w)) & m, None
+    if op == 'G_SAVGCEIL':
+        return ((va | vb) - _ashr(va ^ vb, U64(1), w)) & m, None
+    if op in ('G_ROTL', 'G_ROTR'):
+        n = vb % U64(w)
+        if op == 'G_ROTR':
+            n = (U64(w) - n) % U64(w)
+        return ((va << n) | (va >> ((U64(w) - n) % U64(w)))) & m, None
+    if op in ('G_USHLSAT', 'G_SSHLSAT'):
+        bad = vb >= U64(w)
+        amt = np.where(bad, U64(0), vb)
+        r = (va << amt) & m
+        if op == 'G_USHLSAT':
+            return np.where((r >> amt) == va, r, m), bad
+        neg = _signed(va, w) < 0
+        return _sat_signed(r, neg, _ashr(r, amt, w) != va, w), bad
+    sa, sb = _signed(va, w), _signed(vb, w)
+    if op == 'G_SMIN':
+        return np.where(sa < sb, va, vb), None
+    if op == 'G_SMAX':
+        return np.where(sa > sb, va, vb), None
+    if op == 'G_ABDS':
+        return np.where(sa > sb, va - vb, vb - va) & m, None
+    if op == 'G_SMULH':
+        h = _mulhu(va, vb, w)
+        h = h - np.where(sa < 0, vb, U64(0)) - np.where(sb < 0, va, U64(0))
+        return h & m, None
+    na, nb = sa < 0, sb < 0
+    if op == 'G_SADDSAT':
+        r = (va + vb) & m
+        ovf = (na == nb) & ((_signed(r, w) < 0) != na)
+        return _sat_signed(r, na, ovf, w), None
+    assert op == 'G_SSUBSAT', op
+    r = (va - vb) & m
+    ovf = (na != nb) & ((_signed(r, w) < 0) != na)
+    return _sat_signed(r, na, ovf, w), None
+
+
 def kernel(op, w, wa, va, vb):
     """Vectorized generic MIR semantics on uint64 arrays (widths <= 64).
-    Returns (values, poison) where poison is None or a bool array."""
+    Returns (values, poison) where poison is None or a bool array. ``wa``
+    is the width of the first operand."""
     m = _m(w)
+    if op in ops.ENUMERATED_EXTRA:
+        return _k_extra(op, w, wa, va, vb)
     if op == 'G_TRUNC':
         return va & m, None
     if op == 'G_ZEXT':
@@ -143,15 +307,30 @@ def kernel(op, w, wa, va, vb):
     return (va >> amt) | (sign * (m ^ (m >> amt))), bad
 
 
+def grammar_extras(inst, limits):
+    """The operators of the term bank of ``inst`` next to the base grammar,
+    in the order of ops.ENUMERATED_EXTRA."""
+    if limits.grammar == 'base':
+        return ()
+    if limits.grammar == 'all':
+        return ops.ENUMERATED_EXTRA
+    used = {ops.base(n[0]) for n in ir.nodes(inst.expr)}
+    return tuple(o for o in ops.ENUMERATED_EXTRA if o in used)
+
+
 class Bank:
     """Terms of one signature, stored structurally with width classes."""
 
     CHUNK = 1 << 17
 
-    def __init__(self, var_cls, ncls, limits):
+    def __init__(self, var_cls, ncls, limits, extras=()):
         self.var_cls = tuple(var_cls)
         self.ncls = ncls
         self.limits = limits
+        # Operators next to the base grammar. The terms of the base
+        # grammar come first at every cost, so a bank without extras is
+        # the bank of the base grammar.
+        self.extras = tuple(extras)
         self.cw = CANON_WIDTHS[ncls]
         rng = random.Random('bank:%d:%r:%d' % (limits.seed, self.var_cls,
                                                ncls))
@@ -288,20 +467,48 @@ class Bank:
     def _extend(self, c):
         if self.truncated:
             return
-        prev = self._level(c - 1)
-        for op in ir.CASTS:
+        self._extend_unary(c, ir.CASTS)
+        self._extend_binary(c, ir.BINOPS)
+        if self.extras:
+            self._extend_unary(c, [o for o in self.extras
+                                   if o not in ops.ENUMERATED_BINARY])
+            self._extend_binary(c, [o for o in self.extras
+                                    if o in ops.ENUMERATED_BINARY])
+
+    @staticmethod
+    def _class_pair_ok(op, k, ka):
+        """A one-operand operator with a result of width class ``k`` and
+        an operand of width class ``ka`` (wider classes are wider)."""
+        if op in ops.ENUMERATED_UNARY:
+            return k == ka
+        if op in ops.ENUMERATED_COUNT:
+            return True
+        if op == 'G_TRUNC' or op in ops.ENUMERATED_NARROW:
+            return k < ka
+        return k > ka
+
+    def _extend_unary(self, c, operators):
+        for op in operators:
+            oc = ops.cost(op)
+            if c < oc or self.truncated:
+                continue
+            prev = self._level(c - oc)
             for k in range(self.ncls):
                 for ka in range(self.ncls):
-                    if ka == k or (op == 'G_TRUNC') != (k < ka):
+                    if not self._class_pair_ok(op, k, ka):
                         continue
                     ai = prev[(self.cls_np[prev] == ka) &
                               ~self.lit_np[prev]]
                     if len(ai):
                         self._add_segment(op, k, ka, c, ai, None)
-        for op in ir.BINOPS:
-            oc = ir.OP_COST[op]
-            comm = op in ir.COMMUTATIVE
-            shift = op in ir.SHIFTS
+
+    def _extend_binary(self, c, operators):
+        for op in operators:
+            info = ops.parse(op)[0]
+            oc = info.cost
+            comm = info.commutative
+            # The second operand is an amount of any type.
+            shift = bool(info.meta.get('shift') or info.meta.get('rotate'))
             for ca in range(0, c - oc + 1):
                 cb = c - oc - ca
                 # (b op a) is the same term as (a op b).
@@ -362,7 +569,7 @@ class Bank:
             ai = self.a_np[s:e]
             va = V[ai]
             ok = OK[ai]
-            if op in ir.CASTS:
+            if self.b[s] < 0:
                 vals, bad = kernel(op, widths[cls], widths[cls_a], va, None)
             else:
                 bi = self.b_np[s:e]
@@ -405,11 +612,11 @@ class Context:
         self.seconds = {'bank_build': 0.0, 'bank_eval': 0.0, 'smt': 0.0}
         self.bank_hits = 0
 
-    def bank(self, var_cls, ncls, max_cost):
-        key = (tuple(var_cls), ncls)
+    def bank(self, var_cls, ncls, max_cost, extras=()):
+        key = (tuple(var_cls), ncls, tuple(extras))
         b = self.banks.get(key)
         if b is None:
-            b = self.banks[key] = Bank(var_cls, ncls, self.limits)
+            b = self.banks[key] = Bank(var_cls, ncls, self.limits, extras)
         else:
             self.bank_hits += 1
         if len(b.cost_end) <= max_cost:
@@ -584,10 +791,13 @@ def discover(inst, backend, limits=None, ctx=None):
     var_cls, widths = sig
     max_cost = max_search_cost(inst, limits)
     envs = instance_envs(inst, limits, ctx)
-    src = [ir.evaluate(inst.expr, inst.vw, env) for env in envs]
+    # Poison and undefined behaviour of the source allow every value.
+    src = [None if v is ir.UB else v
+           for v in (ir.evaluate(inst.expr, inst.vw, env) for env in envs)]
     if all(v is None for v in src):
         return [], stats  # always poison on the samples: nothing to learn
-    bank = ctx.bank(var_cls, len(widths), max_cost)
+    bank = ctx.bank(var_cls, len(widths), max_cost,
+                    grammar_extras(inst, limits))
     t0 = time.monotonic()
     cols = [np.array([env[i] for env in envs], U64)
             for i in range(len(inst.vw))]
@@ -612,7 +822,9 @@ def discover(inst, backend, limits=None, ctx=None):
     cands = []
     for i in rows[agree].tolist():
         e = bank.expr(i, widths)
-        if e not in src_variants:
+        # A bank has width classes, not widths: an operator can have a
+        # type rule that the widths of this instance do not meet.
+        if e not in src_variants and ir.well_typed(e, inst.vw):
             cands.append((bank.cost[i], ir.to_sexpr(e), e))
     cands.sort()
     stats['fingerprint_matches'] = len(cands)

@@ -17,6 +17,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/CodeGen/GlobalISel/GIEGraph.h"
 #include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -24,6 +25,7 @@
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
@@ -53,23 +55,26 @@ static cl::opt<unsigned> MaxTreesPerRoot(
 
 namespace {
 
-bool isSupportedOpcode(unsigned Opc) {
-  switch (Opc) {
-  case TargetOpcode::G_ADD:
-  case TargetOpcode::G_SUB:
-  case TargetOpcode::G_MUL:
-  case TargetOpcode::G_AND:
-  case TargetOpcode::G_OR:
-  case TargetOpcode::G_XOR:
-  case TargetOpcode::G_SHL:
-  case TargetOpcode::G_LSHR:
-  case TargetOpcode::G_ASHR:
-  case TargetOpcode::G_TRUNC:
-  case TargetOpcode::G_ZEXT:
-  case TargetOpcode::G_SEXT:
-    return true;
+/// The entry of the operator table of the e-graph combiner for \p Opc, or
+/// null if an instruction with this opcode cannot be a node of a tree. The
+/// extractor has no list of opcodes of its own: an operator that is added to
+/// the table is extracted, and llvm/utils/gisel-rule-synth decides from its
+/// own registry which operators it has a model for.
+const egraph::OpProperties *getSupportedOp(unsigned Opc) {
+  uint32_t Flags;
+  const egraph::OpProperties *P = egraph::getOpPropertiesForInstr(Opc, Flags);
+  if (!P)
+    return nullptr;
+  switch (P->Shape) {
+  case egraph::OpShape::PtrAdd:
+    // Pointer values are not scalars.
+  case egraph::OpShape::Phi:
+    // The value depends on the control flow.
+  case egraph::OpShape::Effect:
+    // A terminator has no value.
+    return nullptr;
   default:
-    return false;
+    return P;
   }
 }
 
@@ -80,20 +85,47 @@ bool isSupportedScalar(const MachineRegisterInfo &MRI, Register R) {
   return Ty.isScalar() && Ty.getSizeInBits() <= 64;
 }
 
-/// An instruction that can be an interior node of an extracted tree: a
-/// supported opcode with one virtual scalar def and virtual scalar uses.
+/// An instruction that can be an interior node of an extracted tree: an
+/// operator of the table whose results and register operands are virtual
+/// scalars. The only other operands are the attribute of the operator: the
+/// predicate of a comparison and a trailing immediate.
 bool isSupportedInstr(const MachineRegisterInfo &MRI, const MachineInstr &MI) {
-  if (!isSupportedOpcode(MI.getOpcode()) || MI.getNumDefs() != 1)
+  const egraph::OpProperties *P = getSupportedOp(MI.getOpcode());
+  if (!P || MI.getNumExplicitDefs() == 0)
     return false;
-  for (const MachineOperand &MO : MI.operands())
-    if (!MO.isReg() || !isSupportedScalar(MRI, MO.getReg()))
-      return false;
+  for (const MachineOperand &MO : MI.operands()) {
+    if (MO.isReg()) {
+      if (MO.isImplicit() || !isSupportedScalar(MRI, MO.getReg()))
+        return false;
+      continue;
+    }
+    if (MO.isPredicate() && P->Shape == egraph::OpShape::Compare)
+      continue;
+    if (MO.isImm() && P->ImmAttr)
+      continue;
+    return false;
+  }
   return true;
 }
 
 std::string hex(const APInt &V) { return "0x" + toString(V, 16, false); }
 
 std::string regName(Register R) { return "%" + utostr(R.virtRegIndex()); }
+
+/// The index of the result \p R of \p MI.
+unsigned defIndex(const MachineInstr &MI, Register R) {
+  for (unsigned I = 0, E = MI.getNumExplicitDefs(); I != E; ++I)
+    if (MI.getOperand(I).getReg() == R)
+      return I;
+  llvm_unreachable("the register is not a result of the instruction");
+}
+
+std::string typeName(LLT Ty) {
+  std::string Name;
+  raw_string_ostream OS(Name);
+  OS << Ty;
+  return Name;
+}
 
 /// A tree node. Leaves (MI == nullptr) are tree inputs.
 struct TreeNode {
@@ -132,7 +164,8 @@ public:
     // Cartesian product of the operand variants.
     std::vector<std::vector<Tree>> OpVariants;
     for (const MachineOperand &MO : Def->uses())
-      OpVariants.push_back(enumerate(MO.getReg(), Depth - 1));
+      if (MO.isReg())
+        OpVariants.push_back(enumerate(MO.getReg(), Depth - 1));
     SmallVector<unsigned, 2> Idx(OpVariants.size(), 0);
     while (Out.size() < MaxTreesPerRoot + 1) {
       Tree T;
@@ -193,13 +226,20 @@ public:
             KnownBits KB = VT.getKnownBits(R);
             J.attribute("reg", regName(R));
             J.attribute("w", W);
+            J.attribute("type", typeName(MRI.getType(R)));
             J.attribute("zero", hex(KB.Zero));
             J.attribute("one", hex(KB.One));
             const MachineInstr *Def = MRI.getVRegDef(R);
             J.attribute("def", Def ? std::string(opcodeName(Def))
                                    : std::string("<none>"));
+            // A floating-point constant is its bit pattern.
             if (auto C = getIConstantVRegVal(R, MRI))
               J.attribute("const", hex(*C));
+            else if (Def && Def->getOpcode() == TargetOpcode::G_FCONSTANT)
+              J.attribute("const", hex(Def->getOperand(1)
+                                           .getFPImm()
+                                           ->getValueAPF()
+                                           .bitcastToAPInt()));
           });
         }
       });
@@ -223,8 +263,20 @@ private:
         return;
       }
       J.attribute("op", opcodeName(N.MI));
+      // The attribute of the operator, and the index of the result if the
+      // instruction has several results.
+      const egraph::OpProperties *P = getSupportedOp(N.MI->getOpcode());
+      if (P->Shape == egraph::OpShape::Compare)
+        J.attribute("pred", egraph::getComparePredicateName(
+                                N.MI->getOperand(1).getPredicate()));
+      else if (P->ImmAttr)
+        J.attribute("imm",
+                    N.MI->getOperand(N.MI->getNumOperands() - 1).getImm());
+      if (N.MI->getNumExplicitDefs() > 1)
+        J.attribute("res", static_cast<int64_t>(defIndex(*N.MI, N.Reg)));
       J.attribute("w",
                   static_cast<int64_t>(MRI.getType(N.Reg).getSizeInBits()));
+      J.attribute("type", typeName(MRI.getType(N.Reg)));
       J.attribute("reg", regName(N.Reg));
       KnownBits KB = VT.getKnownBits(N.Reg);
       J.attribute("zero", hex(KB.Zero));
@@ -299,11 +351,13 @@ bool GISynthCorpusExtractor::runOnMachineFunction(MachineFunction &MF) {
     for (const MachineInstr &MI : MBB) {
       if (!isSupportedInstr(MRI, MI))
         continue;
-      std::vector<Tree> Trees =
-          E.enumerate(MI.getOperand(0).getReg(), MaxDepth);
-      // Skip the leaf-only variant.
-      for (unsigned I = 1; I < Trees.size(); ++I)
-        E.write(OS, MF, Trees[I]);
+      // One set of trees per result of the instruction.
+      for (const MachineOperand &DefMO : MI.defs()) {
+        std::vector<Tree> Trees = E.enumerate(DefMO.getReg(), MaxDepth);
+        // Skip the leaf-only variant.
+        for (unsigned I = 1; I < Trees.size(); ++I)
+          E.write(OS, MF, Trees[I]);
+      }
     }
   }
   OS.flush();
