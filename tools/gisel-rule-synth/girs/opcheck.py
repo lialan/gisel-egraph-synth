@@ -17,6 +17,7 @@ import random
 
 import z3
 
+from . import fp
 from . import ops
 
 
@@ -64,9 +65,25 @@ def smt_value(info, w, ws, attr, res, vals):
     if p is not None and z3.is_true(z3.simplify(p)):
         return None
     v = z3.simplify(v)
+    if not z3.is_bv_value(v):
+        # The bit pattern of a NaN is not specified: take one.
+        s = z3.Solver()
+        out = z3.BitVec('out', w)
+        s.add(out == v)
+        assert s.check() == z3.sat
+        v = s.model().eval(out, model_completion=True)
     assert z3.is_bv_value(v), (info.name, v)
     assert v.size() == w, (info.name, v.size(), w)
     return v.as_long()
+
+
+def _same(info, w, a, b):
+    """Two results of an operator are the same value: the payload of a NaN
+    is not specified."""
+    if a == b:
+        return True
+    return info.fp_result and isinstance(a, int) and isinstance(b, int) \
+        and fp.same_bits(a, b, w)
 
 
 def check_models(samples=40, seed=0, names=None):
@@ -87,8 +104,9 @@ def check_models(samples=40, seed=0, names=None):
                 n += 1
                 a = info.eval(w, ws, attr, res, vals)
                 b = smt_value(info, w, ws, attr, res, vals)
-                if a != b or (a is not None and a is not ops.UB and
-                              not 0 <= a <= ops.mask(w)):
+                if not _same(info, w, a, b) or (
+                        a is not None and a is not ops.UB and
+                        not 0 <= a <= ops.mask(w)):
                     bad.append((ops.make_key(name, attr, res), w, ws,
                                 vals, a, b))
     return n, bad
@@ -120,7 +138,7 @@ def check_llvm(table):
             a = info.eval(w, ws, attr, res, vals)
             want = None if s['out'] is None else int(s['out'], 16)
             got = None if a is None or a is ops.UB else a
-            if got != want:
+            if not _same(info, w, got, want):
                 bad.append((ops.make_key(m['name'], attr, res), w, ws,
                             vals, a, want))
     return n, bad, skipped

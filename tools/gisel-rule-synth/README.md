@@ -206,6 +206,7 @@ takes its place.
 | `girs/compose.py` | rule composition into macro rules |
 | `girs/match.py` | rule matching on corpus trees, coverage |
 | `girs/smt.py` | z3 backend and gMIR bitvector/poison encoding |
+| `girs/fp.py` | IEEE formats of the conversion operators: exact evaluator and z3 encoding |
 | `girs/targets.py` | per-target compiler flags and names |
 | `girs/measure.py` | running llc, instruction and rule counters |
 | `girs/select.py` | per-target coverage, novelty, redundancy, ranking, selection |
@@ -215,7 +216,7 @@ takes its place.
 | `targets/*.json` | target profiles |
 | `proofs/` | SMT-LIB2 queries of the proofs, named by SHA-256 |
 | `eval/compare.py` | compiles a file list as base / synthesized rules / e-graph and compares the final code |
-| `tests/test_synth.py`, `tests/test_unified.py` | unit tests (`python3 -m unittest discover -s llvm/utils/gisel-rule-synth/tests`) |
+| `tests/test_synth.py`, `tests/test_unified.py`, `tests/test_fp.py` | unit tests (`python3 -m unittest discover -s llvm/utils/gisel-rule-synth/tests`) |
 
 Generated in-tree files:
 `llvm/include/llvm/Target/GlobalISel/GISynthCombines.td` and
@@ -227,13 +228,33 @@ The hand-written guard primitives are in
 ## Semantic model, in short
 
 A rule `S -> T if P` is accepted only if, for every consistent known-bits
-assignment satisfying `P` and every non-poison input matching those known
-bits, a non-poison `S` implies that `T` is also non-poison and `T == S`.
-This is proved at every width schedule the guard accepts, for every disjunct
-of `P` and for the emitted disjunction as a whole.
+assignment satisfying `P` and every input that is poison or matches those
+known bits, a non-poison `S` implies that `T` is also non-poison and
+`T == S`. This is proved at every width schedule the guard accepts, for
+every disjunct of `P` and for the emitted disjunction as a whole.
 
-- Shift amounts at or above the bit width are poison.
-- Every supported operation except `G_SELECT` propagates poison.
+- Each input has a poison flag. Shift amounts at or above the bit width are
+  poison.
+- Every supported operation except `G_SELECT` and `G_FREEZE` propagates
+  poison.
+- `G_FREEZE` has the value of its operand, or a value of its own if the
+  operand is poison, and it is never poison. Two `G_FREEZE` instructions
+  have two values: a `G_FREEZE` of the replacement is not the `G_FREEZE` of
+  the source, and one `G_FREEZE` term must not occur twice in a source. A
+  rule can match a `G_FREEZE` but does not create one.
+- The precondition atom `def(x)` says that an input is neither undef nor
+  poison (`isGuaranteedNotToBeUndefOrPoison` in the guard). The e-graph
+  export gives this fact for a value; the known-bits corpus does not, so
+  only an e-graph candidate can get this atom. `freeze(x) -> x` needs it.
+- A floating-point value is its bit pattern (`girs/fp.py`: half, single and
+  double). `G_FPEXT` is exact. `G_FPTRUNC`, `G_SITOFP` and `G_UITOFP` round
+  to nearest, ties to even. `G_FPTOSI` and `G_FPTOUI` round toward zero and
+  are poison for a NaN and for a number outside of the range of the result;
+  the `_SAT` forms give the nearest value of the range, and 0 for a NaN.
+- LLVM does not specify the payload of a NaN that a conversion makes. The
+  proof accepts each NaN of the replacement where the source value is such
+  a NaN. Where the source gives the NaN of an input unchanged (through
+  `G_SELECT` or `G_FREEZE`), the replacement must give the same bits.
 - `T` uses only `S`'s inputs, and each of them at most once, so undef inputs
   are handled soundly. An input that the rule matches as a constant can
   occur more than once: a constant is not undef.

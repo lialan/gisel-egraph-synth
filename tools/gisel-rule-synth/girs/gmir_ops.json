@@ -422,6 +422,64 @@
    "cast": "inttoptr"
   },
   {
+   "name": "G_FPEXT",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "fpext",
+   "has_fold": true
+  },
+  {
+   "name": "G_FPTRUNC",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "fptrunc",
+   "has_fold": true
+  },
+  {
+   "name": "G_SITOFP",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "sitofp",
+   "has_fold": true
+  },
+  {
+   "name": "G_UITOFP",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "uitofp",
+   "has_fold": true
+  },
+  {
+   "name": "G_FPTOSI_SAT",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "fptosi-sat",
+   "has_fold": true
+  },
+  {
+   "name": "G_FPTOUI_SAT",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "fptoui-sat",
+   "has_fold": true
+  },
+  {
+   "name": "G_FPTOSI",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "fptosi",
+   "may_be_poison": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FPTOUI",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "fptoui",
+   "may_be_poison": true,
+   "has_fold": true
+  },
+  {
    "name": "G_SEXT_INREG",
    "shape": "unary",
    "operands": 1,

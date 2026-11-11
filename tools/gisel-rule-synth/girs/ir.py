@@ -28,6 +28,7 @@ the synthesizer ignores them on the source side and never emits them on the
 replacement side (see README.md, "Semantic model").
 """
 
+from . import fp
 from . import ops
 
 UB = ops.UB
@@ -160,6 +161,81 @@ def computed_amounts(e, const_vars=(), out=None):
         for a in e[2:]:
             computed_amounts(a, const_vars, out)
     return out
+
+
+def result_kind(e, expected=None):
+    """'f' if the value of ``e`` is a floating-point value, 'i' if it is an
+    integer, None if the operators do not say (a variable, or a select or a
+    freeze of such values). ``expected`` is the kind that the user of ``e``
+    needs."""
+    if not is_op(e) or not ops.known(e[0]):
+        return expected
+    info = ops.parse(e[0])[0]
+    if info.fp_result:
+        return 'f'
+    if info.freeze:
+        return result_kind(e[2], expected)
+    if info.shape == 'select':
+        return expected or result_kind(e[3]) or result_kind(e[4])
+    return 'i'
+
+
+def var_kinds(e, expected=None, out=None):
+    """variable -> 'f' | 'i' | 'x' for the variables of ``e`` whose kind
+    the operators determine; 'x' if a variable is used as both."""
+    if out is None:
+        out = {}
+    if is_var(e):
+        if expected:
+            out[e[1]] = expected if out.get(e[1], expected) == expected \
+                else 'x'
+        return out
+    if not is_op(e) or not ops.known(e[0]):
+        return out
+    for k, a in enumerate(e[2:]):
+        var_kinds(a, operand_kind(e, k, expected), out)
+    return out
+
+
+def operand_kind(e, k, expected=None):
+    """The kind that the operation ``e`` needs for its operand ``k``; see
+    result_kind."""
+    info = ops.parse(e[0])[0]
+    if info.freeze or (info.shape == 'select' and k > 0):
+        return result_kind(e, expected)
+    return 'f' if info.fp_operand else 'i'
+
+
+def same_value(a, b, e):
+    """Two concrete results of ``e`` are the same value: the payload of a
+    NaN result is not specified."""
+    if a == b:
+        return True
+    if result_kind(e) != 'f' or not isinstance(a, int) or \
+            not isinstance(b, int):
+        return False
+    return fp.same_bits(a, b, e[1])
+
+
+def freeze_terms(e, out=None):
+    """The G_FREEZE nodes of ``e``, one entry per occurrence."""
+    if out is None:
+        out = []
+    if is_op(e):
+        if ops.known(e[0]) and ops.parse(e[0])[0].freeze:
+            out.append(e)
+        for a in e[2:]:
+            freeze_terms(a, out)
+    return out
+
+
+def repeated_freeze(e):
+    """True if one G_FREEZE term occurs twice in ``e``. A pattern matches
+    each occurrence with an instruction of its own, and two G_FREEZE of
+    one poison value can have different values; the model has one value
+    per term."""
+    terms = freeze_terms(e)
+    return len(terms) != len(set(terms))
 
 
 def nodes(e, out=None):
@@ -300,6 +376,9 @@ def apply_op(op, w, ws, vals):
         if any(v is None for v in vals):
             return None
         return info.eval(w, ws, attr, res, vals)
+    if info.freeze:
+        # Any value is a correct result for a poison operand.
+        return 0 if vals[0] is None else vals[0]
     # G_SELECT: poison if the condition or the selected arm is poison.
     if vals[0] is None:
         return None

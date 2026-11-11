@@ -36,20 +36,25 @@ import re
 
 from . import corpus
 from . import discover
+from . import fp
 from . import ir
 from . import ops
 
 FORMAT_VERSION = 1
 
-_SCALAR = re.compile(r'^[si](\d+)$')
+_SCALAR = re.compile(r'^([sif])(\d+)$')
 
 
 def parse_type(t):
-    """Bit width of an integer scalar type name (``s32``, or ``i32`` where
-    the target distinguishes integer and floating-point scalars), or None
-    for any other type."""
+    """Bit width of a scalar type name, or None for any other type: ``s32``
+    or, where the target distinguishes integer and floating-point scalars,
+    ``i32`` and ``f32``. A floating-point value is its bit pattern; its
+    type must have a format that the conversions are modeled for."""
     m = _SCALAR.match(t or '')
-    return int(m.group(1)) if m else None
+    if not m:
+        return None
+    w = int(m.group(2))
+    return w if m.group(1) != 'f' or fp.is_format(w) else None
 
 
 class Limits:
@@ -129,9 +134,13 @@ class _Region:
 
     @staticmethod
     def _kb(n, w):
+        """The facts of an input or of a value: its known bits and, if the
+        compiler says so, that it is neither undef nor poison."""
+        defined = bool(n.get('not_undef') and n.get('not_poison'))
         if w is None or 'zero' not in n:
-            return (0, 0)
-        return (int(n['zero'], 16), int(n['one'], 16))
+            return (0, 0, True) if defined else (0, 0)
+        kb = (int(n['zero'], 16), int(n['one'], 16))
+        return kb + (True,) if defined else kb
 
     @staticmethod
     def _expr(n, env):
@@ -317,6 +326,8 @@ class Importer:
         if _modeled(s, self.limits) or _modeled(t, self.limits):
             return False
         if any(reg.vw[v] is None for v in ir.variables(s)):
+            return False
+        if ir.repeated_freeze(s):
             return False
         inst, tgt = self._instance(reg, s, t)
         if not ir.well_typed(inst.expr, inst.vw) or \
@@ -523,6 +534,10 @@ class Importer:
         if len(order) > lim.max_vars:
             return self._reject('more than %d inputs' % lim.max_vars, rec,
                                 s, t, kind)
+        if ir.repeated_freeze(s):
+            return self._reject('the source has one G_FREEZE term twice '
+                                '(they can be two instructions)', rec, s,
+                                t, kind)
         cvars = sorted({v for c in ir.computed_constants(t, set(const_of))
                         for v in ir.variables(c)})
         if not ir.is_linear_in(t, cvars):

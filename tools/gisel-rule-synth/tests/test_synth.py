@@ -202,14 +202,27 @@ class PreconditionTest(unittest.TestCase):
         self.assertEqual(ps, [])
 
     def test_target_poison_is_rejected(self):
-        # (x & 0) -> (0 >> y): equal values, but the replacement is poison
-        # for y >= width. Rejected unconditionally, valid if y < width.
-        src = ('G_AND', 32, V(0), L(32, '0'))
+        # ((x + y) & 0) -> (0 >> y): equal values, but the replacement is
+        # poison for y >= width. Rejected unconditionally, valid if
+        # y < width.
+        src = ('G_AND', 32, ('G_ADD', 32, V(0), V(1)), L(32, '0'))
         tgt = ('G_LSHR', 32, L(32, '0'), V(1))
         sched = synth.schedules(src, tgt, (32, 32), self.lim)
         st, _ = synth.verify(sched, [()], self.be)
         self.assertEqual(st, 'invalid')
         st, _ = synth.verify(sched, [(('ltw', 1, 0),)], self.be)
+        self.assertEqual(st, 'valid')
+
+    def test_poison_input_of_the_replacement_only_is_rejected(self):
+        # (x & 0) -> (0 >> y): y can be poison, and the source does not
+        # use it.
+        src = ('G_AND', 32, V(0), L(32, '0'))
+        tgt = ('G_LSHR', 32, L(32, '0'), V(1))
+        sched = synth.schedules(src, tgt, (32, 32), self.lim)
+        st, _ = synth.verify(sched, [(('ltw', 1, 0),)], self.be)
+        self.assertEqual(st, 'invalid')
+        # With a value that is not poison, the rule holds.
+        st, _ = synth.verify(sched, [(('ltw', 1, 0), ('def', 1))], self.be)
         self.assertEqual(st, 'valid')
 
     def test_empty_disjunction_is_not_a_proof(self):

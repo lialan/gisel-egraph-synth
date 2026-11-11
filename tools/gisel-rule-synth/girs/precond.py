@@ -23,6 +23,12 @@ Atoms:
     ('leadc', t, j)    t covers its top W - umin(j) bits   bits kept by lshr
     ('trailc', t, j)   t covers its low W - umin(j) bits   bits kept by shl
     ('ugew', i, j)     umin(i) >=u bitwidth(j)         shifted out of j
+    ('def', i)         x_i is neither undef nor poison
+                       isGuaranteedNotToBeUndefOrPoison
+
+The atom 'def' is not a fact of the known bits: a fact of a variable is
+(zero, one) or (zero, one, defined), and the atom holds for the second form
+with a true third element.
 
 A precondition of a rule is a *disjunction* of such conjunctions (DNF). Each
 disjunct is proved sufficient on its own, so the disjunction is sufficient.
@@ -59,6 +65,8 @@ def term_str(t):
 
 def atom_str(a):
     k = a[0]
+    if k == 'def':
+        return 'defined(x%d)' % a[1]
     if k == 'all':
         return 'all(%s)' % term_str(a[1])
     if k == 'all2':
@@ -153,6 +161,8 @@ def enumerate_atoms(vw, rw=None):
         for j in js:
             if j != i and _w(j, vw, rw) < vw[i]:
                 out.append(('ugew', i, j))
+    for i in range(n):
+        out.append(('def', i))
     return out
 
 
@@ -179,6 +189,8 @@ def _cro(v, w):
 
 def eval_atom(a, facts, vw, rw=None):
     k = a[0]
+    if k == 'def':
+        return len(facts[a[1]]) > 2 and bool(facts[a[1]][2])
     if k == 'all':
         return _cterm(a[1], facts) == ir.mask(vw[a[1][1]])
     if k == 'all2':
@@ -246,6 +258,8 @@ def _zext_to(a, b):
 def z3_atom(a, enc):
     k = a[0]
     vw = enc.vw
+    if k == 'def':
+        return z3.Not(enc.xp[a[1]])
     if k == 'all':
         t = _zterm(a[1], enc)
         return t == z3.BitVecVal(ir.mask(t.size()), t.size())
@@ -329,6 +343,8 @@ def _cpp_term(t):
 
 def cpp_atom(a):
     k = a[0]
+    if k == 'def':
+        return 'isGuaranteedNotToBeUndefOrPoison(X%d, MRI)' % a[1]
     if k == 'all':
         return '%s.isAllOnes()' % _cpp_term(a[1])
     if k == 'all2':
@@ -374,6 +390,8 @@ _TERM_VAR = ('lowones', 'hiones', 'lead', 'trail', 'leadc', 'trailc')
 def atom_vars(a):
     """Variables whose known bits the atom reads."""
     k = a[0]
+    if k == 'def':
+        return []
     if k in ('all', 'msb'):
         return [a[1][1]]
     if k == 'all2':
@@ -399,6 +417,8 @@ def pred_cost(p, have=()):
 
 def atom_to_json(a):
     k = a[0]
+    if k == 'def':
+        return [k, a[1]]
     if k in _TERM_VAR:
         return [k, list(a[1]), a[2]]
     if k in ('all', 'msb'):
@@ -410,6 +430,8 @@ def atom_to_json(a):
 
 def atom_from_json(j):
     k = j[0]
+    if k == 'def':
+        return (k, j[1])
     if k in _TERM_VAR:
         return (k, tuple(j[1]), j[2])
     if k in ('all', 'msb'):
@@ -421,6 +443,8 @@ def atom_from_json(j):
 
 def rename_atom(a, m):
     k = a[0]
+    if k == 'def':
+        return (k, m[a[1]])
     if k in _TERM_VAR:
         return (k, (a[1][0], m[a[1][1]]), a[2] if a[2] == 'r' else m[a[2]])
     if k in ('all', 'msb'):

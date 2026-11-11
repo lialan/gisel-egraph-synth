@@ -47,7 +47,8 @@ class Instance:
         return {
             'expr': ir.to_sexpr(self.expr),
             'vw': list(self.vw),
-            'facts': [[hex(z), hex(o)] for z, o in self.facts],
+            'facts': [[hex(f[0]), hex(f[1])] + list(f[2:])
+                      for f in self.facts],
         }
 
 

@@ -33,24 +33,22 @@
   "dominated_disjuncts": 0,
   "dominated_rules": 27,
   "rules_with_disjunction": 3,
-  "unselected_disjuncts": 6
+  "unselected_disjuncts": 8
  },
  "egraph": {
-  "candidates": 669,
+  "candidates": 690,
   "computed_constants": 94,
-  "distinct": 54,
-  "files": 277,
-  "generalized_candidates": 46,
-  "new_rules": 25,
-  "pairs": 659,
-  "records": 3432,
+  "distinct": 61,
+  "files": 279,
+  "generalized_candidates": 53,
+  "new_rules": 30,
+  "pairs": 680,
+  "records": 3440,
   "rejected": {
    "root": {
-    "operator G_PHI has no model": 869,
+    "operator G_PHI has no model": 1117,
     "operator G_PTRTOINT: pointer values are not modeled": 2,
     "source larger than 8 operations": 2,
-    "type f32 is not a scalar": 185,
-    "type f64 is not a scalar": 65,
     "type p0 is not a scalar": 1,
     "type p1 is not a scalar": 2,
     "type p3 is not a scalar": 3,
@@ -58,9 +56,7 @@
     "wider than 64 bits": 20
    },
    "step": {
-    "operator G_PHI has no model": 869,
-    "type f32 is not a scalar": 184,
-    "type f64 is not a scalar": 40,
+    "operator G_PHI has no model": 1091,
     "type p0 is not a scalar": 2,
     "type p1 is not a scalar": 2,
     "type p3 is not a scalar": 3,
@@ -115,46 +111,6 @@
      "fn": "test_urem_odd_setne",
      "replacement": "(G_ICMP:ne (G_TRUNC x0) (G_MUL (G_LSHR (G_UMULH (G_TRUNC x0) 0xd) 0x2) 0x5))",
      "source": "(G_ICMP:ne (G_ADD (G_MUL (G_LSHR (G_UMULH (G_TRUNC (G_TRUNC x0)) 0xd) 0x2) 0xb) (G_TRUNC (G_TRUNC x0))) 0x0)"
-    }
-   ],
-   "root: type f32 is not a scalar": [
-    {
-     "bb": 3,
-     "fn": "dynamic_stack_loop",
-     "replacement": "x0",
-     "source": "(G_PHI@0 x0)"
-    },
-    {
-     "bb": 3,
-     "fn": "global_atomicrmw_fadd_f32_agent__rtn",
-     "replacement": "x0",
-     "source": "(G_PHI@0 x0)"
-    },
-    {
-     "bb": 3,
-     "fn": "buffer_fat_ptr_agent_atomic_fadd_ret_f32__offset",
-     "replacement": "x0",
-     "source": "(G_PHI@0 x0)"
-    }
-   ],
-   "root: type f64 is not a scalar": [
-    {
-     "bb": 3,
-     "fn": "buffer_fat_ptr_agent_atomic_fadd_ret_f64__offset__amdgpu_no_fine_grained_memory",
-     "replacement": "(G_UNMERGE_VALUES x0)",
-     "source": "(G_UNMERGE_VALUES (G_PHI@0 x0))"
-    },
-    {
-     "bb": 3,
-     "fn": "buffer_fat_ptr_agent_atomic_fadd_ret_f64__offset__amdgpu_no_fine_grained_memory",
-     "replacement": "(G_UNMERGE_VALUES#1 x0)",
-     "source": "(G_UNMERGE_VALUES#1 (G_PHI@0 x0))"
-    },
-    {
-     "bb": 3,
-     "fn": "buffer_fat_ptr_agent_atomic_fadd_ret_f64__offset__waterfall__amdgpu_no_fine_grained_memory",
-     "replacement": "(G_UNMERGE_VALUES x0)",
-     "source": "(G_UNMERGE_VALUES (G_PHI@0 x0))"
     }
    ],
    "root: type p0 is not a scalar": [
@@ -259,46 +215,6 @@
      "source": "(G_PHI@0 x0)"
     }
    ],
-   "step: type f32 is not a scalar": [
-    {
-     "bb": 3,
-     "fn": "dynamic_stack_loop",
-     "replacement": "x0",
-     "source": "(G_PHI@0 x0)"
-    },
-    {
-     "bb": 3,
-     "fn": "global_atomicrmw_fadd_f32_agent__rtn",
-     "replacement": "x0",
-     "source": "(G_PHI@0 x0)"
-    },
-    {
-     "bb": 3,
-     "fn": "buffer_fat_ptr_agent_atomic_fadd_ret_f32__offset",
-     "replacement": "x0",
-     "source": "(G_PHI@0 x0)"
-    }
-   ],
-   "step: type f64 is not a scalar": [
-    {
-     "bb": 3,
-     "fn": "buffer_fat_ptr_agent_atomic_fadd_ret_f64__offset__amdgpu_no_fine_grained_memory",
-     "replacement": "x0",
-     "source": "(G_PHI@0 x0)"
-    },
-    {
-     "bb": 3,
-     "fn": "buffer_fat_ptr_agent_atomic_fadd_ret_f64__offset__waterfall__amdgpu_no_fine_grained_memory",
-     "replacement": "x0",
-     "source": "(G_PHI@0 x0)"
-    },
-    {
-     "bb": 3,
-     "fn": "buffer_fat_ptr_agent_atomic_fadd_ret_f64__offset__amdgpu_no_remote_memory",
-     "replacement": "x0",
-     "source": "(G_PHI@0 x0)"
-    }
-   ],
    "step: type p0 is not a scalar": [
     {
      "bb": 3,
@@ -388,14 +304,14 @@
     }
    ]
   },
-  "roots": 5648,
+  "roots": 5657,
   "roots_effect": 4144,
   "roots_unchanged": 87,
-  "rules": 30,
+  "rules": 35,
   "rules_also_enumerative": 5,
-  "sha256": "c080dfa6e4325b900348407f6c4d4511f5463b38fa6eefe004e449402d36594d",
-  "smt_checks": 76,
-  "steps": 1458,
+  "sha256": "0f7042dd3718dd037907b20bd12c77bbf27b995e2484028a5a36d15ec6658d69",
+  "smt_checks": 83,
+  "steps": 1466,
   "steps_not_cheaper": 4
  },
  "emission": {
@@ -404,7 +320,7 @@
   },
   "egraph": {
    "the root instruction has several results": 2,
-   "yes": 23
+   "yes": 28
   },
   "egraph+enumerative": {
    "yes": 5
@@ -420,39 +336,39 @@
   "banks_truncated": 3,
   "counterexample_pool": 8,
   "seconds": {
-   "bank_build": 1.34,
-   "bank_eval": 1.59,
-   "smt": 11.55
+   "bank_build": 1.32,
+   "bank_eval": 1.65,
+   "smt": 11.98
   }
  },
  "provenance": {
-  "generator_sha256": "9e9855cc11772a859201a5a9929230a70fd7dcea09fc8b9f8e7d5224f7045f63",
-  "generator_version": "2.0",
-  "llvm_commit": "492b8ce7c4e245f2fb73172186c6841737a67270",
+  "generator_sha256": "1f94d3234b0b4bbd5920c9a34798eef961063dea332b34be301dc37fbaf540ec",
+  "generator_version": "2.1",
+  "llvm_commit": "1c50b07b188b0402fb364f4719d58060c37a04ee",
   "llvm_dirty": true,
   "python": "3.10.12"
  },
  "rules_by_class": {
   "equal_cost": 26,
-  "reduces_cost": 69,
+  "reduces_cost": 74,
   "widens_operation": 24
  },
  "seconds": {
-  "composition": 375.66,
-  "discovery": 14.94,
-  "egraph_import": 581.85,
-  "generalization": 9.98,
-  "selection_of_disjuncts": 3.81,
-  "total": 986.77
+  "composition": 375.81,
+  "discovery": 15.37,
+  "egraph_import": 580.93,
+  "generalization": 11.79,
+  "selection_of_disjuncts": 5.12,
+  "total": 989.56
  },
- "solver_calls": 4759,
- "solver_seconds": 962.65,
+ "solver_calls": 5075,
+ "solver_seconds": 960.26,
  "synthesis": {
-  "discoveries": 496,
-  "disjuncts_added": 128,
-  "generalized": 119,
+  "discoveries": 503,
+  "disjuncts_added": 135,
+  "generalized": 124,
   "rejected": 64,
-  "reused": 263,
+  "reused": 265,
   "schedules_added": 15,
   "uncovered": 14
  }

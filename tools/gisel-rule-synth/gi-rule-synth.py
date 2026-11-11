@@ -269,7 +269,7 @@ def cmd_check_ops(args):
 
 # The version of the generator. Increase it when a change to the tool can
 # change the rules it writes.
-GENERATOR_VERSION = '2.0'
+GENERATOR_VERSION = '2.1'
 
 
 def _git(*args):

@@ -108,16 +108,20 @@ def build_mir(rule, example, name, target):
     m = dict(zip(_pattern_widths(rule), _example_widths(rule, example)))
     src = ir.map_widths(src, m)
     vw = example['vw']
-    facts = [(int(z, 16), int(o, 16)) for z, o in example['facts']]
+    facts = [(int(f[0], 16), int(f[1], 16)) for f in example['facts']]
+    defined = [len(f) > 2 and f[2] for f in example['facts']]
     fn = _Fn(target)
     xs, live = [], []
-    for w, (z, o) in zip(vw, facts):
+    for w, (z, o), is_defined in zip(vw, facts, defined):
         mk = ir.mask(w)
         if (z | o) == mk:
             xs.append(fn.emit(w, 'G_CONSTANT i%d %d' % (w, o)))
             continue
         r, phys = fn.arg(w)
         live.append(phys)
+        if is_defined:
+            # A value that is neither undef nor poison.
+            r = fn.emit(w, 'G_FREEZE %s' % r)
         if z:
             c = fn.emit(w, 'G_CONSTANT i%d %d' % (w, ~z & mk))
             r = fn.emit(w, 'G_AND %s, %s' % (r, c))

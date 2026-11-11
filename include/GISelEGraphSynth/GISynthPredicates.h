@@ -33,12 +33,16 @@ namespace llvm {
 namespace gisynth {
 
 /// Writes the scalar bit width of each register to \p W. Fails for vectors,
-/// pointers and invalid types: the rules are only proved for scalars.
+/// pointers and invalid types: the rules are only proved for scalars. Also
+/// fails for a floating-point type that does not have the IEEE format of its
+/// width (bfloat): the conversions are proved for the IEEE formats.
 inline bool getScalarWidths(const MachineRegisterInfo &MRI,
                             std::initializer_list<Register> Regs, unsigned *W) {
   for (Register R : Regs) {
     LLT Ty = MRI.getType(R);
     if (!Ty.isValid() || !Ty.isScalar())
+      return false;
+    if (Ty.isFloat() && !Ty.isFloatIEEE())
       return false;
     *W++ = Ty.getSizeInBits();
   }

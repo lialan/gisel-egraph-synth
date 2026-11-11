@@ -1,6 +1,6 @@
 {
  "combiner": "amdgpu-prelegalizer-combiner",
- "emitted_records": 75,
+ "emitted_records": 77,
  "enable_flag": "-amdgpu-gisel-synth-combines",
  "evidence": {
   "compare": "cand_train.json",
@@ -12,9 +12,9 @@
   "no_regressions": false,
   "novelty_and_redundancy": true,
   "provenance": {
-   "generator_sha256": "d816ac4ebeec2e5c1080759271ec5c343fab9f5e86c0aa28d8e2a86019c15da9",
-   "generator_version": "2.0",
-   "llvm_commit": "492b8ce7c4e245f2fb73172186c6841737a67270",
+   "generator_sha256": "1f94d3234b0b4bbd5920c9a34798eef961063dea332b34be301dc37fbaf540ec",
+   "generator_version": "2.1",
+   "llvm_commit": "1c50b07b188b0402fb364f4719d58060c37a04ee",
    "llvm_dirty": true,
    "python": "3.10.12"
   }
@@ -2142,7 +2142,7 @@
     "matched": 1
    },
    "pattern_nodes": 2,
-   "rank": 24,
+   "rank": 26,
    "records": 4,
    "selection": "emitted"
   },
@@ -2455,7 +2455,7 @@
     "matched": 3
    },
    "pattern_nodes": 3,
-   "rank": 22,
+   "rank": 24,
    "records": 4,
    "selection": "emitted"
   },
@@ -2509,6 +2509,146 @@
    "rank": 9,
    "records": 4,
    "selection": "emitted"
+  },
+  "synth_select_244758a1": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 9,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "error",
+    "error": "llc failed:\nerror: <stdin>:14:22: expected a machine operand\n    %7:_(s1) = G_ICMP:ne %6, %2\n                     ^\n\n"
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 3,
+   "records": 1,
+   "selection": "not_fired"
+  },
+  "synth_select_244758a1_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 9,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "error",
+    "error": "llc failed:\nerror: <stdin>:14:22: expected a machine operand\n    %7:_(s1) = G_ICMP:ne %6, %2\n                     ^\n\n"
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 3,
+   "records": 1,
+   "selection": "not_fired"
+  },
+  "synth_select_279ec1f1": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 14,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "covered",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "covered",
+      "existing": 2,
+      "fn": "synth_select_279ec1f1_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 2,
+   "records": 1,
+   "selection": "covered_by_existing_combine"
+  },
+  "synth_select_279ec1f1_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 14,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "covered",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "covered",
+      "existing": 2,
+      "fn": "synth_select_279ec1f1_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 2,
+   "records": 1,
+   "selection": "covered_by_existing_combine"
   },
   "synth_select_4cdb868a": {
    "corpus": {
@@ -2579,6 +2719,68 @@
    "rank": 21,
    "records": 2,
    "selection": "emitted"
+  },
+  "synth_select_4d0eea3f": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 9,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "not_fired",
+    "examples": []
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 3,
+   "records": 1,
+   "selection": "not_fired"
+  },
+  "synth_select_4d0eea3f_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 9,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "not_fired",
+    "examples": []
+   },
+   "online": {
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
+   },
+   "pattern_nodes": 3,
+   "records": 1,
+   "selection": "not_fired"
   },
   "synth_select_4f35dc63": {
    "corpus": {
@@ -3021,7 +3223,7 @@
     "matched": 4
    },
    "pattern_nodes": 2,
-   "rank": 23,
+   "rank": 25,
    "records": 1,
    "selection": "emitted"
   },
@@ -3109,6 +3311,92 @@
    "pattern_nodes": 2,
    "records": 2,
    "selection": "no_measured_gain"
+  },
+  "synth_sitofp_9bd751dd": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "covered",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "covered",
+      "existing": 2,
+      "fn": "synth_sitofp_9bd751dd_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 2,
+    "files_matched": 2,
+    "fired": 5,
+    "matched": 5
+   },
+   "pattern_nodes": 2,
+   "records": 1,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_sitofp_9bd751dd_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 0,
+   "in_set": {
+    "better": 0,
+    "evidence": [],
+    "fired": 10,
+    "insns": 0,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "covered",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "covered",
+      "existing": 2,
+      "fn": "synth_sitofp_9bd751dd_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 5,
+    "files_matched": 5,
+    "fired": 10,
+    "matched": 10
+   },
+   "pattern_nodes": 2,
+   "rank": 23,
+   "records": 1,
+   "selection": "emitted"
   },
   "synth_smax_d4d1ff0e": {
    "corpus": {
@@ -3735,6 +4023,92 @@
    "pattern_nodes": 3,
    "records": 1,
    "selection": "redundant_with_synthesized"
+  },
+  "synth_uitofp_1e203d50": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 0,
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_uitofp_1e203d50_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 2,
+    "files_matched": 2,
+    "fired": 5,
+    "matched": 5
+   },
+   "pattern_nodes": 2,
+   "records": 1,
+   "selection": "one_use_variant_selected"
+  },
+  "synth_uitofp_1e203d50_1u": {
+   "corpus": {
+    "disjunct_occurrences": [
+     0
+    ],
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
+   },
+   "guard_cost": 0,
+   "in_set": {
+    "better": 0,
+    "evidence": [],
+    "fired": 16,
+    "insns": 0,
+    "worse": 0
+   },
+   "marginal": {
+    "better": 0,
+    "evidence": [],
+    "insns": 0,
+    "worse": 0
+   },
+   "novelty": {
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 3,
+      "fn": "synth_uitofp_1e203d50_1u_d0",
+      "source": 3
+     }
+    ]
+   },
+   "online": {
+    "files_fired": 4,
+    "files_matched": 4,
+    "fired": 15,
+    "matched": 15
+   },
+   "pattern_nodes": 2,
+   "rank": 22,
+   "records": 1,
+   "selection": "emitted"
   },
   "synth_unmerge_values_2d5d2fe1": {
    "selection": "not_emittable"
@@ -4551,7 +4925,7 @@
     "files_fired": 1,
     "files_matched": 320,
     "fired": 1,
-    "matched": 2935
+    "matched": 2940
    },
    "pattern_nodes": 1,
    "records": 1,
@@ -4676,24 +5050,24 @@
   }
  },
  "selected_set": {
-  "applications": 369,
+  "applications": 395,
   "failed": 0,
   "files_better": 15,
   "files_compiled": 814,
   "files_worse": 0,
-  "guard_evaluations": 7805,
+  "guard_evaluations": 7831,
   "insns_delta": -66,
   "regressions": []
  },
  "summary": {
-  "covered_by_existing_combine": 14,
-  "emitted": 24,
+  "covered_by_existing_combine": 16,
+  "emitted": 26,
   "measured_regression": 5,
   "never_fires": 14,
   "no_measured_gain": 11,
   "not_emittable": 4,
-  "not_fired": 1,
-  "one_use_variant_selected": 22,
+  "not_fired": 5,
+  "one_use_variant_selected": 24,
   "plain_variant_selected": 3,
   "redundant_with_synthesized": 18
  },

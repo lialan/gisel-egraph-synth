@@ -45,7 +45,9 @@ from . import precond
 from . import smt
 
 WIDTHS = (8, 16, 32, 64)
-SEMANTIC_MODEL = 'gmir-int-v1'
+# v2: each input can be poison, G_FREEZE, the conversions between integers
+# and floating-point values.
+SEMANTIC_MODEL = 'gmir-v2'
 
 
 class SynthLimits:
@@ -157,8 +159,11 @@ def schedules(src, tgt, vw, limits, first=None):
 # ------------------------------------------------------------- CEGIS ---
 
 def _facts_from_model(vals, n):
-    _, kz, ko = smt.split_model(vals, n)
-    return tuple(zip(kz, ko))
+    _, kz, ko, xp = smt.split_model(vals, n)
+    # A value that is not poison in the model counts as defined: the
+    # counterexample then also excludes the preconditions with 'def'.
+    return tuple((z, o, True) if not p else (z, o)
+                 for z, o, p in zip(kz, ko, xp))
 
 
 def verify(sched, dnf, backend, const_vars=()):
@@ -337,7 +342,8 @@ class Synthesizer:
             # Canonical-order facts of the first training instance of this
             # disjunct, used to rebuild a test case.
             d['example'] = {'vw': list(vw),
-                            'facts': [[hex(z), hex(o)] for z, o in facts]}
+                            'facts': [[hex(f[0]), hex(f[1])] + list(f[2:])
+                                      for f in facts]}
         sup = rule['support']
         for p in inst.prov[:2]:
             if len(sup['examples']) < 5:
@@ -466,8 +472,8 @@ class Synthesizer:
                     'example': {'file': os.path.basename(inst.prov[0][0]),
                                 'fn': inst.prov[0][1],
                                 'root': inst.prov[0][2],
-                                'facts': [[hex(z), hex(o)]
-                                          for z, o in facts]}}
+                                'facts': [[hex(f[0]), hex(f[1])] +
+                                          list(f[2:]) for f in facts]}}
             return None
         if rule is None:
             if rej is not None:

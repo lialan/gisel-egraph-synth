@@ -37,6 +37,8 @@ import os
 
 import z3
 
+from . import fp
+
 UB = 'ub'
 PREDS = ('eq', 'ne', 'ugt', 'uge', 'ult', 'ule', 'sgt', 'sge', 'slt', 'sle')
 SWAPPED_PRED = {'eq': 'eq', 'ne': 'ne', 'ugt': 'ult', 'uge': 'ule',
@@ -77,6 +79,15 @@ class OpInfo:
         self.cost = cost
         # A strict operator is poison if any operand is.
         self.strict = strict
+        # G_FREEZE: the result is never poison. For a poison operand it is
+        # some value, and each instruction has its own.
+        self.freeze = False
+        # The operand / the result is a floating-point value (a conversion
+        # between an integer and a floating-point value, or between two
+        # formats). Every other operator computes with integers, and a
+        # select or a freeze has the kind of its operands.
+        self.fp_operand = False
+        self.fp_result = False
         self.typecheck = None
         self.eval = None
         self.smt = None
@@ -188,8 +199,22 @@ def _tc_cast(info):
             return ws[0] > w
         if kind in ('zext', 'sext', 'anyext'):
             return ws[0] < w
+        if kind == 'fpext':
+            return fp.is_format(w) and fp.is_format(ws[0]) and ws[0] < w
+        if kind == 'fptrunc':
+            return fp.is_format(w) and fp.is_format(ws[0]) and ws[0] > w
+        if kind in _FP_TO_INT:
+            return fp.is_format(ws[0])
+        if kind in ('sitofp', 'uitofp'):
+            return fp.is_format(w)
         return False
     return tc
+
+
+# Cast kinds with a floating-point operand and an integer result:
+# kind -> (signed, saturating).
+_FP_TO_INT = {'fptosi': (True, False), 'fptoui': (False, False),
+              'fptosi-sat': (True, True), 'fptoui-sat': (False, True)}
 
 
 def _tc_typed(info):
@@ -754,9 +779,42 @@ SMT['G_UNMERGE_VALUES'] = lambda w, ws, at, r, x: (
     z3.Extract((r + 1) * w - 1, r * w, x[0]), None, None)
 
 
+# Conversions between integers and floating-point values (see fp.py). An
+# integer that the format does not have is rounded to nearest; a
+# floating-point value is rounded toward zero. G_FPTOSI and G_FPTOUI are
+# poison for a NaN and for a number outside of the range of the result.
+
+EVAL['G_SITOFP'] = lambda w, ws, at, r, v: fp.from_int(sx(v[0], ws[0]), w)
+SMT['G_SITOFP'] = lambda w, ws, at, r, x: (
+    fp.z3_from_int(x[0], w, True), None, None)
+EVAL['G_UITOFP'] = lambda w, ws, at, r, v: fp.from_int(v[0], w)
+SMT['G_UITOFP'] = lambda w, ws, at, r, x: (
+    fp.z3_from_int(x[0], w, False), None, None)
+for _name in ('G_FPEXT', 'G_FPTRUNC'):
+    EVAL[_name] = lambda w, ws, at, r, v: fp.convert(v[0], ws[0], w)
+    SMT[_name] = lambda w, ws, at, r, x: (fp.z3_convert(x[0], w), None, None)
+
+
+def _fp_to_int(name, signed, saturate):
+    EVAL[name] = lambda w, ws, at, r, v: fp.to_int(v[0], ws[0], w, signed,
+                                                   saturate)
+    SMT[name] = lambda w, ws, at, r, x: fp.z3_to_int(x[0], w, signed,
+                                                     saturate) + (None,)
+
+
+_fp_to_int('G_FPTOSI', True, False)
+_fp_to_int('G_FPTOUI', False, False)
+_fp_to_int('G_FPTOSI_SAT', True, True)
+_fp_to_int('G_FPTOUI_SAT', False, True)
+
+# G_FREEZE: the value of the operand. The encoder (smt.py) and the
+# evaluator (ir.py) handle a poison operand; see OpInfo.freeze.
+EVAL['G_FREEZE'] = lambda w, ws, at, r, v: v[0]
+SMT['G_FREEZE'] = lambda w, ws, at, r, x: (x[0], None, None)
+
+
 _NO_SEMANTICS = {
     'G_ANYEXT': 'the high bits are not specified',
-    'G_FREEZE': 'needs the undef / poison state of its operand',
     'G_CLMUL': 'no model yet', 'G_CLMULR': 'no model yet',
     'G_CLMULH': 'no model yet',
     'G_EXTRACT': 'no model yet', 'G_INSERT': 'no model yet',
@@ -806,10 +864,15 @@ def _load_generic():
         if shape in _NO_EXPR:
             for st in STAGES[1:]:
                 info.unsupported[st] = _NO_EXPR[shape]
-        elif m.get('stops_poison'):
-            for st in STAGES[1:]:
-                info.unsupported[st] = _NO_SEMANTICS[name]
         else:
+            if m.get('stops_poison'):
+                info.freeze = True
+                info.strict = False
+            kind = m.get('cast')
+            info.fp_operand = kind in ('fpext', 'fptrunc') or \
+                kind in _FP_TO_INT
+            info.fp_result = kind in ('fpext', 'fptrunc', 'sitofp',
+                                      'uitofp')
             if shape == 'cast' and m['cast'] in ('ptrtoint', 'inttoptr',
                                                  'extract'):
                 info.unsupported['typecheck'] = _NO_SEMANTICS[name]
@@ -838,6 +901,9 @@ def _load_generic():
             elif m.get('may_trap'):
                 info.unsupported['emit'] = \
                     'a rule must not create an operation that can trap'
+            elif info.freeze:
+                info.unsupported['emit'] = \
+                    'a rule can match G_FREEZE but must not create it'
         register(info)
 
 

@@ -317,59 +317,112 @@ def _bits_fn(rule):
     types = _type_sources(rule)
 
     def bits(w):
-        if w not in types:
-            raise ValueError('no operand with width %d' % w)
-        return 'MRI.getType(%s).getScalarSizeInBits()' % types[w]
+        return 'MRI.getType(%s).getScalarSizeInBits()' % _type_source(
+            types, w)
     return bits
 
 
-def _apply_patterns(tgt, vw, root_w):
-    """MIR apply patterns building ``tgt`` into $dst."""
+_KIND_NAME = {'f': 'floating-point', 'i': 'integer'}
+
+
+def _type_source(types, w, kind=None, fmt='%s'):
+    """The first register of ``types`` (see _type_sources) that has the
+    width ``w`` and the kind ``kind`` ('f', 'i' or None: any). A register
+    of an unknown kind can give the type of an integer, not the type of a
+    floating-point value."""
+    for tw, tk, reg in types:
+        if tw == w and (kind is None or tk == kind or
+                        (kind == 'i' and tk is None)):
+            return fmt % reg
+    if kind is None:
+        raise ValueError('no operand with width %d' % w)
+    raise ValueError('no %s operand with width %d' % (_KIND_NAME[kind], w))
+
+
+def _check_kinds(src, tgt):
+    """Raises ValueError if the types of the rule cannot be written: a
+    value that is an integer and a floating-point value, or a
+    floating-point constant (the patterns match and build G_CONSTANT)."""
+    root_kind = ir.result_kind(src)
+    kinds = ir.var_kinds(tgt, root_kind, ir.var_kinds(src))
+    if 'x' in kinds.values():
+        raise ValueError('a value is used as an integer and as a '
+                         'floating-point value')
+    return root_kind, kinds
+
+
+def _apply_patterns(tgt, vw, root_w, src=None):
+    """MIR apply patterns building ``tgt`` into $dst. ``src`` is the
+    source pattern; it gives the kinds of the values."""
+    root_kind, kinds = _check_kinds(src, tgt) if src is not None else \
+        (None, {})
     if ir.is_var(tgt):
         return ['(GIReplaceReg $dst, $x%d)' % tgt[1]]
     if ir.is_lit(tgt):
+        if root_kind == 'f':
+            raise ValueError('a floating-point constant in the replacement')
         return ['(G_CONSTANT $dst, (GITypeOf<"$dst"> %s))' %
                 _lit_imm(tgt[2])]
     pats = []
     n = [0]
+    types = [(root_w, root_kind, 'dst')] + \
+        [(w, kinds.get(i), 'x%d' % i) for i, w in enumerate(vw)]
 
-    def type_of(w):
-        if w == root_w:
-            return 'GITypeOf<"$dst">'
-        for i, vwi in enumerate(vw):
-            if vwi == w:
-                return 'GITypeOf<"$x%d">' % i
-        raise ValueError('no operand with width %d' % w)
+    def type_of(w, kind):
+        return _type_source(types, w, kind, 'GITypeOf<"$%s">')
 
-    def walk(e, dst):
+    def walk(e, dst, kind):
         ops = []
-        for a in e[2:]:
+        for k, a in enumerate(e[2:]):
+            ak = ir.operand_kind(e, k, kind)
             if ir.is_var(a):
                 ops.append('$x%d' % a[1])
             elif ir.is_lit(a):
-                ops.append('(%s %s)' % (type_of(a[1]), _lit_imm(a[2])))
+                if ak == 'f':
+                    raise ValueError('a floating-point constant in the '
+                                     'replacement')
+                ops.append('(%s %s)' % (type_of(a[1], ak), _lit_imm(a[2])))
             else:
                 t = '$n%d' % n[0]
                 n[0] += 1
-                walk(a, '%s:%s' % (type_of(a[1]), t))
+                ak = ir.result_kind(a, ak)
+                walk(a, '%s:%s' % (type_of(a[1], ak), t), ak)
                 ops.append(t)
         pats.append('(%s %s, %s)' % (e[0], dst, ', '.join(ops)))
 
-    walk(tgt, '$dst')
+    walk(tgt, '$dst', ir.result_kind(tgt, root_kind))
     return pats
 
 
-def _type_sources(rule):
-    """Width -> C++ expression of a register of that width: the root, a
-    variable or an interior value of the source."""
-    src = ir.from_json(rule['source_json'])
-    _, interior = _annotate(src)
-    out = {}
-    for w, reg in [(src[1], 'Dst')] + \
-            [(w, 'X%d' % i) for i, w in enumerate(rule['vw'])] + \
-            [(w, 'T%d' % k) for k, w in enumerate(interior)]:
-        out.setdefault(w, reg)
+def _interior_kinds(src):
+    """The kinds of the interior values of the source, in the order of
+    _annotate."""
+    out = []
+
+    def walk(e, kind, root):
+        if not ir.is_op(e):
+            return
+        kind = ir.result_kind(e, kind)
+        if not root:
+            out.append(kind)
+        for k, a in enumerate(e[2:]):
+            walk(a, ir.operand_kind(e, k, kind), False)
+    walk(src, None, True)
     return out
+
+
+def _type_sources(rule):
+    """(width, kind, C++ expression of a register) of the values that a
+    new value can take its type from: the root, the variables and the
+    interior values of the source."""
+    src = ir.from_json(rule['source_json'])
+    tgt = ir.from_json(rule['replacement_json'])
+    _, interior = _annotate(src)
+    root_kind, kinds = _check_kinds(src, tgt)
+    return [(src[1], root_kind, 'Dst')] + \
+        [(w, kinds.get(i), 'X%d' % i) for i, w in enumerate(rule['vw'])] + \
+        [(w, k, 'T%d' % n)
+         for n, (w, k) in enumerate(zip(interior, _interior_kinds(src)))]
 
 
 def _apply_params(rule):
@@ -391,10 +444,15 @@ def _cpp_apply(rule):
     built = {}   # (instruction, operands) -> variable
     n = [0]
 
-    def ty(w):
-        if w not in types:
-            raise ValueError('no operand with width %d' % w)
-        return 'MRI.getType(%s)' % types[w]
+    src = ir.from_json(rule['source_json'])
+    root_kind = ir.result_kind(src)
+
+    def ty(w, kind=None):
+        return _type_source(types, w, kind, 'MRI.getType(%s)')
+
+    def no_fp_constant(kind):
+        if kind == 'f':
+            raise ValueError('a floating-point constant in the replacement')
 
     def new(text):
         name = 'N%d' % n[0]
@@ -402,32 +460,38 @@ def _cpp_apply(rule):
         body.append('  auto %s = %s;' % (name, text))
         return name
 
-    def walk(e, dst=None):
-        """Returns the C++ expression of the value of ``e``."""
+    def walk(e, dst=None, kind=None):
+        """Returns the C++ expression of the value of ``e``, which its
+        user needs with the kind ``kind``."""
         if ir.is_var(e):
             return 'X%d' % e[1]
         if not ir.is_op(e):
+            no_fp_constant(kind)
             v = ir.leaf_value(e)
             return new('B.buildConstant(%s, APInt(%d, UINT64_C(%d)))' %
-                       (ty(e[1]), e[1], v)) + '.getReg(0)'
+                       (ty(e[1], kind), e[1], v)) + '.getReg(0)'
         if ir.is_constant_expr(e, cv):
             # A computed constant.
+            no_fp_constant(kind)
             if e not in built:
                 built[e] = new('B.buildConstant(%s, %s)' % (
-                    dst or ty(e[1]), _cpp_const(e, bits)))
+                    dst or ty(e[1], kind), _cpp_const(e, bits)))
             return '%s.getReg(0)' % built[e]
         info, attr, res = ops.parse(e[0])
-        args = [walk(a) for a in e[2:]]
+        kind = ir.result_kind(e, kind)
+        args = [walk(a, None, ir.operand_kind(e, k, kind))
+                for k, a in enumerate(e[2:])]
         key = (info.name, attr) + e[2:]
         if key not in built:
             # Each result of the instruction gets its type from the
             # operator: the main type or s1.
             if info.results == 1:
-                rtys = [dst or ty(e[1])]
+                rtys = [dst or ty(e[1], kind)]
             else:
                 kinds = info.meta['result_kinds']
                 mainw = ir.width(e[2], rule['vw'])
-                rtys = [ty(mainw) if k == 'main' else ty(1) for k in kinds]
+                rtys = [ty(mainw, 'i') if k == 'main' else ty(1, 'i')
+                        for k in kinds]
                 if dst:
                     rtys[res] = dst
             if info.attr == 'pred':
@@ -442,7 +506,7 @@ def _cpp_apply(rule):
             built[key] = new(text)
         return '%s.getReg(%d)' % (built[key], res)
 
-    walk(tgt, 'Dst')
+    walk(tgt, 'Dst', root_kind)
     params = ['MachineIRBuilder &B', 'MachineInstr &Root'] + \
         ['Register %s' % p for p in _apply_params(rule)]
     out = ['/// Builds %s.' % rule['replacement'],
@@ -464,6 +528,10 @@ def why_not_emittable(rule):
         info = ops.parse(n[0])[0]
         if info.shape not in ops._EMIT_SHAPES:
             return 'no match pattern for the shape %s' % info.shape
+    # The guard reads a constant of the source with getIConstantVRegVal.
+    src_kinds = ir.var_kinds(src)
+    if any(src_kinds.get(v) == 'f' for v in cv):
+        return 'a floating-point constant in the source'
     for n in ir.nodes(tgt):
         why = ops.capability(ops.parse(n[0])[0], 'emit')
         if why != 'yes':
@@ -474,7 +542,7 @@ def why_not_emittable(rule):
         if _needs_cpp_apply(tgt, cv):
             _cpp_apply(rule)
         else:
-            _apply_patterns(tgt, rule['vw'], rule['source_json']['w'])
+            _apply_patterns(tgt, rule['vw'], rule['source_json']['w'], src)
     except ValueError as e:
         return str(e)
     return None
@@ -538,7 +606,8 @@ def emit_td(rules, sel):
                     ['${x%d}.getReg()' % i for i in range(len(vw))] +
                     ['${t%d}.getReg()' % k for k in range(len(interior))]))]
         else:
-            apply_pats = _apply_patterns(tgt, vw, root_w)
+            apply_pats = _apply_patterns(tgt, vw, root_w,
+                                         ir.from_json(r['source_json']))
         lines.append('// %s: %s -> %s' % (r['id'], r['source'],
                                           r['replacement']))
         lines.append('//   if %s' % r['precondition'])

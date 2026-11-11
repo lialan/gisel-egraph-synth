@@ -483,6 +483,16 @@ def synth_shl_edbd16af_1u_c1 : GICombineRule<
          [{ return gisynth::guard_synth_shl_edbd16af_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
   (apply (G_SHL $dst, $x0, $x2))>;
 
+// synth_sitofp_9bd751dd_1u: (G_SITOFP:s32 (G_SEXT:s32 x0)) -> (G_SITOFP:s32 x0)
+//   if true
+def synth_sitofp_9bd751dd_1u : GICombineRule<
+  (defs root:$dst),
+  (match (G_SEXT $t0, $x0),
+         (G_SITOFP $dst, $t0),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_sitofp_9bd751dd_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${t0}.getReg()); }]),
+  (apply (G_SITOFP $dst, $x0))>;
+
 // synth_smax_d4d1ff0e_1u: (G_SMAX:s32 (G_SUB:s32 x0 x1) x1) -> (G_ABS:s32 x1)
 //   if leading(KZ(x1)) >= umax(x0) && umax(x0) <=u umin(x1)
 def synth_smax_d4d1ff0e_1u : GICombineRule<
@@ -509,6 +519,16 @@ def synth_trunc_110bd23a_1u : GICombineRule<
          (GIHasOneUse $t0),
          [{ return gisynth::guard_synth_trunc_110bd23a_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${t0}.getReg()); }]),
   (apply (G_TRUNC $dst, $x0))>;
+
+// synth_uitofp_1e203d50_1u: (G_UITOFP:s32 (G_ZEXT:s32 x0)) -> (G_UITOFP:s32 x0)
+//   if true
+def synth_uitofp_1e203d50_1u : GICombineRule<
+  (defs root:$dst),
+  (match (G_ZEXT $t0, $x0),
+         (G_UITOFP $dst, $t0),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_uitofp_1e203d50_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${t0}.getReg()); }]),
+  (apply (G_UITOFP $dst, $x0))>;
 
 // synth_zext_a25c36b8_1u: (G_ZEXT:s32 (G_XOR:s1 x0 x1)) -> (G_LSHR:s32 1:s32 x0)
 //   if all(KO(x1))
@@ -950,7 +970,7 @@ def gi_synth_combines_aarch64 : GICombineGroup<[
   synth_icmp_8f303343_c2, synth_icmp_8f303343_c3
 ]>;
 
-// AMDGPU: 24 rules, 75 records.
+// AMDGPU: 26 rules, 77 records.
 def gi_synth_combines_amdgpu : GICombineGroup<[
   synth_or_d54b7fbe, synth_or_d54b7fbe_c1, synth_or_d54b7fbe_c2,
   synth_or_d54b7fbe_c3, synth_or_d54b7fbe_c4, synth_or_d54b7fbe_c5,
@@ -966,15 +986,16 @@ def gi_synth_combines_amdgpu : GICombineGroup<[
   synth_or_9c2e7958_c2, synth_or_9c2e7958_c3, synth_or_d4ad0f19_1u,
   synth_or_d4ad0f19_1u_c1, synth_or_d4ad0f19_1u_c2, synth_or_d4ad0f19_1u_c3,
   synth_select_4cdb868a_1u, synth_select_4cdb868a_1u_c1, synth_select_4f35dc63_1u,
-  synth_select_4f35dc63_1u_c1, synth_shl_a7bba6d0_1u, synth_trunc_110bd23a_1u,
-  synth_zext_a25c36b8_1u, synth_zext_a25c36b8_1u_c1, synth_and_5466e589,
-  synth_and_5466e589_c1, synth_and_5466e589_c2, synth_and_5466e589_c3,
-  synth_and_5466e589_c4, synth_and_5466e589_c5, synth_and_5466e589_c6,
-  synth_and_5466e589_c7, synth_or_ecb7e28d, synth_or_ecb7e28d_c1,
-  synth_or_ecb7e28d_c2, synth_or_ecb7e28d_c3, synth_select_0c7a2693,
-  synth_select_0c7a2693_c1, synth_select_0c7a2693_c2, synth_select_0c7a2693_c3,
-  synth_xor_70267483, synth_xor_70267483_c1, synth_xor_70267483_c2,
-  synth_xor_70267483_c3, synth_and_dd9a6636, synth_and_dd9a6636_c1,
-  synth_and_dd9a6636_c2, synth_and_dd9a6636_c3, synth_or_2a6976e5,
-  synth_or_2a6976e5_c1, synth_or_2a6976e5_c2, synth_or_2a6976e5_c3
+  synth_select_4f35dc63_1u_c1, synth_shl_a7bba6d0_1u, synth_sitofp_9bd751dd_1u,
+  synth_trunc_110bd23a_1u, synth_uitofp_1e203d50_1u, synth_zext_a25c36b8_1u,
+  synth_zext_a25c36b8_1u_c1, synth_and_5466e589, synth_and_5466e589_c1,
+  synth_and_5466e589_c2, synth_and_5466e589_c3, synth_and_5466e589_c4,
+  synth_and_5466e589_c5, synth_and_5466e589_c6, synth_and_5466e589_c7,
+  synth_or_ecb7e28d, synth_or_ecb7e28d_c1, synth_or_ecb7e28d_c2,
+  synth_or_ecb7e28d_c3, synth_select_0c7a2693, synth_select_0c7a2693_c1,
+  synth_select_0c7a2693_c2, synth_select_0c7a2693_c3, synth_xor_70267483,
+  synth_xor_70267483_c1, synth_xor_70267483_c2, synth_xor_70267483_c3,
+  synth_and_dd9a6636, synth_and_dd9a6636_c1, synth_and_dd9a6636_c2,
+  synth_and_dd9a6636_c3, synth_or_2a6976e5, synth_or_2a6976e5_c1,
+  synth_or_2a6976e5_c2, synth_or_2a6976e5_c3
 ]>;

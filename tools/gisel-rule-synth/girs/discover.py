@@ -86,7 +86,7 @@ def sample_envs(inst, n, rng):
     for _ in range(n):
         env = []
         for i, w in enumerate(inst.vw):
-            z, o = inst.facts[i]
+            z, o = inst.facts[i][:2]
             if inst.consts[i] is not None:
                 env.append(inst.consts[i])
                 continue
@@ -97,7 +97,8 @@ def sample_envs(inst, n, rng):
 
 def consistent(env, inst):
     """True if the input assignment respects the instance's facts."""
-    for v, (z, o), c in zip(env, inst.facts, inst.consts):
+    for v, (z, o), c in zip(env, [f[:2] for f in inst.facts],
+                            inst.consts):
         if v & z or (v & o) != o or (c is not None and v != c):
             return False
     return True
@@ -449,10 +450,13 @@ def prove_concrete(inst, tgt, backend):
     instance's *concrete* facts. Returns a smt.Result."""
     enc = smt.Encoder(inst.vw)
     eqs = []
-    for i, (z, o) in enumerate(inst.facts):
+    for i, f in enumerate(inst.facts):
         w = inst.vw[i]
-        eqs += [enc.kz[i] == z3.BitVecVal(z, w),
-                enc.ko[i] == z3.BitVecVal(o, w)]
+        eqs += [enc.kz[i] == z3.BitVecVal(f[0], w),
+                enc.ko[i] == z3.BitVecVal(f[1], w)]
+        # The value is known to be neither undef nor poison.
+        if len(f) > 2 and f[2]:
+            eqs.append(z3.Not(enc.xp[i]))
     guard = z3.And(eqs) if eqs else z3.BoolVal(True)
     f = smt.refinement_violation(enc, inst.expr, tgt, guard)
     return backend.check(f, want_model_of=enc.x)
@@ -461,7 +465,8 @@ def prove_concrete(inst, tgt, backend):
 def refines_on(inst, tgt, env):
     """Concrete refinement check of one input assignment."""
     s = ir.evaluate(inst.expr, inst.vw, env)
-    return s is None or s is ir.UB or ir.evaluate(tgt, inst.vw, env) == s
+    return s is None or s is ir.UB or ir.same_value(
+        ir.evaluate(tgt, inst.vw, env), s, inst.expr)
 
 
 def instance_envs(inst, limits, ctx):

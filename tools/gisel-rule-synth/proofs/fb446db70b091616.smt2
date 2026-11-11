@@ -1,0 +1,18 @@
+; benchmark generated from python API
+(set-info :status unknown)
+(declare-fun x0 () (_ BitVec 32))
+(declare-fun xp0 () Bool)
+(declare-fun ko0 () (_ BitVec 32))
+(declare-fun kz0 () (_ BitVec 32))
+(assert
+ (let ((?x30 ((_ to_fp_unsigned 11 53) roundNearestTiesToEven x0)))
+(let (($x34 (fp.isNaN ?x30)))
+(let (($x35 (and (fp.isNaN ((_ to_fp_unsigned 11 53) roundNearestTiesToEven ((_ zero_extend 32) x0))) $x34)))
+(let ((?x31 (fp.to_ieee_bv ?x30)))
+(let ((?x28 ((_ to_fp_unsigned 11 53) roundNearestTiesToEven ((_ zero_extend 32) x0))))
+(let (($x23 (or xp0)))
+(let (($x39 (and (not (or $x23)) (or $x23 (not (or (= (fp.to_ieee_bv ?x28) ?x31) $x35))))))
+(let (($x19 (or false)))
+(let (($x16 (and (and (= (bvand kz0 ko0) (_ bv0 32))) (= (bvand x0 kz0) (_ bv0 32)) (= (bvand x0 ko0) ko0))))
+(and $x16 (or (and true)) true (not (or $x19)) (or $x19 $x39))))))))))))
+(check-sat)

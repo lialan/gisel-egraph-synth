@@ -1362,3 +1362,128 @@ body: |
     $vgpr0 = COPY %r(s32)
     SI_RETURN implicit $vgpr0
 ...
+---
+# A signed conversion of a sign-extended value is the conversion of the
+# value (a rule that the e-graph combiner found).
+name: sitofp_of_sext
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0
+
+    ; OFF-LABEL: name: sitofp_of_sext
+    ; OFF: liveins: $vgpr0
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %a:_(s32) = COPY $vgpr0
+    ; OFF-NEXT: %e:_(s64) = G_SEXT %a(s32)
+    ; OFF-NEXT: %r:_(s64) = G_SITOFP %e(s64)
+    ; OFF-NEXT: $vgpr0_vgpr1 = COPY %r(s64)
+    ; OFF-NEXT: SI_RETURN implicit $vgpr0_vgpr1
+    ;
+    ; ON-LABEL: name: sitofp_of_sext
+    ; ON: liveins: $vgpr0
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %a:_(s32) = COPY $vgpr0
+    ; ON-NEXT: %r:_(s64) = G_SITOFP %a(s32)
+    ; ON-NEXT: $vgpr0_vgpr1 = COPY %r(s64)
+    ; ON-NEXT: SI_RETURN implicit $vgpr0_vgpr1
+    %a:_(s32) = COPY $vgpr0
+    %e:_(s64) = G_SEXT %a(s32)
+    %r:_(s64) = G_SITOFP %e(s64)
+    $vgpr0_vgpr1 = COPY %r(s64)
+    SI_RETURN implicit $vgpr0_vgpr1
+...
+---
+name: uitofp_of_zext
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0
+
+    ; OFF-LABEL: name: uitofp_of_zext
+    ; OFF: liveins: $vgpr0
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %a:_(s32) = COPY $vgpr0
+    ; OFF-NEXT: %e:_(s64) = G_ZEXT %a(s32)
+    ; OFF-NEXT: %r:_(s64) = G_UITOFP %e(s64)
+    ; OFF-NEXT: $vgpr0_vgpr1 = COPY %r(s64)
+    ; OFF-NEXT: SI_RETURN implicit $vgpr0_vgpr1
+    ;
+    ; ON-LABEL: name: uitofp_of_zext
+    ; ON: liveins: $vgpr0
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %a:_(s32) = COPY $vgpr0
+    ; ON-NEXT: %r:_(s64) = G_UITOFP %a(s32)
+    ; ON-NEXT: $vgpr0_vgpr1 = COPY %r(s64)
+    ; ON-NEXT: SI_RETURN implicit $vgpr0_vgpr1
+    %a:_(s32) = COPY $vgpr0
+    %e:_(s64) = G_ZEXT %a(s32)
+    %r:_(s64) = G_UITOFP %e(s64)
+    $vgpr0_vgpr1 = COPY %r(s64)
+    SI_RETURN implicit $vgpr0_vgpr1
+...
+---
+# The extended value has a second use: the one-use variant does not apply.
+name: sitofp_of_sext_two_uses
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0
+
+    ; OFF-LABEL: name: sitofp_of_sext_two_uses
+    ; OFF: liveins: $vgpr0
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %a:_(s32) = COPY $vgpr0
+    ; OFF-NEXT: %e:_(s64) = G_SEXT %a(s32)
+    ; OFF-NEXT: %r:_(s64) = G_SITOFP %e(s64)
+    ; OFF-NEXT: $vgpr0_vgpr1 = COPY %r(s64)
+    ; OFF-NEXT: $vgpr2_vgpr3 = COPY %e(s64)
+    ; OFF-NEXT: SI_RETURN implicit $vgpr0_vgpr1, implicit $vgpr2_vgpr3
+    ;
+    ; ON-LABEL: name: sitofp_of_sext_two_uses
+    ; ON: liveins: $vgpr0
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %a:_(s32) = COPY $vgpr0
+    ; ON-NEXT: %e:_(s64) = G_SEXT %a(s32)
+    ; ON-NEXT: %r:_(s64) = G_SITOFP %e(s64)
+    ; ON-NEXT: $vgpr0_vgpr1 = COPY %r(s64)
+    ; ON-NEXT: $vgpr2_vgpr3 = COPY %e(s64)
+    ; ON-NEXT: SI_RETURN implicit $vgpr0_vgpr1, implicit $vgpr2_vgpr3
+    %a:_(s32) = COPY $vgpr0
+    %e:_(s64) = G_SEXT %a(s32)
+    %r:_(s64) = G_SITOFP %e(s64)
+    $vgpr0_vgpr1 = COPY %r(s64)
+    $vgpr2_vgpr3 = COPY %e(s64)
+    SI_RETURN implicit $vgpr0_vgpr1, implicit $vgpr2_vgpr3
+...
+---
+# Not one of the proved width combinations (s32, s64, s32): no change.
+name: sitofp_of_sext_width_not_proved
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0
+
+    ; OFF-LABEL: name: sitofp_of_sext_width_not_proved
+    ; OFF: liveins: $vgpr0
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %a:_(s32) = COPY $vgpr0
+    ; OFF-NEXT: %e:_(s64) = G_SEXT %a(s32)
+    ; OFF-NEXT: %r:_(s32) = G_SITOFP %e(s64)
+    ; OFF-NEXT: $vgpr0 = COPY %r(s32)
+    ; OFF-NEXT: SI_RETURN implicit $vgpr0
+    ;
+    ; ON-LABEL: name: sitofp_of_sext_width_not_proved
+    ; ON: liveins: $vgpr0
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %a:_(s32) = COPY $vgpr0
+    ; ON-NEXT: %e:_(s64) = G_SEXT %a(s32)
+    ; ON-NEXT: %r:_(s32) = G_SITOFP %e(s64)
+    ; ON-NEXT: $vgpr0 = COPY %r(s32)
+    ; ON-NEXT: SI_RETURN implicit $vgpr0
+    %a:_(s32) = COPY $vgpr0
+    %e:_(s64) = G_SEXT %a(s32)
+    %r:_(s32) = G_SITOFP %e(s64)
+    $vgpr0 = COPY %r(s32)
+    SI_RETURN implicit $vgpr0
+...

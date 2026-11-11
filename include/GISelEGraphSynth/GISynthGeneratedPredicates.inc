@@ -451,6 +451,24 @@ inline bool guard_synth_shl_edbd16af_1u(const MachineRegisterInfo &MRI, GISelVal
   return true;
 }
 
+/// (G_SITOFP:s32 (G_SEXT:s32 x0)) -> (G_SITOFP:s32 x0)
+/// if true
+/// Proved for widths (x0, t0, root): 8,16,16; 8,32,32; 8,64,64; 16,32,32; 16,64,64; 32,64,64.
+inline bool guard_synth_sitofp_9bd751dd_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_sitofp_9bd751dd_1u\n");
+  unsigned W[3];
+  if (!getScalarWidths(MRI, {X0, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][3] = {{8, 16, 16}, {8, 32, 32}, {8, 64, 64}, {16, 32, 32}, {16, 64, 64}, {32, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  bool Pass = true;
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_sitofp_9bd751dd_1u\n");
+  return true;
+}
+
 /// (G_SMAX:s32 (G_SUB:s32 x0 x1) x1) -> (G_ABS:s32 x1)
 /// if leading(KZ(x1)) >= umax(x0) && umax(x0) <=u umin(x1)
 /// Proved for widths (x0, x1, t0, root): 8,8,8,8; 16,16,16,16; 32,32,32,32; 64,64,64,64.
@@ -489,6 +507,24 @@ inline bool guard_synth_trunc_110bd23a_1u(const MachineRegisterInfo &MRI, GISelV
   if (!Pass)
     return false;
   DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_trunc_110bd23a_1u\n");
+  return true;
+}
+
+/// (G_UITOFP:s32 (G_ZEXT:s32 x0)) -> (G_UITOFP:s32 x0)
+/// if true
+/// Proved for widths (x0, t0, root): 8,16,16; 8,32,32; 8,64,64; 16,32,32; 16,64,64; 32,64,64.
+inline bool guard_synth_uitofp_1e203d50_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_uitofp_1e203d50_1u\n");
+  unsigned W[3];
+  if (!getScalarWidths(MRI, {X0, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][3] = {{8, 16, 16}, {8, 32, 32}, {8, 64, 64}, {16, 32, 32}, {16, 64, 64}, {32, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  bool Pass = true;
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_uitofp_1e203d50_1u\n");
   return true;
 }
 
@@ -799,7 +835,9 @@ inline bool guard_synth_or_2a6976e5(const MachineRegisterInfo &MRI, GISelValueTr
     "synth_select_4f35dc63_1u",
     "synth_select_4f35dc63_1u_c1",
     "synth_shl_a7bba6d0_1u",
+    "synth_sitofp_9bd751dd_1u",
     "synth_trunc_110bd23a_1u",
+    "synth_uitofp_1e203d50_1u",
     "synth_zext_a25c36b8_1u",
     "synth_zext_a25c36b8_1u_c1",
     "synth_and_5466e589",
