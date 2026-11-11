@@ -47,6 +47,9 @@ using namespace llvm::egraph;
 namespace {
 using Computed = SmallVectorImpl<APInt>;
 
+/// Rules about G_MERGE_VALUES are generated for 2 to this many parts.
+constexpr unsigned MaxMergeParts = 4;
+
 unsigned rootWidth(const EGraph &G, const RuleMatch &M) {
   return G.getType(M.Root).getSizeInBits();
 }
@@ -75,9 +78,22 @@ std::string literalName(int64_t V) {
     return "one";
   case -1:
     return "ones";
+  case OpProperties::SignedMin:
+    return "signed-min";
+  case OpProperties::SignedMax:
+    return "signed-max";
   default:
     return "c" + std::to_string(V);
   }
+}
+
+/// A literal as it is written in patterns.
+std::string lit(int64_t V) {
+  if (V == OpProperties::SignedMin)
+    return "smin";
+  if (V == OpProperties::SignedMax)
+    return "smax";
+  return std::to_string(V);
 }
 
 const OpProperties &propsOf(unsigned Opcode) {
@@ -94,6 +110,30 @@ std::string bin(const OpProperties &P, StringRef A, StringRef B) {
 
 std::string un(const OpProperties &P, StringRef A) {
   return ("(" + Twine(P.Name) + " " + A + ")").str();
+}
+
+/// An operation with an attribute (a result index, an immediate) and any
+/// number of operands.
+std::string opAttr(const OpProperties &P, const Twine &Attr,
+                   std::initializer_list<StringRef> Operands) {
+  std::string S = ("(" + Twine(P.Name) + ":" + Attr).str();
+  for (StringRef O : Operands)
+    S += (" " + O).str();
+  return S + ")";
+}
+
+/// The pattern variables ?a, ?b, ... or #a, #b, ... for \p N operands.
+std::string operandList(char Prefix, unsigned N) {
+  std::string S;
+  for (unsigned I = 0; I != N; ++I)
+    S += std::string(" ") + Prefix + char('a' + I);
+  return S;
+}
+
+/// True for an operator that the rules generated for all binary operators
+/// can use: T = op(T, T) without an immediate.
+bool isPlainBinary(const OpProperties &P) {
+  return P.Shape == OpShape::Binary && !P.ImmAttr;
 }
 
 std::string sel(const OpProperties &P, StringRef C, StringRef A, StringRef B) {
@@ -169,15 +209,14 @@ void llvm::egraph::addAlgebraRulesFromProperties(
   // Identities: a op e == a.
   for (const OpProperties &P : Props)
     if (P.RightIdentity)
-      Add(P, literalName(*P.RightIdentity),
-          bin(P, "?a", std::to_string(*P.RightIdentity)), "?a");
+      Add(P, literalName(*P.RightIdentity), bin(P, "?a", lit(*P.RightIdentity)),
+          "?a");
   // Absorbing elements: a op z == z (drops ?a, so a refinement unless ?a is
   // not poison).
   for (const OpProperties &P : Props)
     if (P.RightAbsorbing)
       Add(P, literalName(*P.RightAbsorbing),
-          bin(P, "?a", std::to_string(*P.RightAbsorbing)),
-          std::to_string(*P.RightAbsorbing));
+          bin(P, "?a", lit(*P.RightAbsorbing)), lit(*P.RightAbsorbing));
   for (const OpProperties &P : Props)
     if (P.LeftAbsorbing)
       Add(P, "left-" + literalName(*P.LeftAbsorbing),
@@ -192,7 +231,10 @@ void llvm::egraph::addAlgebraRulesFromProperties(
   for (const OpProperties &P : Props) {
     // The idempotence of a PHI is a canonical form (see
     // EGraph::collapseIdempotentPhis).
-    if (P.Shape != OpShape::Binary)
+    bool TwoOperands = P.Shape == OpShape::Binary ||
+                       (P.Shape == OpShape::Typed && P.NumOperands == 2 &&
+                        !P.hasProjections());
+    if (!TwoOperands || P.ImmAttr)
       continue;
     if (P.Idempotent)
       Add(P, "self", bin(P, "?a", "?a"), "?a");
@@ -208,6 +250,79 @@ void llvm::egraph::addAlgebraRulesFromProperties(
     const OpProperties &Mul = propsOf(TargetOpcode::G_MUL);
     Add(P, (Twine("from-") + D.ShortName).str(),
         bin(Sub, "?a", bin(Mul, bin(D, "?a", "?b"), "?b")), bin(P, "?a", "?b"));
+  }
+  // Absorption in a lattice: a op (a D b) == a.
+  for (const OpProperties &P : Props)
+    if (P.LatticeDual)
+      Add(P, (Twine("absorb-") + propsOf(P.LatticeDual).ShortName).str(),
+          bin(P, "?a", bin(propsOf(P.LatticeDual), "?a", "?b")), "?a");
+  // A selection by a comparison: select(a pred b, a, b) == a op b. The
+  // predicate that also holds for equal operands selects the same value,
+  // and so do the inverse predicates with the arms exchanged. (The swapped
+  // predicates are the same e-nodes.)
+  for (const OpProperties &P : Props) {
+    if (!P.SelectPredicate)
+      continue;
+    const OpProperties &Sel = propsOf(TargetOpcode::G_SELECT);
+    const OpProperties &Cmp = propsOf(TargetOpcode::G_ICMP);
+    auto Pred = static_cast<CmpInst::Predicate>(P.SelectPredicate);
+    for (CmpInst::Predicate Q : {Pred, CmpInst::getNonStrictPredicate(Pred)}) {
+      Add(P, (Twine("from-select-") + CmpInst::getPredicateName(Q)).str(),
+          sel(Sel, cmp(Cmp, Q, "?a", "?b"), "?a", "?b"), bin(P, "?a", "?b"));
+      CmpInst::Predicate Inv = CmpInst::getInversePredicate(Q);
+      Add(P, (Twine("from-select-") + CmpInst::getPredicateName(Inv)).str(),
+          sel(Sel, cmp(Cmp, Inv, "?a", "?b"), "?b", "?a"), bin(P, "?a", "?b"));
+    }
+  }
+  // The difference of a maximum and a minimum.
+  for (const OpProperties &P : Props) {
+    if (!P.DifferenceOf.first)
+      continue;
+    const OpProperties &Sub = propsOf(TargetOpcode::G_SUB);
+    Add(P, "from-max-min",
+        bin(Sub, bin(propsOf(P.DifferenceOf.first), "?a", "?b"),
+            bin(propsOf(P.DifferenceOf.second), "?a", "?b")),
+        bin(P, "?a", "?b"));
+  }
+  // A result of an operator with several results that an operator with one
+  // result also computes.
+  for (const OpProperties &P : Props)
+    for (unsigned I = 0, E = P.ProjectionOps.size(); I != E; ++I)
+      if (P.ProjectionOps[I]) {
+        const OpProperties &O = propsOf(P.ProjectionOps[I]);
+        std::string Operands = operandList('?', P.NumOperands);
+        Add(P, (Twine(I) + "-to-" + O.ShortName).str(),
+            "(" + std::string(P.Name) + ":" + std::to_string(I) + Operands +
+                ")",
+            "(" + std::string(O.Name) + Operands + ")");
+      }
+  // The overflow bit of arithmetic with an overflow result.
+  for (const OpProperties &P : Props) {
+    for (int64_t C : P.NoOverflowWith)
+      Add(P, "overflow-" + literalName(C), opAttr(P, "1", {"?a", lit(C)}), "0");
+    if (P.NoOverflowSelf)
+      Add(P, "overflow-self", opAttr(P, "1", {"?a", "?a"}), "0");
+    if (P.OverflowPredicate)
+      Add(P, "overflow-to-icmp", opAttr(P, "1", {"?a", "?b"}),
+          cmp(propsOf(TargetOpcode::G_ICMP),
+              static_cast<CmpInst::Predicate>(P.OverflowPredicate), "?a",
+              "?b"));
+    // A carry operand that is 0.
+    if (P.WithoutCarry)
+      for (unsigned I = 0, E = P.ResultKinds.size(); I != E; ++I)
+        Add(P, "no-carry-" + std::to_string(I),
+            opAttr(P, Twine(I), {"?a", "?b", "0"}),
+            opAttr(propsOf(P.WithoutCarry), Twine(I), {"?a", "?b"}));
+  }
+  // Funnel shifts.
+  for (const OpProperties &P : Props) {
+    if (P.SameOperandsOp)
+      Add(P, (Twine("self-to-") + propsOf(P.SameOperandsOp).ShortName).str(),
+          "(" + std::string(P.Name) + " ?a ?a ?c)",
+          bin(propsOf(P.SameOperandsOp), "?a", "?c"));
+    if (P.ZeroAmountOperand >= 0)
+      Add(P, "zero", "(" + std::string(P.Name) + " ?a ?b 0)",
+          P.ZeroAmountOperand == 0 ? "?a" : "?b");
   }
 }
 
@@ -238,13 +353,17 @@ void llvm::egraph::addUnaryRulesFromProperties(
     if (T.Cast != CastKind::Truncate)
       continue;
     for (const OpProperties &E : Props) {
-      if (E.Cast != CastKind::ZeroExtend && E.Cast != CastKind::SignExtend)
+      if (E.Cast != CastKind::ZeroExtend && E.Cast != CastKind::SignExtend &&
+          E.Cast != CastKind::AnyExtend)
         continue;
       std::string Name = (Twine(T.ShortName) + "-of-" + E.ShortName).str();
       std::string L = un(T, un(E, "?a"));
       Add(Name + "-same", L, "?a");
       Add(Name + "-narrow", L, un(T, "?a"));
-      Add(Name + "-wide", L, un(E, "?a"));
+      // The high bits of two any-extensions to different types are not
+      // related.
+      if (E.Cast != CastKind::AnyExtend)
+        Add(Name + "-wide", L, un(E, "?a"));
     }
   }
   // Homomorphisms: op(a) I op(b)  =>  op(a I b), and with a constant c that
@@ -338,7 +457,7 @@ void llvm::egraph::addSelectRulesFromProperties(
     // Factoring an operator with a common operand out of both arms. Both
     // sides are poison iff ?a, the condition or the selected arm is.
     for (const OpProperties &O : Props) {
-      if (O.Shape != OpShape::Binary || O.IsShift || O.MayTrap)
+      if (!isPlainBinary(O) || O.IsShift || O.MayTrap)
         continue;
       std::string Name = (Twine("factor-") + O.ShortName).str();
       Add(Name, sel(S, "?c", bin(O, "?a", "?x"), bin(O, "?a", "?y")),
@@ -355,7 +474,7 @@ void llvm::egraph::addSelectRulesFromProperties(
     std::string Folded = sel(S, "?c", "$0", "$1");
     for (const OpProperties &O : Props) {
       std::string Name = (Twine("fold-") + O.ShortName).str();
-      if (O.Shape == OpShape::Binary && O.Fold) {
+      if (isPlainBinary(O) && O.Fold) {
         Add(Name, bin(O, Arms, "#d"), Folded,
             foldArmsWith(O.Fold, /*ConstOnLeft=*/false));
         // A shift by a select is not a shift by a constant.
@@ -402,16 +521,81 @@ void llvm::egraph::addStructuralRulesFromProperties(
       Rules.emplace_back((Twine(P.ShortName) + "-not").str(),
                          un(P, bin(propsOf(TargetOpcode::G_XOR), "?c", "-1")),
                          ("(" + Twine(P.Name) + ":inverted ?c)").str());
+    // The operator with the immediate 0.
+    if (P.ZeroImmOp)
+      Rules.emplace_back(
+          (Twine(P.ShortName) + "-zero-to-" + propsOf(P.ZeroImmOp).ShortName)
+              .str(),
+          opAttr(P, "0", {"?a"}), un(propsOf(P.ZeroImmOp), "?a"));
+    // A value and a zero high part.
+    if (P.ZeroHighPartOp)
+      Rules.emplace_back((Twine(P.ShortName) + "-zero-to-" +
+                          propsOf(P.ZeroHighPartOp).ShortName)
+                             .str(),
+                         "(" + std::string(P.Name) + " ?a 0)",
+                         un(propsOf(P.ZeroHighPartOp), "?a"));
+    if (!P.InverseOf)
+      continue;
+    const OpProperties &Inv = propsOf(P.InverseOf);
+    std::string Name = (Twine(P.ShortName) + "-of-" + Inv.ShortName).str();
+    if (P.Shape == OpShape::Cast) {
+      // The conversions between a pointer and an integer of the same width.
+      // A narrower integer loses bits, and a wider one is truncated.
+      Rules.emplace_back(Name, un(P, un(Inv, "?a")), "?a",
+                         [](const EGraph &G, const RuleMatch &M, Computed &) {
+                           return G.getType(M.PatClasses[1]).getSizeInBits() ==
+                                  rootWidth(G, M);
+                         });
+      continue;
+    }
+    // Parts: result I of splitting the concatenation of N parts is part I,
+    // and the concatenation of all the results of a split is the value.
+    // A rule whose parts do not have the type of the results is not
+    // well-typed.
+    assert(P.Shape == OpShape::Unmerge && Inv.Shape == OpShape::Merge);
+    for (unsigned N = 2; N <= MaxMergeParts; ++N) {
+      std::string Parts = operandList('?', N), Results;
+      for (unsigned I = 0; I != N; ++I) {
+        std::string Suffix =
+            "-" + std::to_string(I) + "-of-" + std::to_string(N);
+        Rules.emplace_back(Name + Suffix,
+                           "(" + std::string(P.Name) + ":" + std::to_string(I) +
+                               " (" + Inv.Name + Parts + "))",
+                           std::string("?") + char('a' + I));
+        Results += " " + opAttr(P, Twine(I), {"?a"});
+      }
+      // The pattern does not tell how many results the split has.
+      Rules.emplace_back(
+          (Twine(Inv.ShortName) + "-of-" + P.ShortName + "-" + Twine(N)).str(),
+          "(" + std::string(Inv.Name) + Results + ")", "?a",
+          [](const EGraph &G, const RuleMatch &M, Computed &) {
+            return varWidth(G, M, 0) == rootWidth(G, M);
+          });
+    }
   }
 }
 
 std::vector<RewriteRule>
 llvm::egraph::getImplicitPropertyRules(ArrayRef<OpProperties> Props) {
   std::vector<RewriteRule> Rules;
-  for (const OpProperties &P : Props)
-    if (P.Commutative)
-      Rules.emplace_back((Twine(P.ShortName) + "-comm").str(),
-                         bin(P, "?a", "?b"), bin(P, "?b", "?a"));
+  for (const OpProperties &P : Props) {
+    if (!P.Commutative)
+      continue;
+    std::string Name = (Twine(P.ShortName) + "-comm").str();
+    if (P.hasProjections()) {
+      // Every result is symmetric.
+      for (unsigned I = 0, E = P.ResultKinds.size(); I != E; ++I)
+        Rules.emplace_back(Name + "-" + std::to_string(I),
+                           opAttr(P, Twine(I), {"?a", "?b"}),
+                           opAttr(P, Twine(I), {"?b", "?a"}));
+    } else if (P.ImmAttr) {
+      // Stated for the immediate 0; it holds for every immediate.
+      Rules.emplace_back(Name, opAttr(P, "0", {"?a", "?b"}),
+                         opAttr(P, "0", {"?b", "?a"}));
+    } else {
+      Rules.emplace_back(Name, bin(P, "?a", "?b"), bin(P, "?b", "?a"));
+    }
+  }
   for (const OpProperties &P : Props)
     if (P.Associative && P.Commutative)
       Rules.emplace_back((Twine(P.ShortName) + "-assoc").str(),
@@ -445,7 +629,7 @@ void llvm::egraph::addFactoringRulesFromProperties(
       if (!O.RightIdentity)
         continue;
       // With a == a O e:  (a O b) I a  =>  a O (b I e).
-      std::string E = std::to_string(*O.RightIdentity);
+      std::string E = lit(*O.RightIdentity);
       Rules.emplace_back(Name + "-id", bin(I, bin(O, "?a", "?b"), "?a"),
                          bin(O, "?a", bin(I, "?b", E)));
       // a I (a O b)  =>  a O (e I b); covered by commutativity otherwise.
@@ -491,6 +675,32 @@ void llvm::egraph::addFoldingRulesFromProperties(
                   boolean(ICmpInst::compare(*M.Consts[0], *M.Consts[1], Pred)));
               return true;
             });
+    } else if (P.FoldN) {
+      // The pattern has no attribute, so it matches every result and every
+      // immediate; the attribute of the matched node selects the value.
+      RewriteRule::ApplyFn Fn =
+          [Fold = P.FoldN](const EGraph &G, const RuleMatch &M, Computed &Out) {
+            SmallVector<APInt, 4> Ops;
+            for (const std::optional<APInt> &C : M.Consts)
+              Ops.push_back(*C);
+            std::optional<APInt> R = Fold(Ops, M.RootAttr, rootWidth(G, M));
+            if (!R || R->getBitWidth() != rootWidth(G, M))
+              return false;
+            Out.push_back(*R);
+            return true;
+          };
+      if (P.NumOperands >= 0) {
+        Rules.emplace_back(Name,
+                           "(" + std::string(P.Name) +
+                               operandList('#', P.NumOperands) + ")",
+                           "$0", Fn);
+        continue;
+      }
+      // A variable number of operands: one rule per number.
+      for (unsigned N = 2; N <= MaxMergeParts; ++N)
+        Rules.emplace_back(
+            Name + "-" + std::to_string(N),
+            "(" + std::string(P.Name) + operandList('#', N) + ")", "$0", Fn);
     }
   }
 }
@@ -560,6 +770,74 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
           return false;
         Out.push_back(APInt::getLowBitsSet(W, MidW));
         return true;
+      });
+
+  // sext(trunc(a)) extends the sign of the low bits of a.
+  Add("sext-of-trunc-to-sextinreg", "(G_SEXT (G_TRUNC ?a))",
+      "(G_SEXT_INREG:$0 ?a)",
+      [](const EGraph &G, const RuleMatch &M, Computed &Out) {
+        unsigned W = rootWidth(G, M);
+        unsigned MidW = G.getType(M.PatClasses[1]).getSizeInBits();
+        if (varWidth(G, M, 0) != W)
+          return false;
+        Out.push_back(APInt(64, MidW));
+        return true;
+      });
+  // Bit fields as shifts and masks. These connect the bit-field operators
+  // to the rules of the shifts; the operator itself stays in the class.
+  Add("sextinreg-to-shifts", "(G_SEXT_INREG ?a)", "(G_ASHR (G_SHL ?a $0) $0)",
+      [](const EGraph &G, const RuleMatch &M, Computed &Out) {
+        unsigned W = rootWidth(G, M);
+        if (M.RootAttr == 0 || M.RootAttr >= W)
+          return false;
+        Out.push_back(APInt(W, W - M.RootAttr));
+        return true;
+      });
+  Add("ubfx-to-shift-mask", "(G_UBFX ?a #l #w)", "(G_AND (G_LSHR ?a $0) $1)",
+      [](const EGraph &G, const RuleMatch &M, Computed &Out) {
+        unsigned W = rootWidth(G, M);
+        const APInt &Lsb = *M.Consts[0], &Width = *M.Consts[1];
+        if (Lsb.uge(W) || Width.isZero() || Width.ugt(W) ||
+            Lsb.getZExtValue() + Width.getZExtValue() > W)
+          return false;
+        Out.push_back(APInt(W, Lsb.getZExtValue()));
+        Out.push_back(APInt::getLowBitsSet(W, Width.getZExtValue()));
+        return true;
+      });
+  Add("sbfx-to-shifts", "(G_SBFX ?a #l #w)", "(G_ASHR (G_SHL ?a $0) $1)",
+      [](const EGraph &G, const RuleMatch &M, Computed &Out) {
+        unsigned W = rootWidth(G, M);
+        const APInt &Lsb = *M.Consts[0], &Width = *M.Consts[1];
+        if (Lsb.uge(W) || Width.isZero() || Width.ugt(W) ||
+            Lsb.getZExtValue() + Width.getZExtValue() > W)
+          return false;
+        Out.push_back(APInt(W, W - Lsb.getZExtValue() - Width.getZExtValue()));
+        Out.push_back(APInt(W, W - Width.getZExtValue()));
+        return true;
+      });
+  Add("extract-to-trunc-lshr", "(G_EXTRACT ?a)", "(G_TRUNC (G_LSHR ?a $0))",
+      [](const EGraph &G, const RuleMatch &M, Computed &Out) {
+        unsigned SrcW = varWidth(G, M, 0);
+        if (M.RootAttr == 0 || M.RootAttr >= SrcW)
+          return false;
+        Out.push_back(APInt(SrcW, M.RootAttr));
+        return true;
+      });
+
+  // The absolute value as a maximum and as a selection.
+  Add("abs-from-smax-neg", "(G_SMAX ?a (G_SUB 0 ?a))", "(G_ABS ?a)");
+  Add("abs-from-select-slt", "(G_SELECT (G_ICMP:slt ?a 0) (G_SUB 0 ?a) ?a)",
+      "(G_ABS ?a)");
+  Add("abs-from-select-sgt", "(G_SELECT (G_ICMP:sgt ?a -1) ?a (G_SUB 0 ?a))",
+      "(G_ABS ?a)");
+
+  // G_FREEZE of a value that is neither undef nor poison is the value.
+  Add("freeze-of-defined", "(G_FREEZE ?a)", "?a",
+      [](const EGraph &G, const RuleMatch &M, Computed &) {
+        if (M.isSumBound(0))
+          return false;
+        const EClass &C = G.getClass(M.Vars[0]);
+        return C.NotUndef && C.NotPoison;
       });
 
   addCompareRulesFromProperties(Props, R);

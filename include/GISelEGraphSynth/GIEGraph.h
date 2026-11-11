@@ -44,11 +44,13 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/CodeGenTypes/LowLevelType.h"
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace llvm {
@@ -85,7 +87,9 @@ struct ENode {
   APInt Imm;
   /// Operator-specific immediate of an operation; part of the node identity.
   /// For OpShape::Compare it is the CmpInst::Predicate. For OpShape::Phi and
-  /// OpShape::Effect it identifies the instruction (see OpProperties).
+  /// OpShape::Effect it identifies the instruction (see OpProperties). For an
+  /// operator with several results it is the index of the result, and for
+  /// OpProperties::ImmAttr the immediate operand of the instruction.
   uint64_t Attr = 0;
   SmallVector<EClassId, 2> Ops;
 
@@ -281,13 +285,24 @@ private:
 ///   0, -1, 1                   : literal, sign-extended/truncated to the width
 ///   $0                         : computed constant (RHS only)
 ///   (G_ICMP:ult ?a ?b)         : operation with a given attribute (predicate)
+///   (G_UADDO:1 ?a ?b)          : result 1 of an operator with several results
+///   (G_SEXT_INREG:8 ?a)        : immediate operand (OpProperties::ImmAttr)
+///   (G_SEXT_INREG:$0 ?a)       : RHS only: the immediate is the computed
+///                                constant $0
 ///   (G_BRCOND:inverted ?c)     : RHS only: the attribute of the matched LHS
 ///                                root, transformed by OpProperties::InvertAttr
 /// An operation without an attribute matches a node with any attribute; on
 /// the RHS it is created with attribute 0.
+/// The literals `smin` and `smax` are the smallest and the largest signed
+/// value of the width.
 struct PatNode {
   enum KindTy : uint8_t { Var, ConstVar, Literal, Computed, Op } Kind;
-  enum AttrKindTy : uint8_t { AnyAttr, ExactAttr, InvertedRootAttr };
+  enum AttrKindTy : uint8_t {
+    AnyAttr,
+    ExactAttr,
+    InvertedRootAttr,
+    ComputedAttr
+  };
   AttrKindTy AttrKind = AnyAttr;
   unsigned Opcode = 0;
   unsigned Index = 0;
@@ -321,6 +336,9 @@ struct RuleMatch {
   /// modulo AC.
   static constexpr EClassId NoClass = ~0u;
   SmallVector<EClassId, 8> PatClasses;
+  /// ENode::Attr of the node matched by each operation node of the LHS
+  /// pattern (indexed like PatClasses).
+  SmallVector<uint64_t, 8> PatAttrs;
   /// ENode::Attr of the node matched by the LHS root.
   uint64_t RootAttr = 0;
   /// A division or remainder matched by the LHS pattern that may have
@@ -364,6 +382,9 @@ public:
   const Pattern &getRHS() const { return RHS; }
   unsigned getNumVars() const { return VarNames.size(); }
   unsigned getNumConstVars() const { return ConstNames.size(); }
+  /// The operators of the left-hand side, sorted. A rule cannot match in a
+  /// graph that lacks one of them.
+  ArrayRef<unsigned> getLHSOpcodes() const { return LHSOpcodes; }
   unsigned getLHSOccurrences(unsigned Var) const { return OccL[Var]; }
   unsigned getRHSOccurrences(unsigned Var) const { return OccR[Var]; }
   const ApplyFn &getApplyFn() const { return Fn; }
@@ -390,6 +411,7 @@ private:
   Pattern LHS, RHS;
   std::vector<std::string> VarNames, ConstNames;
   SmallVector<unsigned, 4> OccL, OccR;
+  SmallVector<unsigned, 4> LHSOpcodes;
   /// Per side, bit V is set if variable V is mentioned (the side may be
   /// poison because V is) and if it is strict (the side is poison whenever V
   /// is). They differ for the arms of a select.
@@ -405,13 +427,14 @@ private:
 /// How the operands and the result of an operator are typed, and how its
 /// result depends on poison operands.
 enum class OpShape : uint8_t {
-  /// T = op(T, T). Poison iff an operand is poison. For shifts the second
-  /// operand is an amount of any scalar type.
+  /// T = op(T, T). Poison iff an operand is poison. For shifts and
+  /// rotations the second operand is an amount of any scalar type.
   Binary,
   /// T = op(T). Poison iff the operand is poison.
   Unary,
-  /// T2 = op(T1): a conversion between scalars of different widths (see
-  /// OpProperties::Cast). Poison iff the operand is poison.
+  /// T2 = op(T1): a conversion between scalars of different widths, or
+  /// between a pointer and a scalar (see OpProperties::Cast). Poison iff the
+  /// operand is poison.
   Cast,
   /// T2 = op(T1): a bit count. The result type is independent of the source
   /// type. Poison iff the operand is poison.
@@ -422,14 +445,27 @@ enum class OpShape : uint8_t {
   /// T = op(s1, T, T). Poison iff the condition or the selected arm is
   /// poison.
   Select,
-  /// P = op(P, I): a pointer plus an integer offset. Poison iff an operand
-  /// is poison.
+  /// P = op(P, I): a pointer combined with an integer (an offset, a mask).
+  /// Poison iff an operand is poison.
   PtrAdd,
   /// T = op(T, ..., T) with one operand per predecessor block, in a fixed
   /// order. ENode::Attr identifies the instruction, so two nodes are only
   /// congruent if they belong to the same block. Poison iff the incoming
   /// value is poison.
   Phi,
+  /// An operator described by OpProperties::OperandKinds and ResultKinds: any
+  /// number of operands and results, each of the main type T, an independent
+  /// scalar type, or s1. With several results, each result is an e-node of
+  /// its own and ENode::Attr is the index of the result. Every result is
+  /// poison iff an operand is poison.
+  Typed,
+  /// T2 = op(T1, ..., T1): the concatenation of scalars of one type, least
+  /// significant first. Poison iff an operand is poison.
+  Merge,
+  /// T1 = op(T2): result number ENode::Attr of splitting a scalar into
+  /// scalars of one type, least significant first. Poison iff the operand is
+  /// poison.
+  Unmerge,
   /// A terminator: no result. Its class has no type, is never an operand
   /// and is only ever merged with another form of the same terminator.
   /// ENode::Attr identifies the instruction in bits 2 and up; bit 1 is set
@@ -438,7 +474,36 @@ enum class OpShape : uint8_t {
   Effect,
 };
 
-enum class CastKind : uint8_t { None, Truncate, ZeroExtend, SignExtend };
+enum class CastKind : uint8_t {
+  None,
+  Truncate,
+  ZeroExtend,
+  SignExtend,
+  /// The high bits are not specified. Two extensions of one value to one
+  /// type are the same value (as for CSE).
+  AnyExtend,
+  /// A truncation that clamps the value to the range of the result.
+  SatTruncate,
+  PtrToInt,
+  IntToPtr,
+  /// The bits [Attr, Attr + result width) of the operand.
+  Extract,
+};
+
+/// The type of an operand or a result of an OpShape::Typed operator.
+enum class TypeKind : uint8_t {
+  /// The scalar type T that the operator computes in.
+  Main,
+  /// A scalar type of its own (an amount, a bit position, a result that
+  /// only holds a small range).
+  Free,
+  /// s1.
+  Bool,
+};
+
+/// ENode::Flags bit of the poison-generating variant of an operator; see
+/// OpProperties::PoisonVariant.
+constexpr uint32_t PoisonVariantFlag = 1u << 31;
 
 /// Properties of a supported generic operator. The generic part of the rule
 /// library is derived from these properties (see the add*RulesFromProperties
@@ -452,8 +517,12 @@ enum class CastKind : uint8_t { None, Truncate, ZeroExtend, SignExtend };
 /// relies on this.
 ///
 /// Constants are integer literals sign-extended or truncated to the type
-/// width, so -1 is all-ones.
+/// width, so -1 is all-ones. SignedMin and SignedMax stand for the smallest
+/// and the largest signed value of the width.
 struct OpProperties {
+  static constexpr int64_t SignedMin = INT64_MIN;
+  static constexpr int64_t SignedMax = INT64_MAX;
+
   unsigned Opcode = 0;
   /// TargetOpcode name used in patterns, e.g. "G_ADD".
   const char *Name = nullptr;
@@ -462,6 +531,62 @@ struct OpProperties {
   OpShape Shape = OpShape::Binary;
   /// The second operand is a shift amount (poison if out of range).
   bool IsShift = false;
+  /// The second operand is a rotation amount of any scalar type, taken
+  /// modulo the width.
+  bool IsRotate = false;
+  /// The instruction has a trailing immediate operand; it is ENode::Attr.
+  /// Rules generated for all operators of a shape skip such operators.
+  bool ImmAttr = false;
+  /// ENode::Attr identifies the instruction, so two nodes are never
+  /// congruent, and the result is neither undef nor poison (G_FREEZE).
+  /// Rules do not create such nodes.
+  bool StopsPoison = false;
+  /// A bit-field extract (value, position, width): poison unless position
+  /// and width are constants that select bits inside the value.
+  bool IsBitField = false;
+  /// The result can be poison although no operand is, e.g. because the exact
+  /// result does not fit (non-saturating fixed-point arithmetic). Rules do
+  /// not create such nodes.
+  bool MayBePoison = false;
+  /// The opcode of the variant that is poison for some operands and equal to
+  /// this operator otherwise (G_CTLZ_ZERO_POISON for G_CTLZ). An instruction
+  /// with that opcode is an e-node of this operator with PoisonVariantFlag,
+  /// so like every flagged node it only matches as a refinement.
+  unsigned PoisonVariant = 0;
+  /// OpShape::Typed: the kinds of the operands and of the results.
+  SmallVector<TypeKind, 3> OperandKinds;
+  SmallVector<TypeKind, 2> ResultKinds;
+  /// For an operator with several results: per result, the operator with one
+  /// result that computes the same value (0 if there is none), e.g.
+  /// {G_ADD, 0} for G_UADDO, {G_SDIV, G_SREM} for G_SDIVREM and {G_TRUNC}
+  /// for G_UNMERGE_VALUES (only its first result is a truncation).
+  SmallVector<unsigned, 2> ProjectionOps;
+  /// Arithmetic with an overflow bit (result 1): the bit is 0 if the second
+  /// operand is one of these constants.
+  SmallVector<int64_t, 2> NoOverflowWith;
+  /// The overflow bit of op(a, a) is 0.
+  bool NoOverflowSelf = false;
+  /// The overflow bit is the comparison of the operands with this
+  /// CmpInst::Predicate (0 if none): G_USUBO borrows iff a ult b.
+  unsigned OverflowPredicate = 0;
+  /// The operator with a carry operand equal to 0 is this operator:
+  ///   op(a, b, 0) == W(a, b), for every result.
+  unsigned WithoutCarry = 0;
+  /// A funnel shift of a value with itself is this rotation:
+  ///   op(a, a, c) == R(a, c)
+  unsigned SameOperandsOp = 0;
+  /// A funnel shift by 0 is this operand (-1 if not applicable).
+  int ZeroAmountOperand = -1;
+  /// The operator is the inverse of this one: op(g(a)) == a if the types
+  /// agree (G_INTTOPTR and G_PTRTOINT; every result of G_UNMERGE_VALUES of a
+  /// G_MERGE_VALUES is the corresponding part, and merging all the results
+  /// gives the original value).
+  unsigned InverseOf = 0;
+  /// G_MERGE_VALUES of a value and 0 is this extension.
+  unsigned ZeroHighPartOp = 0;
+  /// The operator with the immediate 0 is this operator (G_EXTRACT at
+  /// offset 0 is G_TRUNC).
+  unsigned ZeroImmOp = 0;
   /// Division and remainder: undefined behaviour if the second operand is
   /// zero and, if IsSigned, for the minimum value divided by -1. Such a node
   /// is only matched as a refinement, and a rule only creates one if a
@@ -497,6 +622,14 @@ struct OpProperties {
   /// This operator is the remainder of the division D:
   ///   a - (a D b) * b == a op b
   unsigned RemainderOf = 0;
+  /// The other operator D of a lattice (absorption): a op (a D b) == a.
+  unsigned LatticeDual = 0;
+  /// The operator selects one operand with this CmpInst::Predicate (0 if
+  /// none): a op b == select(a pred b, a, b).
+  unsigned SelectPredicate = 0;
+  /// The operator is the difference of a maximum and a minimum {Max, Min}:
+  ///   a op b == (a Max b) - (a Min b)
+  std::pair<unsigned, unsigned> DifferenceOf = {0, 0};
   /// Left distributivity over each listed operator I:
   ///   a op (b I c) == (a op b) I (a op c)
   /// Only the factoring direction is generated, never the expansion:
@@ -541,6 +674,11 @@ struct OpProperties {
                                     unsigned ResultWidth) = nullptr;
   /// A constant p of \p SrcWidth bits with op(p) == \p C, if there is one.
   std::optional<APInt> (*Preimage)(const APInt &C, unsigned SrcWidth) = nullptr;
+  /// Constant folding of any other operator: the operands, ENode::Attr and
+  /// the width of the result. Returns std::nullopt if the result is poison,
+  /// the behaviour undefined or the operation not defined for these widths.
+  std::optional<APInt> (*FoldN)(ArrayRef<APInt> Ops, uint64_t Attr,
+                                unsigned ResultWidth) = nullptr;
 
   //===--- Pointer arithmetic ---------------------------------------------===//
 
@@ -555,11 +693,31 @@ struct OpProperties {
   /// if the node cannot be inverted.
   std::optional<uint64_t> (*InvertAttr)(uint64_t) = nullptr;
 
-  /// The number of operands, or -1 if it varies (OpShape::Phi).
+  /// The number of operands, or -1 if it varies (OpShape::Phi,
+  /// OpShape::Merge).
   int NumOperands = 2;
 
   bool hasResult() const { return Shape != OpShape::Effect; }
+  /// True if ENode::Attr is the index of a result.
+  bool hasProjections() const {
+    return Shape == OpShape::Unmerge || ResultKinds.size() > 1;
+  }
+  /// True if the second operand is an amount of any scalar type.
+  bool hasAmount() const { return IsShift || IsRotate; }
 };
+
+/// The value of the pattern literal \p V at \p Width bits (see
+/// OpProperties::SignedMin).
+APInt getLiteralValue(int64_t V, unsigned Width);
+
+/// The properties of the operator that an instruction with opcode
+/// \p MIOpcode is an e-node of, or null. \p Flags is set to the ENode::Flags
+/// bits that the opcode implies (see OpProperties::PoisonVariant).
+const OpProperties *getOpPropertiesForInstr(unsigned MIOpcode, uint32_t &Flags);
+
+/// The type of result \p Index of the OpShape::Typed operator \p P whose
+/// main type is \p MainTy; invalid for a TypeKind::Free result.
+LLT getTypedResultType(const OpProperties &P, unsigned Index, LLT MainTy);
 
 /// The properties of all supported operators, in a fixed order.
 ArrayRef<OpProperties> getAllOpProperties();
@@ -696,6 +854,9 @@ public:
   /// Cost of a single node, not including operands. Operations must cost at
   /// least 1 so that extraction is cycle-free.
   virtual unsigned getNodeCost(const ENode &N) const;
+  /// False if \p N must not be extracted, e.g. because the target cannot
+  /// legalize it. The nodes of the original program must be allowed.
+  virtual bool isAllowed(const EGraph &G, const ENode &N) const { return true; }
 };
 
 /// Simple configurable cost model (see the design document for rationale).

@@ -8,7 +8,7 @@
 # REPORT: GIEGraph: factor: %bb.0: instrs=5 roots=1 inputs=4 nodes={{[0-9]+}}->{{[0-9]+}} classes={{[0-9]+}} iters={{[0-9]+}} saturated merges={{[0-9]+}} ac-merges={{[0-9]+}} phi-merges={{[0-9]+}} refinements={{[0-9]+}} unsafe={{[0-9]+}} cost=7->4 profitable (refinement) shadow
 # REPORT-NEXT: root %{{[0-9]+}} = (G_MUL (G_ADD %{{[0-9]+}} %{{[0-9]+}}) (G_ADD %{{[0-9]+}} %{{[0-9]+}}))
 # REPORT-NEXT: rules: {{.*}}factor-mul-add={{[0-9]+}}
-# REPORT: GIEGraph: frozen: %bb.0: {{.*}} cost=7->4 profitable (equivalence) shadow
+# REPORT: GIEGraph: frozen: %bb.0: {{.*}} cost=9->6 profitable (equivalence) shadow
 # REPORT: GIEGraph: nothing: %bb.0: {{.*}} cost=3->3 not-profitable
 # REPORT-NOT: GIEGraph: nothing
 

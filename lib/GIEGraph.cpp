@@ -48,6 +48,56 @@ static std::optional<APInt> countToAPInt(unsigned Count, unsigned Width) {
   return APInt(Width, Count);
 }
 
+/// fshl(Hi, Lo, Amt) or fshr(Hi, Lo, Amt); the amount is taken modulo the
+/// width.
+static std::optional<APInt> funnelShift(const APInt &Hi, const APInt &Lo,
+                                        const APInt &Amt, bool Left) {
+  unsigned W = Hi.getBitWidth();
+  unsigned S = Amt.urem(W);
+  if (S == 0)
+    return Left ? Hi : Lo;
+  return Left ? Hi.shl(S) | Lo.lshr(W - S) : Hi.shl(W - S) | Lo.lshr(S);
+}
+
+/// -1, 0 or 1 as a constant of \p Width bits.
+static std::optional<APInt> threeWay(bool Less, bool Greater, unsigned Width) {
+  if (Width < 2)
+    return std::nullopt;
+  return APInt(Width, Less ? -1 : Greater ? 1 : 0, /*isSigned=*/true);
+}
+
+/// The bits [Lsb, Lsb + Width) of \p V, extended to the width of \p V.
+static std::optional<APInt> bitField(const APInt &V, const APInt &Lsb,
+                                     const APInt &Width, bool Signed) {
+  unsigned W = V.getBitWidth();
+  if (Lsb.uge(W) || Width.isZero() || Width.ugt(W) ||
+      Lsb.getZExtValue() + Width.getZExtValue() > W)
+    return std::nullopt;
+  APInt Field = V.extractBits(Width.getZExtValue(), Lsb.getZExtValue());
+  return Signed ? Field.sext(W) : Field.zext(W);
+}
+
+/// Result \p Index of an operation with an overflow bit.
+static std::optional<APInt> valueOrFlag(const APInt &Value, bool Flag,
+                                        uint64_t Index) {
+  return Index == 0 ? Value : APInt(1, Flag);
+}
+
+/// a + b + carry or a - b - borrow with the carry (unsigned) or overflow
+/// (signed) of the exact result.
+static std::optional<APInt> carryOp(ArrayRef<APInt> O, bool Signed, bool Sub,
+                                    uint64_t Index) {
+  unsigned W = O[0].getBitWidth();
+  auto Ext = [&](const APInt &V) {
+    return Signed ? V.sext(W + 2) : V.zext(W + 2);
+  };
+  APInt Carry = O[2].zext(W + 2);
+  APInt Exact =
+      Sub ? Ext(O[0]) - Ext(O[1]) - Carry : Ext(O[0]) + Ext(O[1]) + Carry;
+  APInt Value = Exact.trunc(W);
+  return valueOrFlag(Value, Ext(Value) != Exact, Index);
+}
+
 static std::optional<uint64_t> invertBranchAttr(uint64_t Attr) {
   // Bit 1: the terminator can be inverted. Bit 0: this is the inverted form.
   if (!(Attr & 2))
@@ -80,14 +130,30 @@ static std::vector<OpProperties> buildOpProperties() {
     case OpShape::Select:
       P.NumOperands = 3;
       break;
+    case OpShape::Unmerge:
+      P.NumOperands = 1;
+      break;
     case OpShape::Phi:
+    case OpShape::Merge:
       P.NumOperands = -1;
       break;
+    case OpShape::Typed:
     case OpShape::Effect:
       P.NumOperands = 0;
       break;
     }
     return &P;
+  };
+  const TypeKind Main = TypeKind::Main, Free = TypeKind::Free,
+                 Bool = TypeKind::Bool;
+  auto Typed = [&](unsigned Opc, const char *Name, const char *Short,
+                   std::initializer_list<TypeKind> Operands,
+                   std::initializer_list<TypeKind> Results) {
+    OpProperties *P = Op(Opc, Name, Short, OpShape::Typed);
+    P->OperandKinds = Operands;
+    P->ResultKinds = Results;
+    P->NumOperands = Operands.size();
+    return P;
   };
 
   OpProperties *P = Op(G_ADD, "G_ADD", "add");
@@ -288,16 +354,452 @@ static std::vector<OpProperties> buildOpProperties() {
   };
 
   P = Op(G_CTLZ, "G_CTLZ", "ctlz", OpShape::BitCount);
+  P->PoisonVariant = G_CTLZ_ZERO_POISON;
   P->ComposesTo = {{G_BITREVERSE, G_CTTZ}};
   P->FoldUnary = [](const APInt &A, unsigned W) {
     return countToAPInt(A.countl_zero(), W);
   };
 
   P = Op(G_CTTZ, "G_CTTZ", "cttz", OpShape::BitCount);
+  P->PoisonVariant = G_CTTZ_ZERO_POISON;
   P->ComposesTo = {{G_BITREVERSE, G_CTLZ}};
   P->FoldUnary = [](const APInt &A, unsigned W) {
     return countToAPInt(A.countr_zero(), W);
   };
+
+  // The number of redundant sign bits: the bits after the sign bit that are
+  // equal to it.
+  P = Op(G_CTLS, "G_CTLS", "ctls", OpShape::BitCount);
+  P->FoldUnary = [](const APInt &A, unsigned W) {
+    return countToAPInt(A.getNumSignBits() - 1, W);
+  };
+
+  // Minimum and maximum. Each signedness is a lattice: associative,
+  // commutative and idempotent operators that absorb and distribute over
+  // each other.
+  P = Op(G_SMIN, "G_SMIN", "smin");
+  P->Commutative = P->Associative = P->Idempotent = true;
+  P->RightIdentity = OpProperties::SignedMax;
+  P->RightAbsorbing = OpProperties::SignedMin;
+  P->LatticeDual = G_SMAX;
+  P->DistributesOver = {G_SMAX};
+  P->SelectPredicate = CmpInst::ICMP_SLT;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return APIntOps::smin(A, B);
+  };
+
+  P = Op(G_SMAX, "G_SMAX", "smax");
+  P->Commutative = P->Associative = P->Idempotent = true;
+  P->RightIdentity = OpProperties::SignedMin;
+  P->RightAbsorbing = OpProperties::SignedMax;
+  P->LatticeDual = G_SMIN;
+  P->DistributesOver = {G_SMIN};
+  P->SelectPredicate = CmpInst::ICMP_SGT;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return APIntOps::smax(A, B);
+  };
+
+  P = Op(G_UMIN, "G_UMIN", "umin");
+  P->Commutative = P->Associative = P->Idempotent = true;
+  P->RightIdentity = -1;
+  P->RightAbsorbing = 0;
+  P->LatticeDual = G_UMAX;
+  P->DistributesOver = {G_UMAX};
+  P->SelectPredicate = CmpInst::ICMP_ULT;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return APIntOps::umin(A, B);
+  };
+
+  P = Op(G_UMAX, "G_UMAX", "umax");
+  P->Commutative = P->Associative = P->Idempotent = true;
+  P->RightIdentity = 0;
+  P->RightAbsorbing = -1;
+  P->LatticeDual = G_UMIN;
+  P->DistributesOver = {G_UMIN};
+  P->SelectPredicate = CmpInst::ICMP_UGT;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return APIntOps::umax(A, B);
+  };
+
+  P = Op(G_ABS, "G_ABS", "abs", OpShape::Unary);
+  P->ComposesTo = {{G_ABS, G_ABS}};
+  P->FoldUnary = [](const APInt &A, unsigned W) -> std::optional<APInt> {
+    return A.abs();
+  };
+
+  // Absolute differences.
+  P = Op(G_ABDS, "G_ABDS", "abds");
+  P->Commutative = true;
+  P->SelfValue = 0;
+  P->DifferenceOf = {G_SMAX, G_SMIN};
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return APIntOps::abds(A, B);
+  };
+
+  P = Op(G_ABDU, "G_ABDU", "abdu");
+  P->Commutative = true;
+  P->RightIdentity = 0;
+  P->SelfValue = 0;
+  P->DifferenceOf = {G_UMAX, G_UMIN};
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return APIntOps::abdu(A, B);
+  };
+
+  // Averages without overflow.
+  P = Op(G_UAVGFLOOR, "G_UAVGFLOOR", "uavgfloor");
+  P->Commutative = P->Idempotent = true;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return APIntOps::avgFloorU(A, B);
+  };
+  P = Op(G_UAVGCEIL, "G_UAVGCEIL", "uavgceil");
+  P->Commutative = P->Idempotent = true;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return APIntOps::avgCeilU(A, B);
+  };
+  P = Op(G_SAVGFLOOR, "G_SAVGFLOOR", "savgfloor");
+  P->Commutative = P->Idempotent = true;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return APIntOps::avgFloorS(A, B);
+  };
+  P = Op(G_SAVGCEIL, "G_SAVGCEIL", "savgceil");
+  P->Commutative = P->Idempotent = true;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return APIntOps::avgCeilS(A, B);
+  };
+
+  // The high half of a product.
+  P = Op(G_UMULH, "G_UMULH", "umulh");
+  P->Commutative = true;
+  P->RightAbsorbing = 0;
+  P->RightConstResult = {{1, 0}};
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return APIntOps::mulhu(A, B);
+  };
+  P = Op(G_SMULH, "G_SMULH", "smulh");
+  P->Commutative = true;
+  P->RightAbsorbing = 0;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return APIntOps::mulhs(A, B);
+  };
+
+  // Saturating arithmetic. Only the unsigned addition is associative.
+  P = Op(G_UADDSAT, "G_UADDSAT", "uaddsat");
+  P->Commutative = P->Associative = true;
+  P->RightIdentity = 0;
+  P->RightAbsorbing = -1;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return A.uadd_sat(B);
+  };
+  P = Op(G_SADDSAT, "G_SADDSAT", "saddsat");
+  P->Commutative = true;
+  P->RightIdentity = 0;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return A.sadd_sat(B);
+  };
+  P = Op(G_USUBSAT, "G_USUBSAT", "usubsat");
+  P->RightIdentity = 0;
+  P->LeftAbsorbing = 0;
+  P->SelfValue = 0;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return A.usub_sat(B);
+  };
+  P = Op(G_SSUBSAT, "G_SSUBSAT", "ssubsat");
+  P->RightIdentity = 0;
+  P->SelfValue = 0;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return A.ssub_sat(B);
+  };
+  P = Op(G_USHLSAT, "G_USHLSAT", "ushlsat");
+  P->IsShift = true;
+  P->RightIdentity = 0;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    if (auto Amt = shiftAmount(A, B))
+      return A.ushl_sat(*Amt);
+    return std::nullopt;
+  };
+  P = Op(G_SSHLSAT, "G_SSHLSAT", "sshlsat");
+  P->IsShift = true;
+  P->RightIdentity = 0;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    if (auto Amt = shiftAmount(A, B))
+      return A.sshl_sat(*Amt);
+    return std::nullopt;
+  };
+
+  // Rotations. The amount is taken modulo the width, so no amount gives
+  // poison. They permute the bits, so they distribute over the bitwise
+  // operators.
+  P = Op(G_ROTL, "G_ROTL", "rotl");
+  P->IsRotate = true;
+  P->RightIdentity = 0;
+  P->RightDistributesOverConst = {G_AND, G_OR, G_XOR};
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return A.rotl(B);
+  };
+  P = Op(G_ROTR, "G_ROTR", "rotr");
+  P->IsRotate = true;
+  P->RightIdentity = 0;
+  P->RightDistributesOverConst = {G_AND, G_OR, G_XOR};
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return A.rotr(B);
+  };
+
+  // Funnel shifts: (high, low, amount), the amount modulo the width.
+  P = Typed(G_FSHL, "G_FSHL", "fshl", {Main, Main, Free}, {Main});
+  P->SameOperandsOp = G_ROTL;
+  P->ZeroAmountOperand = 0;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t, unsigned W) {
+    return funnelShift(O[0], O[1], O[2], /*Left=*/true);
+  };
+  P = Typed(G_FSHR, "G_FSHR", "fshr", {Main, Main, Free}, {Main});
+  P->SameOperandsOp = G_ROTR;
+  P->ZeroAmountOperand = 1;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t, unsigned W) {
+    return funnelShift(O[0], O[1], O[2], /*Left=*/false);
+  };
+
+  // Carry-less multiplication: the product of polynomials over GF(2).
+  P = Op(G_CLMUL, "G_CLMUL", "clmul");
+  P->Commutative = P->Associative = true;
+  P->RightIdentity = 1;
+  P->RightAbsorbing = 0;
+  P->DistributesOver = {G_XOR};
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return APIntOps::clmul(A, B);
+  };
+  P = Op(G_CLMULR, "G_CLMULR", "clmulr");
+  P->Commutative = true;
+  P->RightAbsorbing = 0;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return APIntOps::clmulr(A, B);
+  };
+  P = Op(G_CLMULH, "G_CLMULH", "clmulh");
+  P->Commutative = true;
+  P->RightAbsorbing = 0;
+  P->Fold = [](const APInt &A, const APInt &B) -> std::optional<APInt> {
+    return APIntOps::clmulh(A, B);
+  };
+
+  // Three-way comparisons: -1, 0 or 1 in a type of their own.
+  P = Typed(G_SCMP, "G_SCMP", "scmp", {Main, Main}, {Free});
+  P->SelfValue = 0;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t, unsigned W) {
+    return threeWay(O[0].slt(O[1]), O[0].sgt(O[1]), W);
+  };
+  P = Typed(G_UCMP, "G_UCMP", "ucmp", {Main, Main}, {Free});
+  P->SelfValue = 0;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t, unsigned W) {
+    return threeWay(O[0].ult(O[1]), O[0].ugt(O[1]), W);
+  };
+
+  // More conversions.
+  P = Op(G_ANYEXT, "G_ANYEXT", "anyext", OpShape::Cast);
+  P->Cast = CastKind::AnyExtend;
+
+  P = Op(G_TRUNC_SSAT_S, "G_TRUNC_SSAT_S", "truncssats", OpShape::Cast);
+  P->Cast = CastKind::SatTruncate;
+  P->FoldUnary = [](const APInt &A, unsigned W) -> std::optional<APInt> {
+    return A.truncSSat(W);
+  };
+  P = Op(G_TRUNC_SSAT_U, "G_TRUNC_SSAT_U", "truncssatu", OpShape::Cast);
+  P->Cast = CastKind::SatTruncate;
+  P->FoldUnary = [](const APInt &A, unsigned W) -> std::optional<APInt> {
+    return A.truncSSatU(W);
+  };
+  P = Op(G_TRUNC_USAT_U, "G_TRUNC_USAT_U", "truncusatu", OpShape::Cast);
+  P->Cast = CastKind::SatTruncate;
+  P->FoldUnary = [](const APInt &A, unsigned W) -> std::optional<APInt> {
+    return A.truncUSat(W);
+  };
+
+  P = Op(G_PTRTOINT, "G_PTRTOINT", "ptrtoint", OpShape::Cast);
+  P->Cast = CastKind::PtrToInt;
+  P->InverseOf = G_INTTOPTR;
+  P = Op(G_INTTOPTR, "G_INTTOPTR", "inttoptr", OpShape::Cast);
+  P->Cast = CastKind::IntToPtr;
+  P->InverseOf = G_PTRTOINT;
+
+  // The sign extension of the low Attr bits.
+  P = Op(G_SEXT_INREG, "G_SEXT_INREG", "sextinreg", OpShape::Unary);
+  P->ImmAttr = true;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t Bits,
+                unsigned W) -> std::optional<APInt> {
+    if (Bits == 0 || Bits > W)
+      return std::nullopt;
+    return O[0].trunc(Bits).sext(W);
+  };
+
+  // Bit fields: a contiguous part of a scalar.
+  P = Op(G_EXTRACT, "G_EXTRACT", "extract", OpShape::Cast);
+  P->Cast = CastKind::Extract;
+  P->ImmAttr = true;
+  P->ZeroImmOp = G_TRUNC;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t Offset,
+                unsigned W) -> std::optional<APInt> {
+    if (Offset + W > O[0].getBitWidth())
+      return std::nullopt;
+    return O[0].extractBits(W, Offset);
+  };
+  P = Typed(G_INSERT, "G_INSERT", "insert", {Main, Free}, {Main});
+  P->ImmAttr = true;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t Offset,
+                unsigned W) -> std::optional<APInt> {
+    if (Offset + O[1].getBitWidth() > W)
+      return std::nullopt;
+    APInt R = O[0];
+    R.insertBits(O[1], Offset);
+    return R;
+  };
+  P = Typed(G_SBFX, "G_SBFX", "sbfx", {Main, Free, Free}, {Main});
+  P->IsBitField = true;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t, unsigned W) {
+    return bitField(O[0], O[1], O[2], /*Signed=*/true);
+  };
+  P = Typed(G_UBFX, "G_UBFX", "ubfx", {Main, Free, Free}, {Main});
+  P->IsBitField = true;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t, unsigned W) {
+    return bitField(O[0], O[1], O[2], /*Signed=*/false);
+  };
+
+  // Parts of a scalar, least significant first.
+  P = Op(G_MERGE_VALUES, "G_MERGE_VALUES", "merge", OpShape::Merge);
+  P->ZeroHighPartOp = G_ZEXT;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t,
+                unsigned W) -> std::optional<APInt> {
+    APInt R(W, 0);
+    unsigned Part = O[0].getBitWidth();
+    if (Part * O.size() != W)
+      return std::nullopt;
+    for (unsigned I = 0, E = O.size(); I != E; ++I)
+      R.insertBits(O[I], I * Part);
+    return R;
+  };
+  P = Op(G_UNMERGE_VALUES, "G_UNMERGE_VALUES", "unmerge", OpShape::Unmerge);
+  P->ProjectionOps = {G_TRUNC};
+  P->InverseOf = G_MERGE_VALUES;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t Index,
+                unsigned W) -> std::optional<APInt> {
+    if ((Index + 1) * W > O[0].getBitWidth())
+      return std::nullopt;
+    return O[0].extractBits(W, Index * W);
+  };
+
+  // G_FREEZE: see OpProperties::StopsPoison.
+  P = Op(G_FREEZE, "G_FREEZE", "freeze", OpShape::Unary);
+  P->StopsPoison = true;
+
+  // Arithmetic with an overflow bit: result 0 is the value, result 1 is set
+  // if the value is not the exact result.
+  P = Typed(G_UADDO, "G_UADDO", "uaddo", {Main, Main}, {Main, Bool});
+  P->NoOverflowWith = {0};
+  P->Commutative = true;
+  P->ProjectionOps = {G_ADD, 0};
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t Index, unsigned) {
+    bool Ov;
+    APInt R = O[0].uadd_ov(O[1], Ov);
+    return valueOrFlag(R, Ov, Index);
+  };
+  P = Typed(G_SADDO, "G_SADDO", "saddo", {Main, Main}, {Main, Bool});
+  P->NoOverflowWith = {0};
+  P->Commutative = true;
+  P->ProjectionOps = {G_ADD, 0};
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t Index, unsigned) {
+    bool Ov;
+    APInt R = O[0].sadd_ov(O[1], Ov);
+    return valueOrFlag(R, Ov, Index);
+  };
+  P = Typed(G_USUBO, "G_USUBO", "usubo", {Main, Main}, {Main, Bool});
+  P->NoOverflowWith = {0};
+  P->NoOverflowSelf = true;
+  P->OverflowPredicate = CmpInst::ICMP_ULT;
+  P->ProjectionOps = {G_SUB, 0};
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t Index, unsigned) {
+    bool Ov;
+    APInt R = O[0].usub_ov(O[1], Ov);
+    return valueOrFlag(R, Ov, Index);
+  };
+  P = Typed(G_SSUBO, "G_SSUBO", "ssubo", {Main, Main}, {Main, Bool});
+  P->NoOverflowWith = {0};
+  P->NoOverflowSelf = true;
+  P->ProjectionOps = {G_SUB, 0};
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t Index, unsigned) {
+    bool Ov;
+    APInt R = O[0].ssub_ov(O[1], Ov);
+    return valueOrFlag(R, Ov, Index);
+  };
+  P = Typed(G_UMULO, "G_UMULO", "umulo", {Main, Main}, {Main, Bool});
+  P->NoOverflowWith = {0, 1};
+  P->Commutative = true;
+  P->ProjectionOps = {G_MUL, 0};
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t Index, unsigned) {
+    bool Ov;
+    APInt R = O[0].umul_ov(O[1], Ov);
+    return valueOrFlag(R, Ov, Index);
+  };
+  P = Typed(G_SMULO, "G_SMULO", "smulo", {Main, Main}, {Main, Bool});
+  // Not 1: in a 1-bit type the literal 1 is -1, and -1 * -1 overflows.
+  P->NoOverflowWith = {0};
+  P->Commutative = true;
+  P->ProjectionOps = {G_MUL, 0};
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t Index, unsigned) {
+    bool Ov;
+    APInt R = O[0].smul_ov(O[1], Ov);
+    return valueOrFlag(R, Ov, Index);
+  };
+
+  // The same with a carry or borrow operand.
+  P = Typed(G_UADDE, "G_UADDE", "uadde", {Main, Main, Bool}, {Main, Bool});
+  P->WithoutCarry = G_UADDO;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t Index, unsigned) {
+    return carryOp(O, /*Signed=*/false, /*Sub=*/false, Index);
+  };
+  P = Typed(G_SADDE, "G_SADDE", "sadde", {Main, Main, Bool}, {Main, Bool});
+  P->WithoutCarry = G_SADDO;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t Index, unsigned) {
+    return carryOp(O, /*Signed=*/true, /*Sub=*/false, Index);
+  };
+  P = Typed(G_USUBE, "G_USUBE", "usube", {Main, Main, Bool}, {Main, Bool});
+  P->WithoutCarry = G_USUBO;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t Index, unsigned) {
+    return carryOp(O, /*Signed=*/false, /*Sub=*/true, Index);
+  };
+  P = Typed(G_SSUBE, "G_SSUBE", "ssube", {Main, Main, Bool}, {Main, Bool});
+  P->WithoutCarry = G_SSUBO;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t Index, unsigned) {
+    return carryOp(O, /*Signed=*/true, /*Sub=*/true, Index);
+  };
+
+  // Quotient and remainder of one division.
+  P = Typed(G_UDIVREM, "G_UDIVREM", "udivrem", {Main, Main}, {Main, Main});
+  P->MayTrap = true;
+  P->ProjectionOps = {G_UDIV, G_UREM};
+  P = Typed(G_SDIVREM, "G_SDIVREM", "sdivrem", {Main, Main}, {Main, Main});
+  P->MayTrap = P->IsSigned = true;
+  P->ProjectionOps = {G_SDIV, G_SREM};
+
+  // Fixed-point arithmetic with Attr fractional bits. The rounding of the
+  // multiplications is not specified, so there is no constant folding. A
+  // division by zero is undefined behaviour, and so is a result that does
+  // not fit unless the operator saturates.
+  for (auto [Opc, Name, Short] :
+       {std::tuple(G_SMULFIX, "G_SMULFIX", "smulfix"),
+        std::tuple(G_UMULFIX, "G_UMULFIX", "umulfix"),
+        std::tuple(G_SMULFIXSAT, "G_SMULFIXSAT", "smulfixsat"),
+        std::tuple(G_UMULFIXSAT, "G_UMULFIXSAT", "umulfixsat")}) {
+    P = Op(Opc, Name, Short);
+    P->ImmAttr = P->Commutative = true;
+    P->MayBePoison = Opc == G_SMULFIX || Opc == G_UMULFIX;
+  }
+  for (auto [Opc, Name, Short, Signed] :
+       {std::tuple(G_SDIVFIX, "G_SDIVFIX", "sdivfix", true),
+        std::tuple(G_UDIVFIX, "G_UDIVFIX", "udivfix", false),
+        std::tuple(G_SDIVFIXSAT, "G_SDIVFIXSAT", "sdivfixsat", false),
+        std::tuple(G_UDIVFIXSAT, "G_UDIVFIXSAT", "udivfixsat", false)}) {
+    P = Op(Opc, Name, Short);
+    P->ImmAttr = P->MayTrap = true;
+    P->IsSigned = Signed;
+    P->MayBePoison = Opc == G_SDIVFIX || Opc == G_UDIVFIX;
+  }
 
   // The predicate algebra of comparisons (swapped, inverse, reflexive)
   // comes from CmpInst; see addCompareRulesFromProperties.
@@ -307,6 +809,11 @@ static std::vector<OpProperties> buildOpProperties() {
   P = Op(G_PTR_ADD, "G_PTR_ADD", "ptradd", OpShape::PtrAdd);
   P->RightIdentity = 0;
   P->ActsBy = G_ADD;
+
+  // Clearing bits of a pointer.
+  P = Op(G_PTRMASK, "G_PTRMASK", "ptrmask", OpShape::PtrAdd);
+  P->RightIdentity = -1;
+  P->ActsBy = G_AND;
 
   P = Op(G_PHI, "G_PHI", "phi", OpShape::Phi);
   P->Idempotent = true;
@@ -326,10 +833,52 @@ ArrayRef<OpProperties> llvm::egraph::getAllOpProperties() {
 }
 
 const OpProperties *llvm::egraph::getOpProperties(unsigned Opcode) {
-  for (const OpProperties &P : getAllOpProperties())
-    if (P.Opcode == Opcode)
-      return &P;
+  // Indexed by opcode: this is called for every node that is matched.
+  static const std::vector<const OpProperties *> Index = [] {
+    std::vector<const OpProperties *> I;
+    for (const OpProperties &P : getAllOpProperties()) {
+      if (P.Opcode >= I.size())
+        I.resize(P.Opcode + 1);
+      I[P.Opcode] = &P;
+    }
+    return I;
+  }();
+  return Opcode < Index.size() ? Index[Opcode] : nullptr;
+}
+
+const OpProperties *llvm::egraph::getOpPropertiesForInstr(unsigned MIOpcode,
+                                                          uint32_t &Flags) {
+  Flags = 0;
+  if (const OpProperties *P = getOpProperties(MIOpcode))
+    return P;
+  for (const OpProperties &P : getAllOpProperties()) {
+    if (P.PoisonVariant != MIOpcode)
+      continue;
+    Flags = PoisonVariantFlag;
+    return &P;
+  }
   return nullptr;
+}
+
+APInt llvm::egraph::getLiteralValue(int64_t V, unsigned Width) {
+  if (V == OpProperties::SignedMin)
+    return APInt::getSignedMinValue(Width);
+  if (V == OpProperties::SignedMax)
+    return APInt::getSignedMaxValue(Width);
+  return APInt(Width, V, /*isSigned=*/true, /*implicitTrunc=*/true);
+}
+
+LLT llvm::egraph::getTypedResultType(const OpProperties &P, unsigned Index,
+                                     LLT MainTy) {
+  switch (P.ResultKinds[Index]) {
+  case TypeKind::Main:
+    return MainTy;
+  case TypeKind::Bool:
+    return LLT::scalar(1);
+  case TypeKind::Free:
+    break;
+  }
+  return LLT();
 }
 
 static std::optional<unsigned> getOpcodeByName(StringRef Name) {
@@ -350,11 +899,6 @@ bool llvm::egraph::isACOperator(unsigned Opc) {
   return P && P->Associative && P->Commutative;
 }
 
-static bool isShift(unsigned Opc) {
-  const OpProperties *P = getOpProperties(Opc);
-  return P && P->IsShift;
-}
-
 /// True if the division or remainder \p N has defined behaviour for all
 /// values of its operands: the divisor is a constant other than zero (and
 /// other than -1 for a signed operation).
@@ -362,6 +906,26 @@ static bool isDefinedDivision(const EGraph &G, const OpProperties &P,
                               const ENode &N) {
   const std::optional<APInt> &Divisor = G.getClass(N.Ops[1]).Const;
   return Divisor && !Divisor->isZero() && !(P.IsSigned && Divisor->isAllOnes());
+}
+
+/// True if the node \p P(\p Ops) of type \p Ty is only poison if an operand
+/// is: a shift amount is a constant in range, the position and width of a
+/// bit field are constants inside the value. Operators with possibly poison
+/// results are only rewritten, and only created, in this case.
+static bool propagatesPoisonExactly(const EGraph &G, const OpProperties &P,
+                                    LLT Ty, ArrayRef<EClassId> Ops) {
+  if (P.IsShift) {
+    const std::optional<APInt> &Amt = G.getClass(Ops[1]).Const;
+    return Amt && Amt->ult(Ty.getScalarSizeInBits());
+  }
+  if (P.IsBitField) {
+    const std::optional<APInt> &Lsb = G.getClass(Ops[1]).Const;
+    const std::optional<APInt> &Width = G.getClass(Ops[2]).Const;
+    unsigned W = Ty.getScalarSizeInBits();
+    return Lsb && Width && Lsb->ult(W) && !Width->isZero() && Width->ule(W) &&
+           Lsb->getZExtValue() + Width->getZExtValue() <= W;
+  }
+  return true;
 }
 
 static StringRef getICmpPredicateName(uint64_t Attr) {
@@ -373,7 +937,7 @@ static void printAttr(raw_ostream &OS, unsigned Opc, uint64_t Attr) {
   const OpProperties *P = getOpProperties(Opc);
   if (P && P->Shape == OpShape::Compare)
     OS << ":" << getICmpPredicateName(Attr);
-  else if (Attr)
+  else if (Attr || (P && (P->hasProjections() || P->ImmAttr)))
     OS << ":" << Attr;
 }
 
@@ -802,6 +1366,8 @@ bool EGraph::computeNodeNotUndef(const ENode &N) const {
     const OpProperties *P = getOpProperties(N.Opcode);
     if (!P || !P->hasResult())
       return false;
+    if (P->StopsPoison)
+      return true;
     return all_of(N.Ops, [&](EClassId Op) { return getClass(Op).NotUndef; });
   }
   }
@@ -817,13 +1383,12 @@ bool EGraph::computeNodeNotPoison(const ENode &N) const {
   case ENodeKind::Operation: {
     // Any poison-generating flag may introduce poison.
     const OpProperties *P = getOpProperties(N.Opcode);
-    if (N.Flags != 0 || !P || !P->hasResult())
+    if (P && P->StopsPoison)
+      return true;
+    if (N.Flags != 0 || !P || !P->hasResult() || P->MayBePoison)
       return false;
-    if (P->IsShift) {
-      const std::optional<APInt> &Amt = getClass(N.Ops[1]).Const;
-      if (!Amt || Amt->uge(N.Ty.getScalarSizeInBits()))
-        return false;
-    }
+    if (!propagatesPoisonExactly(*this, *P, N.Ty, N.Ops))
+      return false;
     // Undefined behaviour is treated like poison: a value that may trap is
     // never dropped by an exact rewrite.
     if (P->MayTrap && !isDefinedDivision(*this, *P, N))
@@ -1051,9 +1616,11 @@ private:
           break;
         N.Children.push_back(parseNode(P));
       }
-      if (Props->NumOperands < 0)
-        error(Twine("'") + OpName + "' cannot be used in a pattern");
-      if (N.Children.size() != unsigned(Props->NumOperands))
+      if (Props->Shape == OpShape::Phi || Props->StopsPoison)
+        if (IsRHS || Props->Shape == OpShape::Phi)
+          error(Twine("'") + OpName + "' cannot be used in a pattern");
+      if (Props->NumOperands >= 0 &&
+          N.Children.size() != unsigned(Props->NumOperands))
         error(Twine("'") + OpName + "' takes " + Twine(Props->NumOperands) +
               " operands");
     } else {
@@ -1072,7 +1639,11 @@ private:
           error("bad computed constant index");
       } else {
         N.Kind = PatNode::Literal;
-        if (Tok.getAsInteger(10, N.Value))
+        if (Tok == "smin")
+          N.Value = OpProperties::SignedMin;
+        else if (Tok == "smax")
+          N.Value = OpProperties::SignedMax;
+        else if (Tok.getAsInteger(10, N.Value))
           error(Twine("bad literal '") + Tok + "'");
       }
     }
@@ -1081,10 +1652,30 @@ private:
   }
 
   void parseAttr(PatNode &N, const OpProperties &Props, StringRef AttrName) {
+    bool Numeric = Props.hasProjections() || Props.ImmAttr;
     if (AttrName.empty()) {
-      // A created comparison needs a predicate.
-      if (IsRHS && Props.Shape == OpShape::Compare)
-        error("comparison without a predicate on the right-hand side");
+      // A created comparison needs a predicate, and a created operation with
+      // an immediate or with several results needs to say which.
+      if (IsRHS && (Props.Shape == OpShape::Compare || Numeric))
+        error("operation without an attribute on the right-hand side");
+      return;
+    }
+    if (Numeric) {
+      if (AttrName.consume_front("$")) {
+        if (!IsRHS || !Props.ImmAttr)
+          error("a computed attribute needs an immediate operand on the "
+                "right-hand side");
+        N.AttrKind = PatNode::ComputedAttr;
+        if (AttrName.getAsInteger(10, N.Attr))
+          error("bad computed attribute index");
+        return;
+      }
+      N.AttrKind = PatNode::ExactAttr;
+      if (AttrName.getAsInteger(10, N.Attr))
+        error(Twine("bad attribute '") + AttrName + "'");
+      if (!Props.ResultKinds.empty() && !Props.ImmAttr &&
+          N.Attr >= Props.ResultKinds.size())
+        error("result index out of range");
       return;
     }
     if (AttrName == "inverted") {
@@ -1129,6 +1720,9 @@ static PoisonUse computePoisonUse(const Pattern &P, unsigned Idx) {
   }
   if (N.Kind != PatNode::Op)
     return U;
+  // The result of G_FREEZE is never poison.
+  if (getOpProperties(N.Opcode)->StopsPoison)
+    return U;
   if (getOpProperties(N.Opcode)->Shape == OpShape::Select) {
     PoisonUse Cond = computePoisonUse(P, N.Children[0]);
     PoisonUse TrueArm = computePoisonUse(P, N.Children[1]);
@@ -1171,6 +1765,10 @@ RewriteRule::RewriteRule(StringRef Name, StringRef LHSText, StringRef RHSText,
   if (VarNames.size() > 32)
     report_fatal_error(Twine("GIEGraph rule '") + Name +
                        "': too many variables");
+  for (const PatNode &N : LHS.Nodes)
+    if (N.Kind == PatNode::Op && !is_contained(LHSOpcodes, N.Opcode))
+      LHSOpcodes.push_back(N.Opcode);
+  llvm::sort(LHSOpcodes);
   OccL.assign(VarNames.size(), 0);
   OccR.assign(VarNames.size(), 0);
   countVarOccurrences(LHS, OccL);
@@ -1288,7 +1886,12 @@ static void printPattern(raw_ostream &OS, const Pattern &P, unsigned Idx,
     OS << "#" << Consts[N.Index];
     return;
   case PatNode::Literal:
-    OS << N.Value;
+    if (N.Value == OpProperties::SignedMin)
+      OS << "smin";
+    else if (N.Value == OpProperties::SignedMax)
+      OS << "smax";
+    else
+      OS << N.Value;
     return;
   case PatNode::Computed:
     OS << "$" << N.Index;
@@ -1299,6 +1902,8 @@ static void printPattern(raw_ostream &OS, const Pattern &P, unsigned Idx,
       printAttr(OS, N.Opcode, N.Attr);
     else if (N.AttrKind == PatNode::InvertedRootAttr)
       OS << ":inverted";
+    else if (N.AttrKind == PatNode::ComputedAttr)
+      OS << ":$" << N.Attr;
     for (unsigned C : N.Children) {
       OS << " ";
       printPattern(OS, P, C, Vars, Consts);
@@ -1376,6 +1981,7 @@ public:
     Cur.Consts.assign(R.getNumConstVars(), std::nullopt);
     Cur.Rest = ACTerm();
     Cur.PatClasses.assign(R.getLHS().Nodes.size(), RuleMatch::NoClass);
+    Cur.PatAttrs.assign(R.getLHS().Nodes.size(), 0);
     Cur.RootAttr = 0;
     Cur.Guards.clear();
     Cur.ViaRefinement = false;
@@ -1395,6 +2001,7 @@ private:
     std::vector<uint64_t> K;
     K.push_back(M.ViaRefinement);
     K.push_back(M.RootAttr);
+    K.insert(K.end(), M.PatAttrs.begin(), M.PatAttrs.end());
     for (unsigned V = 0, E = M.Vars.size(); V != E; ++V) {
       K.push_back(M.Vars[V]);
       if (M.isSumBound(V)) {
@@ -1604,9 +2211,7 @@ private:
     case PatNode::Literal: {
       if (!Cls.Const)
         return;
-      APInt Lit(Cls.Const->getBitWidth(), PN.Value, /*isSigned=*/true,
-                /*implicitTrunc=*/true);
-      if (*Cls.Const == Lit)
+      if (*Cls.Const == getLiteralValue(PN.Value, Cls.Const->getBitWidth()))
         K();
       return;
     }
@@ -1643,18 +2248,19 @@ private:
         bool Swapped = P->Commutative && N.Ops[0] != N.Ops[1];
         if (PN.AttrKind == PatNode::ExactAttr) {
           Direct = N.Attr == PN.Attr;
-          Swapped = P->Shape == OpShape::Compare && N.Ops[0] != N.Ops[1] &&
-                    CmpInst::getSwappedPredicate(
-                        static_cast<CmpInst::Predicate>(N.Attr)) == PN.Attr;
+          if (P->Shape == OpShape::Compare)
+            Swapped = N.Ops[0] != N.Ops[1] &&
+                      CmpInst::getSwappedPredicate(
+                          static_cast<CmpInst::Predicate>(N.Attr)) == PN.Attr;
+          else
+            Swapped &= Direct;
           if (!Direct && !Swapped)
             continue;
         }
-        if (isShift(N.Opcode)) {
-          // Only shifts that cannot create poison are rewritten.
-          const std::optional<APInt> &Amt = G.getClass(N.Ops[1]).Const;
-          if (!Amt || Amt->uge(N.Ty.getScalarSizeInBits()))
-            continue;
-        }
+        // Only shifts and bit fields that cannot create poison are
+        // rewritten.
+        if (!propagatesPoisonExactly(G, *P, N.Ty, N.Ops))
+          continue;
         // A flagged operation (nuw/nsw/exact/disjoint...) is refined by the
         // same operation without flags: the flags only add poison. Matching
         // it as the unflagged operator is therefore sound, but the result
@@ -1674,6 +2280,7 @@ private:
         if (IsRoot)
           Cur.RootAttr = N.Attr;
         Cur.PatClasses[PIdx] = C;
+        Cur.PatAttrs[PIdx] = N.Attr;
         if (Direct)
           matchChildren(PN, N, 0, /*Swap=*/false, K);
         if (Swapped)
@@ -1767,8 +2374,7 @@ public:
       if (!Expected.isValid() || !Expected.isScalar())
         return std::nullopt;
       return G.addConstant(Expected,
-                           APInt(Expected.getSizeInBits(), PN.Value,
-                                 /*isSigned=*/true, /*implicitTrunc=*/true));
+                           getLiteralValue(PN.Value, Expected.getSizeInBits()));
     case PatNode::Computed:
       if (PN.Index >= Computed.size())
         return std::nullopt;
@@ -1828,7 +2434,7 @@ private:
     switch (P->Shape) {
     case OpShape::Binary: {
       LLT Ty = inferType(PN.Children[0]);
-      return Ty.isValid() || P->IsShift ? Ty : inferType(PN.Children[1]);
+      return Ty.isValid() || P->hasAmount() ? Ty : inferType(PN.Children[1]);
     }
     case OpShape::Unary:
     case OpShape::PtrAdd:
@@ -1839,8 +2445,16 @@ private:
       LLT Ty = inferType(PN.Children[1]);
       return Ty.isValid() ? Ty : inferType(PN.Children[2]);
     }
+    case OpShape::Typed: {
+      unsigned Index = P->hasProjections() ? PN.Attr : 0;
+      if (Index >= P->ResultKinds.size())
+        return LLT();
+      return getTypedResultType(*P, Index, inferMainType(PN, *P));
+    }
     case OpShape::Cast:
     case OpShape::BitCount:
+    case OpShape::Merge:
+    case OpShape::Unmerge:
     case OpShape::Phi:
     case OpShape::Effect:
       break;
@@ -1848,9 +2462,80 @@ private:
     return LLT();
   }
 
+  /// The main type of the OpShape::Typed pattern \p PN, taken from its
+  /// operands.
+  LLT inferMainType(const PatNode &PN, const OpProperties &P) const {
+    for (unsigned I = 0, E = PN.Children.size(); I != E; ++I) {
+      if (P.OperandKinds[I] != TypeKind::Main)
+        continue;
+      LLT Ty = inferType(PN.Children[I]);
+      if (Ty.isValid())
+        return Ty;
+    }
+    return LLT();
+  }
+
+  /// The attribute of the node created for \p PN.
+  std::optional<uint64_t> getAttr(const PatNode &PN,
+                                  const OpProperties &P) const {
+    switch (PN.AttrKind) {
+    case PatNode::AnyAttr:
+    case PatNode::ExactAttr:
+      return PN.Attr;
+    case PatNode::InvertedRootAttr:
+      return P.InvertAttr(M.RootAttr);
+    case PatNode::ComputedAttr:
+      if (PN.Attr >= Computed.size())
+        return std::nullopt;
+      return Computed[PN.Attr].getZExtValue();
+    }
+    llvm_unreachable("bad attribute kind");
+  }
+
+  /// True if a cast of kind \p P from \p SrcTy to \p Ty is well-typed.
+  static bool isValidCast(const OpProperties &P, LLT Ty, LLT SrcTy,
+                          uint64_t Attr) {
+    if (!Ty.isValid() || !SrcTy.isValid())
+      return false;
+    switch (P.Cast) {
+    case CastKind::PtrToInt:
+      return Ty.isScalar() && SrcTy.isPointer();
+    case CastKind::IntToPtr:
+      return Ty.isPointer() && SrcTy.isScalar();
+    default:
+      break;
+    }
+    if (!Ty.isScalar() || !SrcTy.isScalar())
+      return false;
+    unsigned Width = Ty.getSizeInBits(), SrcWidth = SrcTy.getSizeInBits();
+    switch (P.Cast) {
+    case CastKind::None:
+      return true;
+    case CastKind::Truncate:
+    case CastKind::SatTruncate:
+      return Width < SrcWidth;
+    case CastKind::ZeroExtend:
+    case CastKind::SignExtend:
+    case CastKind::AnyExtend:
+      return Width > SrcWidth;
+    case CastKind::Extract:
+      return Width < SrcWidth && Attr + Width <= SrcWidth;
+    case CastKind::PtrToInt:
+    case CastKind::IntToPtr:
+      break;
+    }
+    llvm_unreachable("bad cast kind");
+  }
+
   std::optional<EClassId> buildOp(const PatNode &PN, unsigned PIdx,
                                   LLT Expected) {
     const OpProperties *P = getOpProperties(PN.Opcode);
+    // The nodes of such an operator belong to instructions.
+    if (P->StopsPoison || P->MayBePoison)
+      return std::nullopt;
+    std::optional<uint64_t> Attr = getAttr(PN, *P);
+    if (!Attr)
+      return std::nullopt;
     LLT Ty = Expected.isValid() ? Expected : inferType(PIdx);
     SmallVector<EClassId, 3> Ops;
     // Build operand \p I with the given type; false if that fails.
@@ -1864,32 +2549,79 @@ private:
     switch (P->Shape) {
     case OpShape::Binary:
       if (!Ty.isValid() || !Ty.isScalar() || !Operand(0, Ty) ||
-          !Operand(1, Ty, /*IsShiftAmount=*/P->IsShift))
+          !Operand(1, Ty, /*IsShiftAmount=*/P->hasAmount()))
         return std::nullopt;
-      if (P->IsShift) {
-        // RHS shifts must not be able to create poison.
-        std::optional<APInt> Amt = G.getConstant(Ops[1]);
-        if (!Amt || Amt->uge(Ty.getSizeInBits()))
-          return std::nullopt;
-      }
       break;
     case OpShape::Unary:
       if (!Ty.isValid() || !Ty.isScalar() || !Operand(0, Ty))
         return std::nullopt;
+      // The immediate of G_SEXT_INREG is a number of bits inside the value.
+      if (P->ImmAttr && (*Attr == 0 || *Attr >= Ty.getSizeInBits()))
+        return std::nullopt;
       break;
     case OpShape::Cast:
-    case OpShape::BitCount: {
+    case OpShape::BitCount:
       // The result type comes from the context, the source type from the
       // operand.
+      if (!Ty.isValid() || !Operand(0, LLT()) ||
+          !isValidCast(*P, Ty, G.getType(Ops[0]), *Attr))
+        return std::nullopt;
+      break;
+    case OpShape::Typed: {
+      unsigned Index = P->hasProjections() ? *Attr : 0;
+      if (Index >= P->ResultKinds.size())
+        return std::nullopt;
+      LLT MainTy =
+          P->ResultKinds[Index] == TypeKind::Main ? Ty : inferMainType(PN, *P);
+      for (unsigned I = 0, E = PN.Children.size(); I != E; ++I) {
+        switch (P->OperandKinds[I]) {
+        case TypeKind::Main:
+          if (!MainTy.isValid() || !MainTy.isScalar() || !Operand(I, MainTy))
+            return std::nullopt;
+          break;
+        case TypeKind::Bool:
+          if (!Operand(I, LLT::scalar(1)))
+            return std::nullopt;
+          break;
+        case TypeKind::Free:
+          if (!Operand(I, LLT()) || !G.getType(Ops.back()).isScalar())
+            return std::nullopt;
+          break;
+        }
+      }
+      LLT ResTy = getTypedResultType(*P, Index, MainTy);
+      if (!ResTy.isValid())
+        ResTy = Ty; // A free result: the context gives the type.
+      if (!ResTy.isValid() || !ResTy.isScalar() ||
+          (Ty.isValid() && Ty != ResTy))
+        return std::nullopt;
+      Ty = ResTy;
+      // A three-way comparison needs two bits; an inserted field must fit.
+      if (P->ResultKinds[Index] == TypeKind::Free && Ty.getSizeInBits() < 2)
+        return std::nullopt;
+      if (P->ImmAttr &&
+          *Attr + G.getType(Ops[1]).getSizeInBits() > Ty.getSizeInBits())
+        return std::nullopt;
+      break;
+    }
+    case OpShape::Merge: {
+      unsigned NumParts = PN.Children.size();
+      if (!Ty.isValid() || !Ty.isScalar() || NumParts < 2 ||
+          Ty.getSizeInBits() % NumParts != 0)
+        return std::nullopt;
+      LLT PartTy = LLT::scalar(Ty.getSizeInBits() / NumParts);
+      for (unsigned I = 0; I != NumParts; ++I)
+        if (!Operand(I, PartTy))
+          return std::nullopt;
+      break;
+    }
+    case OpShape::Unmerge: {
       if (!Ty.isValid() || !Ty.isScalar() || !Operand(0, LLT()))
         return std::nullopt;
       LLT SrcTy = G.getType(Ops[0]);
-      if (!SrcTy.isScalar())
-        return std::nullopt;
-      unsigned Width = Ty.getSizeInBits(), SrcWidth = SrcTy.getSizeInBits();
-      if (P->Cast == CastKind::Truncate
-              ? Width >= SrcWidth
-              : P->Cast != CastKind::None && Width <= SrcWidth)
+      if (!SrcTy.isScalar() || SrcTy.getSizeInBits() <= Ty.getSizeInBits() ||
+          SrcTy.getSizeInBits() % Ty.getSizeInBits() != 0 ||
+          *Attr >= SrcTy.getSizeInBits() / Ty.getSizeInBits())
         return std::nullopt;
       break;
     }
@@ -1930,19 +2662,17 @@ private:
       break;
     }
 
+    // The right-hand side must not be able to create poison: a shift amount
+    // is a constant in range, a bit field is inside the value.
+    if (!propagatesPoisonExactly(G, *P, Ty, Ops))
+      return std::nullopt;
+
     // A division is only created if it cannot trap, or if the matched
     // pattern contains a division that traps in (at least) the same cases.
     if (P->MayTrap && !isCoveredDivision(*P, Ops))
       return std::nullopt;
 
-    uint64_t Attr = PN.Attr;
-    if (PN.AttrKind == PatNode::InvertedRootAttr) {
-      std::optional<uint64_t> Inverted = P->InvertAttr(M.RootAttr);
-      if (!Inverted)
-        return std::nullopt;
-      Attr = *Inverted;
-    }
-    return G.addOp(PN.Opcode, Ty, Ops, /*Flags=*/0, Attr);
+    return G.addOp(PN.Opcode, Ty, Ops, /*Flags=*/0, *Attr);
   }
 
   bool isCoveredDivision(const OpProperties &P, ArrayRef<EClassId> Ops) const {
@@ -2022,11 +2752,21 @@ SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
     ACViewCache Views(G, Limits.MaxACLeaves, Limits.MaxACViews);
     unsigned Budget = Limits.MaxMatchesPerIteration;
     bool AnyBanned = false;
+    // A rule can only match if the graph has a node of every operator of
+    // its left-hand side.
+    SmallDenseSet<unsigned, 16> Present;
+    for (EClassId Id : G.getClassIds())
+      for (const ENode &N : G.getClass(Id).Nodes)
+        if (N.isOperation())
+          Present.insert(N.Opcode);
     for (unsigned RI = 0, RE = Rules.size(); RI != RE && Budget; ++RI) {
       if (Iter < BannedUntil[RI]) {
         AnyBanned = true;
         continue;
       }
+      if (!all_of(Rules[RI].getLHSOpcodes(),
+                  [&](unsigned Opc) { return Present.contains(Opc); }))
+        continue;
       unsigned Threshold = ~0u;
       if (Limits.RuleMatchLimit)
         Threshold = Limits.RuleMatchLimit << std::min(TimesBanned[RI], 16u);
@@ -2119,10 +2859,26 @@ unsigned DefaultCostModel::getNodeCost(const ENode &N) const {
   }
   const OpProperties *P = getOpProperties(N.Opcode);
   unsigned Base = SimpleOpCost;
-  if (N.Opcode == TargetOpcode::G_MUL)
+  switch (N.Opcode) {
+  case TargetOpcode::G_MUL:
+  case TargetOpcode::G_UMULH:
+  case TargetOpcode::G_SMULH:
+  case TargetOpcode::G_UMULO:
+  case TargetOpcode::G_SMULO:
+  case TargetOpcode::G_CLMUL:
+  case TargetOpcode::G_CLMULR:
+  case TargetOpcode::G_CLMULH:
+  case TargetOpcode::G_SMULFIX:
+  case TargetOpcode::G_UMULFIX:
+  case TargetOpcode::G_SMULFIXSAT:
+  case TargetOpcode::G_UMULFIXSAT:
     Base = MulCost;
-  else if (P && P->MayTrap)
-    Base = DivCost;
+    break;
+  default:
+    if (P && P->MayTrap)
+      Base = DivCost;
+    break;
+  }
   if (ScaleByWidth && N.Ty.isValid())
     Base *= std::max<unsigned>(1, (N.Ty.getSizeInBits() + 31) / 32);
   return std::max(1u, Base);
@@ -2148,6 +2904,8 @@ Extractor::Extractor(const EGraph &G, const CostModel &CM) : G(G) {
     return C;
   };
   auto NodeCost = [&](const ENode &N) -> uint64_t {
+    if (N.isOperation() && !CM.isAllowed(G, N))
+      return Infinite;
     uint64_t C = LocalCost(N);
     for (EClassId Op : N.Ops)
       C = addCost(C, Choices[G.find(Op)].Cost);
@@ -2214,6 +2972,8 @@ uint64_t Extractor::getDagCost(ArrayRef<EClassId> Roots) const {
   SmallVector<EClassId, 16> Work;
   for (EClassId R : Roots)
     Work.push_back(resolve(R));
+  // The results of one instruction are several nodes; count it once.
+  std::set<std::vector<uint64_t>> Instructions;
   uint64_t Total = 0;
   while (!Work.empty()) {
     EClassId Id = Work.pop_back_val();
@@ -2222,7 +2982,15 @@ uint64_t Extractor::getDagCost(ArrayRef<EClassId> Roots) const {
     const ENode *N = getChosenNode(Id);
     if (!N)
       return Infinite;
-    Total = addCost(Total, Choices[Id].LocalCost);
+    bool Counted = false;
+    if (N->isOperation() && getOpProperties(N->Opcode)->hasProjections()) {
+      std::vector<uint64_t> Key = {N->Opcode, N->Flags};
+      for (EClassId Op : N->Ops)
+        Key.push_back(G.find(Op));
+      Counted = !Instructions.insert(std::move(Key)).second;
+    }
+    if (!Counted)
+      Total = addCost(Total, Choices[Id].LocalCost);
     for (EClassId Op : N->Ops)
       Work.push_back(resolve(Op));
   }
@@ -2250,8 +3018,10 @@ void Extractor::printExpr(
   case ENodeKind::Operation:
     OS << "(" << getOpcodeName(N->Opcode);
     printAttr(OS, N->Opcode, N->Attr);
-    if (N->Flags)
-      OS << "<flags:" << N->Flags << ">";
+    if (N->Flags & PoisonVariantFlag)
+      OS << "<poison-variant>";
+    if (N->Flags & ~PoisonVariantFlag)
+      OS << "<flags:" << (N->Flags & ~PoisonVariantFlag) << ">";
     for (EClassId Op : N->Ops) {
       OS << " ";
       printExpr(OS, Op, PrintInput);

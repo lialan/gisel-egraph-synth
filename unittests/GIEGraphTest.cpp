@@ -1008,7 +1008,7 @@ TEST_F(GIEGraphOpsTest, PatternsAreChecked) {
   EXPECT_DEATH(RewriteRule("r", "(G_ICMP:foo ?a ?b)", "?a"),
                "unknown predicate");
   EXPECT_DEATH(RewriteRule("r", "(G_AND ?a ?b)", "(G_ICMP ?a ?b)"),
-               "without a predicate");
+               "without an attribute");
   EXPECT_DEATH(RewriteRule("r", "(G_PHI ?a ?b)", "?a"),
                "cannot be used in a pattern");
 }
@@ -1170,6 +1170,477 @@ TEST_F(GIEGraphCoverageTest, MulByNegOne) {
   // mul_by_neg_one: x * -1 -> 0 - x (same cost model value as sub)
   EClassId X = in();
   check(mul(X, cst(-1)), [&] { return sub(cst(0), X); }, 1);
+}
+
+//===----------------------------------------------------------------------===//
+// The remaining integer operators: minimum and maximum, saturating
+// arithmetic, rotations, bit fields, parts of a value, and operators with an
+// overflow result.
+//===----------------------------------------------------------------------===//
+
+namespace T = TargetOpcode;
+
+class GIEGraphIntegerOpsTest : public GIEGraphOpsTest {
+protected:
+  EClassId typed(unsigned Opc, LLT Ty, ArrayRef<EClassId> Ops,
+                 uint64_t Attr = 0, uint32_t Flags = 0) {
+    return G.addOp(Opc, Ty, Ops, Flags, Attr);
+  }
+  /// The value that constant folding gives op(Ops), sign-extended, or
+  /// std::nullopt if the class has no constant.
+  std::optional<int64_t> folded(unsigned Opc, LLT Ty, ArrayRef<EClassId> Ops,
+                                uint64_t Attr = 0) {
+    EClassId C = typed(Opc, Ty, Ops, Attr);
+    runAll();
+    std::optional<APInt> V = G.getConstant(C);
+    if (!V)
+      return std::nullopt;
+    return V->getSExtValue();
+  }
+  std::optional<int64_t> folded8(unsigned Opc, int64_t A, int64_t B) {
+    return folded(Opc, S8, {cst(A, S8), cst(B, S8)});
+  }
+};
+
+TEST_F(GIEGraphIntegerOpsTest, EveryGenericIntegerOpcodeHasProperties) {
+  // The operators that the table must describe. Hints (G_ASSERT_*), the
+  // constant folding barrier and indirect branches are deliberately values
+  // or instructions outside of the graph.
+  for (unsigned Opc : {T::G_ADD,
+                       T::G_SUB,
+                       T::G_MUL,
+                       T::G_UDIV,
+                       T::G_SDIV,
+                       T::G_UREM,
+                       T::G_SREM,
+                       T::G_UDIVREM,
+                       T::G_SDIVREM,
+                       T::G_AND,
+                       T::G_OR,
+                       T::G_XOR,
+                       T::G_SHL,
+                       T::G_LSHR,
+                       T::G_ASHR,
+                       T::G_ROTL,
+                       T::G_ROTR,
+                       T::G_FSHL,
+                       T::G_FSHR,
+                       T::G_SMIN,
+                       T::G_SMAX,
+                       T::G_UMIN,
+                       T::G_UMAX,
+                       T::G_ABS,
+                       T::G_ABDS,
+                       T::G_ABDU,
+                       T::G_UAVGFLOOR,
+                       T::G_UAVGCEIL,
+                       T::G_SAVGFLOOR,
+                       T::G_SAVGCEIL,
+                       T::G_UMULH,
+                       T::G_SMULH,
+                       T::G_UADDSAT,
+                       T::G_SADDSAT,
+                       T::G_USUBSAT,
+                       T::G_SSUBSAT,
+                       T::G_USHLSAT,
+                       T::G_SSHLSAT,
+                       T::G_SMULFIX,
+                       T::G_UMULFIX,
+                       T::G_SMULFIXSAT,
+                       T::G_UMULFIXSAT,
+                       T::G_SDIVFIX,
+                       T::G_UDIVFIX,
+                       T::G_SDIVFIXSAT,
+                       T::G_UDIVFIXSAT,
+                       T::G_CLMUL,
+                       T::G_CLMULR,
+                       T::G_CLMULH,
+                       T::G_UADDO,
+                       T::G_SADDO,
+                       T::G_USUBO,
+                       T::G_SSUBO,
+                       T::G_UMULO,
+                       T::G_SMULO,
+                       T::G_UADDE,
+                       T::G_SADDE,
+                       T::G_USUBE,
+                       T::G_SSUBE,
+                       T::G_ICMP,
+                       T::G_SCMP,
+                       T::G_UCMP,
+                       T::G_SELECT,
+                       T::G_TRUNC,
+                       T::G_ZEXT,
+                       T::G_SEXT,
+                       T::G_ANYEXT,
+                       T::G_SEXT_INREG,
+                       T::G_TRUNC_SSAT_S,
+                       T::G_TRUNC_SSAT_U,
+                       T::G_TRUNC_USAT_U,
+                       T::G_PTRTOINT,
+                       T::G_INTTOPTR,
+                       T::G_PTR_ADD,
+                       T::G_PTRMASK,
+                       T::G_BSWAP,
+                       T::G_BITREVERSE,
+                       T::G_CTPOP,
+                       T::G_CTLZ,
+                       T::G_CTTZ,
+                       T::G_CTLS,
+                       T::G_EXTRACT,
+                       T::G_INSERT,
+                       T::G_SBFX,
+                       T::G_UBFX,
+                       T::G_MERGE_VALUES,
+                       T::G_UNMERGE_VALUES,
+                       T::G_FREEZE,
+                       T::G_PHI,
+                       T::G_BRCOND,
+                       T::G_BR})
+    EXPECT_NE(getOpProperties(Opc), nullptr) << "opcode " << Opc;
+  uint32_t Flags = 0;
+  EXPECT_EQ(getOpPropertiesForInstr(T::G_CTLZ_ZERO_POISON, Flags),
+            getOpProperties(T::G_CTLZ));
+  EXPECT_EQ(Flags, PoisonVariantFlag);
+  EXPECT_EQ(getOpPropertiesForInstr(T::G_CTTZ_ZERO_POISON, Flags),
+            getOpProperties(T::G_CTTZ));
+}
+
+TEST_F(GIEGraphIntegerOpsTest, FoldMinMaxAndDifferences) {
+  EXPECT_EQ(folded8(T::G_SMIN, -3, 5), -3);
+  EXPECT_EQ(folded8(T::G_SMAX, -3, 5), 5);
+  EXPECT_EQ(folded8(T::G_UMIN, -3, 5), 5);
+  EXPECT_EQ(folded8(T::G_UMAX, -3, 5), -3);
+  EXPECT_EQ(folded8(T::G_ABDS, -3, 5), 8);
+  EXPECT_EQ(folded8(T::G_ABDU, -3, 5), -8); // 253 - 5 == 248
+  EXPECT_EQ(folded(T::G_ABS, S8, {cst(-5, S8)}), 5);
+  EXPECT_EQ(folded(T::G_ABS, S8, {cst(-128, S8)}), -128);
+  EXPECT_EQ(folded(T::G_SCMP, S8, {cst(-3, S8), cst(5, S8)}), -1);
+  EXPECT_EQ(folded(T::G_UCMP, S8, {cst(-3, S8), cst(5, S8)}), 1);
+  EXPECT_EQ(folded(T::G_SCMP, S8, {cst(5, S8), cst(5, S8)}), 0);
+}
+
+TEST_F(GIEGraphIntegerOpsTest, FoldAveragesAndHighProducts) {
+  EXPECT_EQ(folded8(T::G_UAVGFLOOR, 255, 1), -128); // 128
+  EXPECT_EQ(folded8(T::G_UAVGCEIL, 254, 1), -128);  // 128
+  EXPECT_EQ(folded8(T::G_SAVGFLOOR, -3, 2), -1);
+  EXPECT_EQ(folded8(T::G_SAVGCEIL, -3, 2), 0);
+  EXPECT_EQ(folded8(T::G_UMULH, 200, 3), 2);
+  EXPECT_EQ(folded8(T::G_SMULH, -56, 3), -1);
+  EXPECT_EQ(folded8(T::G_CLMUL, 7, 5), 27);
+  EXPECT_EQ(folded8(T::G_CLMULH, 0x80, 0x80), 0x40);
+  EXPECT_EQ(folded8(T::G_CLMULR, 0x80, 0x80), -128);
+}
+
+TEST_F(GIEGraphIntegerOpsTest, FoldSaturatingArithmetic) {
+  EXPECT_EQ(folded8(T::G_UADDSAT, 200, 100), -1);
+  EXPECT_EQ(folded8(T::G_SADDSAT, 100, 100), 127);
+  EXPECT_EQ(folded8(T::G_USUBSAT, 5, 10), 0);
+  EXPECT_EQ(folded8(T::G_SSUBSAT, -100, 100), -128);
+  EXPECT_EQ(folded8(T::G_USHLSAT, 3, 2), 12);
+  EXPECT_EQ(folded8(T::G_USHLSAT, 0x40, 2), -1);
+  EXPECT_EQ(folded8(T::G_SSHLSAT, 0x40, 2), 127);
+  EXPECT_EQ(folded8(T::G_SSHLSAT, -64, 2), -128);
+  // An amount that is not smaller than the width gives poison.
+  EXPECT_EQ(folded8(T::G_USHLSAT, 3, 8), std::nullopt);
+  EXPECT_EQ(folded(T::G_TRUNC_SSAT_S, S8, {cst(300, S16)}), 127);
+  EXPECT_EQ(folded(T::G_TRUNC_SSAT_S, S8, {cst(-300, S16)}), -128);
+  EXPECT_EQ(folded(T::G_TRUNC_SSAT_U, S8, {cst(-5, S16)}), 0);
+  EXPECT_EQ(folded(T::G_TRUNC_SSAT_U, S8, {cst(300, S16)}), -1);
+  EXPECT_EQ(folded(T::G_TRUNC_USAT_U, S8, {cst(300, S16)}), -1);
+  EXPECT_EQ(folded(T::G_TRUNC_USAT_U, S8, {cst(200, S16)}), -56);
+}
+
+TEST_F(GIEGraphIntegerOpsTest, FoldRotationsAndFunnelShifts) {
+  EXPECT_EQ(folded8(T::G_ROTL, 0x81, 1), 0x03);
+  EXPECT_EQ(folded8(T::G_ROTL, 0x81, 9), 0x03);
+  EXPECT_EQ(folded8(T::G_ROTR, 0x81, 1), -64);
+  EXPECT_EQ(folded(T::G_FSHL, S8, {cst(0x01, S8), cst(0x80, S8), cst(1, S8)}),
+            0x03);
+  EXPECT_EQ(folded(T::G_FSHR, S8, {cst(0x01, S8), cst(0x80, S8), cst(1, S8)}),
+            -64);
+}
+
+TEST_F(GIEGraphIntegerOpsTest, FoldBitFieldsAndParts) {
+  EXPECT_EQ(folded(T::G_CTLS, S32, {cst(0, S8)}), 7);
+  EXPECT_EQ(folded(T::G_CTLS, S32, {cst(1, S8)}), 6);
+  EXPECT_EQ(folded(T::G_CTLS, S32, {cst(-1, S8)}), 7);
+  EXPECT_EQ(folded(T::G_CTLS, S32, {cst(0x40, S8)}), 0);
+  EXPECT_EQ(folded(T::G_SEXT_INREG, S8, {cst(0x0F, S8)}, 4), -1);
+  EXPECT_EQ(folded(T::G_SEXT_INREG, S8, {cst(0x17, S8)}, 4), 7);
+  EXPECT_EQ(folded(T::G_EXTRACT, S8, {cst(0x1234, S16)}, 4), 0x23);
+  EXPECT_EQ(folded(T::G_INSERT, S16, {cst(0x1234, S16), cst(0xAB, S8)}, 4),
+            0x1AB4);
+  EXPECT_EQ(folded(T::G_UBFX, S8, {cst(0xB4, S8), cst(2, S8), cst(3, S8)}), 5);
+  EXPECT_EQ(folded(T::G_SBFX, S8, {cst(0xB4, S8), cst(2, S8), cst(3, S8)}), -3);
+  // A field that is not inside the value gives poison.
+  EXPECT_EQ(folded(T::G_UBFX, S8, {cst(0xB4, S8), cst(6, S8), cst(3, S8)}),
+            std::nullopt);
+  EXPECT_EQ(folded(T::G_MERGE_VALUES, S16, {cst(0x34, S8), cst(0x12, S8)}),
+            0x1234);
+  EXPECT_EQ(folded(T::G_UNMERGE_VALUES, S8, {cst(0x1234, S16)}, 0), 0x34);
+  EXPECT_EQ(folded(T::G_UNMERGE_VALUES, S8, {cst(0x1234, S16)}, 1), 0x12);
+}
+
+TEST_F(GIEGraphIntegerOpsTest, FoldOverflowResults) {
+  // {operator, a, b, value, overflow}; a true s1 is -1.
+  struct Case {
+    unsigned Opc;
+    int64_t A, B, Value, Overflow;
+  };
+  for (const Case &C :
+       {Case{T::G_UADDO, 200, 100, 44, -1}, Case{T::G_UADDO, 100, 100, -56, 0},
+        Case{T::G_SADDO, 100, 100, -56, -1}, Case{T::G_SADDO, -100, 100, 0, 0},
+        Case{T::G_USUBO, 5, 10, -5, -1}, Case{T::G_USUBO, 10, 5, 5, 0},
+        Case{T::G_SSUBO, -100, 100, 56, -1}, Case{T::G_SSUBO, 100, 50, 50, 0},
+        Case{T::G_UMULO, 16, 16, 0, -1}, Case{T::G_UMULO, 15, 17, -1, 0},
+        Case{T::G_SMULO, 16, 8, -128, -1}, Case{T::G_SMULO, -16, 8, -128, 0}}) {
+    EClassId A = cst(C.A, S8), B = cst(C.B, S8);
+    EXPECT_EQ(folded(C.Opc, S8, {A, B}, 0), C.Value) << C.Opc;
+    EXPECT_EQ(folded(C.Opc, S1, {A, B}, 1), C.Overflow) << C.Opc;
+  }
+  EClassId One = boolean(true);
+  EXPECT_EQ(folded(T::G_UADDE, S8, {cst(200, S8), cst(55, S8), One}, 0), 0);
+  EXPECT_EQ(folded(T::G_UADDE, S1, {cst(200, S8), cst(55, S8), One}, 1), -1);
+  EXPECT_EQ(folded(T::G_SADDE, S8, {cst(100, S8), cst(27, S8), One}, 0), -128);
+  EXPECT_EQ(folded(T::G_SADDE, S1, {cst(100, S8), cst(27, S8), One}, 1), -1);
+  EXPECT_EQ(folded(T::G_USUBE, S8, {cst(5, S8), cst(5, S8), One}, 0), -1);
+  EXPECT_EQ(folded(T::G_USUBE, S1, {cst(5, S8), cst(5, S8), One}, 1), -1);
+  EXPECT_EQ(folded(T::G_SSUBE, S8, {cst(-128, S8), cst(0, S8), One}, 0), 127);
+  EXPECT_EQ(folded(T::G_SSUBE, S1, {cst(-128, S8), cst(0, S8), One}, 1), -1);
+}
+
+TEST_F(GIEGraphIntegerOpsTest, SelectOfComparisonIsMinOrMax) {
+  EClassId A = in(S32, /*Defined=*/true), B = in(S32, /*Defined=*/true);
+  EClassId Min = select(icmp(CmpInst::ICMP_SLT, A, B), A, B);
+  EClassId Max = select(icmp(CmpInst::ICMP_SGE, A, B), A, B);
+  EClassId UMin = select(icmp(CmpInst::ICMP_UGT, A, B), B, A);
+  EClassId SMin = op(T::G_SMIN, A, B), SMax = op(T::G_SMAX, A, B);
+  EClassId UMinOp = op(T::G_UMIN, A, B);
+  // max - min is the absolute difference.
+  EClassId Diff = sub(SMax, SMin), Abds = op(T::G_ABDS, A, B);
+  runAll();
+  EXPECT_TRUE(G.equivalent(Min, SMin));
+  EXPECT_TRUE(G.equivalent(Max, SMax));
+  EXPECT_TRUE(G.equivalent(UMin, UMinOp));
+  EXPECT_FALSE(G.equivalent(SMin, UMinOp));
+  EXPECT_TRUE(G.equivalent(Diff, Abds));
+}
+
+TEST_F(GIEGraphIntegerOpsTest, SelectOfUndefinedValuesIsOnlyRefined) {
+  // The select uses each value twice. If a value is undef, the two uses can
+  // differ, so the minimum is only a refinement.
+  EClassId A = in(), B = in();
+  EClassId Sel = select(icmp(CmpInst::ICMP_SLT, A, B), A, B);
+  EClassId SMin = op(T::G_SMIN, A, B);
+  runAll();
+  EXPECT_FALSE(G.equivalent(Sel, SMin));
+  EXPECT_TRUE(G.refinesTo(Sel, SMin));
+  EXPECT_FALSE(G.refinesTo(SMin, Sel));
+}
+
+TEST_F(GIEGraphIntegerOpsTest, LatticeAbsorption) {
+  EClassId A = in(S32, /*Defined=*/true), B = in(S32, /*Defined=*/true);
+  EClassId L = op(T::G_UMIN, A, op(T::G_UMAX, A, B));
+  EClassId Sat = op(T::G_UADDSAT, A, cst(0));
+  EClassId Clmul = op(T::G_CLMUL, A, cst(1));
+  EClassId Rot = op(T::G_ROTL, A, cst(0));
+  runAll();
+  EXPECT_TRUE(G.equivalent(L, A));
+  EXPECT_TRUE(G.equivalent(Sat, A));
+  EXPECT_TRUE(G.equivalent(Clmul, A));
+  EXPECT_TRUE(G.equivalent(Rot, A));
+}
+
+TEST_F(GIEGraphIntegerOpsTest, AbsoluteValue) {
+  EClassId A = in(S32, /*Defined=*/true);
+  EClassId Neg = sub(cst(0), A);
+  EClassId Sel = select(icmp(CmpInst::ICMP_SLT, A, cst(0)), Neg, A);
+  EClassId Max = op(T::G_SMAX, A, Neg);
+  EClassId Abs = un(T::G_ABS, S32, A), AbsAbs = un(T::G_ABS, S32, Abs);
+  runAll();
+  EXPECT_TRUE(G.equivalent(Sel, Abs));
+  EXPECT_TRUE(G.equivalent(Max, Abs));
+  EXPECT_TRUE(G.equivalent(AbsAbs, Abs));
+}
+
+TEST_F(GIEGraphIntegerOpsTest, OverflowResults) {
+  EClassId A = in(S32, /*Defined=*/true), B = in(S32, /*Defined=*/true);
+  EClassId Sum = typed(T::G_UADDO, S32, {A, B}, 0);
+  EClassId Carry = typed(T::G_UADDO, S1, {A, B}, 1);
+  EClassId NoCarry = typed(T::G_UADDO, S1, {A, cst(0)}, 1);
+  EClassId Borrow = typed(T::G_USUBO, S1, {A, B}, 1);
+  EClassId NoBorrow = typed(T::G_USUBO, S1, {A, A}, 1);
+  EClassId MulOne = typed(T::G_UMULO, S1, {A, cst(1)}, 1);
+  // A carry operand that is 0.
+  EClassId SumE = typed(T::G_UADDE, S32, {A, B, boolean(false)}, 0);
+  EClassId CarryE = typed(T::G_UADDE, S1, {A, B, boolean(false)}, 1);
+  EClassId Add = add(A, B), Ult = icmp(CmpInst::ICMP_ULT, A, B);
+  runAll();
+  EXPECT_TRUE(G.equivalent(Sum, Add));
+  EXPECT_TRUE(G.equivalent(SumE, Add));
+  EXPECT_TRUE(G.equivalent(CarryE, Carry));
+  EXPECT_FALSE(G.equivalent(Carry, Sum));
+  EXPECT_EQ(G.getConstant(NoCarry), APInt(1, 0));
+  EXPECT_EQ(G.getConstant(NoBorrow), APInt(1, 0));
+  EXPECT_EQ(G.getConstant(MulOne), APInt(1, 0));
+  EXPECT_TRUE(G.equivalent(Borrow, Ult));
+  EXPECT_FALSE(G.getConstant(Carry).has_value());
+}
+
+TEST_F(GIEGraphIntegerOpsTest, QuotientAndRemainderOfOneDivision) {
+  EClassId A = in(), B = in();
+  EClassId Quot = typed(T::G_SDIVREM, S32, {A, B}, 0);
+  EClassId Rem = typed(T::G_SDIVREM, S32, {A, B}, 1);
+  EClassId Div = op(T::G_SDIV, A, B), SRem = op(T::G_SREM, A, B);
+  runAll();
+  EXPECT_TRUE(G.equivalent(Quot, Div) || G.refinesTo(Quot, Div));
+  EXPECT_TRUE(G.equivalent(Rem, SRem) || G.refinesTo(Rem, SRem));
+  EXPECT_FALSE(G.equivalent(Quot, Rem));
+}
+
+TEST_F(GIEGraphIntegerOpsTest, PartsOfAValue) {
+  EClassId A = in(S8, /*Defined=*/true), B = in(S8, /*Defined=*/true);
+  EClassId X = in(S16, /*Defined=*/true);
+  EClassId Merge = typed(T::G_MERGE_VALUES, S16, {A, B});
+  EClassId Low = typed(T::G_UNMERGE_VALUES, S8, {Merge}, 0);
+  EClassId High = typed(T::G_UNMERGE_VALUES, S8, {Merge}, 1);
+  EClassId XLow = typed(T::G_UNMERGE_VALUES, S8, {X}, 0);
+  EClassId XHigh = typed(T::G_UNMERGE_VALUES, S8, {X}, 1);
+  EClassId Again = typed(T::G_MERGE_VALUES, S16, {XLow, XHigh});
+  EClassId Swapped = typed(T::G_MERGE_VALUES, S16, {XHigh, XLow});
+  EClassId ZeroHigh = typed(T::G_MERGE_VALUES, S16, {A, cst(0, S8)});
+  EClassId Trunc = trunc(S8, X), ZExt = zext(S16, A);
+  runAll();
+  EXPECT_TRUE(G.equivalent(Low, A));
+  EXPECT_TRUE(G.equivalent(High, B));
+  EXPECT_TRUE(G.equivalent(Again, X));
+  EXPECT_FALSE(G.equivalent(Swapped, X));
+  EXPECT_TRUE(G.equivalent(XLow, Trunc));
+  EXPECT_FALSE(G.equivalent(XHigh, Trunc));
+  EXPECT_TRUE(G.equivalent(ZeroHigh, ZExt));
+}
+
+TEST_F(GIEGraphIntegerOpsTest, MergeOfSomeResultsIsNotTheValue) {
+  // Only two of the four parts: the concatenation is not the value.
+  EClassId X = in(S32);
+  EClassId P0 = typed(T::G_UNMERGE_VALUES, S8, {X}, 0);
+  EClassId P1 = typed(T::G_UNMERGE_VALUES, S8, {X}, 1);
+  EClassId Half = typed(T::G_MERGE_VALUES, S16, {P0, P1});
+  SaturationStats S = runAll();
+  EXPECT_TRUE(S.Saturated);
+  EXPECT_EQ(G.getType(Half), S16);
+  EXPECT_FALSE(G.equivalent(Half, X));
+}
+
+TEST_F(GIEGraphIntegerOpsTest, SignExtensionInPlace) {
+  EClassId X = in();
+  EClassId Ext = sext(S32, trunc(S8, X));
+  EClassId InReg = typed(T::G_SEXT_INREG, S32, {X}, 8);
+  EClassId Other = typed(T::G_SEXT_INREG, S32, {X}, 16);
+  EClassId Shifts = op(T::G_ASHR, shl(X, cst(24)), cst(24));
+  runAll();
+  EXPECT_TRUE(G.equivalent(Ext, InReg));
+  EXPECT_TRUE(G.equivalent(InReg, Shifts));
+  EXPECT_FALSE(G.equivalent(InReg, Other));
+}
+
+TEST_F(GIEGraphIntegerOpsTest, BitFields) {
+  EClassId X = in();
+  EClassId Field = typed(T::G_UBFX, S32, {X, cst(4), cst(8)});
+  EClassId Mask = op(T::G_AND, op(T::G_LSHR, X, cst(4)), cst(255));
+  EClassId Signed = typed(T::G_SBFX, S32, {X, cst(4), cst(8)});
+  EClassId Shifts = op(T::G_ASHR, shl(X, cst(20)), cst(24));
+  EClassId Low = typed(T::G_EXTRACT, S16, {X}, 0);
+  EClassId Mid = typed(T::G_EXTRACT, S8, {X}, 8);
+  EClassId Trunc = trunc(S16, X);
+  EClassId TruncShift = trunc(S8, op(T::G_LSHR, X, cst(8)));
+  runAll();
+  EXPECT_TRUE(G.equivalent(Field, Mask));
+  EXPECT_TRUE(G.equivalent(Signed, Shifts));
+  EXPECT_FALSE(G.equivalent(Field, Signed));
+  EXPECT_TRUE(G.equivalent(Low, Trunc));
+  EXPECT_TRUE(G.equivalent(Mid, TruncShift));
+}
+
+TEST_F(GIEGraphIntegerOpsTest, FunnelShifts) {
+  EClassId A = in(S32, /*Defined=*/true), B = in(S32, /*Defined=*/true);
+  EClassId C = in();
+  EClassId Self = typed(T::G_FSHL, S32, {A, A, C});
+  EClassId Rot = op(T::G_ROTL, A, C);
+  EClassId LeftZero = typed(T::G_FSHL, S32, {A, B, cst(0)});
+  EClassId RightZero = typed(T::G_FSHR, S32, {A, B, cst(0)});
+  // A rotation by a constant distributes over the bitwise operators.
+  EClassId K = cst(5);
+  EClassId Sum = op(T::G_AND, op(T::G_ROTL, A, K), op(T::G_ROTL, B, K));
+  EClassId Hoisted = op(T::G_ROTL, op(T::G_AND, A, B), K);
+  runAll();
+  EXPECT_TRUE(G.equivalent(Self, Rot));
+  EXPECT_TRUE(G.equivalent(LeftZero, A));
+  EXPECT_TRUE(G.equivalent(RightZero, B));
+  EXPECT_TRUE(G.equivalent(Sum, Hoisted));
+}
+
+TEST_F(GIEGraphIntegerOpsTest, PointerConversions) {
+  EClassId P = in(P0), X = in(S64);
+  EClassId Same = un(T::G_INTTOPTR, P0, un(T::G_PTRTOINT, S64, P));
+  // A 32-bit integer does not hold the pointer.
+  EClassId Narrow = un(T::G_INTTOPTR, P0, un(T::G_PTRTOINT, S32, P));
+  EClassId Back = un(T::G_PTRTOINT, S64, un(T::G_INTTOPTR, P0, X));
+  EClassId Masked = G.addOp(T::G_PTRMASK, P0, {P, cst(-1, S64)});
+  runAll();
+  EXPECT_TRUE(G.equivalent(Same, P));
+  EXPECT_FALSE(G.equivalent(Narrow, P));
+  EXPECT_TRUE(G.equivalent(Back, X));
+  EXPECT_TRUE(G.equivalent(Masked, P));
+}
+
+TEST_F(GIEGraphIntegerOpsTest, FreezeOfADefinedValue) {
+  EClassId A = in(S32, /*Defined=*/true), U = in();
+  EClassId FA = typed(T::G_FREEZE, S32, {A}, /*Site=*/0);
+  EClassId FU1 = typed(T::G_FREEZE, S32, {U}, /*Site=*/1);
+  EClassId FU2 = typed(T::G_FREEZE, S32, {U}, /*Site=*/2);
+  // A frozen value is defined, so its square can be shared.
+  EClassId Twice = add(FU1, FU1), Double = mul(FU1, cst(2));
+  runAll();
+  EXPECT_TRUE(G.equivalent(FA, A));
+  EXPECT_FALSE(G.equivalent(FU1, U));
+  // Two freezes of an undefined value can have different values.
+  EXPECT_FALSE(G.equivalent(FU1, FU2));
+  EXPECT_TRUE(G.getClass(FU1).NotUndef);
+  EXPECT_TRUE(G.getClass(FU1).NotPoison);
+  EXPECT_TRUE(G.equivalent(Twice, Double));
+}
+
+TEST_F(GIEGraphIntegerOpsTest, PoisonVariantIsOnlyRefined) {
+  // G_CTLZ_ZERO_POISON is a G_CTLZ node that can be poison: a rule that
+  // matches it gives a refinement, never an equality.
+  EClassId A = in(S32, /*Defined=*/true);
+  EClassId Rev = bitreverse(A);
+  EClassId ZeroPoison =
+      typed(T::G_CTLZ, S32, {Rev}, 0, /*Flags=*/PoisonVariantFlag);
+  EClassId Plain = typed(T::G_CTLZ, S32, {Rev});
+  EClassId Cttz = typed(T::G_CTTZ, S32, {A});
+  runAll();
+  EXPECT_TRUE(G.equivalent(Plain, Cttz));
+  EXPECT_FALSE(G.equivalent(ZeroPoison, Cttz));
+  EXPECT_TRUE(G.refinesTo(ZeroPoison, Cttz));
+  EXPECT_FALSE(G.getClass(ZeroPoison).NotPoison);
+  EXPECT_TRUE(G.getClass(Plain).NotPoison);
+}
+
+TEST_F(GIEGraphIntegerOpsTest, FixedPointOverflowIsPoison) {
+  EClassId A = in(S32, /*Defined=*/true), B = in(S32, /*Defined=*/true);
+  EClassId Mul = typed(T::G_SMULFIX, S32, {A, B}, /*Scale=*/4);
+  EClassId Swapped = typed(T::G_SMULFIX, S32, {B, A}, 4);
+  EClassId OtherScale = typed(T::G_SMULFIX, S32, {A, B}, 8);
+  EClassId Sat = typed(T::G_SMULFIXSAT, S32, {A, B}, 4);
+  runAll();
+  // Commutative, and the scale is part of the operation.
+  EXPECT_TRUE(G.equivalent(Mul, Swapped));
+  EXPECT_FALSE(G.equivalent(Mul, OtherScale));
+  EXPECT_FALSE(G.getClass(Mul).NotPoison);
+  EXPECT_TRUE(G.getClass(Sat).NotPoison);
 }
 
 } // namespace
