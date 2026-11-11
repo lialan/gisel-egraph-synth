@@ -355,6 +355,56 @@ class BudgetTest(unittest.TestCase):
         self.assertIn('bank_truncated: terms', log['stages'][0]['stop'])
 
 
+class AlternativeSearchTest(unittest.TestCase):
+    def test_growth_survives_semantic_deduplication_and_smt(self):
+        # A decomposition of subtraction has a higher Generic cost but
+        # must remain available to target measurement. No rewrite is
+        # supplied to the search: it constructs both expressions.
+        i = inst(('G_SUB', 32, V(0), V(1)), (32, 32))
+        replacement = ('G_ADD', 32, V(0),
+                       ('G_SUB', 32, ('lit', 32, '0'), V(1)))
+        be = smt.Z3Backend()
+        for variants, present in [(1, False), (4, True)]:
+            cands, _ = discover.discover(i, be, discover.Limits(
+                grammar='base', cost_slack=1, semantic_variants=variants,
+                max_candidates=32, max_proofs=64))
+            self.assertEqual(replacement in targets_of(cands), present)
+
+    def test_equal_cost_for_a_larger_source_and_absolute_cap(self):
+        i = inst(('G_SUB', 32, ('G_ADD', 32, V(0), V(1)), V(2)),
+                 (32, 32, 32))
+        self.assertEqual(discover.max_search_cost(i, discover.Limits()), 1)
+        self.assertEqual(discover.max_search_cost(
+            i, discover.Limits(cost_slack=0)), 2)
+        self.assertEqual(discover.max_search_cost(
+            i, discover.Limits(cost_slack=1, max_rhs_cost=2)), 2)
+        cands, _ = discover.discover(i, smt.Z3Backend(), discover.Limits(
+            grammar='base', cost_slack=0, semantic_variants=4,
+            max_candidates=32))
+        replacement = ('G_ADD', 32, V(0), ('G_SUB', 32, V(1), V(2)))
+        self.assertIn(replacement, targets_of(cands))
+
+    def test_replay_identity_includes_search_policy(self):
+        base = discover.Limits().identity()
+        for change in ({'cost_slack': 0}, {'max_rhs_cost': 2},
+                       {'semantic_variants': 3}):
+            self.assertNotEqual(base, discover.Limits(**change).identity())
+
+    def test_alternative_budget_still_keeps_types_and_costs(self):
+        lim = discover.Limits(semantic_variants=3, max_terms=200)
+        ctx = discover.Context(lim)
+        types = ((32, 'i'),)
+        bank = ctx.bank((0, 0), types, 3,
+                        discover.grammar_keys(ops.ENUMERATED))
+        self.assertTrue(bank.truncated)
+        self.assertLessEqual(len(bank.op), 200)
+        for k in range(len(bank.op)):
+            e = bank.expr(k, types)
+            self.assertEqual(ir.cost(e), bank.cost[k])
+            self.assertTrue(ir.well_typed(e, (32, 32)))
+            self.assertTrue(ir.is_linear(e))
+
+
 M32 = ir.mask(32)
 
 if __name__ == '__main__':

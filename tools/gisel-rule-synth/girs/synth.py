@@ -311,11 +311,17 @@ def _source_of(provenance):
 
 
 def rule_class(src, tgt, const_vars=()):
+    if ir.rule_cost(tgt, const_vars) > ir.cost(src):
+        return 'increases_cost'
     if widens_operation(src, tgt):
         return 'widens_operation'
     if ir.rule_cost(tgt, const_vars) >= ir.cost(src):
         return 'equal_cost'
     return 'reduces_cost'
+
+
+class IncompleteGuardProof(Exception):
+    """The final combined guard was not decided within the proof budget."""
 
 
 class Synthesizer:
@@ -568,13 +574,13 @@ class Synthesizer:
         rule['disjuncts'] = keep
         return dropped
 
-    def finalize(self, insts):
+    def finalize(self, insts, preserve_alternatives=False):
         """Chooses the emitted disjuncts of every rule by corpus coverage
         and run-time cost, and proves the chosen disjunction as a whole.
         Returns statistics."""
         from . import match
         stats = {'dominated_disjuncts': 0, 'unselected_disjuncts': 0,
-                 'rules_with_disjunction': 0}
+                 'rules_with_disjunction': 0, 'final_guard_unknown': 0}
         for rule in self.rules.values():
             stats['dominated_disjuncts'] += self._drop_dominated(rule)
         cov = match.coverage(list(self.rules.values()), insts)
@@ -611,9 +617,20 @@ class Synthesizer:
                                 if not k.startswith('_')}
             rule['coverage']['disjunct_occurrences'] = [
                 cov[rid]['disjunct_occurrences'][k] for k in chosen]
-            rule['semantic_status']['dnf_proofs'] = \
-                self._prove_disjunction(rule)
-        stats['dominated_rules'] = self._mark_dominated()
+            try:
+                rule['semantic_status']['dnf_proofs'] = \
+                    self._prove_disjunction(rule)
+            except IncompleteGuardProof as e:
+                # Individual branch proofs do not substitute for the
+                # required final guard check. Keep the opportunity for
+                # inspection, but make it ineligible for emission; one
+                # timeout must not discard an entire discovery run.
+                rule['semantic_status']['kind'] = 'unknown_refinement'
+                rule['semantic_status']['dnf_proofs'] = []
+                rule['semantic_status']['final_guard_unknown'] = str(e)
+                stats['final_guard_unknown'] += 1
+        stats['dominated_rules'] = 0 if preserve_alternatives else \
+            self._mark_dominated()
         return stats
 
     def _mark_dominated(self):
@@ -624,6 +641,8 @@ class Synthesizer:
         groups = {}
         for rid in sorted(self.rules):
             r = self.rules[rid]
+            if r['semantic_status']['kind'] != 'verified_refinement':
+                continue
             src = ir.from_json(r['source_json'])
             vw = tuple(r['vw'])
             ws = sorted(set(vw) | {n[1] for n in [src] +
@@ -717,9 +736,11 @@ class Synthesizer:
             st, proofs = verify(rule_schedules(rule, [maps[key]]), dnf,
                                 self.backend,
                                 tuple(rule.get('const_vars', ())))
+            if st == 'unknown':
+                raise IncompleteGuardProof('width map %s' % maps[key])
             if st != 'valid':
                 raise AssertionError('disjunction of proved disjuncts is '
-                                     'not valid: %s' % rule['id'])
+                                     'not valid (%s): %s' % (st, rule['id']))
             out += save_proofs(proofs, self.proof_dir)
         return out
 

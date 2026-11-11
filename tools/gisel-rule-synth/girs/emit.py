@@ -67,8 +67,9 @@ def one_use_variant(rule):
 
 def candidates(db, target=None):
     """Rules a target may select (any target if ``target`` is None): proved,
-    cheaper than their source under the generic cost model, and not
-    dominated by a rule with the same source. A rule that moves an operation
+    cheaper than their source under the generic cost model (or explicitly
+    admitted by a target-cost search), and not dominated by a rule with
+    the same source. Eligibility is not evidence of profitability. A rule that moves an operation
     to a wider type is a candidate only if that type is not wider than the
     registers of the target (Target.native_bits). Each rule is followed by
     its one-use variant, if it has one. The rules are ordered as the
@@ -77,10 +78,12 @@ def candidates(db, target=None):
     bits = target.native_bits if target else targets.NATIVE_BITS
     out = [r for r in db['rules']
            if r['semantic_status']['kind'] == 'verified_refinement' and
-           (r['class'] == 'reduces_cost' or
+           (r.get('target_cost_candidate', False) or
+            r['class'] == 'reduces_cost' or
             (r['class'] == 'widens_operation' and
              r['cost']['replacement'] < r['cost']['source'] and
              widened_bits(r) <= bits)) and
+           (not r.get('widens_operation') or widened_bits(r) <= bits) and
            r['disjuncts'] and 'dominated_by' not in r]
     # A rule with several outputs applies only if a value below the root
     # has another user; it comes before the rule of the root alone.

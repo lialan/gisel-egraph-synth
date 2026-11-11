@@ -415,5 +415,107 @@ class ProbeLoopTest(unittest.TestCase):
         self.assertEqual(nov['fails']['class'], 'error')
 
 
+class SearchPipelineTest(unittest.TestCase):
+    def test_independent_screen_disables_every_other_candidate(self):
+        from pathlib import Path
+        from unittest import mock
+        spec = importlib.util.spec_from_file_location(
+            'measure_candidates', os.path.join(ROOT, 'eval',
+                                               'measure_candidates.py'))
+        screen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(screen)
+        rs = [{'id': n, 'class': 'equal_cost', 'support': {
+            'examples': [{'file': 'f.jsonl'}]}} for n in ('a', 'b')]
+        calls = []
+
+        def compile_ll(llc, target, path, **kw):
+            calls.append(kw)
+            result = {'rc': 0, 'insns': 10, 'fallback': []}
+            if kw.get('synth'):
+                self.assertEqual(len(kw['disabled']), 1)
+                self.assertIn(kw['disabled'][0], ('record_a', 'record_b'))
+                # A smaller file without a firing is not an observed gain
+                # of this rule. Guard counters use IDs, not record names.
+                result.update(insns=9, passed={'a': 1} if
+                              kw['disabled'] == ['record_b'] else {})
+            return result
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            for d in ('library', 'corpus', 'frozen-baseline'):
+                (run / d).mkdir()
+            (run / 'library/rules.json').write_text(json.dumps({'rules': rs}))
+            (run / 'frozen-baseline/rules.json').write_text('{"rules": []}')
+            (run / 'corpus/index.json').write_text(json.dumps({
+                'f.ll': {'out': 'f.jsonl', 'source': 'f.ll',
+                         'pipeline': 'opt-O2'}}))
+            (run / 'llc').write_text('compiler')
+            with mock.patch.object(screen.emit, 'candidates', return_value=rs), \
+                    mock.patch.object(screen.emit, 'emittable', return_value=True), \
+                    mock.patch.object(screen.emit, 'record_names',
+                                      side_effect=lambda r: ['record_' + r['id']]), \
+                    mock.patch.object(screen.report, 'family_key',
+                                      side_effect=lambda r: r['id']), \
+                    mock.patch.object(screen.measure, 'compile_ll',
+                                      side_effect=compile_ll):
+                result = screen.screen(run, str(run / 'llc'),
+                                       targets.get('AMDGPU'), jobs=1)
+            status = {r['id']: r['status'] for r in result['results']}
+            self.assertEqual(status, {'a': 'better', 'b': 'not_fired'})
+            self.assertEqual(len(calls), 3)  # one shared baseline
+
+    def test_changed_window_invalidates_extracted_files(self):
+        from girs import mine
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as root:
+            d = os.path.join(root, 'corpus')
+            key = {'depth': 2, 'compiler': 'a'}
+            mine._stage_cache(d, key)
+            p = Path(d) / 'old.jsonl'
+            p.write_text('old depth')
+            mine._stage_cache(d, key)
+            self.assertTrue(p.exists())
+            mine._stage_cache(d, dict(key, depth=4))
+            self.assertFalse(p.exists())
+
+    def test_equal_and_growing_rules_reach_target_measurement(self):
+        from girs import emit, synth
+        src = ('G_SUB', 32, ('var', 0), ('var', 1))
+        tgt = ('G_ADD', 32, ('var', 0),
+               ('G_SUB', 32, ('lit', 32, '0'), ('var', 1)))
+        inst = corpus.Instance(src, (32, 32), [(0, 0)] * 2,
+                               [None] * 2, [], [], [('f', 'fn', '%0')])
+        sy = synth.Synthesizer(smt.Z3Backend())
+        rid = sy.add(inst, tgt)
+        self.assertIsNotNone(rid)
+        sy.finalize([inst], preserve_alternatives=True)
+        rule = synth.strip_private(sy.rules[rid])
+        self.assertEqual(rule['class'], 'increases_cost')
+        self.assertEqual(emit.candidates({'rules': [rule]}), [])
+        rule['target_cost_candidate'] = True
+        self.assertIn(rid, [r['id'] for r in emit.candidates(
+            {'rules': [rule]}, targets.get('AMDGPU'))])
+        # Expanding the grammar does not bypass semantic eligibility.
+        rule['semantic_status']['kind'] = 'unknown'
+        self.assertEqual(emit.candidates({'rules': [rule]}), [])
+
+    def test_final_guard_unknown_is_quarantined(self):
+        from girs import emit, synth
+        from unittest import mock
+        src = ('G_AND', 32, ('var', 0), ('var', 0))
+        inst = corpus.Instance(src, (32,), [(0, 0)], [None], [], [],
+                               [('f', 'fn', '%0')])
+        sy = synth.Synthesizer(smt.Z3Backend())
+        rid = sy.add(inst, ('var', 0))
+        self.assertIsNotNone(rid)
+        with mock.patch.object(sy, '_prove_disjunction',
+                               side_effect=synth.IncompleteGuardProof('timeout')):
+            stats = sy.finalize([inst], preserve_alternatives=True)
+        r = sy.rules[rid]
+        self.assertEqual(stats['final_guard_unknown'], 1)
+        self.assertEqual(r['semantic_status']['kind'], 'unknown_refinement')
+        self.assertEqual(emit.candidates({'rules': [r]}), [])
+
+
 if __name__ == '__main__':
     unittest.main()
