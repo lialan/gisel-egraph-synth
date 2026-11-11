@@ -18,6 +18,8 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
+#include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
+#include "llvm/CodeGen/GlobalISel/Utils.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Register.h"
 #include "llvm/Support/Debug.h"
@@ -25,6 +27,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cstdint>
 #include <initializer_list>
+#include <optional>
 
 namespace llvm {
 namespace gisynth {

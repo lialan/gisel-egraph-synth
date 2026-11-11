@@ -1,0 +1,775 @@
+{
+ "version": 1,
+ "operators": [
+  {
+   "name": "G_ADD",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "associative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_SUB",
+   "shape": "binary",
+   "operands": 2,
+   "has_fold": true
+  },
+  {
+   "name": "G_MUL",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "associative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_AND",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "associative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_OR",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "associative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_XOR",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "associative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_SHL",
+   "shape": "binary",
+   "operands": 2,
+   "shift": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_LSHR",
+   "shape": "binary",
+   "operands": 2,
+   "shift": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_ASHR",
+   "shape": "binary",
+   "operands": 2,
+   "shift": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_UDIV",
+   "shape": "binary",
+   "operands": 2,
+   "may_trap": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_SDIV",
+   "shape": "binary",
+   "operands": 2,
+   "may_trap": true,
+   "signed": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_UREM",
+   "shape": "binary",
+   "operands": 2,
+   "may_trap": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_SREM",
+   "shape": "binary",
+   "operands": 2,
+   "may_trap": true,
+   "signed": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_TRUNC",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "trunc",
+   "has_fold": true
+  },
+  {
+   "name": "G_ZEXT",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "zext",
+   "has_fold": true
+  },
+  {
+   "name": "G_SEXT",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "sext",
+   "has_fold": true
+  },
+  {
+   "name": "G_BSWAP",
+   "shape": "unary",
+   "operands": 1,
+   "has_fold": true
+  },
+  {
+   "name": "G_BITREVERSE",
+   "shape": "unary",
+   "operands": 1,
+   "has_fold": true
+  },
+  {
+   "name": "G_CTPOP",
+   "shape": "bitcount",
+   "operands": 1,
+   "has_fold": true
+  },
+  {
+   "name": "G_CTLZ",
+   "shape": "bitcount",
+   "operands": 1,
+   "has_fold": true,
+   "poison_variant": "G_CTLZ_ZERO_POISON"
+  },
+  {
+   "name": "G_CTTZ",
+   "shape": "bitcount",
+   "operands": 1,
+   "has_fold": true,
+   "poison_variant": "G_CTTZ_ZERO_POISON"
+  },
+  {
+   "name": "G_CTLS",
+   "shape": "bitcount",
+   "operands": 1,
+   "has_fold": true
+  },
+  {
+   "name": "G_SMIN",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "associative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_SMAX",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "associative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_UMIN",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "associative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_UMAX",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "associative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_ABS",
+   "shape": "unary",
+   "operands": 1,
+   "has_fold": true
+  },
+  {
+   "name": "G_ABDS",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_ABDU",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_UAVGFLOOR",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_UAVGCEIL",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_SAVGFLOOR",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_SAVGCEIL",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_UMULH",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_SMULH",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_UADDSAT",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "associative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_SADDSAT",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_USUBSAT",
+   "shape": "binary",
+   "operands": 2,
+   "has_fold": true
+  },
+  {
+   "name": "G_SSUBSAT",
+   "shape": "binary",
+   "operands": 2,
+   "has_fold": true
+  },
+  {
+   "name": "G_USHLSAT",
+   "shape": "binary",
+   "operands": 2,
+   "shift": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_SSHLSAT",
+   "shape": "binary",
+   "operands": 2,
+   "shift": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_ROTL",
+   "shape": "binary",
+   "operands": 2,
+   "rotate": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_ROTR",
+   "shape": "binary",
+   "operands": 2,
+   "rotate": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FSHL",
+   "shape": "typed",
+   "operands": 3,
+   "operand_kinds": [
+    "main",
+    "main",
+    "free"
+   ],
+   "result_kinds": [
+    "main"
+   ],
+   "has_fold": true
+  },
+  {
+   "name": "G_FSHR",
+   "shape": "typed",
+   "operands": 3,
+   "operand_kinds": [
+    "main",
+    "main",
+    "free"
+   ],
+   "result_kinds": [
+    "main"
+   ],
+   "has_fold": true
+  },
+  {
+   "name": "G_CLMUL",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "associative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_CLMULR",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_CLMULH",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_SCMP",
+   "shape": "typed",
+   "operands": 2,
+   "operand_kinds": [
+    "main",
+    "main"
+   ],
+   "result_kinds": [
+    "free"
+   ],
+   "has_fold": true
+  },
+  {
+   "name": "G_UCMP",
+   "shape": "typed",
+   "operands": 2,
+   "operand_kinds": [
+    "main",
+    "main"
+   ],
+   "result_kinds": [
+    "free"
+   ],
+   "has_fold": true
+  },
+  {
+   "name": "G_ANYEXT",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "anyext"
+  },
+  {
+   "name": "G_TRUNC_SSAT_S",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "sat-trunc",
+   "has_fold": true
+  },
+  {
+   "name": "G_TRUNC_SSAT_U",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "sat-trunc",
+   "has_fold": true
+  },
+  {
+   "name": "G_TRUNC_USAT_U",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "sat-trunc",
+   "has_fold": true
+  },
+  {
+   "name": "G_PTRTOINT",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "ptrtoint"
+  },
+  {
+   "name": "G_INTTOPTR",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "inttoptr"
+  },
+  {
+   "name": "G_SEXT_INREG",
+   "shape": "unary",
+   "operands": 1,
+   "imm_attr": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_EXTRACT",
+   "shape": "cast",
+   "operands": 1,
+   "cast": "extract",
+   "imm_attr": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_INSERT",
+   "shape": "typed",
+   "operands": 2,
+   "operand_kinds": [
+    "main",
+    "free"
+   ],
+   "result_kinds": [
+    "main"
+   ],
+   "imm_attr": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_SBFX",
+   "shape": "typed",
+   "operands": 3,
+   "operand_kinds": [
+    "main",
+    "free",
+    "free"
+   ],
+   "result_kinds": [
+    "main"
+   ],
+   "bit_field": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_UBFX",
+   "shape": "typed",
+   "operands": 3,
+   "operand_kinds": [
+    "main",
+    "free",
+    "free"
+   ],
+   "result_kinds": [
+    "main"
+   ],
+   "bit_field": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_MERGE_VALUES",
+   "shape": "merge",
+   "operands": -1,
+   "has_fold": true
+  },
+  {
+   "name": "G_UNMERGE_VALUES",
+   "shape": "unmerge",
+   "operands": 1,
+   "has_fold": true
+  },
+  {
+   "name": "G_FREEZE",
+   "shape": "unary",
+   "operands": 1,
+   "stops_poison": true
+  },
+  {
+   "name": "G_UADDO",
+   "shape": "typed",
+   "operands": 2,
+   "operand_kinds": [
+    "main",
+    "main"
+   ],
+   "result_kinds": [
+    "main",
+    "bool"
+   ],
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_SADDO",
+   "shape": "typed",
+   "operands": 2,
+   "operand_kinds": [
+    "main",
+    "main"
+   ],
+   "result_kinds": [
+    "main",
+    "bool"
+   ],
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_USUBO",
+   "shape": "typed",
+   "operands": 2,
+   "operand_kinds": [
+    "main",
+    "main"
+   ],
+   "result_kinds": [
+    "main",
+    "bool"
+   ],
+   "has_fold": true
+  },
+  {
+   "name": "G_SSUBO",
+   "shape": "typed",
+   "operands": 2,
+   "operand_kinds": [
+    "main",
+    "main"
+   ],
+   "result_kinds": [
+    "main",
+    "bool"
+   ],
+   "has_fold": true
+  },
+  {
+   "name": "G_UMULO",
+   "shape": "typed",
+   "operands": 2,
+   "operand_kinds": [
+    "main",
+    "main"
+   ],
+   "result_kinds": [
+    "main",
+    "bool"
+   ],
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_SMULO",
+   "shape": "typed",
+   "operands": 2,
+   "operand_kinds": [
+    "main",
+    "main"
+   ],
+   "result_kinds": [
+    "main",
+    "bool"
+   ],
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_UADDE",
+   "shape": "typed",
+   "operands": 3,
+   "operand_kinds": [
+    "main",
+    "main",
+    "bool"
+   ],
+   "result_kinds": [
+    "main",
+    "bool"
+   ],
+   "has_fold": true
+  },
+  {
+   "name": "G_SADDE",
+   "shape": "typed",
+   "operands": 3,
+   "operand_kinds": [
+    "main",
+    "main",
+    "bool"
+   ],
+   "result_kinds": [
+    "main",
+    "bool"
+   ],
+   "has_fold": true
+  },
+  {
+   "name": "G_USUBE",
+   "shape": "typed",
+   "operands": 3,
+   "operand_kinds": [
+    "main",
+    "main",
+    "bool"
+   ],
+   "result_kinds": [
+    "main",
+    "bool"
+   ],
+   "has_fold": true
+  },
+  {
+   "name": "G_SSUBE",
+   "shape": "typed",
+   "operands": 3,
+   "operand_kinds": [
+    "main",
+    "main",
+    "bool"
+   ],
+   "result_kinds": [
+    "main",
+    "bool"
+   ],
+   "has_fold": true
+  },
+  {
+   "name": "G_UDIVREM",
+   "shape": "typed",
+   "operands": 2,
+   "operand_kinds": [
+    "main",
+    "main"
+   ],
+   "result_kinds": [
+    "main",
+    "main"
+   ],
+   "may_trap": true
+  },
+  {
+   "name": "G_SDIVREM",
+   "shape": "typed",
+   "operands": 2,
+   "operand_kinds": [
+    "main",
+    "main"
+   ],
+   "result_kinds": [
+    "main",
+    "main"
+   ],
+   "may_trap": true,
+   "signed": true
+  },
+  {
+   "name": "G_SMULFIX",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "imm_attr": true,
+   "may_be_poison": true
+  },
+  {
+   "name": "G_UMULFIX",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "imm_attr": true,
+   "may_be_poison": true
+  },
+  {
+   "name": "G_SMULFIXSAT",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "imm_attr": true
+  },
+  {
+   "name": "G_UMULFIXSAT",
+   "shape": "binary",
+   "operands": 2,
+   "commutative": true,
+   "imm_attr": true
+  },
+  {
+   "name": "G_SDIVFIX",
+   "shape": "binary",
+   "operands": 2,
+   "imm_attr": true,
+   "may_be_poison": true,
+   "may_trap": true,
+   "signed": true
+  },
+  {
+   "name": "G_UDIVFIX",
+   "shape": "binary",
+   "operands": 2,
+   "imm_attr": true,
+   "may_be_poison": true,
+   "may_trap": true
+  },
+  {
+   "name": "G_SDIVFIXSAT",
+   "shape": "binary",
+   "operands": 2,
+   "imm_attr": true,
+   "may_trap": true
+  },
+  {
+   "name": "G_UDIVFIXSAT",
+   "shape": "binary",
+   "operands": 2,
+   "imm_attr": true,
+   "may_trap": true
+  },
+  {
+   "name": "G_ICMP",
+   "shape": "compare",
+   "operands": 2
+  },
+  {
+   "name": "G_SELECT",
+   "shape": "select",
+   "operands": 3
+  },
+  {
+   "name": "G_PTR_ADD",
+   "shape": "ptradd",
+   "operands": 2
+  },
+  {
+   "name": "G_PTRMASK",
+   "shape": "ptradd",
+   "operands": 2
+  },
+  {
+   "name": "G_PHI",
+   "shape": "phi",
+   "operands": -1
+  },
+  {
+   "name": "G_BRCOND",
+   "shape": "effect",
+   "operands": 1
+  },
+  {
+   "name": "G_BR",
+   "shape": "effect",
+   "operands": 0
+  }
+ ]
+}

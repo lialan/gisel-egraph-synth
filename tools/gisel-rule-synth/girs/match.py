@@ -37,8 +37,10 @@ def _match(p, pvw, e, evw, bind, wmap, leaves_only):
         if wmap is not None:
             yield bind, wmap
         return
-    if ir.is_lit(p):
-        if ir.is_lit(e) and e[2] == p[2]:
+    if not ir.is_op(p):
+        # A literal keeps its meaning at every width; a constant is one
+        # value.
+        if e[0] == p[0] and e[2] == p[2]:
             wmap = _unify_width(wmap, p[1], e[1])
             if wmap is not None:
                 yield bind, wmap
@@ -48,15 +50,19 @@ def _match(p, pvw, e, evw, bind, wmap, leaves_only):
     wmap = _unify_width(wmap, p[1], e[1])
     if wmap is None:
         return
-    if len(p) == 3:
-        yield from _match(p[2], pvw, e[2], evw, bind, wmap, leaves_only)
-        return
-    orders = [(e[2], e[3])]
-    if p[0] in ir.COMMUTATIVE and e[2] != e[3]:
-        orders.append((e[3], e[2]))
-    for ea, eb in orders:
-        for b1, w1 in _match(p[2], pvw, ea, evw, bind, wmap, leaves_only):
-            yield from _match(p[3], pvw, eb, evw, b1, w1, leaves_only)
+    orders = [e[2:]]
+    if ir.is_commutative(p[0]) and e[2] != e[3]:
+        orders.append((e[3], e[2]) + e[4:])
+
+    def rest(k, args, bind, wmap):
+        if k == len(args):
+            yield bind, wmap
+            return
+        for b1, w1 in _match(p[2 + k], pvw, args[k], evw, bind, wmap,
+                             leaves_only):
+            yield from rest(k + 1, args, b1, w1)
+    for args in orders:
+        yield from rest(0, args, bind, wmap)
 
 
 def match(pat, pvw, expr, evw, leaves_only=False):
@@ -86,6 +92,7 @@ class RuleMatcher:
         self.root_op = self.src[0]
         src_ws = set(self.vw) | {n[1] for n in [self.src] +
                                  ir.interior_nodes(self.src)}
+        self.const_vars = tuple(rule.get('const_vars', ()))
         self.disjuncts = []
         for d in rule['disjuncts']:
             pred = tuple(precond.atom_from_json(a) for a in d['pred_json'])
@@ -104,6 +111,9 @@ class RuleMatcher:
             return None
         ok = set()
         for bind, wmap in ms:
+            if any(inst.consts[bind[i][1]] is None
+                   for i in self.const_vars):
+                continue
             key = tuple(sorted(wmap.items()))
             n = len(self.vw)
             facts = tuple(inst.facts[bind[i][1]] for i in range(n))

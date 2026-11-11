@@ -77,6 +77,35 @@ def compile_ll(llc, target, path, flags=(), synth=False, disabled=(),
     return res
 
 
+def failing_rules(llc, target, path, seconds=20, loop_passes=50):
+    """The rules that are the probable cause of a compilation of ``path``
+    that fails with the synthesized rules: the rules whose guard passes
+    again and again when the compilation does not end (a loop with other
+    combines), or the last rule whose guard passed before a crash."""
+    cmd = [llc] + target.ll_flags + [target.enable_flag,
+                                     '-debug-only=gisel-synth', path, '-o',
+                                     os.devnull]
+    with tempfile.TemporaryFile() as err:
+        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err)
+        try:
+            p.wait(timeout=seconds)
+            looped = False
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+            looped = True
+        # The end of the output is enough to see a loop.
+        err.seek(max(0, os.fstat(err.fileno()).st_size - (1 << 22)))
+        text = err.read().decode(errors='replace')
+    passed = PASSED.findall(text)
+    if looped:
+        c = collections.Counter(passed)
+        return sorted(r for r, n in c.items() if n >= loop_passes)
+    if p.returncode and passed:
+        return [passed[-1]]
+    return []
+
+
 def run_combiner(llc, target, mir, synth=False, disabled=()):
     """Runs the target's pre-legalizer combiner on MIR text. Returns the
     output MIR."""

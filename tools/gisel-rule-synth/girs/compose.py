@@ -113,6 +113,9 @@ class Step:
             return None
         if ir.is_lit(t):
             return ('lit', wmap[t[1]], t[2])
+        if not ir.is_op(t):
+            # A constant with a fixed value: only at the proved width.
+            return t if wmap[t[1]] == t[1] else None
         args = []
         for a in t[2:]:
             x = self._subst(a, bind, wmap)
@@ -174,6 +177,9 @@ class Index:
 
     def add(self, rule):
         # See Limits.widen_bits.
+        if rule.get('const_vars'):
+            # A step with a computed constant needs the bound values.
+            return
         if rule['id'] in self.ids or synth.widened_width(
                 ir.from_json(rule['source_json']),
                 ir.from_json(rule['replacement_json'])) > self.widen_bits:
@@ -211,12 +217,12 @@ class Values:
         if v is None:
             if ir.is_var(e):
                 v = tuple(env[e[1]] for env in self.envs)
-            elif ir.is_lit(e):
-                v = (ir.lit_value(e[1], e[2]),) * len(self.envs)
+            elif not ir.is_op(e):
+                v = (ir.leaf_value(e),) * len(self.envs)
             else:
-                sw = ir.width(e[2], self.vw)
+                ws = [ir.width(a, self.vw) for a in e[2:]]
                 cols = [self.of(a) for a in e[2:]]
-                v = tuple(ir.apply_op(e[0], e[1], sw, *xs)
+                v = tuple(ir.apply_op(e[0], e[1], ws, xs)
                           for xs in zip(*cols))
             self.cache[e] = v
         return v
@@ -271,8 +277,8 @@ def decomposes(src, tgt, vals):
     if not ir.is_op(tgt) or tgt[:2] != src[:2] or len(tgt) != len(src):
         return False
     orders = [tgt[2:]]
-    if src[0] in ir.COMMUTATIVE:
-        orders.append(tgt[2:][::-1])
+    if ir.is_commutative(src[0]):
+        orders.append((tgt[3], tgt[2]) + tgt[4:])
     return any(all(vals.of(a) == vals.of(b) for a, b in zip(src[2:], o))
                for o in orders)
 

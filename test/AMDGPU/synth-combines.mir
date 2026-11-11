@@ -900,3 +900,465 @@ body: |
     $vgpr0 = COPY %r32(s32)
     SI_RETURN implicit $vgpr0
 ...
+
+# Rules that came from the export of the e-graph combiner (provenance
+# "egraph" in rules.json).
+#
+# synth_and_dd9a6636: trunc(a) & ~trunc(b) -> trunc(a & ~b): the operation
+# moves to the register width, where the target has an and-not instruction.
+---
+name: and_not_of_truncs_s16
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+
+    ; OFF-LABEL: name: and_not_of_truncs_s16
+    ; OFF: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %a:_(s32) = COPY $vgpr0
+    ; OFF-NEXT: %b:_(s32) = COPY $vgpr1
+    ; OFF-NEXT: %ta:_(s16) = G_TRUNC %a(s32)
+    ; OFF-NEXT: %tb:_(s16) = G_TRUNC %b(s32)
+    ; OFF-NEXT: %m:_(s16) = G_CONSTANT i16 -1
+    ; OFF-NEXT: %n:_(s16) = G_XOR %tb, %m
+    ; OFF-NEXT: %r16:_(s16) = G_AND %ta, %n
+    ; OFF-NEXT: %r:_(s32) = G_ANYEXT %r16(s16)
+    ; OFF-NEXT: $vgpr0 = COPY %r(s32)
+    ; OFF-NEXT: SI_RETURN implicit $vgpr0
+    ;
+    ; ON-LABEL: name: and_not_of_truncs_s16
+    ; ON: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %a:_(s32) = COPY $vgpr0
+    ; ON-NEXT: %b:_(s32) = COPY $vgpr1
+    ; ON-NEXT: [[C:%[0-9]+]]:_(s32) = G_CONSTANT i32 -1
+    ; ON-NEXT: [[XOR:%[0-9]+]]:_(s32) = G_XOR %b, [[C]]
+    ; ON-NEXT: [[AND:%[0-9]+]]:_(s32) = G_AND [[XOR]], %a
+    ; ON-NEXT: $vgpr0 = COPY [[AND]](s32)
+    ; ON-NEXT: SI_RETURN implicit $vgpr0
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %ta:_(s16) = G_TRUNC %a
+    %tb:_(s16) = G_TRUNC %b
+    %m:_(s16) = G_CONSTANT i16 -1
+    %n:_(s16) = G_XOR %tb, %m
+    %r16:_(s16) = G_AND %ta, %n
+    %r:_(s32) = G_ANYEXT %r16(s16)
+    $vgpr0 = COPY %r(s32)
+    SI_RETURN implicit $vgpr0
+...
+
+# synth_or_2a6976e5: trunc(a) | ~trunc(b) -> trunc(a | ~b).
+---
+name: or_not_of_truncs_s16
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+
+    ; OFF-LABEL: name: or_not_of_truncs_s16
+    ; OFF: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %a:_(s32) = COPY $vgpr0
+    ; OFF-NEXT: %b:_(s32) = COPY $vgpr1
+    ; OFF-NEXT: %ta:_(s16) = G_TRUNC %a(s32)
+    ; OFF-NEXT: %tb:_(s16) = G_TRUNC %b(s32)
+    ; OFF-NEXT: %m:_(s16) = G_CONSTANT i16 -1
+    ; OFF-NEXT: %n:_(s16) = G_XOR %tb, %m
+    ; OFF-NEXT: %r16:_(s16) = G_OR %ta, %n
+    ; OFF-NEXT: %r:_(s32) = G_ANYEXT %r16(s16)
+    ; OFF-NEXT: $vgpr0 = COPY %r(s32)
+    ; OFF-NEXT: SI_RETURN implicit $vgpr0
+    ;
+    ; ON-LABEL: name: or_not_of_truncs_s16
+    ; ON: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %a:_(s32) = COPY $vgpr0
+    ; ON-NEXT: %b:_(s32) = COPY $vgpr1
+    ; ON-NEXT: [[C:%[0-9]+]]:_(s32) = G_CONSTANT i32 -1
+    ; ON-NEXT: [[XOR:%[0-9]+]]:_(s32) = G_XOR %b, [[C]]
+    ; ON-NEXT: [[OR:%[0-9]+]]:_(s32) = G_OR [[XOR]], %a
+    ; ON-NEXT: $vgpr0 = COPY [[OR]](s32)
+    ; ON-NEXT: SI_RETURN implicit $vgpr0
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %ta:_(s16) = G_TRUNC %a
+    %tb:_(s16) = G_TRUNC %b
+    %m:_(s16) = G_CONSTANT i16 -1
+    %n:_(s16) = G_XOR %tb, %m
+    %r16:_(s16) = G_OR %ta, %n
+    %r:_(s32) = G_ANYEXT %r16(s16)
+    $vgpr0 = COPY %r(s32)
+    SI_RETURN implicit $vgpr0
+...
+
+# synth_icmp_482ffe70_1u: (c ? k : b) != k -> c ? false : true when b is
+# always less than k (here b < 16, k = 100).
+---
+name: icmp_ne_of_select_arm
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+
+    ; OFF-LABEL: name: icmp_ne_of_select_arm
+    ; OFF: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %b:_(s32) = COPY $vgpr1
+    ; OFF-NEXT: %c:_(s32) = COPY $vgpr2
+    ; OFF-NEXT: %c1:_(s1) = G_TRUNC %c(s32)
+    ; OFF-NEXT: %k:_(s32) = G_CONSTANT i32 100
+    ; OFF-NEXT: %f:_(s32) = G_CONSTANT i32 15
+    ; OFF-NEXT: %lo:_(s32) = G_AND %b, %f
+    ; OFF-NEXT: %s:_(s32) = G_SELECT %c1(s1), %k, %lo
+    ; OFF-NEXT: %i:_(s1) = G_ICMP intpred(ne), %s(s32), %k
+    ; OFF-NEXT: %r:_(s32) = G_ZEXT %i(s1)
+    ; OFF-NEXT: $vgpr0 = COPY %r(s32)
+    ; OFF-NEXT: SI_RETURN implicit $vgpr0
+    ;
+    ; ON-LABEL: name: icmp_ne_of_select_arm
+    ; ON: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %c:_(s32) = COPY $vgpr2
+    ; ON-NEXT: %c1:_(s1) = G_TRUNC %c(s32)
+    ; ON-NEXT: [[C:%[0-9]+]]:_(s32) = G_CONSTANT i32 1
+    ; ON-NEXT: %r:_(s32) = G_LSHR [[C]], %c1(s1)
+    ; ON-NEXT: $vgpr0 = COPY %r(s32)
+    ; ON-NEXT: SI_RETURN implicit $vgpr0
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %c:_(s32) = COPY $vgpr2
+    %c1:_(s1) = G_TRUNC %c
+    %k:_(s32) = G_CONSTANT i32 100
+    %f:_(s32) = G_CONSTANT i32 15
+    %lo:_(s32) = G_AND %b, %f
+    %s:_(s32) = G_SELECT %c1(s1), %k, %lo
+    %i:_(s1) = G_ICMP intpred(ne), %s(s32), %k
+    %r:_(s32) = G_ZEXT %i(s1)
+    $vgpr0 = COPY %r(s32)
+    SI_RETURN implicit $vgpr0
+...
+
+# Nothing is known about b: it can be equal to k, the guard fails.
+---
+name: icmp_ne_of_select_arm_unknown_no_fold
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+
+    ; OFF-LABEL: name: icmp_ne_of_select_arm_unknown_no_fold
+    ; OFF: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %b:_(s32) = COPY $vgpr1
+    ; OFF-NEXT: %c:_(s32) = COPY $vgpr2
+    ; OFF-NEXT: %c1:_(s1) = G_TRUNC %c(s32)
+    ; OFF-NEXT: %k:_(s32) = G_CONSTANT i32 100
+    ; OFF-NEXT: %s:_(s32) = G_SELECT %c1(s1), %k, %b
+    ; OFF-NEXT: %i:_(s1) = G_ICMP intpred(ne), %s(s32), %k
+    ; OFF-NEXT: %r:_(s32) = G_ZEXT %i(s1)
+    ; OFF-NEXT: $vgpr0 = COPY %r(s32)
+    ; OFF-NEXT: SI_RETURN implicit $vgpr0
+    ;
+    ; ON-LABEL: name: icmp_ne_of_select_arm_unknown_no_fold
+    ; ON: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %b:_(s32) = COPY $vgpr1
+    ; ON-NEXT: %c:_(s32) = COPY $vgpr2
+    ; ON-NEXT: %c1:_(s1) = G_TRUNC %c(s32)
+    ; ON-NEXT: %k:_(s32) = G_CONSTANT i32 100
+    ; ON-NEXT: %s:_(s32) = G_SELECT %c1(s1), %k, %b
+    ; ON-NEXT: %i:_(s1) = G_ICMP intpred(ne), %s(s32), %k
+    ; ON-NEXT: %r:_(s32) = G_ZEXT %i(s1)
+    ; ON-NEXT: $vgpr0 = COPY %r(s32)
+    ; ON-NEXT: SI_RETURN implicit $vgpr0
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %c:_(s32) = COPY $vgpr2
+    %c1:_(s1) = G_TRUNC %c
+    %k:_(s32) = G_CONSTANT i32 100
+    %s:_(s32) = G_SELECT %c1(s1), %k, %b
+    %i:_(s1) = G_ICMP intpred(ne), %s(s32), %k
+    %r:_(s32) = G_ZEXT %i(s1)
+    $vgpr0 = COPY %r(s32)
+    SI_RETURN implicit $vgpr0
+...
+
+# synth_icmp_df1ee794_1u: (c ? b : k) == k -> c ? false : true when b is
+# always less than k.
+---
+name: icmp_eq_of_select_arm
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+
+    ; OFF-LABEL: name: icmp_eq_of_select_arm
+    ; OFF: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %b:_(s32) = COPY $vgpr1
+    ; OFF-NEXT: %c:_(s32) = COPY $vgpr2
+    ; OFF-NEXT: %c1:_(s1) = G_TRUNC %c(s32)
+    ; OFF-NEXT: %k:_(s32) = G_CONSTANT i32 100
+    ; OFF-NEXT: %f:_(s32) = G_CONSTANT i32 15
+    ; OFF-NEXT: %lo:_(s32) = G_AND %b, %f
+    ; OFF-NEXT: %s:_(s32) = G_SELECT %c1(s1), %lo, %k
+    ; OFF-NEXT: %i:_(s1) = G_ICMP intpred(eq), %s(s32), %k
+    ; OFF-NEXT: %r:_(s32) = G_ZEXT %i(s1)
+    ; OFF-NEXT: $vgpr0 = COPY %r(s32)
+    ; OFF-NEXT: SI_RETURN implicit $vgpr0
+    ;
+    ; ON-LABEL: name: icmp_eq_of_select_arm
+    ; ON: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %c:_(s32) = COPY $vgpr2
+    ; ON-NEXT: %c1:_(s1) = G_TRUNC %c(s32)
+    ; ON-NEXT: [[C:%[0-9]+]]:_(s32) = G_CONSTANT i32 1
+    ; ON-NEXT: %r:_(s32) = G_LSHR [[C]], %c1(s1)
+    ; ON-NEXT: $vgpr0 = COPY %r(s32)
+    ; ON-NEXT: SI_RETURN implicit $vgpr0
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %c:_(s32) = COPY $vgpr2
+    %c1:_(s1) = G_TRUNC %c
+    %k:_(s32) = G_CONSTANT i32 100
+    %f:_(s32) = G_CONSTANT i32 15
+    %lo:_(s32) = G_AND %b, %f
+    %s:_(s32) = G_SELECT %c1(s1), %lo, %k
+    %i:_(s1) = G_ICMP intpred(eq), %s(s32), %k
+    %r:_(s32) = G_ZEXT %i(s1)
+    $vgpr0 = COPY %r(s32)
+    SI_RETURN implicit $vgpr0
+...
+
+# synth_icmp_fa5e7560_1u: (a ^ b) != 0 -> a != b.
+---
+name: icmp_ne_of_xor_zero
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+
+    ; OFF-LABEL: name: icmp_ne_of_xor_zero
+    ; OFF: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %a:_(s32) = COPY $vgpr0
+    ; OFF-NEXT: %b:_(s32) = COPY $vgpr1
+    ; OFF-NEXT: %z:_(s32) = G_CONSTANT i32 0
+    ; OFF-NEXT: %x:_(s32) = G_XOR %a, %b
+    ; OFF-NEXT: %i:_(s1) = G_ICMP intpred(ne), %x(s32), %z
+    ; OFF-NEXT: %r:_(s32) = G_ZEXT %i(s1)
+    ; OFF-NEXT: $vgpr0 = COPY %r(s32)
+    ; OFF-NEXT: SI_RETURN implicit $vgpr0
+    ;
+    ; ON-LABEL: name: icmp_ne_of_xor_zero
+    ; ON: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %a:_(s32) = COPY $vgpr0
+    ; ON-NEXT: %b:_(s32) = COPY $vgpr1
+    ; ON-NEXT: %i:_(s1) = G_ICMP intpred(ne), %a(s32), %b
+    ; ON-NEXT: %r:_(s32) = G_ZEXT %i(s1)
+    ; ON-NEXT: $vgpr0 = COPY %r(s32)
+    ; ON-NEXT: SI_RETURN implicit $vgpr0
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %z:_(s32) = G_CONSTANT i32 0
+    %x:_(s32) = G_XOR %a, %b
+    %i:_(s1) = G_ICMP intpred(ne), %x(s32), %z
+    %r:_(s32) = G_ZEXT %i(s1)
+    $vgpr0 = COPY %r(s32)
+    SI_RETURN implicit $vgpr0
+...
+
+# synth_select_0c7a2693: c ? (x ^ a) : (x ^ b) -> (c ? a : b) ^ x.
+---
+name: select_of_xors_common
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2, $vgpr3
+
+    ; OFF-LABEL: name: select_of_xors_common
+    ; OFF: liveins: $vgpr0, $vgpr1, $vgpr2, $vgpr3
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %a:_(s32) = COPY $vgpr0
+    ; OFF-NEXT: %b:_(s32) = COPY $vgpr1
+    ; OFF-NEXT: %c:_(s32) = COPY $vgpr2
+    ; OFF-NEXT: %x:_(s32) = COPY $vgpr3
+    ; OFF-NEXT: %c1:_(s1) = G_TRUNC %c(s32)
+    ; OFF-NEXT: %t0:_(s32) = G_XOR %x, %a
+    ; OFF-NEXT: %t1:_(s32) = G_XOR %x, %b
+    ; OFF-NEXT: %r:_(s32) = G_SELECT %c1(s1), %t0, %t1
+    ; OFF-NEXT: $vgpr0 = COPY %r(s32)
+    ; OFF-NEXT: SI_RETURN implicit $vgpr0
+    ;
+    ; ON-LABEL: name: select_of_xors_common
+    ; ON: liveins: $vgpr0, $vgpr1, $vgpr2, $vgpr3
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %a:_(s32) = COPY $vgpr0
+    ; ON-NEXT: %b:_(s32) = COPY $vgpr1
+    ; ON-NEXT: %c:_(s32) = COPY $vgpr2
+    ; ON-NEXT: %x:_(s32) = COPY $vgpr3
+    ; ON-NEXT: %c1:_(s1) = G_TRUNC %c(s32)
+    ; ON-NEXT: [[SELECT:%[0-9]+]]:_(s32) = G_SELECT %c1(s1), %a, %b
+    ; ON-NEXT: %r:_(s32) = G_XOR [[SELECT]], %x
+    ; ON-NEXT: $vgpr0 = COPY %r(s32)
+    ; ON-NEXT: SI_RETURN implicit $vgpr0
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %c:_(s32) = COPY $vgpr2
+    %x:_(s32) = COPY $vgpr3
+    %c1:_(s1) = G_TRUNC %c
+    %t0:_(s32) = G_XOR %x, %a
+    %t1:_(s32) = G_XOR %x, %b
+    %r:_(s32) = G_SELECT %c1(s1), %t0, %t1
+    $vgpr0 = COPY %r(s32)
+    SI_RETURN implicit $vgpr0
+...
+
+# synth_select_4cdb868a_1u: (a >s b) ? a : b -> smax(a, b).
+---
+name: select_sgt_to_smax
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+
+    ; OFF-LABEL: name: select_sgt_to_smax
+    ; OFF: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %a:_(s32) = COPY $vgpr0
+    ; OFF-NEXT: %b:_(s32) = COPY $vgpr1
+    ; OFF-NEXT: %r:_(s32) = G_SMAX %a, %b
+    ; OFF-NEXT: $vgpr0 = COPY %r(s32)
+    ; OFF-NEXT: SI_RETURN implicit $vgpr0
+    ;
+    ; ON-LABEL: name: select_sgt_to_smax
+    ; ON: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %a:_(s32) = COPY $vgpr0
+    ; ON-NEXT: %b:_(s32) = COPY $vgpr1
+    ; ON-NEXT: %r:_(s32) = G_SMAX %a, %b
+    ; ON-NEXT: $vgpr0 = COPY %r(s32)
+    ; ON-NEXT: SI_RETURN implicit $vgpr0
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %i:_(s1) = G_ICMP intpred(sgt), %a(s32), %b
+    %r:_(s32) = G_SELECT %i(s1), %a, %b
+    $vgpr0 = COPY %r(s32)
+    SI_RETURN implicit $vgpr0
+...
+
+# The comparison has a second user, so it stays: the variant with the
+# one-use guard does not apply.
+---
+name: select_sgt_to_smax_shared_no_fold
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+
+    ; OFF-LABEL: name: select_sgt_to_smax_shared_no_fold
+    ; OFF: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %a:_(s32) = COPY $vgpr0
+    ; OFF-NEXT: %b:_(s32) = COPY $vgpr1
+    ; OFF-NEXT: %i:_(s1) = G_ICMP intpred(sgt), %a(s32), %b
+    ; OFF-NEXT: %r:_(s32) = G_SELECT %i(s1), %a, %b
+    ; OFF-NEXT: %z:_(s32) = G_ZEXT %i(s1)
+    ; OFF-NEXT: $vgpr0 = COPY %r(s32)
+    ; OFF-NEXT: $vgpr1 = COPY %z(s32)
+    ; OFF-NEXT: SI_RETURN implicit $vgpr0, implicit $vgpr1
+    ;
+    ; ON-LABEL: name: select_sgt_to_smax_shared_no_fold
+    ; ON: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %a:_(s32) = COPY $vgpr0
+    ; ON-NEXT: %b:_(s32) = COPY $vgpr1
+    ; ON-NEXT: %i:_(s1) = G_ICMP intpred(sgt), %a(s32), %b
+    ; ON-NEXT: %r:_(s32) = G_SELECT %i(s1), %a, %b
+    ; ON-NEXT: %z:_(s32) = G_ZEXT %i(s1)
+    ; ON-NEXT: $vgpr0 = COPY %r(s32)
+    ; ON-NEXT: $vgpr1 = COPY %z(s32)
+    ; ON-NEXT: SI_RETURN implicit $vgpr0, implicit $vgpr1
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %i:_(s1) = G_ICMP intpred(sgt), %a(s32), %b
+    %r:_(s32) = G_SELECT %i(s1), %a, %b
+    %z:_(s32) = G_ZEXT %i(s1)
+    $vgpr0 = COPY %r(s32)
+    $vgpr1 = COPY %z(s32)
+    SI_RETURN implicit $vgpr0, implicit $vgpr1
+...
+
+# synth_select_4f35dc63_1u: (a >s b) ? b : a -> smin(a, b).
+---
+name: select_sgt_to_smin
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+
+    ; OFF-LABEL: name: select_sgt_to_smin
+    ; OFF: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %a:_(s32) = COPY $vgpr0
+    ; OFF-NEXT: %b:_(s32) = COPY $vgpr1
+    ; OFF-NEXT: %r:_(s32) = G_SMIN %b, %a
+    ; OFF-NEXT: $vgpr0 = COPY %r(s32)
+    ; OFF-NEXT: SI_RETURN implicit $vgpr0
+    ;
+    ; ON-LABEL: name: select_sgt_to_smin
+    ; ON: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %a:_(s32) = COPY $vgpr0
+    ; ON-NEXT: %b:_(s32) = COPY $vgpr1
+    ; ON-NEXT: %r:_(s32) = G_SMIN %a, %b
+    ; ON-NEXT: $vgpr0 = COPY %r(s32)
+    ; ON-NEXT: SI_RETURN implicit $vgpr0
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %i:_(s1) = G_ICMP intpred(sgt), %a(s32), %b
+    %r:_(s32) = G_SELECT %i(s1), %b, %a
+    $vgpr0 = COPY %r(s32)
+    SI_RETURN implicit $vgpr0
+...
+
+# synth_zext_a25c36b8_1u: zext(!c) -> 1 >>u c for a 1-bit c.
+---
+name: zext_of_not_s1
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1, $vgpr2
+
+    ; OFF-LABEL: name: zext_of_not_s1
+    ; OFF: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %a:_(s32) = COPY $vgpr0
+    ; OFF-NEXT: %i:_(s1) = G_TRUNC %a(s32)
+    ; OFF-NEXT: %t:_(s1) = G_CONSTANT i1 true
+    ; OFF-NEXT: %n:_(s1) = G_XOR %i, %t
+    ; OFF-NEXT: %r:_(s32) = G_ZEXT %n(s1)
+    ; OFF-NEXT: $vgpr0 = COPY %r(s32)
+    ; OFF-NEXT: SI_RETURN implicit $vgpr0
+    ;
+    ; ON-LABEL: name: zext_of_not_s1
+    ; ON: liveins: $vgpr0, $vgpr1, $vgpr2
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %a:_(s32) = COPY $vgpr0
+    ; ON-NEXT: %i:_(s1) = G_TRUNC %a(s32)
+    ; ON-NEXT: [[C:%[0-9]+]]:_(s32) = G_CONSTANT i32 1
+    ; ON-NEXT: %r:_(s32) = G_LSHR [[C]], %i(s1)
+    ; ON-NEXT: $vgpr0 = COPY %r(s32)
+    ; ON-NEXT: SI_RETURN implicit $vgpr0
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %i:_(s1) = G_TRUNC %a(s32)
+    %t:_(s1) = G_CONSTANT i1 true
+    %n:_(s1) = G_XOR %i, %t
+    %r:_(s32) = G_ZEXT %n(s1)
+    $vgpr0 = COPY %r(s32)
+    SI_RETURN implicit $vgpr0
+...

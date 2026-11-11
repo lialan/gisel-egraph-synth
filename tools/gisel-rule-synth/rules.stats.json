@@ -4,17 +4,17 @@
   "dominated": 5,
   "fingerprint_matches": 0,
   "instances": 2100,
-  "macro_rules": 4,
-  "proposals": 55,
-  "proved": 38,
-  "smt_checks": 45,
+  "macro_rules": 10,
+  "proposals": 69,
+  "proved": 48,
+  "smt_checks": 55,
   "smt_refuted": 7,
   "smt_unknown": 0,
   "terms": 0
  },
  "corpus": {
   "distinct": 2954,
-  "records": 29854,
+  "records": 29940,
   "unsupported": 0
  },
  "discovery": {
@@ -31,9 +31,387 @@
  },
  "disjuncts": {
   "dominated_disjuncts": 0,
-  "dominated_rules": 20,
+  "dominated_rules": 27,
   "rules_with_disjunction": 3,
-  "unselected_disjuncts": 4
+  "unselected_disjuncts": 6
+ },
+ "egraph": {
+  "candidates": 669,
+  "computed_constants": 94,
+  "distinct": 54,
+  "files": 277,
+  "generalized_candidates": 46,
+  "new_rules": 25,
+  "pairs": 659,
+  "records": 3432,
+  "rejected": {
+   "root": {
+    "operator G_PHI has no model": 869,
+    "operator G_PTRTOINT: pointer values are not modeled": 2,
+    "source larger than 8 operations": 2,
+    "type f32 is not a scalar": 185,
+    "type f64 is not a scalar": 65,
+    "type p0 is not a scalar": 1,
+    "type p1 is not a scalar": 2,
+    "type p3 is not a scalar": 3,
+    "type p5 is not a scalar": 4,
+    "wider than 64 bits": 20
+   },
+   "step": {
+    "operator G_PHI has no model": 869,
+    "type f32 is not a scalar": 184,
+    "type f64 is not a scalar": 40,
+    "type p0 is not a scalar": 2,
+    "type p1 is not a scalar": 2,
+    "type p3 is not a scalar": 3,
+    "type p5 is not a scalar": 4,
+    "wider than 64 bits": 20
+   }
+  },
+  "rejected_examples": {
+   "root: operator G_PHI has no model": [
+    {
+     "bb": 3,
+     "fn": "absdiff_valu_input_regression",
+     "replacement": "(G_ABS (G_SUB 0x0 (G_UMIN (G_SMAX 0x0 x0) 0x1)))",
+     "source": "(G_ABS (G_SUB 0x0 (G_UMIN (G_SMAX (G_PHI@0 x0) 0x0) 0x1)))"
+    },
+    {
+     "bb": 3,
+     "fn": "widget",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    },
+    {
+     "bb": 3,
+     "fn": "direct_loop",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    }
+   ],
+   "root: operator G_PTRTOINT: pointer values are not modeled": [
+    {
+     "bb": 3,
+     "fn": "if_break_mask_shares_constant_with_divergent_phi",
+     "replacement": "(G_UNMERGE_VALUES (G_PTRTOINT x0))",
+     "source": "(G_UNMERGE_VALUES (G_PTRTOINT (G_PHI@0 x0)))"
+    },
+    {
+     "bb": 3,
+     "fn": "if_break_mask_shares_constant_with_divergent_phi",
+     "replacement": "(G_UNMERGE_VALUES#1 (G_PTRTOINT x0))",
+     "source": "(G_UNMERGE_VALUES#1 (G_PTRTOINT (G_PHI@0 x0)))"
+    }
+   ],
+   "root: source larger than 8 operations": [
+    {
+     "bb": 1,
+     "fn": "test_urem_odd",
+     "replacement": "(G_ICMP:eq (G_TRUNC x0) (G_MUL (G_LSHR (G_UMULH (G_TRUNC x0) 0xccd) 0x1) 0x5))",
+     "source": "(G_ICMP:eq (G_ADD (G_MUL (G_LSHR (G_UMULH (G_TRUNC (G_TRUNC x0)) 0xccd) 0x1) 0x1ffb) (G_TRUNC (G_TRUNC x0))) 0x0)"
+    },
+    {
+     "bb": 1,
+     "fn": "test_urem_odd_setne",
+     "replacement": "(G_ICMP:ne (G_TRUNC x0) (G_MUL (G_LSHR (G_UMULH (G_TRUNC x0) 0xd) 0x2) 0x5))",
+     "source": "(G_ICMP:ne (G_ADD (G_MUL (G_LSHR (G_UMULH (G_TRUNC (G_TRUNC x0)) 0xd) 0x2) 0xb) (G_TRUNC (G_TRUNC x0))) 0x0)"
+    }
+   ],
+   "root: type f32 is not a scalar": [
+    {
+     "bb": 3,
+     "fn": "dynamic_stack_loop",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    },
+    {
+     "bb": 3,
+     "fn": "global_atomicrmw_fadd_f32_agent__rtn",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    },
+    {
+     "bb": 3,
+     "fn": "buffer_fat_ptr_agent_atomic_fadd_ret_f32__offset",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    }
+   ],
+   "root: type f64 is not a scalar": [
+    {
+     "bb": 3,
+     "fn": "buffer_fat_ptr_agent_atomic_fadd_ret_f64__offset__amdgpu_no_fine_grained_memory",
+     "replacement": "(G_UNMERGE_VALUES x0)",
+     "source": "(G_UNMERGE_VALUES (G_PHI@0 x0))"
+    },
+    {
+     "bb": 3,
+     "fn": "buffer_fat_ptr_agent_atomic_fadd_ret_f64__offset__amdgpu_no_fine_grained_memory",
+     "replacement": "(G_UNMERGE_VALUES#1 x0)",
+     "source": "(G_UNMERGE_VALUES#1 (G_PHI@0 x0))"
+    },
+    {
+     "bb": 3,
+     "fn": "buffer_fat_ptr_agent_atomic_fadd_ret_f64__offset__waterfall__amdgpu_no_fine_grained_memory",
+     "replacement": "(G_UNMERGE_VALUES x0)",
+     "source": "(G_UNMERGE_VALUES (G_PHI@0 x0))"
+    }
+   ],
+   "root: type p0 is not a scalar": [
+    {
+     "bb": 3,
+     "fn": "widget",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    }
+   ],
+   "root: type p1 is not a scalar": [
+    {
+     "bb": 25,
+     "fn": "svm_node_closure_bsdf",
+     "replacement": "(G_PTR_ADD (G_PTR_ADD x1 (G_MUL (G_ADD x4 x0) 0x60)) 0x150)",
+     "source": "(G_PTR_ADD (G_PTR_ADD (G_PTR_ADD x1 (G_MUL 0x60 x0)) (G_MUL x4 0x60)) 0x150)"
+    },
+    {
+     "bb": 68,
+     "fn": "eggs",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    }
+   ],
+   "root: type p3 is not a scalar": [
+    {
+     "bb": 1,
+     "fn": "promote_alloca_size_order_1",
+     "replacement": "(G_PTR_ADD (G_PTR_ADD x1 x4) 0x330)",
+     "source": "(G_PTR_ADD (G_PTR_ADD (G_PTR_ADD x1 (G_SHL x0 0x4)) (G_SUB 0x0 x4)) 0x330)"
+    },
+    {
+     "bb": 1,
+     "fn": "promote_alloca_size_order_1",
+     "replacement": "(G_PTR_ADD (G_PTR_ADD x1 x5) 0x200)",
+     "source": "(G_PTR_ADD (G_PTR_ADD (G_PTR_ADD (G_PTR_ADD x1 (G_SHL x0 0x4)) (G_SUB 0x0 (G_SHL x0 0x3))) (G_SUB 0x0 x5)) 0x200)"
+    },
+    {
+     "bb": 1,
+     "fn": "promote_alloca_align_pad_guess_over_limit",
+     "replacement": "(G_PTR_ADD x1 (G_SHL x0 0x4))",
+     "source": "(G_PTR_ADD (G_PTR_ADD x1 (G_SHL x0 0x2)) (G_MUL 0xc x0))"
+    }
+   ],
+   "root: type p5 is not a scalar": [
+    {
+     "bb": 1,
+     "fn": "store_load_vindex_small_offset_kernel",
+     "replacement": "(G_PTR_ADD (G_PTR_ADD x1 (G_SUB x4 (G_SHL x2 0x2))) 0x7c)",
+     "source": "(G_PTR_ADD (G_PTR_ADD (G_PTR_ADD x1 x4) (G_SHL (G_SUB 0x0 x2) 0x2)) 0x7c)"
+    },
+    {
+     "bb": 1,
+     "fn": "store_load_vindex_large_offset_kernel",
+     "replacement": "(G_PTR_ADD (G_PTR_ADD x1 (G_SUB x4 (G_SHL x2 0x2))) 0x7c)",
+     "source": "(G_PTR_ADD (G_PTR_ADD (G_PTR_ADD x1 x4) (G_SHL (G_SUB 0x0 x2) 0x2)) 0x7c)"
+    },
+    {
+     "bb": 1,
+     "fn": "store_load_vindex_small_offset_kernel",
+     "replacement": "(G_PTR_ADD (G_PTR_ADD x1 (G_SUB x4 (G_SHL x2 0x2))) 0x7c)",
+     "source": "(G_PTR_ADD (G_PTR_ADD (G_PTR_ADD x1 x4) (G_SHL (G_SUB 0x0 x2) 0x2)) 0x7c)"
+    }
+   ],
+   "root: wider than 64 bits": [
+    {
+     "bb": 2,
+     "fn": "v_sdiv_v2i128_vv",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    },
+    {
+     "bb": 2,
+     "fn": "v_sdiv_v2i128_vv",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    },
+    {
+     "bb": 10,
+     "fn": "v_sdiv_v2i128_vv",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    }
+   ],
+   "step: operator G_PHI has no model": [
+    {
+     "bb": 3,
+     "fn": "absdiff_valu_input_regression",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    },
+    {
+     "bb": 3,
+     "fn": "widget",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    },
+    {
+     "bb": 3,
+     "fn": "direct_loop",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    }
+   ],
+   "step: type f32 is not a scalar": [
+    {
+     "bb": 3,
+     "fn": "dynamic_stack_loop",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    },
+    {
+     "bb": 3,
+     "fn": "global_atomicrmw_fadd_f32_agent__rtn",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    },
+    {
+     "bb": 3,
+     "fn": "buffer_fat_ptr_agent_atomic_fadd_ret_f32__offset",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    }
+   ],
+   "step: type f64 is not a scalar": [
+    {
+     "bb": 3,
+     "fn": "buffer_fat_ptr_agent_atomic_fadd_ret_f64__offset__amdgpu_no_fine_grained_memory",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    },
+    {
+     "bb": 3,
+     "fn": "buffer_fat_ptr_agent_atomic_fadd_ret_f64__offset__waterfall__amdgpu_no_fine_grained_memory",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    },
+    {
+     "bb": 3,
+     "fn": "buffer_fat_ptr_agent_atomic_fadd_ret_f64__offset__amdgpu_no_remote_memory",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    }
+   ],
+   "step: type p0 is not a scalar": [
+    {
+     "bb": 3,
+     "fn": "widget",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    },
+    {
+     "bb": 3,
+     "fn": "if_break_mask_shares_constant_with_divergent_phi",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    }
+   ],
+   "step: type p1 is not a scalar": [
+    {
+     "bb": 25,
+     "fn": "svm_node_closure_bsdf",
+     "replacement": "(G_PTR_ADD x1 (G_MUL (G_ADD x3 x0) 0x60))",
+     "source": "(G_PTR_ADD (G_PTR_ADD x1 (G_MUL 0x60 x0)) (G_MUL x3 0x60))"
+    },
+    {
+     "bb": 68,
+     "fn": "eggs",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    }
+   ],
+   "step: type p3 is not a scalar": [
+    {
+     "bb": 1,
+     "fn": "promote_alloca_size_order_1",
+     "replacement": "(G_PTR_ADD x1 x2)",
+     "source": "(G_PTR_ADD (G_PTR_ADD x1 (G_SHL x0 0x4)) (G_SUB 0x0 x2))"
+    },
+    {
+     "bb": 1,
+     "fn": "promote_alloca_size_order_1",
+     "replacement": "(G_PTR_ADD x1 x3)",
+     "source": "(G_PTR_ADD (G_PTR_ADD x1 (G_SHL x0 0x3)) (G_SUB 0x0 x3))"
+    },
+    {
+     "bb": 1,
+     "fn": "promote_alloca_align_pad_guess_over_limit",
+     "replacement": "(G_PTR_ADD x1 (G_SHL x0 0x4))",
+     "source": "(G_PTR_ADD (G_PTR_ADD x1 (G_SHL x0 0x2)) (G_MUL 0xc x0))"
+    }
+   ],
+   "step: type p5 is not a scalar": [
+    {
+     "bb": 1,
+     "fn": "store_load_vindex_small_offset_kernel",
+     "replacement": "(G_PTR_ADD x1 (G_SUB x3 (G_SHL x2 0x2)))",
+     "source": "(G_PTR_ADD (G_PTR_ADD x1 x3) (G_SHL (G_SUB 0x0 x2) 0x2))"
+    },
+    {
+     "bb": 1,
+     "fn": "store_load_vindex_large_offset_kernel",
+     "replacement": "(G_PTR_ADD x1 (G_SUB x3 (G_SHL x2 0x2)))",
+     "source": "(G_PTR_ADD (G_PTR_ADD x1 x3) (G_SHL (G_SUB 0x0 x2) 0x2))"
+    },
+    {
+     "bb": 1,
+     "fn": "store_load_vindex_small_offset_kernel",
+     "replacement": "(G_PTR_ADD x1 (G_SUB x3 (G_SHL x2 0x2)))",
+     "source": "(G_PTR_ADD (G_PTR_ADD x1 x3) (G_SHL (G_SUB 0x0 x2) 0x2))"
+    }
+   ],
+   "step: wider than 64 bits": [
+    {
+     "bb": 2,
+     "fn": "v_sdiv_v2i128_vv",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    },
+    {
+     "bb": 2,
+     "fn": "v_sdiv_v2i128_vv",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    },
+    {
+     "bb": 10,
+     "fn": "v_sdiv_v2i128_vv",
+     "replacement": "x0",
+     "source": "(G_PHI@0 x0)"
+    }
+   ]
+  },
+  "roots": 5648,
+  "roots_effect": 4144,
+  "roots_unchanged": 87,
+  "rules": 30,
+  "rules_also_enumerative": 5,
+  "sha256": "c080dfa6e4325b900348407f6c4d4511f5463b38fa6eefe004e449402d36594d",
+  "smt_checks": 76,
+  "steps": 1458,
+  "steps_not_cheaper": 4
+ },
+ "emission": {
+  "composition": {
+   "yes": 10
+  },
+  "egraph": {
+   "the root instruction has several results": 2,
+   "yes": 23
+  },
+  "egraph+enumerative": {
+   "yes": 5
+  },
+  "enumerative": {
+   "yes": 79
+  }
  },
  "enumeration": {
   "bank_reuses": 2931,
@@ -42,39 +420,40 @@
   "banks_truncated": 3,
   "counterexample_pool": 8,
   "seconds": {
-   "bank_build": 1.29,
-   "bank_eval": 1.62,
-   "smt": 11.46
+   "bank_build": 1.34,
+   "bank_eval": 1.59,
+   "smt": 11.55
   }
  },
  "provenance": {
-  "generator_sha256": "8a5817a0f2518fdeac65c5cdae0334e2a462606ee1b630e6b56cd3aba73fb64c",
-  "generator_version": "1.6",
-  "llvm_commit": "9886924f6aa120022ed11df8f2660b1c8aec03ed",
+  "generator_sha256": "9e9855cc11772a859201a5a9929230a70fd7dcea09fc8b9f8e7d5224f7045f63",
+  "generator_version": "2.0",
+  "llvm_commit": "492b8ce7c4e245f2fb73172186c6841737a67270",
   "llvm_dirty": true,
   "python": "3.10.12"
  },
  "rules_by_class": {
   "equal_cost": 26,
-  "reduces_cost": 56,
-  "widens_operation": 6
+  "reduces_cost": 69,
+  "widens_operation": 24
  },
  "seconds": {
-  "composition": 368.16,
-  "discovery": 14.69,
-  "generalization": 9.92,
-  "selection_of_disjuncts": 2.75,
-  "total": 395.99
+  "composition": 375.66,
+  "discovery": 14.94,
+  "egraph_import": 581.85,
+  "generalization": 9.98,
+  "selection_of_disjuncts": 3.81,
+  "total": 986.77
  },
- "solver_calls": 3435,
- "solver_seconds": 379.18,
+ "solver_calls": 4759,
+ "solver_seconds": 962.65,
  "synthesis": {
-  "discoveries": 440,
-  "disjuncts_added": 95,
-  "generalized": 88,
-  "rejected": 62,
-  "reused": 240,
-  "schedules_added": 12,
+  "discoveries": 496,
+  "disjuncts_added": 128,
+  "generalized": 119,
+  "rejected": 64,
+  "reused": 263,
+  "schedules_added": 15,
   "uncovered": 14
  }
 }

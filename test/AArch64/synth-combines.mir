@@ -308,80 +308,198 @@ body: |
     RET_ReallyLR implicit $x0
 ...
 
-# synth_trunc_110bd23a_1u: trunc(trunc a) -> trunc a. The AArch64 profile
-# selects the variant of the rule that applies only if the inner value has no
-# other user (the rule without that guard costs instructions there,
-# measured).
+# Rules that came from the export of the e-graph combiner (provenance
+# "egraph" in rules.json).
+#
+# synth_select_4cdb868a: (a >s b) ? a : b -> smax(a, b).
 ---
-name: trunc_of_trunc_one_use
+name: select_sgt_to_smax
 tracksRegLiveness: true
 body: |
   bb.0:
-    liveins: $x0, $x1, $x2
+    liveins: $w0, $w1, $w2
 
-    ; OFF-LABEL: name: trunc_of_trunc_one_use
-    ; OFF: liveins: $x0, $x1, $x2
+    ; OFF-LABEL: name: select_sgt_to_smax
+    ; OFF: liveins: $w0, $w1, $w2
     ; OFF-NEXT: {{  $}}
-    ; OFF-NEXT: %a:_(s64) = COPY $x0
-    ; OFF-NEXT: %t0:_(s32) = G_TRUNC %a(s64)
-    ; OFF-NEXT: %r16:_(s16) = G_TRUNC %t0(s32)
-    ; OFF-NEXT: %r:_(s32) = G_ZEXT %r16(s16)
+    ; OFF-NEXT: %a:_(s32) = COPY $w0
+    ; OFF-NEXT: %b:_(s32) = COPY $w1
+    ; OFF-NEXT: %r:_(s32) = G_SMAX %a, %b
     ; OFF-NEXT: $w0 = COPY %r(s32)
     ; OFF-NEXT: RET_ReallyLR implicit $w0
     ;
-    ; ON-LABEL: name: trunc_of_trunc_one_use
-    ; ON: liveins: $x0, $x1, $x2
+    ; ON-LABEL: name: select_sgt_to_smax
+    ; ON: liveins: $w0, $w1, $w2
     ; ON-NEXT: {{  $}}
-    ; ON-NEXT: %a:_(s64) = COPY $x0
-    ; ON-NEXT: %r16:_(s16) = G_TRUNC %a(s64)
-    ; ON-NEXT: %r:_(s32) = G_ZEXT %r16(s16)
+    ; ON-NEXT: %a:_(s32) = COPY $w0
+    ; ON-NEXT: %b:_(s32) = COPY $w1
+    ; ON-NEXT: %r:_(s32) = G_SMAX %a, %b
     ; ON-NEXT: $w0 = COPY %r(s32)
     ; ON-NEXT: RET_ReallyLR implicit $w0
-    %a:_(s64) = COPY $x0
-    %b:_(s64) = COPY $x1
-    %c:_(s64) = COPY $x2
-    %t0:_(s32) = G_TRUNC %a(s64)
-    %r16:_(s16) = G_TRUNC %t0(s32)
-    %r:_(s32) = G_ZEXT %r16(s16)
+    %a:_(s32) = COPY $w0
+    %b:_(s32) = COPY $w1
+    %i:_(s1) = G_ICMP intpred(sgt), %a(s32), %b
+    %r:_(s32) = G_SELECT %i(s1), %a, %b
     $w0 = COPY %r(s32)
     RET_ReallyLR implicit $w0
 ...
 
-# The inner value has a second user: the variant with the one-use guard does
-# not apply.
+# synth_select_4f35dc63: (a >s b) ? b : a -> smin(a, b).
 ---
-name: trunc_of_trunc_shared
+name: select_sgt_to_smin
 tracksRegLiveness: true
 body: |
   bb.0:
-    liveins: $x0
+    liveins: $w0, $w1, $w2
 
-    ; OFF-LABEL: name: trunc_of_trunc_shared
-    ; OFF: liveins: $x0
+    ; OFF-LABEL: name: select_sgt_to_smin
+    ; OFF: liveins: $w0, $w1, $w2
     ; OFF-NEXT: {{  $}}
-    ; OFF-NEXT: %a:_(s64) = COPY $x0
-    ; OFF-NEXT: %t0:_(s32) = G_TRUNC %a(s64)
-    ; OFF-NEXT: %r16:_(s16) = G_TRUNC %t0(s32)
-    ; OFF-NEXT: %r:_(s32) = G_ZEXT %r16(s16)
+    ; OFF-NEXT: %a:_(s32) = COPY $w0
+    ; OFF-NEXT: %b:_(s32) = COPY $w1
+    ; OFF-NEXT: %r:_(s32) = G_SMIN %b, %a
     ; OFF-NEXT: $w0 = COPY %r(s32)
-    ; OFF-NEXT: $w1 = COPY %t0(s32)
-    ; OFF-NEXT: RET_ReallyLR implicit $w0, implicit $w1
+    ; OFF-NEXT: RET_ReallyLR implicit $w0
     ;
-    ; ON-LABEL: name: trunc_of_trunc_shared
-    ; ON: liveins: $x0
+    ; ON-LABEL: name: select_sgt_to_smin
+    ; ON: liveins: $w0, $w1, $w2
     ; ON-NEXT: {{  $}}
-    ; ON-NEXT: %a:_(s64) = COPY $x0
-    ; ON-NEXT: %t0:_(s32) = G_TRUNC %a(s64)
-    ; ON-NEXT: %r16:_(s16) = G_TRUNC %t0(s32)
-    ; ON-NEXT: %r:_(s32) = G_ZEXT %r16(s16)
+    ; ON-NEXT: %a:_(s32) = COPY $w0
+    ; ON-NEXT: %b:_(s32) = COPY $w1
+    ; ON-NEXT: %r:_(s32) = G_SMIN %a, %b
     ; ON-NEXT: $w0 = COPY %r(s32)
-    ; ON-NEXT: $w1 = COPY %t0(s32)
-    ; ON-NEXT: RET_ReallyLR implicit $w0, implicit $w1
-    %a:_(s64) = COPY $x0
-    %t0:_(s32) = G_TRUNC %a(s64)
-    %r16:_(s16) = G_TRUNC %t0(s32)
-    %r:_(s32) = G_ZEXT %r16(s16)
+    ; ON-NEXT: RET_ReallyLR implicit $w0
+    %a:_(s32) = COPY $w0
+    %b:_(s32) = COPY $w1
+    %i:_(s1) = G_ICMP intpred(sgt), %a(s32), %b
+    %r:_(s32) = G_SELECT %i(s1), %b, %a
     $w0 = COPY %r(s32)
-    $w1 = COPY %t0(s32)
-    RET_ReallyLR implicit $w0, implicit $w1
+    RET_ReallyLR implicit $w0
+...
+
+# synth_icmp_7274715e, a rule with a computed constant:
+# b * 7 + c == 0 -> c == b * (0 - 7). The new constant comes from a recipe that
+# the proof covers for every value of the two constants.
+---
+name: icmp_eq_of_madd_zero
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $w0, $w1, $w2
+
+    ; OFF-LABEL: name: icmp_eq_of_madd_zero
+    ; OFF: liveins: $w0, $w1, $w2
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %b:_(s32) = COPY $w1
+    ; OFF-NEXT: %c:_(s32) = COPY $w2
+    ; OFF-NEXT: %z:_(s32) = G_CONSTANT i32 0
+    ; OFF-NEXT: %k:_(s32) = G_CONSTANT i32 7
+    ; OFF-NEXT: %m:_(s32) = G_MUL %b, %k
+    ; OFF-NEXT: %s:_(s32) = G_ADD %m, %c
+    ; OFF-NEXT: %i:_(s1) = G_ICMP intpred(eq), %s(s32), %z
+    ; OFF-NEXT: %r:_(s32) = G_ZEXT %i(s1)
+    ; OFF-NEXT: $w0 = COPY %r(s32)
+    ; OFF-NEXT: RET_ReallyLR implicit $w0
+    ;
+    ; ON-LABEL: name: icmp_eq_of_madd_zero
+    ; ON: liveins: $w0, $w1, $w2
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %b:_(s32) = COPY $w1
+    ; ON-NEXT: %c:_(s32) = COPY $w2
+    ; ON-NEXT: [[C:%[0-9]+]]:_(s32) = G_CONSTANT i32 -7
+    ; ON-NEXT: [[MUL:%[0-9]+]]:_(s32) = G_MUL %b, [[C]]
+    ; ON-NEXT: %i:_(s1) = G_ICMP intpred(eq), %c(s32), [[MUL]]
+    ; ON-NEXT: %r:_(s32) = G_ZEXT %i(s1)
+    ; ON-NEXT: $w0 = COPY %r(s32)
+    ; ON-NEXT: RET_ReallyLR implicit $w0
+    %a:_(s32) = COPY $w0
+    %b:_(s32) = COPY $w1
+    %c:_(s32) = COPY $w2
+    %z:_(s32) = G_CONSTANT i32 0
+    %k:_(s32) = G_CONSTANT i32 7
+    %m:_(s32) = G_MUL %b, %k
+    %s:_(s32) = G_ADD %m, %c
+    %i:_(s1) = G_ICMP intpred(eq), %s(s32), %z
+    %r:_(s32) = G_ZEXT %i(s1)
+    $w0 = COPY %r(s32)
+    RET_ReallyLR implicit $w0
+...
+
+# synth_icmp_8f303343: b * 7 + c != 0 -> c != b * (0 - 7).
+---
+name: icmp_ne_of_madd_zero
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $w0, $w1, $w2
+
+    ; OFF-LABEL: name: icmp_ne_of_madd_zero
+    ; OFF: liveins: $w0, $w1, $w2
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %b:_(s32) = COPY $w1
+    ; OFF-NEXT: %c:_(s32) = COPY $w2
+    ; OFF-NEXT: %z:_(s32) = G_CONSTANT i32 0
+    ; OFF-NEXT: %k:_(s32) = G_CONSTANT i32 7
+    ; OFF-NEXT: %m:_(s32) = G_MUL %b, %k
+    ; OFF-NEXT: %s:_(s32) = G_ADD %m, %c
+    ; OFF-NEXT: %i:_(s1) = G_ICMP intpred(ne), %s(s32), %z
+    ; OFF-NEXT: %r:_(s32) = G_ZEXT %i(s1)
+    ; OFF-NEXT: $w0 = COPY %r(s32)
+    ; OFF-NEXT: RET_ReallyLR implicit $w0
+    ;
+    ; ON-LABEL: name: icmp_ne_of_madd_zero
+    ; ON: liveins: $w0, $w1, $w2
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %b:_(s32) = COPY $w1
+    ; ON-NEXT: %c:_(s32) = COPY $w2
+    ; ON-NEXT: [[C:%[0-9]+]]:_(s32) = G_CONSTANT i32 -7
+    ; ON-NEXT: [[MUL:%[0-9]+]]:_(s32) = G_MUL %b, [[C]]
+    ; ON-NEXT: %i:_(s1) = G_ICMP intpred(ne), %c(s32), [[MUL]]
+    ; ON-NEXT: %r:_(s32) = G_ZEXT %i(s1)
+    ; ON-NEXT: $w0 = COPY %r(s32)
+    ; ON-NEXT: RET_ReallyLR implicit $w0
+    %a:_(s32) = COPY $w0
+    %b:_(s32) = COPY $w1
+    %c:_(s32) = COPY $w2
+    %z:_(s32) = G_CONSTANT i32 0
+    %k:_(s32) = G_CONSTANT i32 7
+    %m:_(s32) = G_MUL %b, %k
+    %s:_(s32) = G_ADD %m, %c
+    %i:_(s1) = G_ICMP intpred(ne), %s(s32), %z
+    %r:_(s32) = G_ZEXT %i(s1)
+    $w0 = COPY %r(s32)
+    RET_ReallyLR implicit $w0
+...
+
+# synth_smax_d4d1ff0e_1u: smax(0 - a, a) -> abs(a).
+---
+name: smax_of_neg_to_abs
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $w0, $w1, $w2
+
+    ; OFF-LABEL: name: smax_of_neg_to_abs
+    ; OFF: liveins: $w0, $w1, $w2
+    ; OFF-NEXT: {{  $}}
+    ; OFF-NEXT: %a:_(s32) = COPY $w0
+    ; OFF-NEXT: %z:_(s32) = G_CONSTANT i32 0
+    ; OFF-NEXT: %n:_(s32) = G_SUB %z, %a
+    ; OFF-NEXT: %r:_(s32) = G_SMAX %n, %a
+    ; OFF-NEXT: $w0 = COPY %r(s32)
+    ; OFF-NEXT: RET_ReallyLR implicit $w0
+    ;
+    ; ON-LABEL: name: smax_of_neg_to_abs
+    ; ON: liveins: $w0, $w1, $w2
+    ; ON-NEXT: {{  $}}
+    ; ON-NEXT: %a:_(s32) = COPY $w0
+    ; ON-NEXT: %r:_(s32) = G_ABS %a
+    ; ON-NEXT: $w0 = COPY %r(s32)
+    ; ON-NEXT: RET_ReallyLR implicit $w0
+    %a:_(s32) = COPY $w0
+    %z:_(s32) = G_CONSTANT i32 0
+    %n:_(s32) = G_SUB %z, %a
+    %r:_(s32) = G_SMAX %n, %a
+    $w0 = COPY %r(s32)
+    RET_ReallyLR implicit $w0
 ...

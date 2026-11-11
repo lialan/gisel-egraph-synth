@@ -276,6 +276,47 @@ def synth_and_d05a2340_1u_c1 : GICombineRule<
          [{ return gisynth::guard_synth_and_d05a2340_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
   (apply (G_LSHR $dst, $x0, $x1))>;
 
+// synth_icmp_482ffe70_1u: (G_ICMP:ne:s1 (G_SELECT:s32 x0 x1 x2) x1) -> (G_SELECT:s1 x0 0:s1 1:s1)
+//   if umax(x2) <u umin(x1)
+def synth_icmp_482ffe70_1u : GICombineRule<
+  (defs root:$dst),
+  (match (G_SELECT $t0, $x0, $x1, $x2),
+         (G_ICMP $dst, $dst_p, $t0, $x1),
+         [{ return ${dst_p}.getPredicate() == CmpInst::ICMP_NE; }],
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_icmp_482ffe70_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
+  (apply (G_SELECT $dst, $x0, (GITypeOf<"$dst"> 0), (GITypeOf<"$dst"> 1)))>;
+
+// synth_icmp_df1ee794_1u: (G_ICMP:eq:s1 (G_SELECT:s32 x0 x1 x2) x2) -> (G_SELECT:s1 x0 0:s1 1:s1)
+//   if umax(x1) <u umin(x2)
+def synth_icmp_df1ee794_1u : GICombineRule<
+  (defs root:$dst),
+  (match (G_SELECT $t0, $x0, $x1, $x2),
+         (G_ICMP $dst, $dst_p, $t0, $x2),
+         [{ return ${dst_p}.getPredicate() == CmpInst::ICMP_EQ; }],
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_icmp_df1ee794_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
+  (apply (G_SELECT $dst, $x0, (GITypeOf<"$dst"> 0), (GITypeOf<"$dst"> 1)))>;
+
+// synth_icmp_fa5e7560_1u: (G_ICMP:ne:s1 (G_XOR:s32 x0 x1) x2) -> (G_ICMP:ne:s1 x0 x1)
+//   if all(KZ(x2))
+def synth_icmp_fa5e7560_1u : GICombineRule<
+  (defs root:$dst),
+  (match (G_XOR $t0, $x0, $x1),
+         (G_ICMP $dst, $dst_p, $t0, $x2),
+         [{ return ${dst_p}.getPredicate() == CmpInst::ICMP_NE; }],
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_icmp_fa5e7560_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
+  (apply [{ gisynth::apply_synth_icmp_fa5e7560(B, *${dst}.getParent(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }])>;
+def synth_icmp_fa5e7560_1u_c1 : GICombineRule<
+  (defs root:$dst),
+  (match (G_XOR $t0, $x1, $x0),
+         (G_ICMP $dst, $dst_p, $t0, $x2),
+         [{ return ${dst_p}.getPredicate() == CmpInst::ICMP_NE; }],
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_icmp_fa5e7560_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
+  (apply [{ gisynth::apply_synth_icmp_fa5e7560(B, *${dst}.getParent(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }])>;
+
 // synth_lshr_c497647d: (G_LSHR:s32 (G_ASHR:s32 x0 x1) x2) -> (G_LSHR:s32 x0 x2)
 //   if trailing(KO(x2)) >= umax(x1) && trailing(KZ(x1)) >= bitwidth - umin(x2)
 def synth_lshr_c497647d : GICombineRule<
@@ -343,6 +384,78 @@ def synth_or_d4ad0f19_1u_c3 : GICombineRule<
          [{ return gisynth::guard_synth_or_d4ad0f19_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
   (apply (G_XOR $dst, $x0, $x1))>;
 
+// synth_select_4cdb868a: (G_SELECT:s32 (G_ICMP:sgt:s1 x0 x1) x0 x1) -> (G_SMAX:s32 x0 x1)
+//   if true
+def synth_select_4cdb868a : GICombineRule<
+  (defs root:$dst),
+  (match (G_ICMP $t0, $t0_p, $x0, $x1),
+         (G_SELECT $dst, $t0, $x0, $x1),
+         [{ return ${t0_p}.getPredicate() == CmpInst::ICMP_SGT; }],
+         [{ return gisynth::guard_synth_select_4cdb868a(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+  (apply (G_SMAX $dst, $x0, $x1))>;
+def synth_select_4cdb868a_c1 : GICombineRule<
+  (defs root:$dst),
+  (match (G_ICMP $t0, $t0_p, $x1, $x0),
+         (G_SELECT $dst, $t0, $x0, $x1),
+         [{ return ${t0_p}.getPredicate() == CmpInst::ICMP_SLT; }],
+         [{ return gisynth::guard_synth_select_4cdb868a(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+  (apply (G_SMAX $dst, $x0, $x1))>;
+
+// synth_select_4cdb868a_1u: (G_SELECT:s32 (G_ICMP:sgt:s1 x0 x1) x0 x1) -> (G_SMAX:s32 x0 x1)
+//   if true
+def synth_select_4cdb868a_1u : GICombineRule<
+  (defs root:$dst),
+  (match (G_ICMP $t0, $t0_p, $x0, $x1),
+         (G_SELECT $dst, $t0, $x0, $x1),
+         [{ return ${t0_p}.getPredicate() == CmpInst::ICMP_SGT; }],
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_select_4cdb868a_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+  (apply (G_SMAX $dst, $x0, $x1))>;
+def synth_select_4cdb868a_1u_c1 : GICombineRule<
+  (defs root:$dst),
+  (match (G_ICMP $t0, $t0_p, $x1, $x0),
+         (G_SELECT $dst, $t0, $x0, $x1),
+         [{ return ${t0_p}.getPredicate() == CmpInst::ICMP_SLT; }],
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_select_4cdb868a_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+  (apply (G_SMAX $dst, $x0, $x1))>;
+
+// synth_select_4f35dc63: (G_SELECT:s32 (G_ICMP:sgt:s1 x0 x1) x1 x0) -> (G_SMIN:s32 x0 x1)
+//   if true
+def synth_select_4f35dc63 : GICombineRule<
+  (defs root:$dst),
+  (match (G_ICMP $t0, $t0_p, $x0, $x1),
+         (G_SELECT $dst, $t0, $x1, $x0),
+         [{ return ${t0_p}.getPredicate() == CmpInst::ICMP_SGT; }],
+         [{ return gisynth::guard_synth_select_4f35dc63(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+  (apply (G_SMIN $dst, $x0, $x1))>;
+def synth_select_4f35dc63_c1 : GICombineRule<
+  (defs root:$dst),
+  (match (G_ICMP $t0, $t0_p, $x1, $x0),
+         (G_SELECT $dst, $t0, $x1, $x0),
+         [{ return ${t0_p}.getPredicate() == CmpInst::ICMP_SLT; }],
+         [{ return gisynth::guard_synth_select_4f35dc63(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+  (apply (G_SMIN $dst, $x0, $x1))>;
+
+// synth_select_4f35dc63_1u: (G_SELECT:s32 (G_ICMP:sgt:s1 x0 x1) x1 x0) -> (G_SMIN:s32 x0 x1)
+//   if true
+def synth_select_4f35dc63_1u : GICombineRule<
+  (defs root:$dst),
+  (match (G_ICMP $t0, $t0_p, $x0, $x1),
+         (G_SELECT $dst, $t0, $x1, $x0),
+         [{ return ${t0_p}.getPredicate() == CmpInst::ICMP_SGT; }],
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_select_4f35dc63_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+  (apply (G_SMIN $dst, $x0, $x1))>;
+def synth_select_4f35dc63_1u_c1 : GICombineRule<
+  (defs root:$dst),
+  (match (G_ICMP $t0, $t0_p, $x1, $x0),
+         (G_SELECT $dst, $t0, $x1, $x0),
+         [{ return ${t0_p}.getPredicate() == CmpInst::ICMP_SLT; }],
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_select_4f35dc63_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+  (apply (G_SMIN $dst, $x0, $x1))>;
+
 // synth_shl_a7bba6d0_1u: (G_SHL:s64 x0 (G_ZEXT:s64 x1)) -> (G_SHL:s64 x0 x1)
 //   if true
 def synth_shl_a7bba6d0_1u : GICombineRule<
@@ -369,6 +482,23 @@ def synth_shl_edbd16af_1u_c1 : GICombineRule<
          (GIHasOneUse $t0),
          [{ return gisynth::guard_synth_shl_edbd16af_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg()); }]),
   (apply (G_SHL $dst, $x0, $x2))>;
+
+// synth_smax_d4d1ff0e_1u: (G_SMAX:s32 (G_SUB:s32 x0 x1) x1) -> (G_ABS:s32 x1)
+//   if leading(KZ(x1)) >= umax(x0) && umax(x0) <=u umin(x1)
+def synth_smax_d4d1ff0e_1u : GICombineRule<
+  (defs root:$dst),
+  (match (G_SUB $t0, $x0, $x1),
+         (G_SMAX $dst, $t0, $x1),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_smax_d4d1ff0e_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+  (apply (G_ABS $dst, $x1))>;
+def synth_smax_d4d1ff0e_1u_c1 : GICombineRule<
+  (defs root:$dst),
+  (match (G_SUB $t0, $x0, $x1),
+         (G_SMAX $dst, $x1, $t0),
+         (GIHasOneUse $t0),
+         [{ return gisynth::guard_synth_smax_d4d1ff0e_1u(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${t0}.getReg()); }]),
+  (apply (G_ABS $dst, $x1))>;
 
 // synth_trunc_110bd23a_1u: (G_TRUNC:s8 (G_TRUNC:s16 x0)) -> (G_TRUNC:s8 x0)
 //   if true
@@ -523,6 +653,49 @@ def synth_or_ecb7e28d_c3 : GICombineRule<
   (apply (G_OR GITypeOf<"$dst">:$n0, $x1, $x2),
          (G_AND $dst, $n0, $x0))>;
 
+// synth_select_0c7a2693: (G_SELECT:s32 x0 (G_XOR:s32 x1 x2) (G_XOR:s32 x1 x3)) -> (G_XOR:s32 (G_SELECT:s32 x0 x2 x3) x1)
+//   if true
+def synth_select_0c7a2693 : GICombineRule<
+  (defs root:$dst),
+  (match (G_XOR $t0, $x1, $x2),
+         (G_XOR $t1, $x1, $x3),
+         (G_SELECT $dst, $x0, $t0, $t1),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_select_0c7a2693(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+  (apply (G_SELECT GITypeOf<"$dst">:$n0, $x0, $x2, $x3),
+         (G_XOR $dst, $n0, $x1))>;
+def synth_select_0c7a2693_c1 : GICombineRule<
+  (defs root:$dst),
+  (match (G_XOR $t0, $x1, $x2),
+         (G_XOR $t1, $x3, $x1),
+         (G_SELECT $dst, $x0, $t0, $t1),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_select_0c7a2693(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+  (apply (G_SELECT GITypeOf<"$dst">:$n0, $x0, $x2, $x3),
+         (G_XOR $dst, $n0, $x1))>;
+def synth_select_0c7a2693_c2 : GICombineRule<
+  (defs root:$dst),
+  (match (G_XOR $t0, $x2, $x1),
+         (G_XOR $t1, $x1, $x3),
+         (G_SELECT $dst, $x0, $t0, $t1),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_select_0c7a2693(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+  (apply (G_SELECT GITypeOf<"$dst">:$n0, $x0, $x2, $x3),
+         (G_XOR $dst, $n0, $x1))>;
+def synth_select_0c7a2693_c3 : GICombineRule<
+  (defs root:$dst),
+  (match (G_XOR $t0, $x2, $x1),
+         (G_XOR $t1, $x3, $x1),
+         (G_SELECT $dst, $x0, $t0, $t1),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_select_0c7a2693(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+  (apply (G_SELECT GITypeOf<"$dst">:$n0, $x0, $x2, $x3),
+         (G_XOR $dst, $n0, $x1))>;
+
 // synth_xor_70267483: (G_XOR:s32 (G_AND:s32 x0 x1) (G_AND:s32 x0 x2)) -> (G_AND:s32 (G_XOR:s32 x1 x2) x0)
 //   if true
 def synth_xor_70267483 : GICombineRule<
@@ -566,18 +739,218 @@ def synth_xor_70267483_c3 : GICombineRule<
   (apply (G_XOR GITypeOf<"$dst">:$n0, $x1, $x2),
          (G_AND $dst, $n0, $x0))>;
 
-// AArch64: 8 rules, 19 records.
+// synth_and_dd9a6636: (G_AND:s16 (G_TRUNC:s16 x0) (G_XOR:s16 (G_TRUNC:s16 x1) x2)) -> (G_TRUNC:s16 (G_AND:s32 (G_XOR:s32 -1:s32 x1) x0))
+//   if all(KO(x2))
+def synth_and_dd9a6636 : GICombineRule<
+  (defs root:$dst),
+  (match (G_TRUNC $t0, $x0),
+         (G_TRUNC $t2, $x1),
+         (G_XOR $t1, $t2, $x2),
+         (G_AND $dst, $t0, $t1),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         (GIHasOneUse $t2),
+         [{ return gisynth::guard_synth_and_dd9a6636(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg(), ${t2}.getReg()); }]),
+  (apply (G_XOR GITypeOf<"$x0">:$n1, (GITypeOf<"$x0"> -1), $x1),
+         (G_AND GITypeOf<"$x0">:$n0, $n1, $x0),
+         (G_TRUNC $dst, $n0))>;
+def synth_and_dd9a6636_c1 : GICombineRule<
+  (defs root:$dst),
+  (match (G_TRUNC $t2, $x1),
+         (G_XOR $t1, $t2, $x2),
+         (G_TRUNC $t0, $x0),
+         (G_AND $dst, $t1, $t0),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         (GIHasOneUse $t2),
+         [{ return gisynth::guard_synth_and_dd9a6636(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg(), ${t2}.getReg()); }]),
+  (apply (G_XOR GITypeOf<"$x0">:$n1, (GITypeOf<"$x0"> -1), $x1),
+         (G_AND GITypeOf<"$x0">:$n0, $n1, $x0),
+         (G_TRUNC $dst, $n0))>;
+def synth_and_dd9a6636_c2 : GICombineRule<
+  (defs root:$dst),
+  (match (G_TRUNC $t0, $x0),
+         (G_TRUNC $t2, $x1),
+         (G_XOR $t1, $x2, $t2),
+         (G_AND $dst, $t0, $t1),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         (GIHasOneUse $t2),
+         [{ return gisynth::guard_synth_and_dd9a6636(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg(), ${t2}.getReg()); }]),
+  (apply (G_XOR GITypeOf<"$x0">:$n1, (GITypeOf<"$x0"> -1), $x1),
+         (G_AND GITypeOf<"$x0">:$n0, $n1, $x0),
+         (G_TRUNC $dst, $n0))>;
+def synth_and_dd9a6636_c3 : GICombineRule<
+  (defs root:$dst),
+  (match (G_TRUNC $t2, $x1),
+         (G_XOR $t1, $x2, $t2),
+         (G_TRUNC $t0, $x0),
+         (G_AND $dst, $t1, $t0),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         (GIHasOneUse $t2),
+         [{ return gisynth::guard_synth_and_dd9a6636(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg(), ${t2}.getReg()); }]),
+  (apply (G_XOR GITypeOf<"$x0">:$n1, (GITypeOf<"$x0"> -1), $x1),
+         (G_AND GITypeOf<"$x0">:$n0, $n1, $x0),
+         (G_TRUNC $dst, $n0))>;
+
+// synth_icmp_7274715e: (G_ICMP:eq:s1 (G_ADD:s27 (G_MUL:s27 x0 x1) x2) x3) -> (G_ICMP:eq:s1 x2 (G_MUL:s27 (G_SUB:s27 x3 x0) x1))
+//   if all(KZ(x3))
+def synth_icmp_7274715e : GICombineRule<
+  (defs root:$dst),
+  (match (G_MUL $t1, $x0, $x1),
+         (G_ADD $t0, $t1, $x2),
+         (G_ICMP $dst, $dst_p, $t0, $x3),
+         [{ return ${dst_p}.getPredicate() == CmpInst::ICMP_EQ; }],
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_icmp_7274715e(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+  (apply [{ gisynth::apply_synth_icmp_7274715e(B, *${dst}.getParent(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }])>;
+def synth_icmp_7274715e_c1 : GICombineRule<
+  (defs root:$dst),
+  (match (G_MUL $t1, $x0, $x1),
+         (G_ADD $t0, $x2, $t1),
+         (G_ICMP $dst, $dst_p, $t0, $x3),
+         [{ return ${dst_p}.getPredicate() == CmpInst::ICMP_EQ; }],
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_icmp_7274715e(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+  (apply [{ gisynth::apply_synth_icmp_7274715e(B, *${dst}.getParent(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }])>;
+def synth_icmp_7274715e_c2 : GICombineRule<
+  (defs root:$dst),
+  (match (G_MUL $t1, $x1, $x0),
+         (G_ADD $t0, $t1, $x2),
+         (G_ICMP $dst, $dst_p, $t0, $x3),
+         [{ return ${dst_p}.getPredicate() == CmpInst::ICMP_EQ; }],
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_icmp_7274715e(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+  (apply [{ gisynth::apply_synth_icmp_7274715e(B, *${dst}.getParent(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }])>;
+def synth_icmp_7274715e_c3 : GICombineRule<
+  (defs root:$dst),
+  (match (G_MUL $t1, $x1, $x0),
+         (G_ADD $t0, $x2, $t1),
+         (G_ICMP $dst, $dst_p, $t0, $x3),
+         [{ return ${dst_p}.getPredicate() == CmpInst::ICMP_EQ; }],
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_icmp_7274715e(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+  (apply [{ gisynth::apply_synth_icmp_7274715e(B, *${dst}.getParent(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }])>;
+
+// synth_icmp_8f303343: (G_ICMP:ne:s1 (G_ADD:s4 (G_MUL:s4 x0 x1) x2) x3) -> (G_ICMP:ne:s1 x2 (G_MUL:s4 (G_SUB:s4 x3 x0) x1))
+//   if all(KZ(x3))
+def synth_icmp_8f303343 : GICombineRule<
+  (defs root:$dst),
+  (match (G_MUL $t1, $x0, $x1),
+         (G_ADD $t0, $t1, $x2),
+         (G_ICMP $dst, $dst_p, $t0, $x3),
+         [{ return ${dst_p}.getPredicate() == CmpInst::ICMP_NE; }],
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_icmp_8f303343(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+  (apply [{ gisynth::apply_synth_icmp_8f303343(B, *${dst}.getParent(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }])>;
+def synth_icmp_8f303343_c1 : GICombineRule<
+  (defs root:$dst),
+  (match (G_MUL $t1, $x0, $x1),
+         (G_ADD $t0, $x2, $t1),
+         (G_ICMP $dst, $dst_p, $t0, $x3),
+         [{ return ${dst_p}.getPredicate() == CmpInst::ICMP_NE; }],
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_icmp_8f303343(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+  (apply [{ gisynth::apply_synth_icmp_8f303343(B, *${dst}.getParent(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }])>;
+def synth_icmp_8f303343_c2 : GICombineRule<
+  (defs root:$dst),
+  (match (G_MUL $t1, $x1, $x0),
+         (G_ADD $t0, $t1, $x2),
+         (G_ICMP $dst, $dst_p, $t0, $x3),
+         [{ return ${dst_p}.getPredicate() == CmpInst::ICMP_NE; }],
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_icmp_8f303343(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+  (apply [{ gisynth::apply_synth_icmp_8f303343(B, *${dst}.getParent(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }])>;
+def synth_icmp_8f303343_c3 : GICombineRule<
+  (defs root:$dst),
+  (match (G_MUL $t1, $x1, $x0),
+         (G_ADD $t0, $x2, $t1),
+         (G_ICMP $dst, $dst_p, $t0, $x3),
+         [{ return ${dst_p}.getPredicate() == CmpInst::ICMP_NE; }],
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         [{ return gisynth::guard_synth_icmp_8f303343(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }]),
+  (apply [{ gisynth::apply_synth_icmp_8f303343(B, *${dst}.getParent(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${x3}.getReg(), ${t0}.getReg(), ${t1}.getReg()); }])>;
+
+// synth_or_2a6976e5: (G_OR:s16 (G_TRUNC:s16 x0) (G_XOR:s16 (G_TRUNC:s16 x1) x2)) -> (G_TRUNC:s16 (G_OR:s32 (G_XOR:s32 -1:s32 x1) x0))
+//   if all(KO(x2))
+def synth_or_2a6976e5 : GICombineRule<
+  (defs root:$dst),
+  (match (G_TRUNC $t0, $x0),
+         (G_TRUNC $t2, $x1),
+         (G_XOR $t1, $t2, $x2),
+         (G_OR $dst, $t0, $t1),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         (GIHasOneUse $t2),
+         [{ return gisynth::guard_synth_or_2a6976e5(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg(), ${t2}.getReg()); }]),
+  (apply (G_XOR GITypeOf<"$x0">:$n1, (GITypeOf<"$x0"> -1), $x1),
+         (G_OR GITypeOf<"$x0">:$n0, $n1, $x0),
+         (G_TRUNC $dst, $n0))>;
+def synth_or_2a6976e5_c1 : GICombineRule<
+  (defs root:$dst),
+  (match (G_TRUNC $t2, $x1),
+         (G_XOR $t1, $t2, $x2),
+         (G_TRUNC $t0, $x0),
+         (G_OR $dst, $t1, $t0),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         (GIHasOneUse $t2),
+         [{ return gisynth::guard_synth_or_2a6976e5(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg(), ${t2}.getReg()); }]),
+  (apply (G_XOR GITypeOf<"$x0">:$n1, (GITypeOf<"$x0"> -1), $x1),
+         (G_OR GITypeOf<"$x0">:$n0, $n1, $x0),
+         (G_TRUNC $dst, $n0))>;
+def synth_or_2a6976e5_c2 : GICombineRule<
+  (defs root:$dst),
+  (match (G_TRUNC $t0, $x0),
+         (G_TRUNC $t2, $x1),
+         (G_XOR $t1, $x2, $t2),
+         (G_OR $dst, $t0, $t1),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         (GIHasOneUse $t2),
+         [{ return gisynth::guard_synth_or_2a6976e5(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg(), ${t2}.getReg()); }]),
+  (apply (G_XOR GITypeOf<"$x0">:$n1, (GITypeOf<"$x0"> -1), $x1),
+         (G_OR GITypeOf<"$x0">:$n0, $n1, $x0),
+         (G_TRUNC $dst, $n0))>;
+def synth_or_2a6976e5_c3 : GICombineRule<
+  (defs root:$dst),
+  (match (G_TRUNC $t2, $x1),
+         (G_XOR $t1, $x2, $t2),
+         (G_TRUNC $t0, $x0),
+         (G_OR $dst, $t1, $t0),
+         (GIHasOneUse $t0),
+         (GIHasOneUse $t1),
+         (GIHasOneUse $t2),
+         [{ return gisynth::guard_synth_or_2a6976e5(MRI, Helper.getValueTracking(), ${dst}.getReg(), ${x0}.getReg(), ${x1}.getReg(), ${x2}.getReg(), ${t0}.getReg(), ${t1}.getReg(), ${t2}.getReg()); }]),
+  (apply (G_XOR GITypeOf<"$x0">:$n1, (GITypeOf<"$x0"> -1), $x1),
+         (G_OR GITypeOf<"$x0">:$n0, $n1, $x0),
+         (G_TRUNC $dst, $n0))>;
+
+// AArch64: 12 rules, 32 records.
 def gi_synth_combines_aarch64 : GICombineGroup<[
   synth_xor_66308b8b, synth_xor_66308b8b_c1, synth_xor_66308b8b_c2,
   synth_xor_66308b8b_c3, synth_sub_c1235ab0_1u, synth_sub_c1235ab0_1u_c1,
   synth_sub_c1235ab0_1u_c2, synth_sub_c1235ab0_1u_c3, synth_and_83abd1ae_1u,
-  synth_and_83abd1ae_1u_c1, synth_lshr_c497647d, synth_shl_a7bba6d0_1u,
-  synth_shl_edbd16af_1u, synth_shl_edbd16af_1u_c1, synth_trunc_110bd23a_1u,
-  synth_or_ecb7e28d, synth_or_ecb7e28d_c1, synth_or_ecb7e28d_c2,
-  synth_or_ecb7e28d_c3
+  synth_and_83abd1ae_1u_c1, synth_lshr_c497647d, synth_select_4cdb868a,
+  synth_select_4cdb868a_c1, synth_select_4f35dc63, synth_select_4f35dc63_c1,
+  synth_shl_a7bba6d0_1u, synth_shl_edbd16af_1u, synth_shl_edbd16af_1u_c1,
+  synth_smax_d4d1ff0e_1u, synth_smax_d4d1ff0e_1u_c1, synth_or_ecb7e28d,
+  synth_or_ecb7e28d_c1, synth_or_ecb7e28d_c2, synth_or_ecb7e28d_c3,
+  synth_icmp_7274715e, synth_icmp_7274715e_c1, synth_icmp_7274715e_c2,
+  synth_icmp_7274715e_c3, synth_icmp_8f303343, synth_icmp_8f303343_c1,
+  synth_icmp_8f303343_c2, synth_icmp_8f303343_c3
 ]>;
 
-// AMDGPU: 16 rules, 55 records.
+// AMDGPU: 24 rules, 75 records.
 def gi_synth_combines_amdgpu : GICombineGroup<[
   synth_or_d54b7fbe, synth_or_d54b7fbe_c1, synth_or_d54b7fbe_c2,
   synth_or_d54b7fbe_c3, synth_or_d54b7fbe_c4, synth_or_d54b7fbe_c5,
@@ -587,15 +960,21 @@ def gi_synth_combines_amdgpu : GICombineGroup<[
   synth_or_d7cb9f3c_1u_c3, synth_sub_c1235ab0, synth_sub_c1235ab0_c1,
   synth_sub_c1235ab0_c2, synth_sub_c1235ab0_c3, synth_xor_535a60d9,
   synth_xor_535a60d9_c1, synth_and_b1e9087f_1u, synth_and_b1e9087f_1u_c1,
-  synth_and_d05a2340_1u, synth_and_d05a2340_1u_c1, synth_lshr_c497647d,
-  synth_or_9c2e7958, synth_or_9c2e7958_c1, synth_or_9c2e7958_c2,
-  synth_or_9c2e7958_c3, synth_or_d4ad0f19_1u, synth_or_d4ad0f19_1u_c1,
-  synth_or_d4ad0f19_1u_c2, synth_or_d4ad0f19_1u_c3, synth_shl_a7bba6d0_1u,
-  synth_trunc_110bd23a_1u, synth_zext_a25c36b8_1u, synth_zext_a25c36b8_1u_c1,
-  synth_and_5466e589, synth_and_5466e589_c1, synth_and_5466e589_c2,
-  synth_and_5466e589_c3, synth_and_5466e589_c4, synth_and_5466e589_c5,
-  synth_and_5466e589_c6, synth_and_5466e589_c7, synth_or_ecb7e28d,
-  synth_or_ecb7e28d_c1, synth_or_ecb7e28d_c2, synth_or_ecb7e28d_c3,
+  synth_and_d05a2340_1u, synth_and_d05a2340_1u_c1, synth_icmp_482ffe70_1u,
+  synth_icmp_df1ee794_1u, synth_icmp_fa5e7560_1u, synth_icmp_fa5e7560_1u_c1,
+  synth_lshr_c497647d, synth_or_9c2e7958, synth_or_9c2e7958_c1,
+  synth_or_9c2e7958_c2, synth_or_9c2e7958_c3, synth_or_d4ad0f19_1u,
+  synth_or_d4ad0f19_1u_c1, synth_or_d4ad0f19_1u_c2, synth_or_d4ad0f19_1u_c3,
+  synth_select_4cdb868a_1u, synth_select_4cdb868a_1u_c1, synth_select_4f35dc63_1u,
+  synth_select_4f35dc63_1u_c1, synth_shl_a7bba6d0_1u, synth_trunc_110bd23a_1u,
+  synth_zext_a25c36b8_1u, synth_zext_a25c36b8_1u_c1, synth_and_5466e589,
+  synth_and_5466e589_c1, synth_and_5466e589_c2, synth_and_5466e589_c3,
+  synth_and_5466e589_c4, synth_and_5466e589_c5, synth_and_5466e589_c6,
+  synth_and_5466e589_c7, synth_or_ecb7e28d, synth_or_ecb7e28d_c1,
+  synth_or_ecb7e28d_c2, synth_or_ecb7e28d_c3, synth_select_0c7a2693,
+  synth_select_0c7a2693_c1, synth_select_0c7a2693_c2, synth_select_0c7a2693_c3,
   synth_xor_70267483, synth_xor_70267483_c1, synth_xor_70267483_c2,
-  synth_xor_70267483_c3
+  synth_xor_70267483_c3, synth_and_dd9a6636, synth_and_dd9a6636_c1,
+  synth_and_dd9a6636_c2, synth_and_dd9a6636_c3, synth_or_2a6976e5,
+  synth_or_2a6976e5_c1, synth_or_2a6976e5_c2, synth_or_2a6976e5_c3
 ]>;

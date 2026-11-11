@@ -24,6 +24,7 @@ import json
 import os
 
 from . import ir
+from . import ops
 from . import precond
 from . import synth
 from . import targets
@@ -136,8 +137,8 @@ def _annotate(src):
     def walk(e, root):
         if ir.is_var(e):
             return e
-        if ir.is_lit(e):
-            raise ValueError('literal in source pattern')
+        if not ir.is_op(e):
+            raise ValueError('constant in source pattern')
         if root:
             name = '$dst'
         else:
@@ -148,18 +149,25 @@ def _annotate(src):
 
 
 def _forms(n):
-    """All commuted forms of an annotated pattern."""
+    """All commuted forms of an annotated pattern. A comparison also has
+    the form with the operands and the predicate exchanged."""
     if not isinstance(n, _Node):
         return [n]
-    if len(n.args) == 1:
-        return [_Node(n.op, n.w, n.name, [a]) for a in _forms(n.args[0])]
-    out = []
-    for a in _forms(n.args[0]):
-        for b in _forms(n.args[1]):
-            out.append(_Node(n.op, n.w, n.name, [a, b]))
-            if n.op in ir.COMMUTATIVE:
-                out.append(_Node(n.op, n.w, n.name, [b, a]))
-    return out
+    out = [[]]
+    for a in n.args:
+        out = [o + [f] for o in out for f in _forms(a)]
+    res = []
+    info, attr, _ = ops.parse(n.op)
+    for args in out:
+        res.append(_Node(n.op, n.w, n.name, args))
+        if info.commutative:
+            res.append(_Node(n.op, n.w, n.name,
+                             [args[1], args[0]] + args[2:]))
+        elif info.attr == 'pred' and ops.SWAPPED_PRED[attr] != attr:
+            res.append(_Node(ops.make_key(info.name,
+                                          ops.SWAPPED_PRED[attr]),
+                             n.w, n.name, [args[1], args[0]]))
+    return res
 
 
 def _plain(n):
@@ -168,15 +176,38 @@ def _plain(n):
     return (n.op, n.w) + tuple(_plain(a) for a in n.args)
 
 
-def _lines(n, out):
-    ops = []
+_CPP_PRED = {p: 'CmpInst::ICMP_' + p.upper() for p in ops.PREDS}
+
+
+def _lines(n, out, checks=None):
+    """Appends the match patterns of ``n`` and of its operands to ``out``
+    and the C++ conditions on their attributes to ``checks``."""
+    if checks is None:
+        checks = []
+    operands = []
     for a in n.args:
         if isinstance(a, _Node):
-            _lines(a, out)
-            ops.append(a.name)
+            _lines(a, out, checks)
+            operands.append(a.name)
         else:
-            ops.append('$x%d' % a[1])
-    out.append('(%s %s, %s)' % (n.op, n.name, ', '.join(ops)))
+            operands.append('$x%d' % a[1])
+    info, attr, res = ops.parse(n.op)
+    tag = n.name[1:]
+    if info.results == 1:
+        defs = [n.name]
+    else:
+        # The other results of the instruction are not part of the
+        # pattern.
+        defs = [n.name if k == res else '$%s_r%d' % (tag, k)
+                for k in range(info.results)]
+    if info.attr == 'pred':
+        operands.insert(0, '$%s_p' % tag)
+        checks.append('${%s_p}.getPredicate() == %s' % (tag,
+                                                        _CPP_PRED[attr]))
+    elif info.attr == 'imm':
+        operands.append('$%s_i' % tag)
+        checks.append('${%s_i}.getImm() == %d' % (tag, attr))
+    out.append('(%s %s)' % (info.name, ', '.join(defs + operands)))
     return out
 
 
@@ -206,7 +237,11 @@ def variants(rule):
         if sig in seen:
             continue
         seen.add(sig)
-        out.append(_lines(form, []))
+        checks = []
+        pats = _lines(form, [], checks)
+        if checks:
+            pats.append('[{ return %s; }]' % ' && '.join(checks))
+        out.append(pats)
     return out
 
 
@@ -217,6 +252,75 @@ def record_names(rule):
 
 def _lit_imm(k):
     return {'0': '0', '1': '1', '-1': '-1'}[k]
+
+
+def _needs_cpp_apply(tgt, const_vars=()):
+    """True if the replacement has a node that an apply pattern cannot
+    write: a constant that is not a literal, a computed constant, an
+    operator with an attribute or an instruction with several results."""
+    if ir.is_const(tgt):
+        return True
+    if not ir.is_op(tgt):
+        return False
+    if ir.is_constant_expr(tgt, const_vars):
+        return True
+    info = ops.parse(tgt[0])[0]
+    return info.attr is not None or info.results != 1 or \
+        any(_needs_cpp_apply(a, const_vars) for a in tgt[2:])
+
+
+def _rule_needs_cpp_apply(rule):
+    return _needs_cpp_apply(ir.from_json(rule['replacement_json']),
+                            tuple(rule.get('const_vars', ())))
+
+
+_CPP_APINT = {'G_ADD': '(%s + %s)', 'G_SUB': '(%s - %s)',
+              'G_MUL': '(%s * %s)', 'G_AND': '(%s & %s)',
+              'G_OR': '(%s | %s)', 'G_XOR': '(%s ^ %s)',
+              'G_SHL': '%s.shl(%s)', 'G_LSHR': '%s.lshr(%s)',
+              'G_ASHR': '%s.ashr(%s)'}
+assert set(_CPP_APINT) == set(ir.RECIPE_OPS)
+
+
+def _cpp_const(e, bits):
+    """The C++ APInt expression of the constant expression ``e``.
+    ``bits(w)`` is the C++ expression of the width ``w``. The constant
+    variable i is the APInt C<i>."""
+    if ir.is_var(e):
+        return 'C%d' % e[1]
+    if ir.is_lit(e):
+        return {'0': 'APInt::getZero(%s)', '1': 'APInt(%s, 1)',
+                '-1': 'APInt::getAllOnes(%s)'}[e[2]] % bits(e[1])
+    if not ir.is_op(e):
+        return 'APInt(%s, UINT64_C(%d))' % (bits(e[1]), e[2])
+    if e[0] == 'G_ZEXT':
+        return '%s.zext(%s)' % (_cpp_const(e[2], bits), bits(e[1]))
+    return _CPP_APINT[e[0]] % tuple(_cpp_const(a, bits) for a in e[2:])
+
+
+def _cpp_recipe_checks(tgt, const_vars, bits):
+    """The C++ conditions of smt.Encoder.recipe_guard, in the same order:
+    each shift of a computed constant has an amount smaller than its
+    width, and so has each shift whose amount is a computed constant."""
+    out = []
+    for c in ir.computed_constants(tgt, const_vars):
+        for n in ir.nodes(c):
+            if n[0] in ir.SHIFT_OPS:
+                out.append('%s.ult(%s)' % (_cpp_const(n[3], bits),
+                                           bits(n[1])))
+    for w, c in ir.computed_amounts(tgt, const_vars):
+        out.append('%s.ult(%s)' % (_cpp_const(c, bits), bits(w)))
+    return out
+
+
+def _bits_fn(rule):
+    types = _type_sources(rule)
+
+    def bits(w):
+        if w not in types:
+            raise ValueError('no operand with width %d' % w)
+        return 'MRI.getType(%s).getScalarSizeInBits()' % types[w]
+    return bits
 
 
 def _apply_patterns(tgt, vw, root_w):
@@ -255,18 +359,138 @@ def _apply_patterns(tgt, vw, root_w):
     return pats
 
 
-def emittable(rule):
+def _type_sources(rule):
+    """Width -> C++ expression of a register of that width: the root, a
+    variable or an interior value of the source."""
+    src = ir.from_json(rule['source_json'])
+    _, interior = _annotate(src)
+    out = {}
+    for w, reg in [(src[1], 'Dst')] + \
+            [(w, 'X%d' % i) for i, w in enumerate(rule['vw'])] + \
+            [(w, 'T%d' % k) for k, w in enumerate(interior)]:
+        out.setdefault(w, reg)
+    return out
+
+
+def _apply_params(rule):
+    _, interior = _annotate(ir.from_json(rule['source_json']))
+    return ['Dst'] + ['X%d' % i for i in range(len(rule['vw']))] + \
+        ['T%d' % k for k in range(len(interior))]
+
+
+def _cpp_apply(rule):
+    """The C++ function that builds the replacement before the root
+    instruction and erases the root."""
+    tgt = ir.from_json(rule['replacement_json'])
+    cv = tuple(rule.get('const_vars', ()))
+    types = _type_sources(rule)
+    bits = _bits_fn(rule)
+    # The guard checked that these are constants.
+    body = ['  APInt C%d = *getIConstantVRegVal(X%d, MRI);' % (i, i)
+            for i in cv]
+    built = {}   # (instruction, operands) -> variable
+    n = [0]
+
+    def ty(w):
+        if w not in types:
+            raise ValueError('no operand with width %d' % w)
+        return 'MRI.getType(%s)' % types[w]
+
+    def new(text):
+        name = 'N%d' % n[0]
+        n[0] += 1
+        body.append('  auto %s = %s;' % (name, text))
+        return name
+
+    def walk(e, dst=None):
+        """Returns the C++ expression of the value of ``e``."""
+        if ir.is_var(e):
+            return 'X%d' % e[1]
+        if not ir.is_op(e):
+            v = ir.leaf_value(e)
+            return new('B.buildConstant(%s, APInt(%d, UINT64_C(%d)))' %
+                       (ty(e[1]), e[1], v)) + '.getReg(0)'
+        if ir.is_constant_expr(e, cv):
+            # A computed constant.
+            if e not in built:
+                built[e] = new('B.buildConstant(%s, %s)' % (
+                    dst or ty(e[1]), _cpp_const(e, bits)))
+            return '%s.getReg(0)' % built[e]
+        info, attr, res = ops.parse(e[0])
+        args = [walk(a) for a in e[2:]]
+        key = (info.name, attr) + e[2:]
+        if key not in built:
+            # Each result of the instruction gets its type from the
+            # operator: the main type or s1.
+            if info.results == 1:
+                rtys = [dst or ty(e[1])]
+            else:
+                kinds = info.meta['result_kinds']
+                mainw = ir.width(e[2], rule['vw'])
+                rtys = [ty(mainw) if k == 'main' else ty(1) for k in kinds]
+                if dst:
+                    rtys[res] = dst
+            if info.attr == 'pred':
+                text = 'B.buildICmp(%s, %s, %s)' % (
+                    _CPP_PRED[attr], rtys[0], ', '.join(args))
+            else:
+                srcs = list(args)
+                if info.attr == 'imm':
+                    srcs.append('int64_t(%d)' % attr)
+                text = 'B.buildInstr(TargetOpcode::%s, {%s}, {%s})' % (
+                    info.name, ', '.join(rtys), ', '.join(srcs))
+            built[key] = new(text)
+        return '%s.getReg(%d)' % (built[key], res)
+
+    walk(tgt, 'Dst')
+    params = ['MachineIRBuilder &B', 'MachineInstr &Root'] + \
+        ['Register %s' % p for p in _apply_params(rule)]
+    out = ['/// Builds %s.' % rule['replacement'],
+           'inline void %s(%s) {' % (_apply_name(rule), ', '.join(params)),
+           '  [[maybe_unused]] MachineRegisterInfo &MRI = *B.getMRI();',
+           '  B.setInstrAndDebugLoc(Root);'] + body + \
+        ['  Root.eraseFromParent();', '}']
+    return '\n'.join(out)
+
+
+def why_not_emittable(rule):
+    """None if the emitter can write the rule, else the reason."""
+    src = ir.from_json(rule['source_json'])
+    tgt = ir.from_json(rule['replacement_json'])
+    cv = tuple(rule.get('const_vars', ()))
+    if ops.parse(src[0])[0].results != 1:
+        return 'the root instruction has several results'
+    for n in [src] + ir.interior_nodes(src):
+        info = ops.parse(n[0])[0]
+        if info.shape not in ops._EMIT_SHAPES:
+            return 'no match pattern for the shape %s' % info.shape
+    for n in ir.nodes(tgt):
+        why = ops.capability(ops.parse(n[0])[0], 'emit')
+        if why != 'yes':
+            return '%s: %s' % (n[0], why)
     try:
-        _apply_patterns(ir.from_json(rule['replacement_json']), rule['vw'],
-                        rule['source_json']['w'])
-        _annotate(ir.from_json(rule['source_json']))
-    except ValueError:
-        return False
-    return True
+        _annotate(src)
+        _cpp_recipe_checks(tgt, cv, _bits_fn(rule))
+        if _needs_cpp_apply(tgt, cv):
+            _cpp_apply(rule)
+        else:
+            _apply_patterns(tgt, rule['vw'], rule['source_json']['w'])
+    except ValueError as e:
+        return str(e)
+    return None
+
+
+def emittable(rule):
+    return why_not_emittable(rule) is None
 
 
 def _guard_name(rule):
     return 'guard_' + rule['id']
+
+
+def _apply_name(rule):
+    # A rule and its one-use variant have the same replacement.
+    return 'apply_' + rule.get('variant_of', rule['id'])
 
 
 TD_HEAD = [
@@ -306,8 +530,15 @@ def emit_td(rules, sel):
         vw = r['vw']
         tgt = ir.from_json(r['replacement_json'])
         root_w = r['source_json']['w']
-        apply_pats = _apply_patterns(tgt, vw, root_w)
         _, interior = _annotate(ir.from_json(r['source_json']))
+        if _rule_needs_cpp_apply(r):
+            apply_pats = ['[{ gisynth::%s(B, *${dst}.getParent(), %s); }]' % (
+                _apply_name(r), ', '.join(
+                    ['${dst}.getReg()'] +
+                    ['${x%d}.getReg()' % i for i in range(len(vw))] +
+                    ['${t%d}.getReg()' % k for k in range(len(interior))]))]
+        else:
+            apply_pats = _apply_patterns(tgt, vw, root_w)
         lines.append('// %s: %s -> %s' % (r['id'], r['source'],
                                           r['replacement']))
         lines.append('//   if %s' % r['precondition'])
@@ -351,9 +582,16 @@ def _cpp_guard(r):
     dnf = rule_dnf(r)
     # Disjuncts that share their verified schedules share a table.
     tables, table_of = [], []
+    # A rule that moves an operation to a wider type applies only at the
+    # proved widths at which that type fits in a register of a target: a
+    # wider operation is divided again by the target.
+    wide = widened_bits(r)
     for d in r['disjuncts']:
         rows = sorted({tuple(dict(m)[w] for w in cols)
-                       for m in d['width_maps']})
+                       for m in d['width_maps']
+                       if not wide or dict(m)[wide] <= targets.NATIVE_BITS})
+        # No width is left: a row that no register has.
+        rows = rows or [(0,) * len(cols)]
         if rows not in tables:
             tables.append(rows)
         table_of.append(tables.index(rows))
@@ -389,6 +627,19 @@ def _cpp_guard(r):
         out += ['  if (!(%s))' % ' || '.join('S%d' % ti
                                              for ti in range(len(tables))),
                 '    return false;']
+    cv = tuple(r.get('const_vars', ()))
+    if cv:
+        out.append('  // The variables that the rule matches as constants, '
+                   'and the conditions')
+        out.append('  // on the computed constants of the replacement.')
+    for i in cv:
+        out += ['  std::optional<APInt> OptC%d = getIConstantVRegVal(X%d, '
+                'MRI);' % (i, i),
+                '  if (!OptC%d)' % i, '    return false;',
+                '  [[maybe_unused]] const APInt &C%d = *OptC%d;' % (i, i)]
+    for c in _cpp_recipe_checks(ir.from_json(r['replacement_json']), cv,
+                                _bits_fn(r)):
+        out += ['  if (!%s)' % c, '    return false;']
     cpp = [[precond.cpp_atom(a) for a in p] for p in dnf]
     text = ' '.join(c for p in cpp for c in p)
     for i in range(n):
@@ -464,9 +715,14 @@ def emit_inc(rules, sel, names):
              '// `emit --check` stays byte-exact.',
              '// clang-format off',
              '']
+    applies = set()
     for r in rules:
         lines.append(_cpp_guard(r))
         lines.append('')
+        if _rule_needs_cpp_apply(r) and _apply_name(r) not in applies:
+            applies.add(_apply_name(r))
+            lines.append(_cpp_apply(r))
+            lines.append('')
     for tname in sorted(sel):
         lines.append('/// Records of the rules selected for %s, for enabling '
                      'them as a group.' % tname)

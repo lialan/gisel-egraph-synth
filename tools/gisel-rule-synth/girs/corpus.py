@@ -28,6 +28,9 @@ class Instance:
         # Known bits of the operation nodes below the root, by subexpression
         # (what GISelValueTracking reports for that register).
         self.sub_facts = sub_facts or {}
+        # Variables that a rule from this instance only matches as
+        # constants: the replacement computes a constant from them.
+        self.const_vars = ()
 
     def facts_of(self, e):
         """Known bits (zero, one) of a variable or of an operation node of

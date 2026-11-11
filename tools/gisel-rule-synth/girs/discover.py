@@ -461,7 +461,7 @@ def prove_concrete(inst, tgt, backend):
 def refines_on(inst, tgt, env):
     """Concrete refinement check of one input assignment."""
     s = ir.evaluate(inst.expr, inst.vw, env)
-    return s is None or ir.evaluate(tgt, inst.vw, env) == s
+    return s is None or s is ir.UB or ir.evaluate(tgt, inst.vw, env) == s
 
 
 def instance_envs(inst, limits, ctx):

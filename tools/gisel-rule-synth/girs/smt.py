@@ -13,6 +13,7 @@ import time
 import z3
 
 from . import ir
+from . import ops
 
 
 class Result:
@@ -69,76 +70,103 @@ class Z3Backend:
 
 class Encoder:
     """Symbolic inputs for one width schedule: a value x_i and known-bits
-    masks KZ_i / KO_i per pattern variable."""
+    masks KZ_i / KO_i per pattern variable.
 
-    def __init__(self, vw, rw=None):
+    ``const_vars`` are the variables that the rule only matches as
+    constants: their known bits are exact."""
+
+    def __init__(self, vw, rw=None, const_vars=()):
         self.vw = tuple(vw)
+        self.nreal = len(vw)
         self.rw = rw  # source root width, for 'r' operands of atoms
+        self.const_vars = tuple(const_vars)
         self.x = [z3.BitVec('x%d' % i, w) for i, w in enumerate(vw)]
         self.kz = [z3.BitVec('kz%d' % i, w) for i, w in enumerate(vw)]
         self.ko = [z3.BitVec('ko%d' % i, w) for i, w in enumerate(vw)]
 
+    def recipe_guard(self, tgt):
+        """The condition on the computed constants of the replacement
+        ``tgt`` that the generated guard checks before the rule applies:
+        each computed constant is defined, and a computed shift amount is
+        smaller than the width of its shift."""
+        cs = []
+        for c in ir.computed_constants(tgt, self.const_vars):
+            _, p, ub = self.enc_full(c)
+            cs.append(z3.Not(z3.Or(p, ub)))
+        for w, c in ir.computed_amounts(tgt, self.const_vars):
+            cs.append(z3.Not(ops._oob(self.enc_full(c)[0], w)))
+        return z3.And(cs) if cs else z3.BoolVal(True)
+
     def fact_consistency(self):
-        """KZ and KO never claim the same bit."""
-        return z3.And([(z & o) == 0 for z, o in zip(self.kz, self.ko)] or
-                      [z3.BoolVal(True)])
+        """KZ and KO never claim the same bit, and the known bits of a
+        constant are exact."""
+        cs = [(self.kz[i] & self.ko[i]) == 0 for i in range(self.nreal)]
+        for i in self.const_vars:
+            cs.append(self.kz[i] == ~self.ko[i])
+        return z3.And(cs or [z3.BoolVal(True)])
 
     def well_formed(self):
         """Soundness of the facts for the (non-poison) values: every bit in
         KZ is 0 in x and every bit in KO is 1 in x. This is exactly the
         KnownBits contract GISelValueTracking guarantees."""
         cs = [self.fact_consistency()]
-        for x, z, o in zip(self.x, self.kz, self.ko):
+        for i in range(self.nreal):
+            x, z, o = self.x[i], self.kz[i], self.ko[i]
             cs += [(x & z) == 0, (x & o) == o]
         return z3.And(cs)
 
     def enc(self, e):
-        """Returns (value, poison) z3 terms for expression ``e``."""
+        """Returns (value, poison) z3 terms for expression ``e``; for an
+        expression without operations that can have undefined behaviour."""
+        v, p, _ = self.enc_full(e)
+        return v, p
+
+    def enc_full(self, e, memo=None):
+        """Returns (value, poison, ub) z3 terms for expression ``e``. ``ub``
+        is true if any operation of ``e`` has undefined behaviour: every
+        instruction of a pattern executes, whatever uses its result."""
+        if memo is None:
+            memo = {}
+        if e in memo:
+            return memo[e]
+        false = z3.BoolVal(False)
         if ir.is_var(e):
-            return self.x[e[1]], z3.BoolVal(False)
-        if ir.is_lit(e):
-            return z3.BitVecVal(ir.lit_value(e[1], e[2]), e[1]), \
-                z3.BoolVal(False)
-        op, w = e[0], e[1]
-        args = [self.enc(a) for a in e[2:]]
-        poison = z3.Or([p for _, p in args])
-        if op in ir.CASTS:
-            v = args[0][0]
-            sw = ir.width(e[2], self.vw)
-            if op == 'G_TRUNC':
-                return z3.Extract(w - 1, 0, v), poison
-            if op == 'G_ZEXT':
-                return z3.ZeroExt(w - sw, v), poison
-            return z3.SignExt(w - sw, v), poison
-        (a, _), (b, _) = args
-        if op in ir.SHIFTS:
-            aw = ir.width(e[3], self.vw)
-            # amount >= width is poison (generic MIR / LLVM semantics).
-            oob = z3.UGE(b, z3.BitVecVal(w, aw)) if w < (1 << aw) else \
-                z3.BoolVal(False)
-            poison = z3.Or(poison, oob)
-            if aw < w:
-                b = z3.ZeroExt(w - aw, b)
-            elif aw > w:
-                b = z3.Extract(w - 1, 0, b)
-            fn = {'G_SHL': lambda: a << b, 'G_LSHR': lambda: z3.LShR(a, b),
-                  'G_ASHR': lambda: a >> b}[op]
-            return fn(), poison
-        fn = {'G_ADD': lambda: a + b, 'G_SUB': lambda: a - b,
-              'G_MUL': lambda: a * b, 'G_AND': lambda: a & b,
-              'G_OR': lambda: a | b, 'G_XOR': lambda: a ^ b}[op]
-        return fn(), poison
+            r = self.x[e[1]], false, false
+        elif not ir.is_op(e):
+            r = z3.BitVecVal(ir.leaf_value(e), e[1]), false, false
+        else:
+            info, attr, res = ops.parse(e[0])
+            args = [self.enc_full(a, memo) for a in e[2:]]
+            ws = [ir.width(a, self.vw) for a in e[2:]]
+            v, p, ub = info.smt(e[1], ws, attr, res, [a[0] for a in args])
+            ubs = [a[2] for a in args] + ([ub] if ub is not None else [])
+            if info.strict:
+                ps = [a[1] for a in args]
+            else:
+                # G_SELECT: the condition and the selected arm.
+                ps = [args[0][1], z3.If(args[0][0] == 1, args[1][1],
+                                        args[2][1])]
+            if p is not None:
+                ps.append(p)
+            r = v, z3.Or(ps), z3.Or(ubs)
+        memo[e] = r
+        return r
 
     def model_terms(self):
-        return self.x + self.kz + self.ko
+        n = self.nreal
+        return self.x[:n] + self.kz[:n] + self.ko[:n]
 
 
 def refinement_violation(enc, src, tgt, guard):
     """Formula satisfiable iff some input satisfying the facts and the guard
-    makes the source non-poison while the target is poison or different."""
-    sv, sp = enc.enc(src)
-    tv, tp = enc.enc(tgt)
-    return z3.And(enc.well_formed(), guard, z3.Not(sp), z3.Or(tp, sv != tv))
+    gives the source defined behaviour, while the target has undefined
+    behaviour, or the source is not poison and the target is poison or
+    different."""
+    sv, sp, su = enc.enc_full(src)
+    tv, tp, tu = enc.enc_full(tgt)
+    return z3.And(enc.well_formed(), guard, enc.recipe_guard(tgt),
+                  z3.Not(su),
+                  z3.Or(tu, z3.And(z3.Not(sp), z3.Or(tp, sv != tv))))
 
 
 def split_model(vals, n):

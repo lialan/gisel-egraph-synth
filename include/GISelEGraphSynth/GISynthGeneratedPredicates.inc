@@ -203,6 +203,79 @@ inline bool guard_synth_and_d05a2340_1u(const MachineRegisterInfo &MRI, GISelVal
   return true;
 }
 
+/// (G_ICMP:ne:s1 (G_SELECT:s32 x0 x1 x2) x1) -> (G_SELECT:s1 x0 0:s1 1:s1)
+/// if umax(x2) <u umin(x1)
+/// Proved for widths (x0, x1, x2, t0, root): 1,8,8,8,1; 1,16,16,16,1; 1,32,32,32,1; 1,64,64,64,1.
+inline bool guard_synth_icmp_482ffe70_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_icmp_482ffe70_1u\n");
+  unsigned W[5];
+  if (!getScalarWidths(MRI, {X0, X1, X2, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][5] = {{1, 8, 8, 8, 1}, {1, 16, 16, 16, 1}, {1, 32, 32, 32, 1}, {1, 64, 64, 64, 1}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!VT)
+    return false;
+  KnownBits K1 = VT->getKnownBits(X1);
+  KnownBits K2 = VT->getKnownBits(X2);
+  bool Pass = umaxULTUmin(K2, K1);
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_icmp_482ffe70_1u\n");
+  return true;
+}
+
+/// (G_ICMP:eq:s1 (G_SELECT:s32 x0 x1 x2) x2) -> (G_SELECT:s1 x0 0:s1 1:s1)
+/// if umax(x1) <u umin(x2)
+/// Proved for widths (x0, x1, x2, t0, root): 1,8,8,8,1; 1,16,16,16,1; 1,32,32,32,1; 1,64,64,64,1.
+inline bool guard_synth_icmp_df1ee794_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_icmp_df1ee794_1u\n");
+  unsigned W[5];
+  if (!getScalarWidths(MRI, {X0, X1, X2, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][5] = {{1, 8, 8, 8, 1}, {1, 16, 16, 16, 1}, {1, 32, 32, 32, 1}, {1, 64, 64, 64, 1}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!VT)
+    return false;
+  KnownBits K1 = VT->getKnownBits(X1);
+  KnownBits K2 = VT->getKnownBits(X2);
+  bool Pass = umaxULTUmin(K1, K2);
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_icmp_df1ee794_1u\n");
+  return true;
+}
+
+/// (G_ICMP:ne:s1 (G_XOR:s32 x0 x1) x2) -> (G_ICMP:ne:s1 x0 x1)
+/// if all(KZ(x2))
+/// Proved for widths (x0, x1, x2, t0, root): 8,8,8,8,1; 16,16,16,16,1; 32,32,32,32,1; 64,64,64,64,1.
+inline bool guard_synth_icmp_fa5e7560_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_icmp_fa5e7560_1u\n");
+  unsigned W[5];
+  if (!getScalarWidths(MRI, {X0, X1, X2, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][5] = {{8, 8, 8, 8, 1}, {16, 16, 16, 16, 1}, {32, 32, 32, 32, 1}, {64, 64, 64, 64, 1}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!VT)
+    return false;
+  KnownBits K2 = VT->getKnownBits(X2);
+  bool Pass = K2.Zero.isAllOnes();
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_icmp_fa5e7560_1u\n");
+  return true;
+}
+
+/// Builds (G_ICMP:ne:s1 x0 x1).
+inline void apply_synth_icmp_fa5e7560(MachineIRBuilder &B, MachineInstr &Root, Register Dst, Register X0, Register X1, Register X2, Register T0) {
+  [[maybe_unused]] MachineRegisterInfo &MRI = *B.getMRI();
+  B.setInstrAndDebugLoc(Root);
+  auto N0 = B.buildICmp(CmpInst::ICMP_NE, Dst, X0, X1);
+  Root.eraseFromParent();
+}
+
 /// (G_LSHR:s32 (G_ASHR:s32 x0 x1) x2) -> (G_LSHR:s32 x0 x2)
 /// if trailing(KO(x2)) >= umax(x1) && trailing(KZ(x1)) >= bitwidth - umin(x2)
 /// Proved for widths (x0, x1, x2, t0, root): 8,8,8,8,8; 16,16,16,16,16; 32,32,32,32,32; 64,64,64,64,64.
@@ -266,6 +339,78 @@ inline bool guard_synth_or_d4ad0f19_1u(const MachineRegisterInfo &MRI, GISelValu
   return true;
 }
 
+/// (G_SELECT:s32 (G_ICMP:sgt:s1 x0 x1) x0 x1) -> (G_SMAX:s32 x0 x1)
+/// if true
+/// Proved for widths (x0, x1, t0, root): 8,8,1,8; 16,16,1,16; 32,32,1,32; 64,64,1,64.
+inline bool guard_synth_select_4cdb868a(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_select_4cdb868a\n");
+  unsigned W[4];
+  if (!getScalarWidths(MRI, {X0, X1, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][4] = {{8, 8, 1, 8}, {16, 16, 1, 16}, {32, 32, 1, 32}, {64, 64, 1, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  bool Pass = true;
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_select_4cdb868a\n");
+  return true;
+}
+
+/// (G_SELECT:s32 (G_ICMP:sgt:s1 x0 x1) x0 x1) -> (G_SMAX:s32 x0 x1)
+/// if true
+/// Proved for widths (x0, x1, t0, root): 8,8,1,8; 16,16,1,16; 32,32,1,32; 64,64,1,64.
+inline bool guard_synth_select_4cdb868a_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_select_4cdb868a_1u\n");
+  unsigned W[4];
+  if (!getScalarWidths(MRI, {X0, X1, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][4] = {{8, 8, 1, 8}, {16, 16, 1, 16}, {32, 32, 1, 32}, {64, 64, 1, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  bool Pass = true;
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_select_4cdb868a_1u\n");
+  return true;
+}
+
+/// (G_SELECT:s32 (G_ICMP:sgt:s1 x0 x1) x1 x0) -> (G_SMIN:s32 x0 x1)
+/// if true
+/// Proved for widths (x0, x1, t0, root): 8,8,1,8; 16,16,1,16; 32,32,1,32; 64,64,1,64.
+inline bool guard_synth_select_4f35dc63(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_select_4f35dc63\n");
+  unsigned W[4];
+  if (!getScalarWidths(MRI, {X0, X1, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][4] = {{8, 8, 1, 8}, {16, 16, 1, 16}, {32, 32, 1, 32}, {64, 64, 1, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  bool Pass = true;
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_select_4f35dc63\n");
+  return true;
+}
+
+/// (G_SELECT:s32 (G_ICMP:sgt:s1 x0 x1) x1 x0) -> (G_SMIN:s32 x0 x1)
+/// if true
+/// Proved for widths (x0, x1, t0, root): 8,8,1,8; 16,16,1,16; 32,32,1,32; 64,64,1,64.
+inline bool guard_synth_select_4f35dc63_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_select_4f35dc63_1u\n");
+  unsigned W[4];
+  if (!getScalarWidths(MRI, {X0, X1, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][4] = {{8, 8, 1, 8}, {16, 16, 1, 16}, {32, 32, 1, 32}, {64, 64, 1, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  bool Pass = true;
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_select_4f35dc63_1u\n");
+  return true;
+}
+
 /// (G_SHL:s64 x0 (G_ZEXT:s64 x1)) -> (G_SHL:s64 x0 x1)
 /// if true
 /// Proved for widths (x0, x1, t0, root): 16,8,16,16; 32,8,32,32; 32,16,32,32; 64,8,64,64; 64,16,64,64; 64,32,64,64.
@@ -306,15 +451,38 @@ inline bool guard_synth_shl_edbd16af_1u(const MachineRegisterInfo &MRI, GISelVal
   return true;
 }
 
+/// (G_SMAX:s32 (G_SUB:s32 x0 x1) x1) -> (G_ABS:s32 x1)
+/// if leading(KZ(x1)) >= umax(x0) && umax(x0) <=u umin(x1)
+/// Proved for widths (x0, x1, t0, root): 8,8,8,8; 16,16,16,16; 32,32,32,32; 64,64,64,64.
+inline bool guard_synth_smax_d4d1ff0e_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register T0) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_smax_d4d1ff0e_1u\n");
+  unsigned W[4];
+  if (!getScalarWidths(MRI, {X0, X1, T0, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][4] = {{8, 8, 8, 8}, {16, 16, 16, 16}, {32, 32, 32, 32}, {64, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!VT)
+    return false;
+  KnownBits K0 = VT->getKnownBits(X0);
+  KnownBits K1 = VT->getKnownBits(X1);
+  bool Pass = K0.getMaxValue().ule(K1.Zero.countl_one()) &&
+      umaxULEUmin(K0, K1);
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_smax_d4d1ff0e_1u\n");
+  return true;
+}
+
 /// (G_TRUNC:s8 (G_TRUNC:s16 x0)) -> (G_TRUNC:s8 x0)
 /// if true
-/// Proved for widths (x0, t0, root): 16,8,1; 32,16,1; 32,16,4; 32,16,7; 32,16,8; 32,16,9; 32,16,11; 32,16,12; 32,16,13; 64,16,8; 64,32,8; 64,32,16; 64,55,32.
+/// Proved for widths (x0, t0, root): 16,8,1; 32,8,1; 32,16,1; 32,16,4; 32,16,7; 32,16,8; 32,16,9; 32,16,11; 32,16,12; 32,16,13; 64,16,8; 64,32,8; 64,32,16; 64,55,32.
 inline bool guard_synth_trunc_110bd23a_1u(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register T0) {
   DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_trunc_110bd23a_1u\n");
   unsigned W[3];
   if (!getScalarWidths(MRI, {X0, T0, Dst}, W))
     return false;
-  static constexpr uint16_t V0[][3] = {{16, 8, 1}, {32, 16, 1}, {32, 16, 4}, {32, 16, 7}, {32, 16, 8}, {32, 16, 9}, {32, 16, 11}, {32, 16, 12}, {32, 16, 13}, {64, 16, 8}, {64, 32, 8}, {64, 32, 16}, {64, 55, 32}};
+  static constexpr uint16_t V0[][3] = {{16, 8, 1}, {32, 8, 1}, {32, 16, 1}, {32, 16, 4}, {32, 16, 7}, {32, 16, 8}, {32, 16, 9}, {32, 16, 11}, {32, 16, 12}, {32, 16, 13}, {64, 16, 8}, {64, 32, 8}, {64, 32, 16}, {64, 55, 32}};
   if (!isVerifiedSchedule(W, V0))
     return false;
   bool Pass = true;
@@ -385,6 +553,24 @@ inline bool guard_synth_or_ecb7e28d(const MachineRegisterInfo &MRI, GISelValueTr
   return true;
 }
 
+/// (G_SELECT:s32 x0 (G_XOR:s32 x1 x2) (G_XOR:s32 x1 x3)) -> (G_XOR:s32 (G_SELECT:s32 x0 x2 x3) x1)
+/// if true
+/// Proved for widths (x0, x1, x2, x3, t0, t1, root): 1,8,8,8,8,8,8; 1,16,16,16,16,16,16; 1,32,32,32,32,32,32; 1,64,64,64,64,64,64.
+inline bool guard_synth_select_0c7a2693(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register X3, Register T0, Register T1) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_select_0c7a2693\n");
+  unsigned W[7];
+  if (!getScalarWidths(MRI, {X0, X1, X2, X3, T0, T1, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][7] = {{1, 8, 8, 8, 8, 8, 8}, {1, 16, 16, 16, 16, 16, 16}, {1, 32, 32, 32, 32, 32, 32}, {1, 64, 64, 64, 64, 64, 64}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  bool Pass = true;
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_select_0c7a2693\n");
+  return true;
+}
+
 /// (G_XOR:s32 (G_AND:s32 x0 x1) (G_AND:s32 x0 x2)) -> (G_AND:s32 (G_XOR:s32 x1 x2) x0)
 /// if true
 /// Proved for widths (x0, x1, x2, t0, t1, root): 8,8,8,8,8,8; 16,16,16,16,16,16; 32,32,32,32,32,32; 64,64,64,64,64,64.
@@ -403,6 +589,134 @@ inline bool guard_synth_xor_70267483(const MachineRegisterInfo &MRI, GISelValueT
   return true;
 }
 
+/// (G_AND:s16 (G_TRUNC:s16 x0) (G_XOR:s16 (G_TRUNC:s16 x1) x2)) -> (G_TRUNC:s16 (G_AND:s32 (G_XOR:s32 -1:s32 x1) x0))
+/// if all(KO(x2))
+/// Proved for widths (x0, x1, x2, t0, t1, t2, root): 16,16,8,8,8,8,8; 32,32,8,8,8,8,8; 32,32,16,16,16,16,16.
+inline bool guard_synth_and_dd9a6636(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0, Register T1, Register T2) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_and_dd9a6636\n");
+  unsigned W[7];
+  if (!getScalarWidths(MRI, {X0, X1, X2, T0, T1, T2, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][7] = {{16, 16, 8, 8, 8, 8, 8}, {32, 32, 8, 8, 8, 8, 8}, {32, 32, 16, 16, 16, 16, 16}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!VT)
+    return false;
+  KnownBits K2 = VT->getKnownBits(X2);
+  bool Pass = K2.One.isAllOnes();
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_and_dd9a6636\n");
+  return true;
+}
+
+/// (G_ICMP:eq:s1 (G_ADD:s27 (G_MUL:s27 x0 x1) x2) x3) -> (G_ICMP:eq:s1 x2 (G_MUL:s27 (G_SUB:s27 x3 x0) x1))
+/// if all(KZ(x3))
+/// Proved for widths (x0, x1, x2, x3, t0, t1, root): 8,8,8,8,8,8,1; 13,13,13,13,13,13,1; 16,16,16,16,16,16,1; 27,27,27,27,27,27,1; 32,32,32,32,32,32,1; 64,64,64,64,64,64,1.
+inline bool guard_synth_icmp_7274715e(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register X3, Register T0, Register T1) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_icmp_7274715e\n");
+  unsigned W[7];
+  if (!getScalarWidths(MRI, {X0, X1, X2, X3, T0, T1, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][7] = {{8, 8, 8, 8, 8, 8, 1}, {13, 13, 13, 13, 13, 13, 1}, {16, 16, 16, 16, 16, 16, 1}, {27, 27, 27, 27, 27, 27, 1}, {32, 32, 32, 32, 32, 32, 1}, {64, 64, 64, 64, 64, 64, 1}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  // The variables that the rule matches as constants, and the conditions
+  // on the computed constants of the replacement.
+  std::optional<APInt> OptC0 = getIConstantVRegVal(X0, MRI);
+  if (!OptC0)
+    return false;
+  [[maybe_unused]] const APInt &C0 = *OptC0;
+  std::optional<APInt> OptC3 = getIConstantVRegVal(X3, MRI);
+  if (!OptC3)
+    return false;
+  [[maybe_unused]] const APInt &C3 = *OptC3;
+  if (!VT)
+    return false;
+  KnownBits K3 = VT->getKnownBits(X3);
+  bool Pass = K3.Zero.isAllOnes();
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_icmp_7274715e\n");
+  return true;
+}
+
+/// Builds (G_ICMP:eq:s1 x2 (G_MUL:s27 (G_SUB:s27 x3 x0) x1)).
+inline void apply_synth_icmp_7274715e(MachineIRBuilder &B, MachineInstr &Root, Register Dst, Register X0, Register X1, Register X2, Register X3, Register T0, Register T1) {
+  [[maybe_unused]] MachineRegisterInfo &MRI = *B.getMRI();
+  B.setInstrAndDebugLoc(Root);
+  APInt C0 = *getIConstantVRegVal(X0, MRI);
+  APInt C3 = *getIConstantVRegVal(X3, MRI);
+  auto N0 = B.buildConstant(MRI.getType(X0), (C3 - C0));
+  auto N1 = B.buildInstr(TargetOpcode::G_MUL, {MRI.getType(X0)}, {N0.getReg(0), X1});
+  auto N2 = B.buildICmp(CmpInst::ICMP_EQ, Dst, X2, N1.getReg(0));
+  Root.eraseFromParent();
+}
+
+/// (G_ICMP:ne:s1 (G_ADD:s4 (G_MUL:s4 x0 x1) x2) x3) -> (G_ICMP:ne:s1 x2 (G_MUL:s4 (G_SUB:s4 x3 x0) x1))
+/// if all(KZ(x3))
+/// Proved for widths (x0, x1, x2, x3, t0, t1, root): 4,4,4,4,4,4,1; 8,8,8,8,8,8,1; 16,16,16,16,16,16,1; 32,32,32,32,32,32,1; 64,64,64,64,64,64,1.
+inline bool guard_synth_icmp_8f303343(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register X3, Register T0, Register T1) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_icmp_8f303343\n");
+  unsigned W[7];
+  if (!getScalarWidths(MRI, {X0, X1, X2, X3, T0, T1, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][7] = {{4, 4, 4, 4, 4, 4, 1}, {8, 8, 8, 8, 8, 8, 1}, {16, 16, 16, 16, 16, 16, 1}, {32, 32, 32, 32, 32, 32, 1}, {64, 64, 64, 64, 64, 64, 1}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  // The variables that the rule matches as constants, and the conditions
+  // on the computed constants of the replacement.
+  std::optional<APInt> OptC0 = getIConstantVRegVal(X0, MRI);
+  if (!OptC0)
+    return false;
+  [[maybe_unused]] const APInt &C0 = *OptC0;
+  std::optional<APInt> OptC3 = getIConstantVRegVal(X3, MRI);
+  if (!OptC3)
+    return false;
+  [[maybe_unused]] const APInt &C3 = *OptC3;
+  if (!VT)
+    return false;
+  KnownBits K3 = VT->getKnownBits(X3);
+  bool Pass = K3.Zero.isAllOnes();
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_icmp_8f303343\n");
+  return true;
+}
+
+/// Builds (G_ICMP:ne:s1 x2 (G_MUL:s4 (G_SUB:s4 x3 x0) x1)).
+inline void apply_synth_icmp_8f303343(MachineIRBuilder &B, MachineInstr &Root, Register Dst, Register X0, Register X1, Register X2, Register X3, Register T0, Register T1) {
+  [[maybe_unused]] MachineRegisterInfo &MRI = *B.getMRI();
+  B.setInstrAndDebugLoc(Root);
+  APInt C0 = *getIConstantVRegVal(X0, MRI);
+  APInt C3 = *getIConstantVRegVal(X3, MRI);
+  auto N0 = B.buildConstant(MRI.getType(X0), (C3 - C0));
+  auto N1 = B.buildInstr(TargetOpcode::G_MUL, {MRI.getType(X0)}, {N0.getReg(0), X1});
+  auto N2 = B.buildICmp(CmpInst::ICMP_NE, Dst, X2, N1.getReg(0));
+  Root.eraseFromParent();
+}
+
+/// (G_OR:s16 (G_TRUNC:s16 x0) (G_XOR:s16 (G_TRUNC:s16 x1) x2)) -> (G_TRUNC:s16 (G_OR:s32 (G_XOR:s32 -1:s32 x1) x0))
+/// if all(KO(x2))
+/// Proved for widths (x0, x1, x2, t0, t1, t2, root): 16,16,8,8,8,8,8; 32,32,8,8,8,8,8; 32,32,16,16,16,16,16.
+inline bool guard_synth_or_2a6976e5(const MachineRegisterInfo &MRI, GISelValueTracking *VT, Register Dst, Register X0, Register X1, Register X2, Register T0, Register T1, Register T2) {
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: matched: synth_or_2a6976e5\n");
+  unsigned W[7];
+  if (!getScalarWidths(MRI, {X0, X1, X2, T0, T1, T2, Dst}, W))
+    return false;
+  static constexpr uint16_t V0[][7] = {{16, 16, 8, 8, 8, 8, 8}, {32, 32, 8, 8, 8, 8, 8}, {32, 32, 16, 16, 16, 16, 16}};
+  if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!VT)
+    return false;
+  KnownBits K2 = VT->getKnownBits(X2);
+  bool Pass = K2.One.isAllOnes();
+  if (!Pass)
+    return false;
+  DEBUG_WITH_TYPE("gisel-synth", dbgs() << "gisel-synth: guard passed: synth_or_2a6976e5\n");
+  return true;
+}
+
 /// Records of the rules selected for AArch64, for enabling them as a group.
 [[maybe_unused]] inline constexpr const char *SynthRuleNamesAArch64[] = {
     "synth_xor_66308b8b",
@@ -416,14 +730,27 @@ inline bool guard_synth_xor_70267483(const MachineRegisterInfo &MRI, GISelValueT
     "synth_and_83abd1ae_1u",
     "synth_and_83abd1ae_1u_c1",
     "synth_lshr_c497647d",
+    "synth_select_4cdb868a",
+    "synth_select_4cdb868a_c1",
+    "synth_select_4f35dc63",
+    "synth_select_4f35dc63_c1",
     "synth_shl_a7bba6d0_1u",
     "synth_shl_edbd16af_1u",
     "synth_shl_edbd16af_1u_c1",
-    "synth_trunc_110bd23a_1u",
+    "synth_smax_d4d1ff0e_1u",
+    "synth_smax_d4d1ff0e_1u_c1",
     "synth_or_ecb7e28d",
     "synth_or_ecb7e28d_c1",
     "synth_or_ecb7e28d_c2",
     "synth_or_ecb7e28d_c3",
+    "synth_icmp_7274715e",
+    "synth_icmp_7274715e_c1",
+    "synth_icmp_7274715e_c2",
+    "synth_icmp_7274715e_c3",
+    "synth_icmp_8f303343",
+    "synth_icmp_8f303343_c1",
+    "synth_icmp_8f303343_c2",
+    "synth_icmp_8f303343_c3",
 };
 
 /// Records of the rules selected for AMDGPU, for enabling them as a group.
@@ -454,6 +781,10 @@ inline bool guard_synth_xor_70267483(const MachineRegisterInfo &MRI, GISelValueT
     "synth_and_b1e9087f_1u_c1",
     "synth_and_d05a2340_1u",
     "synth_and_d05a2340_1u_c1",
+    "synth_icmp_482ffe70_1u",
+    "synth_icmp_df1ee794_1u",
+    "synth_icmp_fa5e7560_1u",
+    "synth_icmp_fa5e7560_1u_c1",
     "synth_lshr_c497647d",
     "synth_or_9c2e7958",
     "synth_or_9c2e7958_c1",
@@ -463,6 +794,10 @@ inline bool guard_synth_xor_70267483(const MachineRegisterInfo &MRI, GISelValueT
     "synth_or_d4ad0f19_1u_c1",
     "synth_or_d4ad0f19_1u_c2",
     "synth_or_d4ad0f19_1u_c3",
+    "synth_select_4cdb868a_1u",
+    "synth_select_4cdb868a_1u_c1",
+    "synth_select_4f35dc63_1u",
+    "synth_select_4f35dc63_1u_c1",
     "synth_shl_a7bba6d0_1u",
     "synth_trunc_110bd23a_1u",
     "synth_zext_a25c36b8_1u",
@@ -479,10 +814,22 @@ inline bool guard_synth_xor_70267483(const MachineRegisterInfo &MRI, GISelValueT
     "synth_or_ecb7e28d_c1",
     "synth_or_ecb7e28d_c2",
     "synth_or_ecb7e28d_c3",
+    "synth_select_0c7a2693",
+    "synth_select_0c7a2693_c1",
+    "synth_select_0c7a2693_c2",
+    "synth_select_0c7a2693_c3",
     "synth_xor_70267483",
     "synth_xor_70267483_c1",
     "synth_xor_70267483_c2",
     "synth_xor_70267483_c3",
+    "synth_and_dd9a6636",
+    "synth_and_dd9a6636_c1",
+    "synth_and_dd9a6636_c2",
+    "synth_and_dd9a6636_c3",
+    "synth_or_2a6976e5",
+    "synth_or_2a6976e5_c1",
+    "synth_or_2a6976e5_c2",
+    "synth_or_2a6976e5_c3",
 };
 
 // clang-format on

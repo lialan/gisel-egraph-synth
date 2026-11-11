@@ -17,8 +17,11 @@ PROFILE_DIR = os.path.join(HERE, 'targets')
 class Target:
     def __init__(self, name, triple_flags, combiner, enable_flag,
                  corpus_flag, arg32, arg64, ret, insn_regex,
-                 native_bits=32):
+                 native_bits=32, egraph_flag=None):
         self.name = name
+        # llc flag that adds the e-graph combiner to the pipeline, or None:
+        # then it runs on the MIR after the pre-legalizer combiner.
+        self.egraph_flag = egraph_flag
         # The width of the smallest register of the target's integer
         # operations. An operation on a narrower type is done in a register
         # of this width, so a rule that moves an operation to a wider type
@@ -52,7 +55,7 @@ TARGETS = {
         lambda n: '$vgpr%d' % n,
         lambda n: '$vgpr%d_vgpr%d' % (n, n + 1),
         lambda r: 'SI_RETURN implicit %s' % r,
-        r'^\s+[sv]_[a-z0-9_]+'),
+        r'^\s+[sv]_[a-z0-9_]+', egraph_flag='-amdgpu-gisel-egraph'),
     'AArch64': Target(
         'AArch64', ['-mtriple=aarch64'],
         'aarch64-prelegalizer-combiner', '-aarch64-gisel-synth-combines',

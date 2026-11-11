@@ -107,11 +107,169 @@ def cmd_extract(args):
     print('extract: %d files written, %d failed (skipped)' % (ok, fail))
 
 
+# ------------------------------------------------------ egraph-export ---
+
+def _egraph_export_one(llc, path, out_dir, kind, target, stages):
+    """Runs the e-graph combiner in shadow mode (it does not change the
+    MIR) and writes its candidates for ``path``."""
+    h = hashlib.sha256(os.path.abspath(path).encode()).hexdigest()[:10]
+    out = os.path.join(out_dir, '%s.%s.jsonl' % (os.path.basename(path), h))
+    if os.path.exists(out):
+        os.remove(out)
+    tail = ['-gisel-egraph-export=' + out, '-gisel-egraph-mode=shadow',
+            '-gisel-egraph-stages=' + stages]
+    run_pass = [llc] + target.triple_flags + \
+        ['-run-pass=gisel-egraph-combiner']
+    quiet = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                 timeout=EXTRACT_TIMEOUT)
+    try:
+        if kind == 'mir':
+            rc = subprocess.run(run_pass + [path, '-o', os.devnull] + tail,
+                                **quiet).returncode
+        elif target.egraph_flag:
+            rc = subprocess.run([llc] + target.ll_flags +
+                                [target.egraph_flag, path, '-o', os.devnull]
+                                + tail, **quiet).returncode
+        else:
+            # The pass is not in this target's pipeline: run it on the MIR
+            # after the pre-legalizer combiner.
+            p1 = subprocess.run([llc] + target.ll_flags +
+                                ['-stop-after=' + target.combiner, path,
+                                 '-o', '-'], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL,
+                                timeout=EXTRACT_TIMEOUT)
+            rc = p1.returncode
+            if rc == 0:
+                rc = subprocess.run(run_pass + ['-x', 'mir', '-', '-o',
+                                                os.devnull] + tail,
+                                    input=p1.stdout, **quiet).returncode
+    except subprocess.TimeoutExpired:
+        rc = -1
+    if rc != 0:
+        if os.path.exists(out):
+            os.remove(out)
+        return path, None, 0
+    if not os.path.exists(out):
+        return path, out, 0   # no region with a cheaper form
+    with open(out) as f:
+        return path, out, sum(1 for _ in f)
+
+
+def cmd_egraph_export(args):
+    from girs import targets
+    target = targets.get(args.target)
+    os.makedirs(args.o, exist_ok=True)
+    jobs = [(p, 'mir') for p in args.mir] + [(p, 'll') for p in args.ll]
+    if args.ll_list:
+        with open(args.ll_list) as f:
+            jobs += [(l.strip(), 'll') for l in f if l.strip()]
+    ok = fail = recs = 0
+    with concurrent.futures.ThreadPoolExecutor(args.j) as ex:
+        futs = [ex.submit(_egraph_export_one, args.llc, p, args.o, k, target,
+                          args.stages) for p, k in jobs]
+        for fu in concurrent.futures.as_completed(futs):
+            _, out, n = fu.result()
+            if out:
+                ok += 1
+                recs += n
+            else:
+                fail += 1
+    print('egraph-export: %d files compiled, %d failed (skipped), %d '
+          'regions with a cheaper form' % (ok, fail, recs))
+
+
+# ---------------------------------------------------------- operators ---
+
+def cmd_capabilities(args):
+    """Prints the capability matrix: per operator, the pipeline stages
+    that support it and the reason for each stage that does not."""
+    from girs import ops
+    rows = ops.capability_matrix()
+    if args.json:
+        json.dump(rows, sys.stdout, indent=1)
+        print()
+        return 0
+    short = {'yes': 'yes', 'enumerative+egraph': 'enum+egraph',
+             'egraph': 'egraph'}
+    print('| Operator | Shape | ' + ' | '.join(
+        s.capitalize() for s in ops.STAGES) + ' |')
+    print('|---|---|' + '---|' * len(ops.STAGES))
+    notes = {}
+    for r in rows:
+        cells = []
+        for st in ops.STAGES:
+            v = r[st]
+            if v in short:
+                cells.append(short[v])
+            else:
+                k = notes.setdefault(v, len(notes) + 1)
+                cells.append('no [%d]' % k)
+        print('| %s | %s | %s |' % (r['name'], r['shape'], ' | '.join(cells)))
+    print()
+    for v, k in sorted(notes.items(), key=lambda x: x[1]):
+        print('[%d] %s' % (k, v))
+    print()
+    for st in ops.STAGES:
+        n = sum(1 for r in rows if r[st] in short)
+        print('%s: %d of %d operators' % (st, n, len(rows)))
+    return 0
+
+
+def cmd_check_ops(args):
+    """Compares the concrete evaluator with the SMT encoding and, with
+    --llc, both with the constant folding of the compiler; with
+    --update, writes the operator table of the compiler to
+    girs/gmir_ops.json."""
+    from girs import opcheck, ops, targets
+    rc = 0
+    n, bad = opcheck.check_models(samples=args.samples, seed=args.seed)
+    print('check-ops: evaluator against SMT encoding: %d comparisons, %d '
+          'mismatches' % (n, len(bad)))
+    for b in bad[:20]:
+        print('  %s w=%d ws=%s operands=%s: evaluator %r, SMT %r' % b)
+    rc |= bool(bad)
+    if args.llc:
+        target = targets.get('AMDGPU')
+        mir = ('---\nname: f\nbody: |\n  bb.0:\n    %0:_(s32) = '
+               'G_IMPLICIT_DEF\n...\n')
+        cmd = [args.llc] + target.triple_flags + [
+            '-x', 'mir', '-run-pass=gisel-egraph-combiner',
+            '-gisel-egraph-print-ops', '-o', os.devnull, '-']
+        meta = subprocess.run(cmd, input=mir.encode(),
+                              stdout=subprocess.PIPE, check=True).stdout
+        path = os.path.join(HERE, 'girs', 'gmir_ops.json')
+        if args.update:
+            with open(path, 'wb') as f:
+                f.write(meta)
+            print('check-ops: wrote %s' % path)
+        elif open(path, 'rb').read() != meta:
+            print('check-ops: girs/gmir_ops.json is not the operator table '
+                  'of this compiler (run check-ops --llc ... --update)')
+            rc = 1
+        else:
+            print('check-ops: girs/gmir_ops.json is the operator table of '
+                  'this compiler')
+        table = json.loads(subprocess.run(
+            cmd + ['-gisel-egraph-print-op-samples'], input=mir.encode(),
+            stdout=subprocess.PIPE, check=True).stdout)
+        n, bad, skipped = opcheck.check_llvm(table)
+        print('check-ops: evaluator against the constant folding of the '
+              'compiler: %d comparisons, %d mismatches' % (n, len(bad)))
+        for b in bad[:20]:
+            print('  %s w=%d ws=%s operands=%s: evaluator %r, compiler %r'
+                  % b)
+        if skipped:
+            print('  no fold function in the compiler (not compared): %s' %
+                  ', '.join(skipped))
+        rc |= bool(bad)
+    return rc
+
+
 # -------------------------------------------------------------- synth ---
 
 # The version of the generator. Increase it when a change to the tool can
 # change the rules it writes.
-GENERATOR_VERSION = '1.6'
+GENERATOR_VERSION = '2.0'
 
 
 def _git(*args):
@@ -164,8 +322,22 @@ def _sha(files):
     return h.hexdigest()
 
 
+def _record_emission(rules):
+    """Sets rule['emission'] to 'yes' or to the reason why the emitter
+    cannot write the rule (the rule stays in the library as a verified
+    opportunity). Returns discovery source -> {'yes' | reason: rules}."""
+    from girs import emit
+    out = {}
+    for r in rules:
+        r['emission'] = emit.why_not_emittable(r) or 'yes'
+        src = '+'.join(r['provenance']['sources'])
+        by = out.setdefault(src, {})
+        by[r['emission']] = by.get(r['emission'], 0) + 1
+    return out
+
+
 def cmd_synth(args):
-    from girs import compose, corpus, discover, ir, smt, synth
+    from girs import compose, corpus, discover, egraph, ir, smt, synth
 
     t0 = time.monotonic()
     files = _corpus_files(args.corpus)
@@ -199,6 +371,44 @@ def cmd_synth(args):
         t_synth += time.monotonic() - ts
     seconds['discovery'] = round(time.monotonic() - t - t_synth, 2)
     seconds['generalization'] = round(t_synth, 2)
+
+    # The second candidate source: the rewrites of the e-graph combiner.
+    # A candidate goes through the same generalization and proofs.
+    efiles = egraph.export_files(args.egraph or [])
+    einsts, estats = [], {}
+    if efiles:
+        t = time.monotonic()
+        imp = egraph.Importer(backend, egraph.Limits(
+            max_cost=args.egraph_max_cost))
+        for f in efiles:
+            imp.add_file(f)
+        before = set(sy.rules)
+        hit = set()
+        cands = imp.candidates()
+        generalized = 0
+        done = set()
+        for c in cands:
+            # The first recipe of a computed constant that is proved.
+            gkey = (ir.to_sexpr(c.inst.expr), c.group) if c.group else None
+            if gkey in done:
+                continue
+            rid = sy.add(c.inst, c.tgt, provenance={
+                'discovery': 'egraph', 'egraph_rules': c.rules,
+                'egraph_refinement': c.refinement})
+            if rid:
+                hit.add(rid)
+                generalized += 1
+                if gkey:
+                    done.add(gkey)
+        einsts = [c.inst for c in cands]
+        estats = dict(imp.stats)
+        estats.update({
+            'files': len(efiles), 'sha256': _sha(efiles),
+            'generalized_candidates': generalized,
+            'rules': len(hit), 'new_rules': len(set(sy.rules) - before),
+            'rules_also_enumerative': len(hit & before),
+            'rejected_examples': imp.rejected_examples})
+        seconds['egraph_import'] = round(time.monotonic() - t, 2)
 
     # Composition: verified rules as rewrite steps on deeper corpus trees.
     cfiles = _corpus_files(args.compose_corpus or [])
@@ -244,14 +454,19 @@ def cmd_synth(args):
 
     t = time.monotonic()
     known = {i.key() for i in insts}
-    fstats = sy.finalize(insts + [i for i in cinsts
-                                  if i.key() not in known])
+    extra = []
+    for i in cinsts + einsts:
+        if i.key() not in known:
+            known.add(i.key())
+            extra.append(i)
+    fstats = sy.finalize(insts + extra)
     seconds['selection_of_disjuncts'] = round(time.monotonic() - t, 2)
 
     rules = [synth.strip_private(sy.rules[rid]) for rid in sorted(sy.rules)]
     for r in rules:
         r['support']['examples'].sort(key=lambda e: (e['file'], e['fn'],
                                                      e['root']))
+    emission = _record_emission(rules)
     rejected = sorted((synth.strip_private(r)
                        for r in sy.rejected.values()),
                       key=lambda r: (r['source'], r['replacement']))
@@ -284,16 +499,19 @@ def cmd_synth(args):
              'solver_calls': backend.calls,
              'solver_seconds': round(backend.seconds, 2),
              'discovery': dstats, 'enumeration': ctx.stats(),
-             'composition': pstats, 'synthesis': sy.stats,
+             'composition': pstats, 'egraph': estats,
+             'synthesis': sy.stats, 'emission': emission,
              'disjuncts': fstats, 'rules_by_class': by_class,
              'corpus': cstats}
     with open(args.stats or os.path.splitext(args.o)[0] + '.stats.json',
               'w') as f:
         json.dump(stats, f, indent=1, sort_keys=True)
         f.write('\n')
-    print('synth: %d instances, %d discoveries, %d compositions -> %d rules '
-          '(%s), %d rejected (%.1fs, %d solver calls)' %
-          (len(insts), dstats['candidates'], pstats['proved'], len(rules),
+    print('synth: %d instances, %d discoveries, %d compositions, %d e-graph '
+          'candidates -> %d rules (%s), %d rejected (%.1fs, %d solver '
+          'calls)' %
+          (len(insts), dstats['candidates'], pstats['proved'],
+           estats.get('distinct', 0), len(rules),
            ', '.join('%d %s' % (n, c) for c, n in sorted(by_class.items())),
            len(rejected), time.monotonic() - t0, backend.calls))
 
@@ -352,8 +570,9 @@ def cmd_recheck(args):
     for r in db['rules']:
         src = ir.from_json(r['source_json'])
         tgt = ir.from_json(r['replacement_json'])
+        cv = tuple(r.get('const_vars', ()))
         ok = (set(ir.variables(tgt)) <= set(ir.variables(src)) and
-              ir.is_linear(tgt))
+              ir.is_linear_in(tgt, cv))
         status = 'valid' if ok else 'structural'
         checks = []
         for d in r['disjuncts'] + r.get('unselected_disjuncts', []):
@@ -370,7 +589,7 @@ def cmd_recheck(args):
                 break
             n += 1
             status, _ = synth.verify(synth.rule_schedules(r, wmaps), dnf,
-                                     backend)
+                                     backend, cv)
         if status != 'valid':
             bad += 1
             print('FAIL %s: %s' % (r['id'], status))
@@ -506,10 +725,45 @@ def main():
                    help='deeper corpus (extract --depth 3) for rule '
                    'composition and coverage')
     p.add_argument('--compose-steps', type=int, default=3)
+    p.add_argument('--egraph', nargs='*', default=[],
+                   help='files or directories written by egraph-export: '
+                   'the rewrites of the e-graph combiner are a second '
+                   'source of candidates')
+    p.add_argument('--egraph-max-cost', type=int, default=8,
+                   help='largest source (operations) of an e-graph '
+                   'candidate')
     p.add_argument('--compose-axioms', action='store_true',
                    help='also use equal-cost reassociation identities as '
                    'composition steps')
     p.set_defaults(fn=cmd_synth)
+
+    p = sub.add_parser('egraph-export', help='write the candidates of the '
+                       'e-graph combiner with llc')
+    p.add_argument('--llc', required=True)
+    p.add_argument('-o', required=True, help='output directory')
+    p.add_argument('--mir', nargs='*', default=[])
+    p.add_argument('--ll', nargs='*', default=[])
+    p.add_argument('--ll-list', help='file with one .ll path per line')
+    p.add_argument('-j', type=int, default=os.cpu_count())
+    p.add_argument('--target', default='AMDGPU')
+    p.add_argument('--stages', default='pre-legalizer',
+                   choices=['pre-legalizer', 'post-legalizer', 'both'],
+                   help='the positions of the pass that write candidates '
+                   '(the synthesized rules run before the legalizer)')
+    p.set_defaults(fn=cmd_egraph_export)
+
+    p = sub.add_parser('capabilities', help='print the capability matrix '
+                       'of the operators')
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(fn=cmd_capabilities)
+
+    p = sub.add_parser('check-ops', help='compare the operator models with '
+                       'each other and with the compiler')
+    p.add_argument('--llc')
+    p.add_argument('--update', action='store_true')
+    p.add_argument('--samples', type=int, default=40)
+    p.add_argument('--seed', type=int, default=0)
+    p.set_defaults(fn=cmd_check_ops)
 
     p = sub.add_parser('emit', help='generate TableGen and C++')
     p.add_argument('db', nargs='?', default=DEFAULT_DB)

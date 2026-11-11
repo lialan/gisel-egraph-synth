@@ -40,6 +40,7 @@ import itertools
 import os
 
 from . import ir
+from . import ops
 from . import precond
 from . import smt
 
@@ -65,8 +66,8 @@ def normalize_commutative(e):
     if not ir.is_op(e):
         return e
     args = tuple(normalize_commutative(a) for a in e[2:])
-    if e[0] in ir.COMMUTATIVE:
-        args = tuple(sorted(args, key=ir.to_sexpr))
+    if ir.is_commutative(e[0]):
+        args = tuple(sorted(args[:2], key=ir.to_sexpr)) + args[2:]
     return e[:2] + args
 
 
@@ -82,11 +83,11 @@ def widens_operation(src, tgt):
 def widened_width(src, tgt):
     """The width of the widest non-cast operation of the replacement, if
     it is wider than every non-cast operation of the source; else 0."""
-    def ops(e):
+    def non_casts(e):
         return [n for n in [e] + ir.interior_nodes(e)
-                if ir.is_op(n) and n[0] not in ir.CASTS]
-    sw = max([n[1] for n in ops(src)] or [0])
-    tw = max([n[1] for n in ops(tgt)] or [0])
+                if ir.is_op(n) and ops.parse(n[0])[0].shape != 'cast']
+    sw = max([n[1] for n in non_casts(src)] or [0])
+    tw = max([n[1] for n in non_casts(tgt)] or [0])
     return tw if tw > sw else 0
 
 
@@ -120,13 +121,14 @@ def all_widths(src, tgt, vw):
     return sorted(ws)
 
 
-def class_key(src, tgt, vw):
+def class_key(src, tgt, vw, const_vars=()):
     """Width-independent key of a canonical (src, tgt) pair."""
     ws = all_widths(src, tgt, vw)
     cls = {w: 1000 + i for i, w in enumerate(ws)}
-    return (ir.to_sexpr(ir.map_widths(src, cls)),
-            ir.to_sexpr(ir.map_widths(tgt, cls)),
-            tuple(cls[w] for w in vw))
+    key = (ir.to_sexpr(ir.map_widths(src, cls)),
+           ir.to_sexpr(ir.map_widths(tgt, cls)),
+           tuple(cls[w] for w in vw))
+    return key + (tuple(const_vars),) if const_vars else key
 
 
 def schedules(src, tgt, vw, limits, first=None):
@@ -159,14 +161,15 @@ def _facts_from_model(vals, n):
     return tuple(zip(kz, ko))
 
 
-def verify(sched, dnf, backend):
+def verify(sched, dnf, backend, const_vars=()):
     """Proves (p1 || p2 || ...) => (tgt refines src) for every schedule;
-    ``dnf`` is a list of conjunctions. Returns ('valid', proofs) |
-    ('invalid', (vw, facts, root width)) | ('unknown', None)."""
+    ``dnf`` is a list of conjunctions. ``const_vars`` are the variables
+    that are constants (their known bits are exact). Returns ('valid',
+    proofs) | ('invalid', (vw, facts, root width)) | ('unknown', None)."""
     assert dnf, 'an empty disjunction is false and proves nothing'
     proofs = []
     for s, t, v, wmap in sched:
-        enc = smt.Encoder(v, s[1])
+        enc = smt.Encoder(v, s[1], const_vars)
         f = smt.refinement_violation(enc, s, t, precond.z3_dnf(dnf, enc))
         r = backend.check(f, want_model_of=enc.model_terms())
         if r.status == 'sat':
@@ -181,7 +184,7 @@ def verify(sched, dnf, backend):
 
 
 def synthesize_precondition(src, tgt, vw, facts, sched, backend, limits,
-                            pool=None, fvw=None, frw=None):
+                            pool=None, fvw=None, frw=None, const_vars=()):
     """CEGIS over the precondition grammar. Returns (valid, stats) where
     valid lists every minimal valid conjunction as (pred, proofs), smallest
     first. ``pool`` is the counterexample pool of the rule class; it is
@@ -211,7 +214,7 @@ def synthesize_precondition(src, tgt, vw, facts, sched, backend, limits,
             if any(precond.eval_pred(p, f, v, r) for v, f, r in pool):
                 stats['pruned_by_cex'] += 1
                 continue
-            status, info = verify(sched, [p], backend)
+            status, info = verify(sched, [p], backend, const_vars)
             if status == 'invalid':
                 pool.append(info)
                 stats['counterexamples'] += 1
@@ -249,9 +252,10 @@ def weakest(valid, vw, backend, rw=None):
 
 # ------------------------------------------------------------- rules ---
 
-def rule_id(src, tgt, vw):
-    h = hashlib.sha256(repr(class_key(src, tgt, vw)).encode()).hexdigest()
-    return 'synth_%s_%s' % (src[0][2:].lower(), h[:8])
+def rule_id(src, tgt, vw, const_vars=()):
+    h = hashlib.sha256(repr(class_key(src, tgt, vw, const_vars))
+                       .encode()).hexdigest()
+    return 'synth_%s_%s' % (ops.base(src[0])[2:].lower(), h[:8])
 
 
 def save_proofs(proofs, proof_dir):
@@ -290,10 +294,17 @@ def rule_schedules(rule, maps):
     return out
 
 
-def rule_class(src, tgt):
+def _source_of(provenance):
+    """The engine that proposed a discovery: 'enumerative', 'composition'
+    or 'egraph'."""
+    d = (provenance or {}).get('discovery', 'enumerative')
+    return d if d in ('composition', 'egraph') else 'enumerative'
+
+
+def rule_class(src, tgt, const_vars=()):
     if widens_operation(src, tgt):
         return 'widens_operation'
-    if ir.cost(tgt) >= ir.cost(src):
+    if ir.rule_cost(tgt, const_vars) >= ir.cost(src):
         return 'equal_cost'
     return 'reduces_cost'
 
@@ -371,11 +382,13 @@ class Synthesizer:
         self.stats['discoveries'] += 1
         src, tgt, vw, facts, perm = canonicalize(inst.expr, tgt, inst.vw,
                                                  inst.facts)
+        cv = tuple(sorted(new for new, old in enumerate(perm)
+                          if old in inst.const_vars))
         # Structural soundness conditions of the refinement argument
         # (README.md, "Semantic model").
         assert set(ir.variables(tgt)) <= set(ir.variables(src))
-        assert ir.is_linear(tgt)
-        key = class_key(src, tgt, vw)
+        assert ir.is_linear_in(tgt, cv)
+        key = class_key(src, tgt, vw, cv)
         rw = src[1]
         rule = self.rules.get(self.by_key.get(key))
         rej = self.rejected.get(key)
@@ -388,6 +401,10 @@ class Synthesizer:
             psrc = ir.from_json(rule['source_json'])
             ptgt = ir.from_json(rule['replacement_json'])
             pvw = tuple(rule['vw'])
+            source = _source_of(provenance)
+            if source not in rule['provenance']['sources']:
+                rule['provenance']['sources'] = sorted(
+                    rule['provenance']['sources'] + [source])
             if provenance and provenance['discovery'] not in \
                     rule['provenance']['discovery']:
                 rule['provenance']['discovery'] += '+' + \
@@ -409,7 +426,7 @@ class Synthesizer:
                     # Same rule at widths not proved yet: prove them.
                     st, proofs = verify(
                         rule_schedules(rule, [sorted(first.items())]),
-                        [d['_pred']], self.backend)
+                        [d['_pred']], self.backend, cv)
                     if st != 'valid':
                         continue
                     self._add_disjunct(rule, d['_pred'], proofs)
@@ -422,14 +439,15 @@ class Synthesizer:
         sched = schedules(psrc, ptgt, pvw, self.limits, first)
         valid, st = synthesize_precondition(psrc, ptgt, pvw, facts, sched,
                                             self.backend, self.limits, pool,
-                                            vw, rw)
+                                            vw, rw, cv)
         if not valid and len(sched) > 1 and not st['unknown']:
             # Some identities only hold at the training widths (e.g.
             # xor == add for s1). Retry with the training schedule alone;
             # the guard then only accepts those widths.
             valid, st2 = synthesize_precondition(psrc, ptgt, pvw, facts,
                                                  sched[:1], self.backend,
-                                                 self.limits, None, vw, rw)
+                                                 self.limits, None, vw, rw,
+                                                 cv)
             st = {k: st.get(k, 0) + st2.get(k, 0) for k in set(st) | set(st2)
                   if isinstance(st.get(k, st2.get(k)), int)}
         if not valid:
@@ -455,7 +473,8 @@ class Synthesizer:
             if rej is not None:
                 del self.rejected[key]
                 self.stats['rejected'] -= 1
-            rule = self._new_rule(src, tgt, vw, key, st, pool, provenance)
+            rule = self._new_rule(src, tgt, vw, key, st, pool, provenance,
+                                  cv)
         best = weakest(valid, vw, self.backend, rw)
         first_d = None
         for pred, proofs in best:
@@ -464,8 +483,8 @@ class Synthesizer:
         self._support(rule, first_d, inst, perm, facts, vw)
         return rule['id']
 
-    def _new_rule(self, src, tgt, vw, key, st, pool, provenance):
-        rid = rule_id(src, tgt, vw)
+    def _new_rule(self, src, tgt, vw, key, st, pool, provenance, cv=()):
+        rid = rule_id(src, tgt, vw, cv)
         assert rid not in self.rules
         self.stats['generalized'] += 1
         rule = {
@@ -476,12 +495,13 @@ class Synthesizer:
             'replacement_json': ir.to_json(tgt),
             'vw': list(vw),
             'disjuncts': [],
-            'class': rule_class(src, tgt),
-            'cost': {'source': ir.cost(src), 'replacement': ir.cost(tgt)},
+            'class': rule_class(src, tgt, cv),
+            'cost': {'source': ir.cost(src),
+                     'replacement': ir.rule_cost(tgt, cv)},
             # If the replacement costs no more than the root instruction,
             # the rewrite never increases the instruction count even when
             # the interior instructions stay alive for other users.
-            'needs_one_use': ir.cost(tgt) > ir.OP_COST[src[0]] and
+            'needs_one_use': ir.rule_cost(tgt, cv) > ir.op_cost(src[0]) and
             bool(ir.interior_nodes(src)),
             'widens_operation': widens_operation(src, tgt),
             'semantic_status': {
@@ -494,11 +514,15 @@ class Synthesizer:
             'search': st,
             'provenance': dict(provenance or
                                {'discovery': 'enumerative-fingerprint+smt'},
-                               generalization='symbolic-known-bits'),
+                               generalization='symbolic-known-bits',
+                               sources=[_source_of(provenance)]),
             'support': {'instances': 0, 'occurrences': 0, 'examples': [],
                         'training_constants': {}, 'source_flags': []},
             '_cex': pool,
         }
+        if cv:
+            # The variables that the rule only matches as constants.
+            rule['const_vars'] = list(cv)
         self.rules[rid] = rule
         self.by_key[key] = rid
         return rule
@@ -638,6 +662,10 @@ class Synthesizer:
             sigma = {i: e[1] for i, e in bind.items()}
             if len(set(sigma.values())) != len(sigma):
                 continue
+            # a matches some variables only as constants: b must do so too.
+            if not {sigma[i] for i in a.get('const_vars', ())} <= \
+                    set(b.get('const_vars', ())):
+                continue
             ok = True
             for db in b['disjuncts']:
                 for mb in db['width_maps']:
@@ -677,7 +705,8 @@ class Synthesizer:
             dnf = [d['_pred'] for d in ds
                    if key in {_map_key(m) for m in d['width_maps']}]
             st, proofs = verify(rule_schedules(rule, [maps[key]]), dnf,
-                                self.backend)
+                                self.backend,
+                                tuple(rule.get('const_vars', ())))
             if st != 'valid':
                 raise AssertionError('disjunction of proved disjuncts is '
                                      'not valid: %s' % rule['id'])

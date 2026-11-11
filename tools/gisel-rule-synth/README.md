@@ -44,10 +44,14 @@ $S extract --llc build/bin/llc -o corpus-d3 --ll-list train.txt --depth 3
 $S extract --llc build/bin/llc -o seed-d3 --depth 3 \
     --mir llvm/utils/gisel-rule-synth/corpus/seed.mir
 
+# 1b. Second candidate source: the rewrites that the e-graph combiner
+#     finds on the same files, as JSON lines (one record per region).
+$S egraph-export --llc build/bin/llc -o egraph-train --ll-list train.txt
+
 # 2. Discover, generalize, synthesize preconditions (CEGIS), prove (z3),
 #    compose. Writes rules.json, proofs/*.smt2 and rules.stats.json.
 $S synth corpus-d2 llvm/utils/gisel-rule-synth/corpus/seed.jsonl \
-    --compose-corpus corpus-d3 seed-d3
+    --compose-corpus corpus-d3 seed-d3 --egraph egraph-train
 
 # 3. Select per target. Needs an llc with every candidate compiled in:
 $S emit --all-candidates && ninja -C build llc
@@ -62,6 +66,10 @@ $S emit --check         # fails if the generated files are stale
 
 # Re-prove every rule in the library from its JSON form.
 $S recheck
+
+# The operators: what each stage supports, and the checks of the models.
+$S capabilities                       # one row per operator
+$S check-ops --llc build/bin/llc      # evaluator against SMT and against llc
 ```
 
 Using the generated rules:
@@ -102,6 +110,34 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
    heuristic: the macro rule has its own proof. A step or a result can move
    an operation to a wider type of at most 32 bits (the register width of
    the targets in `girs/targets.py`); a wider operation is never proposed.
+
+4. **E-graph candidates** (`egraph.py`). `llc -gisel-egraph-export=FILE`
+   makes the e-graph combiner write, for each region with a cheaper form,
+   the original expression DAG, the DAG that the extractor selected, the
+   inputs with their known bits and the roots (format version 1, one JSON
+   object per line; the function is not changed). The importer reads each
+   record in three steps. (a) The maximal subterms that the two DAGs have in
+   common become variables. (b) The pair is divided at the operators that
+   did not change, until each part is proved with the known bits of the
+   region. (c) Each subterm of a part becomes a variable if the part is
+   still proved. A part is a *candidate*: it goes through `Synthesizer.add`
+   as an enumerative discovery does (generalization, CEGIS, width schedules,
+   proofs), with the provenance `egraph` and the names of the e-graph rules
+   that fired. The e-graph is not trusted: a candidate that is not proved
+   gives no rule. A rewrite that gives no candidate is counted with its
+   reason in `rules.stats.json` (`egraph.rejected`).
+
+A replacement can have a *computed constant*: a constant that the source
+does not have. The importer looks for a recipe, an expression over the
+constants of the source (`G_ADD`, `G_SUB`, `G_MUL`, `G_AND`, `G_OR`, `G_XOR`
+and the shifts) or the mask of the low bits of a narrower type of the source
+(`G_ZEXT` of the literal -1), and tries at most three recipes. The rule then
+matches the variables of the recipe only as constants (`const_vars`), and
+the proof holds for every value of them. The generated guard reads the
+constants, and it rejects a recipe that is not defined or that gives a shift
+amount that is not smaller than the width; the proof assumes exactly that
+check (`smt.Encoder.recipe_guard`). The apply function computes the constant
+with `APInt`.
 
 Everything is deterministic: every solver check runs in a fresh solver
 context, so `rules.json` and the proof files are byte-identical between runs
@@ -158,6 +194,11 @@ takes its place.
 
 | Path | Contents |
 |---|---|
+| `girs/ops.py` | the operator registry: shape, typing, evaluator and SMT encoding of each generic opcode; `Provider` for target operators |
+| `girs/gmir_ops.json` | typing metadata of the operators, written by `llc -gisel-egraph-print-ops` from the property table of the e-graph |
+| `girs/opcheck.py` | checks of the operator models (evaluator against SMT, evaluator against the folds of llc) |
+| `girs/ir.py` | typed expressions: operators with attributes and result indices, constants, computed constants |
+| `girs/egraph.py` | import of the e-graph export: candidates, recipes of computed constants |
 | `girs/corpus.py` | corpus reader, DAG-aware tree conversion |
 | `girs/discover.py` | term banks, fingerprints, concrete SMT proof |
 | `girs/precond.py` | precondition grammar (eval / z3 / C++), implication |
@@ -174,7 +215,7 @@ takes its place.
 | `targets/*.json` | target profiles |
 | `proofs/` | SMT-LIB2 queries of the proofs, named by SHA-256 |
 | `eval/compare.py` | compiles a file list as base / synthesized rules / e-graph and compares the final code |
-| `tests/test_synth.py` | unit tests (`python3 -m unittest discover -s llvm/utils/gisel-rule-synth/tests`) |
+| `tests/test_synth.py`, `tests/test_unified.py` | unit tests (`python3 -m unittest discover -s llvm/utils/gisel-rule-synth/tests`) |
 
 Generated in-tree files:
 `llvm/include/llvm/Target/GlobalISel/GISynthCombines.td` and
@@ -192,9 +233,13 @@ This is proved at every width schedule the guard accepts, for every disjunct
 of `P` and for the emitted disjunction as a whole.
 
 - Shift amounts at or above the bit width are poison.
-- Every supported operation propagates poison.
+- Every supported operation except `G_SELECT` propagates poison.
 - `T` uses only `S`'s inputs, and each of them at most once, so undef inputs
-  are handled soundly.
+  are handled soundly. An input that the rule matches as a constant can
+  occur more than once: a constant is not undef.
+- An operation with undefined behaviour (a division by zero) is modeled as
+  such: `T` must not have undefined behaviour if `S` has none.
+- `G_SELECT` is poison only if its condition or the selected operand is.
 - Source flags (`nsw`, `nuw`, `exact`, `disjoint`, `nneg`) only add poison,
   so a proof for the flag-free source also covers them. Replacements carry no
   flags.

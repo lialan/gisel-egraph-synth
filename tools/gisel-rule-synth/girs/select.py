@@ -272,6 +272,41 @@ def online(compare, rules):
     return out
 
 
+def compile_failures(llc, target, compare, rules, jobs, log=print):
+    """Rule id -> files that compile without the synthesized rules and do
+    not compile with every candidate, and compile again without the rule
+    (with the other rules of the same file that are found). A file whose
+    failure has no such rule is an error: its cause is not known."""
+    by_id = {r['id']: r for r in rules}
+    files = sorted(p for p, res in compare.items()
+                   if res['base']['rc'] == 0 and res['synth'].get('rc'))
+    if not files:
+        return {}
+    log('select: %d files do not compile with every candidate' % len(files))
+
+    def one(path):
+        ids = [i for i in measure.failing_rules(llc, target, path)
+               if i in by_id]
+        names = [n for i in ids for n in emit.record_names(by_id[i])]
+        if not ids:
+            return path, None
+        res = measure.compile_ll(llc, target, path, synth=True,
+                                 disabled=names, count_rules=False)
+        return path, ids if res['rc'] == 0 else None
+    out, unknown = {}, []
+    with concurrent.futures.ThreadPoolExecutor(jobs) as ex:
+        for path, ids in ex.map(one, files):
+            if ids is None:
+                unknown.append(path)
+            else:
+                for i in ids:
+                    out.setdefault(i, []).append(path)
+    if unknown:
+        raise RuntimeError('compilations fail with the synthesized rules '
+                           'and no rule explains it: ' + ', '.join(unknown))
+    return out
+
+
 def marginal(llc, target, compare, rules, onl, jobs):
     """Leave-one-out: for each rule, recompiles the files in which it fired
     with only that rule disabled. Returns id -> {'insns': delta of the rule
@@ -450,9 +485,12 @@ def select(db, target, insts=None, llc=None, compare=None, jobs=8,
         for rid, n in nov.items():
             prof[rid]['novelty'] = n
     onl = marg = None
+    failures = {}
     if compare is not None:
         onl = online(compare, rules)
         if llc:
+            failures = compile_failures(llc, target, compare, rules, jobs,
+                                        log)
             log('select: leave-one-out over %d (rule, file) pairs' %
                 sum(len(o['_files']) for o in onl.values()))
             marg = marginal(llc, target, compare, rules, onl, jobs)
@@ -526,6 +564,17 @@ def select(db, target, insts=None, llc=None, compare=None, jobs=8,
             b['selection'] = 'one_use_variant_selected'
         else:
             v['selection'] = b['selection']
+    # A rule that makes a compilation fail (a loop with the combines of
+    # the target) is never selected, and neither is the other variant in
+    # its place without a measurement.
+    for rid, paths in failures.items():
+        prof[rid]['selection'] = 'compile_failure'
+        prof[rid]['compile_failure'] = {
+            'files': len(paths),
+            'examples': [os.path.basename(p) for p in paths[:3]]}
+    for base in [b for b, v in alt.items()
+                 if v in failures or b in failures]:
+        del alt[base]
     set_summary = None
     if marg is not None:
         names = {r['id']: emit.record_names(r) for r in rules}
