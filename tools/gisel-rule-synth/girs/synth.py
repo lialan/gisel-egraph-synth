@@ -311,6 +311,8 @@ def _source_of(provenance):
 
 
 def rule_class(src, tgt, const_vars=()):
+    if ir.rule_cost(tgt, const_vars) > ir.cost(src):
+        return 'increases_cost'
     if widens_operation(src, tgt):
         return 'widens_operation'
     if ir.rule_cost(tgt, const_vars) >= ir.cost(src):
@@ -568,7 +570,7 @@ class Synthesizer:
         rule['disjuncts'] = keep
         return dropped
 
-    def finalize(self, insts):
+    def finalize(self, insts, preserve_alternatives=False):
         """Chooses the emitted disjuncts of every rule by corpus coverage
         and run-time cost, and proves the chosen disjunction as a whole.
         Returns statistics."""
@@ -613,7 +615,8 @@ class Synthesizer:
                 cov[rid]['disjunct_occurrences'][k] for k in chosen]
             rule['semantic_status']['dnf_proofs'] = \
                 self._prove_disjunction(rule)
-        stats['dominated_rules'] = self._mark_dominated()
+        stats['dominated_rules'] = 0 if preserve_alternatives else \
+            self._mark_dominated()
         return stats
 
     def _mark_dominated(self):

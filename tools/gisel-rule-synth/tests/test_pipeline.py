@@ -415,5 +415,42 @@ class ProbeLoopTest(unittest.TestCase):
         self.assertEqual(nov['fails']['class'], 'error')
 
 
+class SearchPipelineTest(unittest.TestCase):
+    def test_changed_window_invalidates_extracted_files(self):
+        from girs import mine
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as root:
+            d = os.path.join(root, 'corpus')
+            key = {'depth': 2, 'compiler': 'a'}
+            mine._stage_cache(d, key)
+            p = Path(d) / 'old.jsonl'
+            p.write_text('old depth')
+            mine._stage_cache(d, key)
+            self.assertTrue(p.exists())
+            mine._stage_cache(d, dict(key, depth=4))
+            self.assertFalse(p.exists())
+
+    def test_equal_and_growing_rules_reach_target_measurement(self):
+        from girs import emit, synth
+        src = ('G_SUB', 32, ('var', 0), ('var', 1))
+        tgt = ('G_ADD', 32, ('var', 0),
+               ('G_SUB', 32, ('lit', 32, '0'), ('var', 1)))
+        inst = corpus.Instance(src, (32, 32), [(0, 0)] * 2,
+                               [None] * 2, [], [], [('f', 'fn', '%0')])
+        sy = synth.Synthesizer(smt.Z3Backend())
+        rid = sy.add(inst, tgt)
+        self.assertIsNotNone(rid)
+        sy.finalize([inst], preserve_alternatives=True)
+        rule = synth.strip_private(sy.rules[rid])
+        self.assertEqual(rule['class'], 'increases_cost')
+        self.assertEqual(emit.candidates({'rules': [rule]}), [])
+        rule['target_cost_candidate'] = True
+        self.assertIn(rid, [r['id'] for r in emit.candidates(
+            {'rules': [rule]}, targets.get('AMDGPU'))])
+        # Expanding the grammar does not bypass semantic eligibility.
+        rule['semantic_status']['kind'] = 'unknown'
+        self.assertEqual(emit.candidates({'rules': [rule]}), [])
+
+
 if __name__ == '__main__':
     unittest.main()

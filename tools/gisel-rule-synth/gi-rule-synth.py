@@ -461,6 +461,9 @@ def cmd_synth(args):
     from girs import targets
     cap = targets.Capability.load(args.legality) if args.legality else None
     dlim = discover.Limits(seed=args.seed, grammar=args.grammar,
+                           cost_slack=args.cost_slack,
+                           max_rhs_cost=args.max_rhs_cost,
+                           semantic_variants=args.semantic_variants,
                            max_terms=args.max_terms,
                            max_evals=args.max_evals,
                            max_proofs=args.max_proofs,
@@ -639,7 +642,9 @@ def cmd_synth(args):
         if i.key() not in known:
             known.add(i.key())
             extra.append(i)
-    fstats = sy.finalize(insts + extra)
+    target_cost_search = args.cost_slack is not None and args.cost_slack >= 0
+    fstats = sy.finalize(insts + extra, preserve_alternatives=(
+        target_cost_search or args.semantic_variants > 1))
     seconds['selection_of_disjuncts'] = round(time.monotonic() - t, 2)
 
     # Rules with several outputs: the same term bank and the same proofs,
@@ -663,6 +668,11 @@ def cmd_synth(args):
 
     rules = [synth.strip_private(sy.rules[rid]) for rid in sorted(sy.rules)]
     for r in rules:
+        if target_cost_search:
+            # Opt-in eligibility for measurement, not profitability.
+            # Emission and selection must not discard these candidates
+            # again solely because their Generic cost is not lower.
+            r['target_cost_candidate'] = True
         r['support']['examples'].sort(key=lambda e: (e['file'], e['fn'],
                                                      e['root']))
     emission = _record_emission(rules)
@@ -1039,6 +1049,17 @@ def build_parser():
     p.add_argument('--max-instances', type=int, default=0)
     p.add_argument('--max-terms', type=int, default=50000,
                    help='budget: terms of one term bank')
+    p.add_argument('--cost-slack', type=int,
+                   help='RHS Generic cost minus source cost: -1 cheaper, '
+                        '0 also equal, 1 allows one extra operation; '
+                        'default keeps the historical cheaper policy '
+                        '(equal cost only for one-operation sources)')
+    p.add_argument('--max-rhs-cost', type=int, default=0,
+                   help='absolute RHS cost budget (0: no additional cap)')
+    p.add_argument('--semantic-variants', type=int, default=1,
+                   help='bounded instruction forms per sampled function; '
+                        'use more than 1 to preserve different lowerings '
+                        'for target measurement')
     p.add_argument('--max-proofs', type=int, default=48,
                    help='budget: SMT checks of the candidates of one '
                         'instance')

@@ -50,7 +50,18 @@ class Limits:
     def __init__(self, samples=48, max_terms=50000, max_candidates=6,
                  equal_cost_max=1, max_proofs=48, seed=0, bank_samples=64,
                  max_cex_samples=16, grammar='source', max_evals=40000000,
-                 capability=None, namespaces=('generic',)):
+                 capability=None, namespaces=('generic',), cost_slack=None,
+                 max_rhs_cost=0, semantic_variants=1):
+        if cost_slack is not None and cost_slack < -1:
+            raise ValueError('cost_slack must be -1 or greater')
+        if max_rhs_cost < 0 or semantic_variants < 1:
+            raise ValueError('invalid RHS cost or semantic variant limit')
+        # None preserves the historical policy. 0 searches equal cost at
+        # every source size; positive values allow bounded growth. These
+        # are search budgets, never assertions of target profitability.
+        self.cost_slack = cost_slack
+        self.max_rhs_cost = max_rhs_cost
+        self.semantic_variants = semantic_variants
         self.samples = samples
         # The operator namespaces of the registry that a grammar takes
         # operators from (the generic table and the tables of a target).
@@ -302,6 +313,7 @@ class Bank:
         self.counters = {}
         self._expr = {}
         self._seen = set()
+        self._variant_counts = {}
         self._r1 = np.array([rng.getrandbits(64) | 1 for _ in range(n)], U64)
         self._r2 = np.array([rng.getrandbits(64) | 1 for _ in range(n)], U64)
         self._V = np.zeros((256, n), U64)
@@ -405,13 +417,23 @@ class Bank:
         chosen, full, rest = [], False, None
         limit = room if cap is None else min(room, cap)
         for j, k in zip(first.tolist(), hkey[first].tolist()):
-            if keep[j] and k not in self._seen:
+            # Preserve a bounded set of different instruction forms of
+            # one sampled function. Generic cost and enumeration order
+            # cannot choose the best lowering for a target. Leaves still
+            # suppress identities; default 1 preserves the old bank.
+            seen_key = k if self.limits.semantic_variants == 1 else \
+                (k, key, tuple(kas), cost)
+            if keep[j] and k not in self._seen and \
+                    seen_key not in self._seen and \
+                    self._variant_counts.get(k, 0) < \
+                    self.limits.semantic_variants:
                 if len(chosen) >= limit:
                     full = limit == room
                     rest = [i[j:] for i in idx]
                     break
-                self._seen.add(k)
-                self._level_keys.append(k)
+                self._seen.add(seen_key)
+                self._variant_counts[k] = self._variant_counts.get(k, 0) + 1
+                self._level_keys.append(seen_key)
                 chosen.append(j)
         if chosen:
             self.kept[name] = self.kept.get(name, 0) + len(chosen)
@@ -473,6 +495,10 @@ class Bank:
         n, nsegs, self.built, self.kept, _ = mark
         for k in self._level_keys:
             self._seen.discard(k)
+            h = k[0] if isinstance(k, tuple) else k
+            self._variant_counts[h] -= 1
+            if not self._variant_counts[h]:
+                del self._variant_counts[h]
         self._level_keys = []
         for name in ('op', 'arg', 'cls', 'cost', 'vars', 'opnds'):
             del getattr(self, name)[n:]
@@ -797,9 +823,11 @@ def instance_envs(inst, limits, ctx):
 
 def max_search_cost(inst, limits):
     src_cost = ir.cost(inst.expr)
-    if src_cost <= limits.equal_cost_max:
-        return src_cost
-    return src_cost - 1
+    if limits.cost_slack is not None:
+        bound = max(0, src_cost + limits.cost_slack)
+    else:
+        bound = src_cost if src_cost <= limits.equal_cost_max else src_cost - 1
+    return min(bound, limits.max_rhs_cost) if limits.max_rhs_cost else bound
 
 
 def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
@@ -818,6 +846,12 @@ def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
         return vals[e]
 
     def dominated(tgt):
+        if limits.semantic_variants > 1 or \
+                (limits.cost_slack is not None and limits.cost_slack >= 0):
+            # These runs explicitly seek alternative implementations for
+            # target measurement. Sample agreement and Generic cost do
+            # not establish that one implementation is unprofitable.
+            return False
         # A proved candidate that is no more expensive and refines this one
         # on the samples makes it pointless (x for x & 1, 0 for 0 << x).
         # Two candidates that are equal on the samples are both kept.

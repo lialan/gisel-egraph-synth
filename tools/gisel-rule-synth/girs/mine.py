@@ -77,6 +77,8 @@ DEFAULTS = {
                'timeout_ms': 10000, 'max_atoms': 2, 'max_terms': 50000,
                'max_evals': 40000000, 'max_proofs': 48,
                'max_candidates': 6, 'time_budget_s': 0,
+               'cost_slack': None, 'max_rhs_cost': 0,
+               'semantic_variants': 1,
                'explore_share': 0.2, 'regions': False,
                'siblings': False, 'max_pairs': 0},
     'hybrid': {'egraph_stages': 'pre-legalizer', 'egraph_max_cost': 8,
@@ -131,6 +133,17 @@ def _merge(base, over, where='config'):
         else:
             out[k] = v
     return out
+
+
+def _stage_cache(directory, identity):
+    """Resume files only for the exact stage inputs. A changed extraction
+    depth or compiler must not silently reuse the previous JSONL corpus.
+    The directory contains only this driver's generated stage outputs."""
+    marker = os.path.join(directory, '.inputs.json')
+    if os.path.isdir(directory) and _load(marker) != identity:
+        shutil.rmtree(directory)
+    os.makedirs(directory, exist_ok=True)
+    _dump(identity, marker)
 
 
 class Unit:
@@ -382,13 +395,16 @@ class Run:
         if 'opt-O2' not in c['pipelines'] + c['discovery_pipelines']:
             return {'skip': True}
         return {'opt': _sha_file(c['opt']),
-                'manifests': self.inputs_identity()['manifests']}
+                'manifests': self.inputs_identity()['manifests'],
+                'source_files': {p: _sha_file(p) for p in sorted({
+                    f for role in c['manifests']
+                    for f in self.manifest(role)})}}
 
     def stage_prepare(self):
         c = self.cfg
         if 'opt-O2' not in c['pipelines'] + c['discovery_pipelines']:
             return {'skipped': 'no opt-O2 pipeline'}
-        os.makedirs(self.p('o2'), exist_ok=True)
+        _stage_cache(self.p('o2'), self.inputs_prepare())
         index = {}
         files = sorted({f for role in c['manifests']
                         for f in self.manifest(role)})
@@ -428,7 +444,7 @@ class Run:
     def _extract(self, out_dir, units, fn, *args):
         """Runs ``fn`` (an extractor of the command line) on each unit.
         A file that is already there is not written again."""
-        os.makedirs(out_dir, exist_ok=True)
+        _stage_cache(out_dir, self.inputs_extract())
         index = _load(os.path.join(out_dir, 'index.json'), {})
         todo = [u for u in units if u.path not in index]
         with concurrent.futures.ThreadPoolExecutor(self.cfg['jobs']) as ex:
@@ -497,6 +513,8 @@ class Run:
                                  'timeout_ms', 'max_atoms', 'max_terms',
                                  'max_evals', 'max_proofs',
                                  'max_candidates', 'time_budget_s',
+                                 'cost_slack', 'max_rhs_cost',
+                                 'semantic_variants',
                                  'explore_share', 'regions', 'siblings',
                                  'max_pairs')})
         if c['mode'] == 'hybrid':
