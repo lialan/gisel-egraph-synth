@@ -1,0 +1,116 @@
+# REQUIRES: synth-chain
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -run-pass=amdgpu-prelegalizer-combiner %s -o - | FileCheck --check-prefix=OFF %s
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -run-pass=amdgpu-prelegalizer-combiner,gisynth-amdgpu-combiner %s -o - | FileCheck --check-prefix=ON %s
+
+# The rule synth_add_ae52fe29, x + y -> x | y if no bit is one in both
+# (guard all(KZ(x0) | KZ(x1))), as tools/gisel-rule-synth/eval/rule_chain.py
+# finds it in tools/gisel-rule-synth/tests/data/chain/corpus.mir (x + 1, the
+# low bit of x known zero) and builds it alone into a scratch llc. These
+# functions are not in that corpus: other masks, constants, widths and a
+# sum of two values. The *_no_fold functions are what the guard rejects.
+
+# The low 4 bits of x are zero (a mask in another block) and 5 fits in them.
+# OFF-LABEL: name: add_mask_low4
+# OFF: %r:_(s32) = G_ADD %x, %c
+# ON-LABEL: name: add_mask_low4
+# ON: %c:_(s32) = G_CONSTANT i32 5
+# ON-NEXT: %r:_(s32) = G_OR %x, %c
+# ON-NEXT: $vgpr0 = COPY %r(s32)
+---
+name: add_mask_low4
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $vgpr0
+    %y:_(s32) = COPY $vgpr0
+    %m:_(s32) = G_CONSTANT i32 -16
+    %x:_(s32) = G_AND %y, %m
+    G_BR %bb.1
+  bb.1:
+    %c:_(s32) = G_CONSTANT i32 5
+    %r:_(s32) = G_ADD %x, %c
+    $vgpr0 = COPY %r
+    SI_RETURN implicit $vgpr0
+...
+
+# Two values: bits [4, 32) and bits [0, 4).
+# The or of the two shifts is then a funnel shift (a combine of
+# all_combines, which runs with the synthesized rules).
+# OFF-LABEL: name: add_two_values
+# OFF: %r:_(s32) = G_ADD %x, %y
+# ON-LABEL: name: add_two_values
+# ON: %c28:_(s32) = G_CONSTANT i32 28
+# ON-NEXT: %r:_(s32) = G_FSHR %a, %b, %c28(s32)
+# ON-NEXT: $vgpr0 = COPY %r(s32)
+---
+name: add_two_values
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %c4:_(s32) = G_CONSTANT i32 4
+    %c28:_(s32) = G_CONSTANT i32 28
+    %x:_(s32) = G_SHL %a, %c4
+    %y:_(s32) = G_LSHR %b, %c28
+    %r:_(s32) = G_ADD %x, %y
+    $vgpr0 = COPY %r
+    SI_RETURN implicit $vgpr0
+...
+
+# 64 bits (a width of the proved schedules).
+# OFF-LABEL: name: add_one_s64
+# OFF: %r:_(s64) = G_ADD %x, %one
+# ON-LABEL: name: add_one_s64
+# ON: %one:_(s64) = G_CONSTANT i64 1
+# ON-NEXT: %r:_(s64) = G_OR %x, %one
+---
+name: add_one_s64
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0_vgpr1
+    %y:_(s64) = COPY $vgpr0_vgpr1
+    %s:_(s32) = G_CONSTANT i32 1
+    %x:_(s64) = G_SHL %y, %s
+    %one:_(s64) = G_CONSTANT i64 1
+    %r:_(s64) = G_ADD %x, %one
+    $vgpr0_vgpr1 = COPY %r
+    SI_RETURN implicit $vgpr0_vgpr1
+...
+
+# Nothing is known about y: the low bit may be one.
+# ON-LABEL: name: add_unknown_no_fold
+# ON: %r:_(s32) = G_ADD %y, %c
+---
+name: add_unknown_no_fold
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0
+    %y:_(s32) = COPY $vgpr0
+    %c:_(s32) = G_CONSTANT i32 1
+    %r:_(s32) = G_ADD %y, %c
+    $vgpr0 = COPY %r
+    SI_RETURN implicit $vgpr0
+...
+
+# Bit 0 of x is zero, but bit 1 of x and of 3 may both be one.
+# ON-LABEL: name: add_overlap_no_fold
+# ON: %r:_(s32) = G_ADD %x, %c
+---
+name: add_overlap_no_fold
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0
+    %y:_(s32) = COPY $vgpr0
+    %s:_(s32) = G_CONSTANT i32 1
+    %x:_(s32) = G_SHL %y, %s
+    %c:_(s32) = G_CONSTANT i32 3
+    %r:_(s32) = G_ADD %x, %c
+    $vgpr0 = COPY %r
+    SI_RETURN implicit $vgpr0
+...

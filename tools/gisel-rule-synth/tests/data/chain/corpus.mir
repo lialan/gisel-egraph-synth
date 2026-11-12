@@ -1,0 +1,57 @@
+# The corpus of tests/test_chain.py and eval/rule_chain.py: generic MIR
+# after the pre-legalizer combiner. It is an input of the search, not a
+# list of answers: the tests check what the search finds in it.
+#
+# add_one_*: x + 1 where the low bit of x is known zero. x is defined in
+# another block, so it is an input of the extracted tree with the known
+# bits of GISelValueTracking.
+# add_carry: a sum and its carry (the sum has another user).
+---
+name: add_one_shl
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $vgpr0
+    %0:_(s32) = COPY $vgpr0
+    %1:_(s32) = G_CONSTANT i32 1
+    %2:_(s32) = G_SHL %0, %1
+    G_BR %bb.1
+  bb.1:
+    %3:_(s32) = G_CONSTANT i32 1
+    %4:_(s32) = G_ADD %2, %3
+    $vgpr0 = COPY %4
+    SI_RETURN implicit $vgpr0
+...
+---
+name: add_one_mask
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $vgpr0
+    %0:_(s32) = COPY $vgpr0
+    %1:_(s32) = G_CONSTANT i32 -2
+    %2:_(s32) = G_AND %0, %1
+    G_BR %bb.1
+  bb.1:
+    %3:_(s32) = G_CONSTANT i32 1
+    %4:_(s32) = G_ADD %2, %3
+    $vgpr0 = COPY %4
+    SI_RETURN implicit $vgpr0
+...
+---
+name: add_carry
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1
+    %0:_(s32) = COPY $vgpr0
+    %1:_(s32) = COPY $vgpr1
+    %2:_(s32) = G_ADD %0, %1
+    %3:_(s1) = G_ICMP intpred(ult), %2, %0
+    %4:_(s32) = G_ZEXT %3
+    $vgpr0 = COPY %2
+    $vgpr1 = COPY %4
+    SI_RETURN implicit $vgpr0, implicit $vgpr1
+...
