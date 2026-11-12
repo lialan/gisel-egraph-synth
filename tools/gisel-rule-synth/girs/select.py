@@ -493,7 +493,10 @@ def size(mir_out):
         if m and name and m.group(1) not in ('G_CONSTANT',
                                              'G_IMPLICIT_DEF'):
             op = m.group(1)
-            cost = max(1, ops.cost(op)) if op in ops.REGISTRY else 1
+            # The registry entry, not ops.cost: the output has the opcode
+            # with no attribute key (G_SEXT_INREG has an immediate).
+            cost = max(1, ops.REGISTRY[op].cost) if op in ops.REGISTRY \
+                else 1
             res[name] = (res[name][0] + 1, res[name][1] + cost)
     return res
 

@@ -768,6 +768,11 @@ class SelectTest(unittest.TestCase):
         other = ('name: f\n'
                  '    %0:_(s32) = G_NOT_AN_OPERATOR %1\n')
         self.assertEqual(select.size(other), {'f': (1, 1)})
+        # An operator with an immediate is in the output with no attribute
+        # key; its cost is the cost of its registry entry.
+        imm = ('name: f\n'
+               '    %1:_(s32) = G_SEXT_INREG %0, 8\n')
+        self.assertEqual(select.size(imm)['f'][0], 1)
 
 
 class EmitTest(unittest.TestCase):
