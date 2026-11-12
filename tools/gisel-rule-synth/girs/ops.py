@@ -205,6 +205,14 @@ class OpInfo:
         # from the same lane of its operands, unless ``lanewise`` is
         # false (G_MERGE_VALUES: scalars only).
         self.lanewise = True
+        # G_PHI: the value is the incoming value of the edge that the
+        # control flow took. The operand 0 is that edge (phi_edge_bits),
+        # the other operands are the incoming values; an edge with a
+        # number that no incoming value has selects the last one. The edge
+        # is an input of the source that no register has: a proof holds
+        # for each edge, and a replacement and a precondition do not read
+        # it (ir.edge_vars).
+        self.phi = False
         # (kind of each operand, kind of the result) of a vector
         # operator: 'v' (the kind of the lanes of the vector), 'i' or 'f'.
         # One operand kind stands for each operand if their number is not
@@ -268,6 +276,9 @@ class OpInfo:
                 (None if rrole == 'v' else rrole)
         if self.freeze:
             return ks[0]
+        if self.phi:
+            # The kind of the incoming values.
+            return ks[1] if ks[0] == 'i' and len(set(ks[1:])) == 1 else None
         if self.ptr_operands or self.ptr_result:
             if any(k != ('p' if i in self.ptr_operands else 'i')
                    for i, k in enumerate(ks)):
@@ -388,7 +399,7 @@ def typecheck(key, w, ws):
     n = lanes(w)
     for k, x in enumerate(ws):
         if lanes(x) != n and not (info.shape == 'select' and k == 0 and
-                                  x == 1):
+                                  x == 1) and not (info.phi and k == 0):
             return False
     return bool(info.typecheck(elem(w), [elem(x) for x in ws], attr, res))
 
@@ -543,6 +554,9 @@ _TYPECHECK = {
         len(ws) == 2 and w == 1 and ws[0] == ws[1] and attr in PREDS,
     'select': lambda info: lambda w, ws, attr, res:
         len(ws) == 3 and ws[0] == 1 and ws[1] == w and ws[2] == w,
+    'phi': lambda info: lambda w, ws, attr, res:
+        2 <= len(ws) <= MAX_PHI_INPUTS + 1 and
+        ws[0] == phi_edge_bits(len(ws) - 1) and all(x == w for x in ws[1:]),
     'typed': _tc_typed,
     # G_PTR_ADD, G_PTRMASK: a pointer and an integer of its width.
     'ptradd': lambda info: lambda w, ws, attr, res:
@@ -555,9 +569,17 @@ _TYPECHECK = {
 }
 
 _NO_EXPR = {
-    'phi': 'needs the control flow of the function',
     'effect': 'a terminator has no value',
 }
+
+# The largest number of incoming values of a G_PHI of a source
+# (gisynth::MaxPhiInputs).
+MAX_PHI_INPUTS = 4
+
+
+def phi_edge_bits(n):
+    """The width of the edge of a G_PHI with ``n`` incoming values."""
+    return 1 if n <= 2 else 2
 
 
 # --------------------------------------------------------- semantics ---
@@ -976,6 +998,18 @@ SMT['G_ICMP'] = lambda w, ws, at, r, x: (
 EVAL['G_SELECT'] = lambda w, ws, at, r, v: v[1] if v[0] else v[2]
 SMT['G_SELECT'] = lambda w, ws, at, r, x: (
     z3.If(x[0] == 1, x[1], x[2]), None, None)
+
+
+def _phi_smt(w, ws, at, r, x):
+    v = x[-1]
+    for k in range(len(x) - 3, -1, -1):
+        v = z3.If(x[0] == k, x[1 + k], v)
+    return v, None, None
+
+
+# G_PHI is not strict; the encoder handles its poison (OpInfo.phi).
+EVAL['G_PHI'] = lambda w, ws, at, r, v: v[1 + min(v[0], len(v) - 2)]
+SMT['G_PHI'] = _phi_smt
 
 
 def _three_way(signed):
@@ -1707,7 +1741,7 @@ _EMIT_SHAPES = ('binary', 'unary', 'cast', 'bitcount', 'compare', 'select',
 # Shapes the emitter can write as a match pattern below the root. A rule
 # does not build G_UNMERGE_VALUES, and it is not the root of a pattern: it
 # has several results.
-_MATCH_SHAPES = _EMIT_SHAPES + ('unmerge', 'vector')
+_MATCH_SHAPES = _EMIT_SHAPES + ('unmerge', 'vector', 'phi')
 
 _COSTS = {'G_MUL': 2, 'G_UMULH': 2, 'G_SMULH': 2, 'G_UDIV': 4, 'G_SDIV': 4,
           'G_UREM': 4, 'G_SREM': 4, 'G_UDIVREM': 4, 'G_SDIVREM': 4,
@@ -1741,13 +1775,13 @@ def _load_generic():
                       else None, results, attr,
                       commutative=bool(m.get('commutative')), meta=m,
                       cost=_COSTS.get(name, 1),
-                      strict=shape != 'select')
+                      strict=shape not in ('select', 'phi'))
+        info.phi = shape == 'phi'
         if shape == 'unmerge':
             info.results = None
         # G_MERGE_VALUES, G_EXTRACT and G_INSERT take scalars only; a
         # G_UNMERGE_VALUES of a vector gives its lanes (typecheck).
-        info.lanewise = shape not in ('merge', 'unmerge', 'phi',
-                                      'effect') and \
+        info.lanewise = shape not in ('merge', 'unmerge', 'effect') and \
             name not in _SCALAR_ONLY
         if shape in _NO_EXPR:
             for st in STAGES[1:]:
@@ -1824,6 +1858,9 @@ def _load_generic():
                 info.unsupported['emit'] = \
                     'a rule can match G_UNMERGE_VALUES but does not ' \
                     'create it'
+            elif info.phi:
+                info.unsupported['emit'] = \
+                    'a rule can match G_PHI but does not create it'
             elif shape not in _EMIT_SHAPES:
                 info.unsupported['emit'] = \
                     'the emitter has no pattern for the shape %s' % shape

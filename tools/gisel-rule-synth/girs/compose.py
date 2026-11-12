@@ -191,6 +191,9 @@ class Index:
         if rule.get('const_vars'):
             # A step with a computed constant needs the bound values.
             return
+        if ir.phi_nodes(ir.from_json(rule['source_json'])):
+            # The edge of a G_PHI is not a value of an expression.
+            return
         if rule['id'] in self.ids or synth.widened_width(
                 ir.from_json(rule['source_json']),
                 ir.from_json(rule['replacement_json'])) > self.widen_bits:

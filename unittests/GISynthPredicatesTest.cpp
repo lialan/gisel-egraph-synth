@@ -13,6 +13,7 @@
 
 #include "llvm/CodeGen/GlobalISel/GISynthPredicates.h"
 #include "GISelMITest.h"
+#include "llvm/CodeGen/MachineDominators.h"
 
 using namespace llvm::gisynth;
 
@@ -456,6 +457,58 @@ TEST_F(AArch64GISelMITest, DropFlags) {
   EXPECT_TRUE(Add->getFlag(MachineInstr::NoMerge));
   EXPECT_EQ(Sub->getFlags(), 0u);
   EXPECT_EQ(FAdd->getFlags(), 0u);
+}
+
+TEST_F(AArch64GISelMITest, StablePhiInputs) {
+  StringRef MIRString = "  %3:_(s64) = G_ADD %0, %1\n"
+                        "  %4:_(s1) = G_TRUNC %2(s64)\n"
+                        "  G_BRCOND %4(s1), %bb.3\n"
+                        "  G_BR %bb.2\n"
+                        "\n"
+                        "  bb.2:\n"
+                        "  %5:_(s64) = G_SUB %0, %1\n"
+                        "  G_BR %bb.3\n"
+                        "\n"
+                        "  bb.3:\n"
+                        "  %6:_(s64) = G_PHI %0(s64), %bb.1, %3(s64), %bb.2\n"
+                        "  %7:_(s64) = G_PHI %0(s64), %bb.1, %5(s64), %bb.2\n"
+                        "  G_BR %bb.4\n"
+                        "\n"
+                        "  bb.4:\n"
+                        "  %8:_(s64) = G_PHI %6(s64), %bb.3, %9(s64), %bb.4\n"
+                        "  %9:_(s64) = G_ADD %8, %0\n"
+                        "  G_BRCOND %4(s1), %bb.4\n"
+                        "  G_BR %bb.5\n"
+                        "\n"
+                        "  bb.5:\n"
+                        "  %10:_(s64) = G_PHI %9(s64), %bb.4\n";
+  setUp(MIRString);
+  if (!TM)
+    GTEST_SKIP();
+  MachineDominatorTree MDT(*MF);
+  auto Dominates = [&](const MachineInstr &Def, const MachineInstr &Use) {
+    return MDT.dominates(&Def, &Use);
+  };
+  auto IsStable = [&](unsigned Skip) {
+    return hasStablePhiInputs(*MRI, *findOpcode(*MF, TargetOpcode::G_PHI, Skip),
+                              Dominates);
+  };
+  // The two incoming values are defined in the entry block.
+  EXPECT_TRUE(IsStable(0));
+  // %5 is defined in a predecessor: its block does not dominate the G_PHI.
+  EXPECT_FALSE(IsStable(1));
+  // %9 is the value of the iteration before: it is defined in the block of
+  // the G_PHI.
+  EXPECT_FALSE(IsStable(2));
+  // After the loop, %9 is the value of the last iteration.
+  EXPECT_TRUE(IsStable(3));
+  // Not a G_PHI.
+  EXPECT_FALSE(hasStablePhiInputs(*MRI, *findOpcode(*MF, TargetOpcode::G_ADD),
+                                  Dominates));
+  // Without a dominator tree, no incoming value is known to dominate.
+  auto Never = [](const MachineInstr &, const MachineInstr &) { return false; };
+  EXPECT_FALSE(
+      hasStablePhiInputs(*MRI, *findOpcode(*MF, TargetOpcode::G_PHI), Never));
 }
 
 } // namespace

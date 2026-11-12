@@ -19,8 +19,10 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/CodeGen/GlobalISel/GIEGraph.h"
 #include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
+#include "llvm/CodeGen/GlobalISel/GISynthPredicates.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
+#include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
@@ -154,6 +156,26 @@ bool isSupportedInstr(const MachineRegisterInfo &MRI, const MachineInstr &MI) {
   return true;
 }
 
+/// True if the G_PHI \p MI can be a node of a tree: a rule can read its
+/// incoming values (gisynth::hasStablePhiInputs), and they and its result
+/// are values of a tree.
+bool isSupportedPhi(const MachineRegisterInfo &MRI,
+                    const MachineDominatorTree &MDT, const MachineInstr &MI) {
+  assert(MI.getOpcode() == TargetOpcode::G_PHI && "not a G_PHI");
+  const DataLayout &DL = MI.getMF()->getDataLayout();
+  if (!gisynth::hasStablePhiInputs(
+          MRI, MI, [&](const MachineInstr &Def, const MachineInstr &Use) {
+            return MDT.dominates(&Def, &Use);
+          }))
+    return false;
+  if (!isSupportedValue(MRI, DL, MI.getOperand(0).getReg()))
+    return false;
+  for (unsigned I = 1, E = MI.getNumOperands(); I < E; I += 2)
+    if (!isSupportedValue(MRI, DL, MI.getOperand(I).getReg()))
+      return false;
+  return true;
+}
+
 bool isHint(unsigned Opc) {
   return Opc == TargetOpcode::G_ASSERT_ZEXT ||
          Opc == TargetOpcode::G_ASSERT_SEXT ||
@@ -193,12 +215,20 @@ struct Tree {
 class Extractor {
   const MachineRegisterInfo &MRI;
   GISelValueTracking &VT;
+  const MachineDominatorTree &MDT;
   const MachineBasicBlock &MBB;
 
 public:
   Extractor(const MachineRegisterInfo &MRI, GISelValueTracking &VT,
-            const MachineBasicBlock &MBB)
-      : MRI(MRI), VT(VT), MBB(MBB) {}
+            const MachineDominatorTree &MDT, const MachineBasicBlock &MBB)
+      : MRI(MRI), VT(VT), MDT(MDT), MBB(MBB) {}
+
+  /// True if \p MI is an instruction of a tree in this block.
+  bool isNode(const MachineInstr &MI) const {
+    if (MI.getOpcode() == TargetOpcode::G_PHI)
+      return isSupportedPhi(MRI, MDT, MI);
+    return isSupportedInstr(MRI, MI);
+  }
 
   /// All tree shapes for value \p R with at most \p Depth interior levels.
   /// A leaf is always the first variant.
@@ -210,12 +240,16 @@ public:
     if (Depth == 0)
       return Out;
     const MachineInstr *Def = MRI.getVRegDef(R);
-    if (!Def || Def->getParent() != &MBB || !isSupportedInstr(MRI, *Def))
+    if (!Def || Def->getParent() != &MBB || !isNode(*Def))
       return Out;
 
     // Cartesian product of the operand variants. A hint is not an
-    // instruction of the final code: it is not a level of the tree.
+    // instruction of the final code: it is not a level of the tree. An
+    // incoming value of a G_PHI is always an input: its definition is in
+    // another block.
     unsigned Below = isHint(Def->getOpcode()) ? Depth : Depth - 1;
+    if (Def->getOpcode() == TargetOpcode::G_PHI)
+      Below = 0;
     std::vector<std::vector<Tree>> OpVariants;
     for (const MachineOperand &MO : Def->uses())
       if (MO.isReg())
@@ -340,7 +374,9 @@ private:
       // The attribute of the operator, and the index of the result if the
       // instruction has several results.
       const egraph::OpProperties *P = getSupportedOp(N.MI->getOpcode());
-      if (P->Shape == egraph::OpShape::Compare)
+      if (!P) {
+        // A G_PHI: no attribute and one result.
+      } else if (P->Shape == egraph::OpShape::Compare)
         J.attribute("pred", egraph::getComparePredicateName(
                                 N.MI->getOperand(1).getPredicate()));
       else if (P->ImmAttr)
@@ -519,6 +555,7 @@ INITIALIZE_PASS_BEGIN(GISynthCorpusExtractor, DEBUG_TYPE,
                       "GlobalISel rule synthesizer corpus extractor", false,
                       true)
 INITIALIZE_PASS_DEPENDENCY(GISelValueTrackingAnalysisLegacy)
+INITIALIZE_PASS_DEPENDENCY(MachineDominatorTreeWrapperPass)
 INITIALIZE_PASS_END(GISynthCorpusExtractor, DEBUG_TYPE,
                     "GlobalISel rule synthesizer corpus extractor", false, true)
 
@@ -529,6 +566,7 @@ GISynthCorpusExtractor::GISynthCorpusExtractor() : MachineFunctionPass(ID) {
 void GISynthCorpusExtractor::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesAll();
   AU.addRequired<GISelValueTrackingAnalysisLegacy>();
+  AU.addRequired<MachineDominatorTreeWrapperPass>();
   MachineFunctionPass::getAnalysisUsage(AU);
 }
 
@@ -539,6 +577,8 @@ bool GISynthCorpusExtractor::runOnMachineFunction(MachineFunction &MF) {
   const MachineRegisterInfo &MRI = MF.getRegInfo();
   GISelValueTracking &VT =
       getAnalysis<GISelValueTrackingAnalysisLegacy>().get(MF);
+  const MachineDominatorTree &MDT =
+      getAnalysis<MachineDominatorTreeWrapperPass>().getDomTree();
   raw_ostream &OS = getCorpusStream();
   static bool LegalityWritten = false;
   if (!LegalityOut.empty() && !LegalityWritten) {
@@ -546,11 +586,11 @@ bool GISynthCorpusExtractor::runOnMachineFunction(MachineFunction &MF) {
     writeLegality(MF);
   }
   for (const MachineBasicBlock &MBB : MF) {
-    Extractor E(MRI, VT, MBB);
+    Extractor E(MRI, VT, MDT, MBB);
     for (const MachineInstr &MI : MBB) {
       // An instruction without operands and a hint are nodes of a tree,
       // not roots: no replacement is better than they are.
-      if (!isSupportedInstr(MRI, MI) || isHint(MI.getOpcode()) ||
+      if (!E.isNode(MI) || isHint(MI.getOpcode()) ||
           MI.getNumExplicitOperands() == MI.getNumExplicitDefs())
         continue;
       // One set of trees per result of the instruction.

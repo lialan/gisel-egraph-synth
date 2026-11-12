@@ -210,6 +210,8 @@ def build_mir(rule, example, name, target):
         xs.append(r)
 
     several = {}
+    # The register of each G_PHI of the source (see below).
+    phi_reg = {}
     # The register of each node of the tree: the root is the node 0, and a
     # node below it has its pre-order index plus 1 (ir.interior_nodes).
     node_reg = []
@@ -222,6 +224,9 @@ def build_mir(rule, example, name, target):
                               expected)
         k = len(node_reg)
         node_reg.append(None)
+        if e in phi_reg:
+            node_reg[k] = phi_reg[e]
+            return node_reg[k]
         kind = ir.result_kind(e, expected)
         node_reg[k] = instr(e, [walk(a, ir.operand_kind(e, i, kind))
                                 for i, a in enumerate(e[2:])], kind)
@@ -265,6 +270,36 @@ def build_mir(rule, example, name, target):
         if text not in several:
             several[text] = fn.emit_results(ws, text)
         return several[text][res]
+    # The G_PHI instructions of the source are the first instructions of
+    # a block of their own. Its predecessors are the entry block, with the
+    # definitions of the inputs, and one more block for each other
+    # incoming value. The edge of the first G_PHI selects the predecessor.
+    phis = list(dict.fromkeys(ir.phi_nodes(src)))
+    preds = len(phis[0]) - 3 if phis else 0
+    entry, conds = None, []
+    if phis:
+        if any(len(n) - 3 != preds for n in phis):
+            raise ValueError('G_PHI instructions with different numbers '
+                             'of incoming values in one block')
+        phi_kind = {}
+
+        def kinds(e, expected=None):
+            if ir.is_op(e):
+                kind = ir.result_kind(e, expected)
+                if e in phis:
+                    phi_kind[e] = kind
+                for i, a in enumerate(e[2:]):
+                    kinds(a, ir.operand_kind(e, i, kind))
+        kinds(src)
+        ins = [[walk(a, phi_kind[n]) for a in n[3:]] for n in phis]
+        sel = xs[phis[0][2][1]]
+        conds = [fn.emit(1, 'G_ICMP intpred(eq), %s, %s' % (
+            sel, fn.const(vw[phis[0][2][1]], j))) for j in range(preds - 1)]
+        entry, fn.lines = fn.lines, []
+        for n, regs in zip(phis, ins):
+            phi_reg[n] = fn.emit(n[1], 'G_PHI ' + ', '.join(
+                '%s, %%bb.%d' % (r, j) for j, r in enumerate(regs)),
+                phi_kind[n])
     # The outputs of the function: the root, and for a rule with a region
     # each other value that has a user outside the region.
     outs = [(fn.as_kind(walk(src), src[1], 'i'), src[1])]
@@ -306,8 +341,26 @@ def build_mir(rule, example, name, target):
         copies.append((phys, r))
     body = ['---', 'name: %s' % name, 'tracksRegLiveness: true', 'body: |',
             '  bb.0:']
+    if phis:
+        body.append('    successors: ' + ', '.join(
+            '%%bb.%d' % j for j in ([preds, 1] if conds else [preds])))
     if live:
         body.append('    liveins: ' + ', '.join(live))
+    if phis:
+        # The block j goes to the block of the G_PHI if the edge is j,
+        # else to the block j + 1; the last block always goes to it.
+        body += entry
+        for j in range(preds):
+            if j:
+                body += ['', '  bb.%d:' % j, '    successors: ' + ', '.join(
+                    '%%bb.%d' % x for x in (
+                        [preds, j + 1] if j < preds - 1 else [preds]))]
+            if j < preds - 1:
+                body += ['    G_BRCOND %s(s1), %%bb.%d' % (conds[j], preds),
+                         '    G_BR %%bb.%d' % (j + 1)]
+            else:
+                body.append('    G_BR %%bb.%d' % preds)
+        body += ['', '  bb.%d:' % preds]
     body += fn.lines + ['    %s = COPY %s' % c for c in copies] + [
         '    ' + target.ret(', implicit '.join(p for p, _ in copies)),
         '...']
@@ -389,7 +442,13 @@ def novelty(llc, target, rules):
     all_recs = [n for r in rules for n in names[r['id']]]
     out = {}
     for r in rules:
-        fns = [(n, build_mir(r, ex, n, target)) for n, ex in examples(r)]
+        try:
+            fns = [(n, build_mir(r, ex, n, target))
+                   for n, ex in examples(r)]
+        except ValueError as e:
+            # No function with the source of the rule: not known.
+            out[r['id']] = {'class': 'error', 'error': str(e)}
+            continue
         mir = '\n'.join(t for _, t in fns) + '\n'
         src = count(mir)
         try:

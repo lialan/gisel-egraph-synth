@@ -211,8 +211,12 @@ def synthesize_precondition(src, tgt, vw, facts, sched, backend, limits,
     verify_fn = verify_fn or verify
     fvw = vw if fvw is None else fvw
     frw = src[1] if frw is None else frw
+    # No register has the edge of a G_PHI: a guard cannot check a
+    # condition on it.
+    edge = ir.edge_vars(src)
     atoms = [a for a in precond.enumerate_atoms(fvw, frw)
-             if precond.eval_atom(a, facts, fvw, frw)]
+             if precond.eval_atom(a, facts, fvw, frw) and
+             not (edge & set(precond.atom_all_vars(a)))]
     if pool is None:
         pool = []
     stats = {'atoms': len(atoms), 'tried': 0, 'pruned_by_cex': 0,
@@ -414,6 +418,13 @@ class Synthesizer:
         """Generalizes and verifies one concrete discovery. Returns the rule
         id, or None if no precondition was found."""
         self.stats['discoveries'] += 1
+        # The edge of a G_PHI is not a value of a register: a replacement
+        # cannot read it (ir.edge_vars).
+        if ir.phi_error(inst.expr) is not None or (
+                ir.edge_vars(inst.expr) & set(ir.variables(tgt))):
+            self.stats['phi_rejected'] = \
+                self.stats.get('phi_rejected', 0) + 1
+            return None
         if vector.has_vector(inst.vw, inst.expr, tgt):
             return self._add_vector(inst, tgt, provenance)
         rid = self._add(inst, tgt, provenance)

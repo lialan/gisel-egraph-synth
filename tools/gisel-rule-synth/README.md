@@ -229,7 +229,11 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
 0. **Corpus** (`GISynthCorpusExtractor`, `corpus.py`). The extractor pass
    has no list of opcodes: it writes a tree for each instruction that
    is an operator of the operator table of the e-graph combiner (GIEGraph.h,
-   `OpProperties`), except `G_PHI` and the terminators. The values of a
+   `OpProperties`), except the terminators. A `G_PHI` is a node of a tree
+   only if each incoming value is a virtual register whose definition is
+   in a block that properly dominates the block of the `G_PHI`, and it has
+   at most 4 incoming values; its first argument in the tree is the edge
+   that the control flow took, which no register has. The values of a
    tree are scalars, pointers, and fixed vectors of them with at most 16
    lanes (`-gisel-synth-corpus-max-lanes`); a vector node has the width of
    a lane (`w`) and the number of lanes (`lanes`), and a
@@ -711,6 +715,25 @@ every disjunct of `P` and for the emitted disjunction as a whole.
     stays a rule for scalars.
   - Scalable vectors have no model (`G_SPLAT_VECTOR`, `G_STEP_VECTOR`,
     `G_VSCALE`).
+- A `G_PHI` is the selection of one of its incoming values by the edge
+  that the control flow took into its block. The edge is one more input of
+  the source: the proof holds for each edge, a replacement and a
+  precondition cannot read it, and the incoming values match in each
+  order. The result is poison only if the selected value is. A rule
+  matches a `G_PHI` and does not build one.
+  - A rule reads the incoming values at the position of its root, and it
+    takes an incoming value and each other occurrence of the same register
+    as one value. That is correct only if the definition of each incoming
+    value is in a block that properly dominates the block of the `G_PHI`
+    (`gisynth::isStablePhi`, which the emitted match calls): the
+    definition then does not execute again between the `G_PHI` and an
+    instruction that the `G_PHI` dominates. A value that a loop computes
+    again does not pass this check, because the `G_PHI` holds the value of
+    an earlier iteration. Without a dominator tree the check fails, so the
+    rule does not apply.
+  - A rule whose root is a `G_PHI` is emitted only if its replacement is
+    an input (a new instruction at that position is before the other
+    `G_PHI` of the block). A rule with several outputs has no `G_PHI`.
 - `G_MERGE_VALUES` and `G_UNMERGE_VALUES` of scalars are the concatenation
   and the parts of the bits. A rule matches and builds a merge. It matches
   an unmerge below the root and does not build one.

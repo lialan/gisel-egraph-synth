@@ -496,7 +496,9 @@ def lift(code_expr, vw):
     """The scalar expression and the scalar widths of an expression whose
     values are all vectors with one number of lanes and whose operators are
     all lane-wise (lanewise_only), or None."""
-    ls = {lanes(w) for w in vw}
+    # The edge of a G_PHI is a scalar: one edge for all lanes.
+    edge = ir.edge_vars(code_expr)
+    ls = {lanes(w) for i, w in enumerate(vw) if i not in edge}
     for n in ir.nodes(code_expr):
         ls.add(lanes(n[1]))
         for a in n[2:]:

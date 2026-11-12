@@ -20,6 +20,7 @@ the profiles, so `gi-rule-synth.py emit --check` can detect stale generated
 files.
 """
 
+import itertools
 import json
 import os
 
@@ -178,6 +179,12 @@ def _forms(n):
     res = []
     info, attr, _ = ops.parse(n.op)
     for args in out:
+        if info.phi:
+            # The proof holds for each edge: the incoming values match in
+            # each order. The edge is not an operand of the instruction.
+            res += [_Node(n.op, n.w, n.name, [args[0]] + list(p))
+                    for p in itertools.permutations(args[1:])]
+            continue
         res.append(_Node(n.op, n.w, n.name, args, n.results))
         if info.commutative:
             res.append(_Node(n.op, n.w, n.name,
@@ -208,14 +215,24 @@ def _lines(n, out, checks=None):
     if checks is None:
         checks = []
     operands = []
-    for a in n.args:
+    info, attr, res = ops.parse(n.op)
+    tag = n.name[1:]
+    for k, a in enumerate(n.args):
+        if info.phi and k == 0:
+            # The edge: no operand.
+            continue
         if isinstance(a, _Node):
             _lines(a, out, checks)
             operands.append(a.name)
         else:
             operands.append('$x%d' % a[1])
-    info, attr, res = ops.parse(n.op)
-    tag = n.name[1:]
+        if info.phi:
+            # The block of the incoming value.
+            operands.append('$%s_b%d' % (tag, k - 1))
+    if info.phi:
+        # The rule reads the incoming values at the root.
+        checks.append('gisynth::isStablePhi(MRI, Helper, ${%s}.getReg())'
+                      % tag)
     if info.results == 1:
         defs = [n.name]
     else:
@@ -381,8 +398,14 @@ def _sibling_vars(rule):
     return list((rule.get('region') or {}).get('sibling_vars', ()))
 
 
+def _edge_vars(rule):
+    """The variables that are the edge of a G_PHI: no register has them
+    (ir.edge_vars)."""
+    return ir.edge_vars(ir.from_json(rule['source_json']))
+
+
 def _pattern_vars(rule):
-    sv = set(_sibling_vars(rule))
+    sv = set(_sibling_vars(rule)) | _edge_vars(rule)
     return [i for i in range(len(rule['vw'])) if i not in sv]
 
 
@@ -797,7 +820,8 @@ def _type_sources(rule):
             for j, (b, _, _) in enumerate(_siblings(rule))
             if ops.parse(b[0])[0].results == 1]
     return [(src[1], root_kind, 'Dst')] + \
-        [(w, kinds.get(i), 'X%d' % i) for i, w in enumerate(rule['vw'])] + \
+        [(w, kinds.get(i), 'X%d' % i) for i, w in enumerate(rule['vw'])
+         if i not in ir.edge_vars(src)] + \
         [(w, k, 'T%d' % n)
          for n, (w, k) in enumerate(zip(interior, _interior_kinds(src)))] + \
         sibs
@@ -1006,6 +1030,11 @@ def why_not_emittable(rule):
     cv = tuple(rule.get('const_vars', ()))
     if ops.parse(src[0])[0].results != 1:
         return 'the root instruction has several results'
+    if ops.parse(src[0])[0].phi and not ir.is_var(tgt):
+        return 'a new instruction at the position of a G_PHI root is ' \
+            'before the other G_PHI of the block'
+    if ir.phi_nodes(src) and rule.get('region'):
+        return 'a rule with several outputs has no G_PHI'
     for n in [src] + ir.interior_nodes(src):
         info = ops.parse(n[0])[0]
         if info.shape not in ops._MATCH_SHAPES:
@@ -1148,8 +1177,11 @@ def _cpp_guard(r):
     vw = r['vw']
     src = ir.from_json(r['source_json'])
     _, interior = _annotate(src)
-    n, k = len(vw), len(interior)
-    cols = list(vw) + interior + [src[1]]
+    # The variables that a register has (not the edge of a G_PHI), and the
+    # index of each in the width tables.
+    real = [i for i in range(len(vw)) if i not in ir.edge_vars(src)]
+    n, k = len(real), len(interior)
+    cols = [vw[i] for i in real] + interior + [src[1]]
     sibs = _siblings(r)
     # (register, name in the comment, width) of the results of the
     # siblings. A result with a width of its own in every map (one bit)
@@ -1178,9 +1210,9 @@ def _cpp_guard(r):
     params = ['const MachineRegisterInfo &MRI', 'GISelValueTracking *VT'] + \
         (['RegionPlan &Plan'] if r.get('region') else []) + \
         ['Register %s' % x for x in _apply_params(r)]
-    regs = ['X%d' % i for i in range(n)] + ['T%d' % i for i in range(k)] + \
+    regs = ['X%d' % i for i in real] + ['T%d' % i for i in range(k)] + \
         ['Dst'] + [x for x, _, _ in sres]
-    what = ', '.join(['x%d' % i for i in range(n)] +
+    what = ', '.join(['x%d' % i for i in real] +
                      ['t%d' % i for i in range(k)] + ['root'] +
                      [x for _, x, _ in sres])
     out = ['/// %s -> %s' % (r['source'], r['replacement']),
@@ -1251,9 +1283,9 @@ def _cpp_guard(r):
                 '  if (!(%s))' % c, '    return false;']
     cpp = [[precond.cpp_atom(a) for a in p] for p in dnf]
     text = ' '.join(c for p in cpp for c in p)
-    for i in range(n):
+    for pos, i in enumerate(real):
         if ('W%d' % i) in text.replace('WRoot', ''):
-            out.append('  [[maybe_unused]] unsigned W%d = W[%d];' % (i, i))
+            out.append('  [[maybe_unused]] unsigned W%d = W[%d];' % (i, pos))
     if 'WRoot' in text:
         out.append('  [[maybe_unused]] unsigned WRoot = W[%d];' % (n + k))
     # Disjuncts without atoms need no value tracking; try them first.

@@ -196,6 +196,9 @@ def result_kind(e, expected=None):
         return 'p'
     if info.freeze:
         return result_kind(e[2], expected)
+    if info.phi:
+        return expected or next(
+            (k for k in map(result_kind, e[3:]) if k), None)
     if info.bitcast:
         if ops.parse(e[0])[1] == ops.REGROUP:
             # Another number of lanes: the kinds are free.
@@ -269,7 +272,8 @@ def operand_kind(e, k, expected=None):
         roles = info.vec_kinds[0]
         role = roles[min(k, len(roles) - 1)]
         return result_kind(e, expected) if role == 'v' else role
-    if info.freeze or (info.shape == 'select' and k > 0):
+    if info.freeze or (info.shape == 'select' and k > 0) or \
+            (info.phi and k > 0):
         return result_kind(e, expected)
     if info.bitcast:
         if ops.parse(e[0])[1] == ops.REGROUP:
@@ -315,6 +319,54 @@ def repeated_freeze(e):
     per term."""
     terms = freeze_terms(e)
     return len(terms) != len(set(terms))
+
+
+def phi_nodes(e, out=None):
+    """The G_PHI nodes of ``e``, one entry per occurrence."""
+    if out is None:
+        out = []
+    if is_op(e):
+        if ops.known(e[0]) and ops.parse(e[0])[0].phi:
+            out.append(e)
+        for a in e[2:]:
+            phi_nodes(a, out)
+    return out
+
+
+def edge_vars(e):
+    """The variables of ``e`` that are the edge of a G_PHI (OpInfo.phi).
+    No register has their value: a pattern does not match them, and a
+    replacement and a precondition do not read them."""
+    return frozenset(n[2][1] for n in phi_nodes(e))
+
+
+def phi_error(e):
+    """None if the G_PHI nodes of the source ``e`` have the form of the
+    model, else the reason. Each G_PHI has an edge variable of its own
+    that nothing else reads: a pattern matches each occurrence with an
+    instruction of its own, and two G_PHI of different blocks have
+    different edges. (Two G_PHI of one block have the same edge; the proof
+    for independent edges is the stronger one.) The incoming values are
+    variables or constants: their definitions are in other blocks."""
+    phis = phi_nodes(e)
+    if not phis:
+        return None
+    edges = [n[2] for n in phis]
+    if not all(is_var(x) for x in edges) or len(set(edges)) != len(edges):
+        return 'a G_PHI without an edge of its own'
+    ev = {x[1] for x in edges}
+
+    def reads_edge(n, below_phi):
+        if is_var(n):
+            return n[1] in ev and not below_phi
+        return is_op(n) and any(
+            reads_edge(a, ops.known(n[0]) and ops.parse(n[0])[0].phi and
+                       k == 0) for k, a in enumerate(n[2:]))
+    if reads_edge(e, False):
+        return 'an operator reads the edge of a G_PHI'
+    if any(is_op(a) for n in phis for a in n[3:]):
+        return 'an incoming value of a G_PHI is an operation'
+    return None
 
 
 def nodes(e, out=None):
@@ -467,10 +519,11 @@ def apply_op(op, w, ws, vals, fill=1):
     if info.freeze:
         # Any value is a correct result for a poison operand.
         return 0 if vals[0] is None else vals[0]
-    # G_SELECT: poison if the condition or the selected arm is poison.
+    # G_SELECT, G_PHI: poison if the condition (the edge) or the selected
+    # value is poison.
     if vals[0] is None:
         return None
-    return vals[1] if vals[0] else vals[2]
+    return info.eval(w, ws, attr, res, vals)
 
 
 def evaluate(e, vw, env, fill=1):

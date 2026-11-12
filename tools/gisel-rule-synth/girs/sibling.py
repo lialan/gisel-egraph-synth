@@ -143,6 +143,11 @@ def freeze_ok(a, sibs):
     G_FREEZE itself is a new instruction."""
     if ir.repeated_freeze(a):
         return False
+    # A rule with several roots has no G_PHI: its replacement is built at
+    # a position in the block of the roots that the rule finds, and a
+    # G_PHI is in another block.
+    if ir.phi_nodes(a) or any(ir.phi_nodes(b) for b in sibs):
+        return False
     have = set(ir.freeze_terms(a))
     for b in sibs:
         if ir.is_op(b) and ops.parse(b[0])[0].freeze:

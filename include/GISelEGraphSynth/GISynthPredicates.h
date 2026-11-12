@@ -207,6 +207,54 @@ inline bool coversLowAfterShift(const APInt &Mask, const KnownBits &Amt) {
   return Mask.countr_one() >= W - Amt.getMinValue().getLimitedValue(W);
 }
 
+/// The largest number of incoming values of a G_PHI of a rule.
+constexpr unsigned MaxPhiInputs = 4;
+
+/// True if \p Phi is a G_PHI whose incoming values a rule can read at the
+/// position of an instruction that the G_PHI dominates. The synthesizer
+/// proves a rule for each edge into the block of the G_PHI, and it takes an
+/// incoming value and each other occurrence of the same register in the rule
+/// as one value. That is correct if the definition of each incoming value is
+/// in a block that properly dominates the block of the G_PHI: the definition
+/// then does not execute again between the G_PHI and an instruction that the
+/// G_PHI dominates, and it dominates that instruction. (A value that a loop
+/// computes again is the value of an earlier iteration in the G_PHI.)
+///
+/// \p Dominates(Def, Use) says if the instruction Def dominates the
+/// instruction Use; an answer that is always false is correct
+/// (CombinerHelper::dominates without a dominator tree).
+template <typename DominatesFn>
+bool hasStablePhiInputs(const MachineRegisterInfo &MRI, const MachineInstr &Phi,
+                        DominatesFn Dominates) {
+  if (Phi.getOpcode() != TargetOpcode::G_PHI)
+    return false;
+  unsigned NumInputs = (Phi.getNumOperands() - 1) / 2;
+  if (NumInputs == 0 || NumInputs > MaxPhiInputs)
+    return false;
+  for (unsigned I = 1, E = Phi.getNumOperands(); I < E; I += 2) {
+    const MachineOperand &MO = Phi.getOperand(I);
+    if (!MO.isReg() || !MO.getReg().isVirtual())
+      return false;
+    const MachineInstr *Def = MRI.getVRegDef(MO.getReg());
+    if (!Def || Def->getParent() == Phi.getParent() || !Dominates(*Def, Phi))
+      return false;
+  }
+  return true;
+}
+
+/// hasStablePhiInputs for the G_PHI that defines \p Phi, with the dominance
+/// query of \p Helper (a CombinerHelper).
+template <typename HelperT>
+bool isStablePhi(const MachineRegisterInfo &MRI, const HelperT &Helper,
+                 Register Phi) {
+  const MachineInstr *Def = MRI.getVRegDef(Phi);
+  return Def && hasStablePhiInputs(
+                    MRI, *Def,
+                    [&](const MachineInstr &DefMI, const MachineInstr &UseMI) {
+                      return Helper.dominates(DefMI, UseMI);
+                    });
+}
+
 /// A rule for a region with several outputs replaces the root and, with it,
 /// values below the root that have other users (\p Outs). The replacement is
 /// built before the first of these values, so that it dominates every user.

@@ -425,6 +425,11 @@ def atom_vars(a):
     return [a[1], a[2]]
 
 
+def atom_all_vars(a):
+    """Each variable that the atom is a condition on."""
+    return [a[1]] if a[0] == 'def' else atom_vars(a)
+
+
 def pred_vars(p):
     return sorted({i for a in p for i in atom_vars(a)})
 

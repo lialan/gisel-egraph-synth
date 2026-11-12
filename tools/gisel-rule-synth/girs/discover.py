@@ -1019,6 +1019,8 @@ def discover(inst, backend, limits=None, ctx=None, log=None):
     # Neither is the source with a constant input spelled as a literal.
     for e in literal_spellings(inst):
         src_variants.update(ir.commuted_variants(e))
+    # No register has the edge of a G_PHI: a replacement does not read it.
+    edge = ir.edge_vars(inst.expr)
     found = {}
     stages = []
     truncated = None
@@ -1040,7 +1042,8 @@ def discover(inst, backend, limits=None, ctx=None, log=None):
             # A bank has type classes, not types: an operator can have a
             # type rule that the widths of this instance do not meet.
             if e not in src_variants and e not in found and \
-                    ir.well_typed(e, inst.vw):
+                    ir.well_typed(e, inst.vw) and \
+                    not (edge and edge & set(ir.variables(e))):
                 found[e] = (bank.cost[i], ir.to_sexpr(e), e)
                 new += 1
         cut = bank.truncated and bank.truncated_at[0] <= max_cost

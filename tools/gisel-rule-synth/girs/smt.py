@@ -391,6 +391,12 @@ class Encoder:
                 ps = []
             elif info.strict:
                 ps = [a[1] for a in args]
+            elif info.phi:
+                # The edge and the incoming value of the edge.
+                sel = args[-1][1]
+                for k in range(len(args) - 3, -1, -1):
+                    sel = z3.If(xs[0] == k, args[1 + k][1], sel)
+                ps = [args[0][1], sel]
             else:
                 # G_SELECT: the condition and the selected arm.
                 ps = [args[0][1], z3.If(args[0][0] == 1, args[1][1],
@@ -448,6 +454,7 @@ def refinement_violation(enc, src, tgt, guard):
     behaviour, or the source is not poison and the target is poison or
     different."""
     assert not ir.repeated_freeze(src), 'one G_FREEZE term twice'
+    assert ir.phi_error(src) is None, ir.phi_error(src)
     enc.roots = (src,)
     enc.mark_source(src)
     sv, sp, su = enc.enc_full(src)

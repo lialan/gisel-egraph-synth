@@ -134,6 +134,13 @@ def _convert(node, inputs, interior_uses, flags, shared, root=False,
                 regs.append(a['reg'])
         args.append(_convert(a, inputs, interior_uses, flags, shared,
                              sub=sub, regs=regs))
+    if ops.REGISTRY[node['op']].phi:
+        # The edge that the control flow took: an input that no register
+        # has (OpInfo.phi). It is never poison.
+        bits = ops.phi_edge_bits(len(args))
+        inputs.append({'reg': None, 'w': bits, 'zero': '0x0', 'one': '0x0',
+                       'type': '', 'noundef': True, 'edge': True})
+        args.insert(0, ('var', len(inputs) - 1))
     if node['op'] == 'G_BITCAST':
         a = node['args'][0]
         if ('in' in a and inputs[a['in']].get('lanes', 0) or
