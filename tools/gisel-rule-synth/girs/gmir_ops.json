@@ -378,6 +378,194 @@
    "has_fold": true
   },
   {
+   "name": "G_BUILD_VECTOR",
+   "shape": "vector",
+   "operands": -1,
+   "model_only": true
+  },
+  {
+   "name": "G_BUILD_VECTOR_TRUNC",
+   "shape": "vector",
+   "operands": -1,
+   "model_only": true
+  },
+  {
+   "name": "G_CONCAT_VECTORS",
+   "shape": "vector",
+   "operands": -1,
+   "model_only": true
+  },
+  {
+   "name": "G_INSERT_VECTOR_ELT",
+   "shape": "vector",
+   "operands": 3,
+   "model_only": true
+  },
+  {
+   "name": "G_EXTRACT_VECTOR_ELT",
+   "shape": "vector",
+   "operands": 2,
+   "model_only": true
+  },
+  {
+   "name": "G_SHUFFLE_VECTOR",
+   "shape": "vector",
+   "operands": 2,
+   "model_only": true
+  },
+  {
+   "name": "G_INSERT_SUBVECTOR",
+   "shape": "vector",
+   "operands": 2,
+   "model_only": true,
+   "imm_attr": true
+  },
+  {
+   "name": "G_EXTRACT_SUBVECTOR",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true,
+   "imm_attr": true
+  },
+  {
+   "name": "G_VECTOR_COMPRESS",
+   "shape": "vector",
+   "operands": 3,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_SEQ_FADD",
+   "shape": "vector",
+   "operands": 2,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_SEQ_FMUL",
+   "shape": "vector",
+   "operands": 2,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_FADD",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_FMUL",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_FMAX",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_FMIN",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_FMAXIMUM",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_FMINIMUM",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_FMAXIMUMNUM",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_FMINIMUMNUM",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_ADD",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_MUL",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_AND",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_OR",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_XOR",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_SMAX",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_SMIN",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_UMAX",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_VECREDUCE_UMIN",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_SPLAT_VECTOR",
+   "shape": "vector",
+   "operands": 1,
+   "model_only": true
+  },
+  {
+   "name": "G_STEP_VECTOR",
+   "shape": "vector",
+   "operands": 0,
+   "model_only": true
+  },
+  {
+   "name": "G_VSCALE",
+   "shape": "vector",
+   "operands": 0,
+   "model_only": true
+  },
+  {
    "name": "G_FCANONICALIZE",
    "shape": "unary",
    "operands": 1,

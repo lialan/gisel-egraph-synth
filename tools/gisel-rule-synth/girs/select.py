@@ -98,13 +98,16 @@ class _Fn:
     def emit(self, w, rhs, kind=None):
         r = '%%%d' % self.n
         self.n += 1
+        n, ew = ops.lanes(w), ops.elem(w)
         if kind == 'p':
-            if w not in self.t.pointer_as:
-                raise ValueError('the target has no pointer of %d bits' % w)
-            ty = 'p%d' % self.t.pointer_as[w]
+            if ew not in self.t.pointer_as:
+                raise ValueError('the target has no pointer of %d bits' % ew)
+            ty = 'p%d' % self.t.pointer_as[ew]
         else:
             ty = '%s%d' % (('f' if kind == 'f' else 'i') if self.typed
-                           else 's', w)
+                           else 's', ew)
+        if n:
+            ty = '<%d x %s>' % (n, ty)
         self.lines.append('    %s:_(%s) = %s' % (r, ty, rhs))
         self.kind[r] = kind
         self.width[r] = w
@@ -133,10 +136,32 @@ class _Fn:
         self.n += len(ws)
         self.width.update(zip(rs, ws))
         self.lines.append('    %s = %s' % (', '.join(
-            '%s:_(s%d)' % (r, w) for r, w in zip(rs, ws)), rhs))
+            '%s:_(%s)' % (r, '<%d x s%d>' % (ops.lanes(w), ops.elem(w))
+                          if ops.lanes(w) else 's%d' % w)
+            for r, w in zip(rs, ws)), rhs))
         return rs
 
+    def const(self, w, value):
+        """A constant of the type code ``w``; a vector has the value in
+        each lane."""
+        ew = ops.elem(w)
+        c = self.emit(ew, 'G_CONSTANT i%d %d' % (ew, value))
+        if ops.lanes(w):
+            c = self.emit(w, 'G_BUILD_VECTOR ' +
+                          ', '.join([c] * ops.lanes(w)))
+        return c
+
     def arg(self, w):
+        """(register, physical registers) of a new argument."""
+        if ops.lanes(w):
+            # A vector of one argument for each lane.
+            lanes = [self.arg(ops.elem(w)) for _ in range(ops.lanes(w))]
+            return self.emit(w, 'G_BUILD_VECTOR ' + ', '.join(
+                r for r, _ in lanes)), [p for _, ps in lanes for p in ps]
+        r, phys = self._scalar_arg(w)
+        return r, [phys]
+
+    def _scalar_arg(self, w):
         if w > 32:
             phys = self.t.arg64(self.nargs)
             self.nargs += 2 if self.t.name == 'AMDGPU' else 1
@@ -169,21 +194,19 @@ def build_mir(rule, example, name, target):
     fn.typed = any(ops.parse(n[0])[0].bitcast for n in ir.nodes(src))
     xs, live = [], []
     for w, (z, o), is_defined in zip(vw, facts, defined):
-        mk = ir.mask(w)
+        mk = ir.mask(ops.elem(w))
         if (z | o) == mk:
-            xs.append(fn.emit(w, 'G_CONSTANT i%d %d' % (w, o)))
+            xs.append(fn.const(w, o))
             continue
         r, phys = fn.arg(w)
-        live.append(phys)
+        live += phys
         if is_defined:
             # A value that is neither undef nor poison.
             r = fn.emit(w, 'G_FREEZE %s' % r)
         if z:
-            c = fn.emit(w, 'G_CONSTANT i%d %d' % (w, ~z & mk))
-            r = fn.emit(w, 'G_AND %s, %s' % (r, c))
+            r = fn.emit(w, 'G_AND %s, %s' % (r, fn.const(w, ~z & mk)))
         if o:
-            c = fn.emit(w, 'G_CONSTANT i%d %d' % (w, o))
-            r = fn.emit(w, 'G_OR %s, %s' % (r, c))
+            r = fn.emit(w, 'G_OR %s, %s' % (r, fn.const(w, o)))
         xs.append(r)
 
     several = {}
@@ -195,8 +218,8 @@ def build_mir(rule, example, name, target):
         if ir.is_var(e):
             return fn.as_kind(xs[e[1]], vw[e[1]], expected)
         if not ir.is_op(e):
-            return fn.as_kind(fn.emit(e[1], 'G_CONSTANT i%d %d' % (
-                e[1], ir.leaf_value(e))), e[1], expected)
+            return fn.as_kind(fn.const(e[1], ir.leaf_value(e)), e[1],
+                              expected)
         k = len(node_reg)
         node_reg.append(None)
         kind = ir.result_kind(e, expected)
@@ -216,11 +239,20 @@ def build_mir(rule, example, name, target):
                 ', '.join(args))
         elif info.attr == 'imm':
             text = '%s %s, %d' % (info.name, ', '.join(args), attr)
+        elif info.attr == 'imm?' and attr is not None:
+            # The index of a lane: a constant of the index type of the
+            # target.
+            text = '%s %s, %s' % (info.name, ', '.join(args), fn.const(
+                target.vector_idx_bits, attr))
+        elif info.attr == 'mask':
+            text = '%s %s, shufflemask(%s)' % (
+                info.name, ', '.join(args), ', '.join(
+                    'undef' if x < 0 else str(x) for x in ops.mask_of(attr)))
         else:
             text = '%s %s' % (info.name, ', '.join(args))
         if info.shape == 'unmerge':
             # Equal parts of the operand.
-            ws = [e[1]] * (ir.width(e[2], vw) // e[1])
+            ws = [e[1]] * (ops.bits(ir.width(e[2], vw)) // ops.bits(e[1]))
         else:
             kinds = info.meta.get('result_kinds', ['main'])
             if len(kinds) == 1:
@@ -252,6 +284,11 @@ def build_mir(rule, example, name, target):
                 for i, r in enumerate(args)]
         sib_reg.append(instr(b, args, bk))
         outs.append((fn.as_kind(sib_reg[-1], b[1], 'i'), b[1]))
+    # Each lane of a vector is an output.
+    outs = [x for r, w in outs for x in (
+        [(r, w)] if not ops.lanes(w) else
+        [(p, ops.elem(w)) for p in fn.emit_results(
+            [ops.elem(w)] * ops.lanes(w), 'G_UNMERGE_VALUES %s' % r)])]
     copies, slot = [], 0
     for r, w in outs:
         if w < 32:

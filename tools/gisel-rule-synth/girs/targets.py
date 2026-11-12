@@ -17,8 +17,13 @@ PROFILE_DIR = os.path.join(HERE, 'targets')
 class Target:
     def __init__(self, name, triple_flags, combiner, enable_flag,
                  corpus_flag, arg32, arg64, ret, insn_regex,
-                 native_bits=32, egraph_flag=None, pointer_as=None):
+                 native_bits=32, egraph_flag=None, pointer_as=None,
+                 vector_idx_bits=64):
         self.name = name
+        # The width of the index of a lane (TargetLowering::
+        # getVectorIdxWidth): the type of the index constant of a probe
+        # function.
+        self.vector_idx_bits = vector_idx_bits
         # width -> an address space of the target whose pointers have this
         # width and are their bits (integral, offsets of the same width):
         # the pointer type of a probe function (select.py).
@@ -106,7 +111,7 @@ TARGETS = {
         lambda n: '$vgpr%d_vgpr%d' % (n, n + 1),
         lambda r: 'SI_RETURN implicit %s' % r,
         r'^\s+[sv]_[a-z0-9_]+', egraph_flag='-amdgpu-gisel-egraph',
-        pointer_as={64: 0, 32: 3}),
+        pointer_as={64: 0, 32: 3}, vector_idx_bits=32),
     'AArch64': Target(
         'AArch64', ['-mtriple=aarch64'],
         'aarch64-prelegalizer-combiner', '-aarch64-gisel-synth-combines',

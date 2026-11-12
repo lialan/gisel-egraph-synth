@@ -43,6 +43,7 @@ from . import ir
 from . import ops
 from . import precond
 from . import smt
+from . import vector
 
 WIDTHS = (8, 16, 32, 64)
 # v2: each input can be poison, G_FREEZE, the conversions between integers
@@ -88,6 +89,9 @@ def widened_width(src, tgt):
     def non_casts(e):
         return [n for n in [e] + ir.interior_nodes(e)
                 if ir.is_op(n) and ops.parse(n[0])[0].shape != 'cast']
+    if vector.has_vector((), src, tgt):
+        # The type codes of vectors have no order.
+        return 0
     sw = max([n[1] for n in non_casts(src)] or [0])
     tw = max([n[1] for n in non_casts(tgt)] or [0])
     return tw if tw > sw else 0
@@ -174,6 +178,9 @@ def verify(sched, dnf, backend, const_vars=(), strong=False):
     ('valid', proofs) | ('invalid', (vw, facts, root width)) | ('unknown',
     None)."""
     assert dnf, 'an empty disjunction is false and proves nothing'
+    if any(vector.has_vector(v, s, t) for s, t, v, _ in sched):
+        # Each lane of the replacement refines the same lane of the source.
+        return vector.verify(sched, dnf, backend, const_vars, strong)
     proofs = []
     for s, t, v, wmap in sched:
         enc = smt.Encoder(v, s[1], const_vars)
@@ -323,6 +330,14 @@ def rule_class(src, tgt, const_vars=()):
     return 'reduces_cost'
 
 
+def interior_choice(src, vw):
+    """smt.interior_choice for the source of a rule with the variables
+    ``vw``: scalars, or vectors with their lanes."""
+    if vector.has_vector(vw, src):
+        return vector.interior_choice(src, vw)
+    return smt.interior_choice([src])
+
+
 class IncompleteGuardProof(Exception):
     """The final combined guard was not decided within the proof budget."""
 
@@ -399,6 +414,73 @@ class Synthesizer:
         """Generalizes and verifies one concrete discovery. Returns the rule
         id, or None if no precondition was found."""
         self.stats['discoveries'] += 1
+        if vector.has_vector(inst.vw, inst.expr, tgt):
+            return self._add_vector(inst, tgt, provenance)
+        rid = self._add(inst, tgt, provenance)
+        if rid and getattr(inst, 'lifted', False):
+            # The source is in the corpus with vectors: the guard also
+            # accepts vectors, lane by lane (emit.lifts).
+            self.rules[rid]['lift'] = True
+        return rid
+
+    def _add_vector(self, inst, tgt, provenance):
+        """A discovery with vectors: a rule for the types of the instance,
+        without a precondition. Its proof is the joint proof of the lanes
+        (vector.verify)."""
+        src, tgt, vw, facts, perm = canonicalize(inst.expr, tgt, inst.vw,
+                                                 inst.facts)
+        assert set(ir.variables(tgt)) <= set(ir.variables(src))
+        assert vector.linear(tgt, vw)
+        key = class_key(src, tgt, vw)
+        rule = self.rules.get(self.by_key.get(key))
+        if rule is None and key in self.rejected:
+            self.rejected[key]['instances'] += 1
+            return None
+        if rule is not None:
+            psrc = ir.from_json(rule['source_json'])
+            ptgt = ir.from_json(rule['replacement_json'])
+            pvw = tuple(rule['vw'])
+        else:
+            psrc, ptgt, pvw = src, tgt, vw
+        first = dict(zip(all_widths(psrc, ptgt, pvw),
+                         all_widths(src, tgt, vw)))
+        if (ir.map_widths(psrc, first), ir.map_widths(ptgt, first),
+                tuple(first[w] for w in pvw)) != (src, tgt, vw):
+            # The types of the instance are not the types of the rule in
+            # the same order.
+            return None
+        d = rule['disjuncts'][0] if rule is not None else None
+        if d is None or _map_key(first.items()) not in \
+                {_map_key(m) for m in d['width_maps']}:
+            st, proofs = verify([(src, tgt, vw, first)], [()], self.backend)
+            if st != 'valid':
+                if rule is None:
+                    self.stats['rejected'] += 1
+                    self.rejected[key] = {
+                        'source': ir.to_sexpr(src),
+                        'replacement': ir.to_sexpr(tgt), 'vw': list(vw),
+                        'reason': ('solver_unknown' if st == 'unknown' else
+                                   'not_a_refinement'),
+                        'search': {}, 'instances': 1, '_retries': 1,
+                        '_cex': [],
+                        'example': {
+                            'file': os.path.basename(inst.prov[0][0]),
+                            'fn': inst.prov[0][1], 'root': inst.prov[0][2],
+                            'facts': [[hex(f[0]), hex(f[1])] + list(f[2:])
+                                      for f in facts]}}
+                return None
+            if rule is None:
+                rule = self._new_rule(src, tgt, vw, key, {}, [], dict(
+                    provenance or {}, discovery='vector-lanes+smt'))
+            else:
+                self.stats['schedules_added'] += 1
+            d = self._add_disjunct(rule, (), proofs)
+        else:
+            self.stats['reused'] += 1
+        self._support(rule, d, inst, perm, facts, vw)
+        return rule['id']
+
+    def _add(self, inst, tgt, provenance=None):
         # The replacement has the type of the source: two values with the
         # same bits and different kinds (an integer and a floating-point
         # value, G_BITCAST) are not the same register type.
@@ -747,7 +829,8 @@ class Synthesizer:
         value of the bits. If the emitted guard is not proved in this
         form, the rule gets the guard that the values below the root have
         no other user. Returns the entry of the statistics."""
-        kind = smt.interior_choice([ir.from_json(rule['source_json'])])
+        kind = interior_choice(ir.from_json(rule['source_json']),
+                               rule['vw'])
         if kind is None:
             rule.pop('interior_choice', None)
             return None

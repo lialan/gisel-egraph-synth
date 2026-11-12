@@ -32,6 +32,8 @@ from . import fp
 from . import ops
 
 UB = ops.UB
+# Type codes of fixed vectors (ops.py).
+vec, lanes, elem = ops.vec, ops.lanes, ops.elem
 
 # The base grammar of the enumerative search (ops.ENUMERATED). These lists
 # do not say which operators the synthesizer supports: that is the
@@ -60,6 +62,9 @@ def mask(w):
 
 
 def lit_value(w, k):
+    """The value of the literal ``k`` of the width ``w``; for a vector,
+    the value of each lane."""
+    w = elem(w)
     return {'0': 0, '1': 1 & mask(w), '-1': mask(w)}[k]
 
 
@@ -175,6 +180,16 @@ def result_kind(e, expected=None):
     if not is_op(e) or not ops.known(e[0]):
         return expected
     info, _, res = ops.parse(e[0])
+    if info.vector:
+        roles, rrole = info.vec_kinds
+        if rrole != 'v':
+            return rrole
+        for k, a in enumerate(e[2:]):
+            if roles[min(k, len(roles) - 1)] == 'v':
+                r = result_kind(a, expected)
+                if r:
+                    return r
+        return expected
     if info.fp_result:
         return 'i' if res in info.int_results else 'f'
     if info.ptr_result:
@@ -182,6 +197,9 @@ def result_kind(e, expected=None):
     if info.freeze:
         return result_kind(e[2], expected)
     if info.bitcast:
+        if ops.parse(e[0])[1] == ops.REGROUP:
+            # Another number of lanes: the kinds are free.
+            return expected
         # The other kind than the operand.
         return expected or _OTHER_KIND.get(result_kind(e[2]))
     if info.shape == 'select':
@@ -247,9 +265,15 @@ def operand_kind(e, k, expected=None):
     """The kind that the operation ``e`` needs for its operand ``k``; see
     result_kind."""
     info = ops.parse(e[0])[0]
+    if info.vector:
+        roles = info.vec_kinds[0]
+        role = roles[min(k, len(roles) - 1)]
+        return result_kind(e, expected) if role == 'v' else role
     if info.freeze or (info.shape == 'select' and k > 0):
         return result_kind(e, expected)
     if info.bitcast:
+        if ops.parse(e[0])[1] == ops.REGROUP:
+            return None
         return _OTHER_KIND.get(result_kind(e, expected))
     if k in info.ptr_operands:
         return 'p'
@@ -369,14 +393,20 @@ def interior_nodes(e, out=None):
     return out
 
 
+def type_str(t):
+    """s32 for a scalar of 32 bits, v4s32 for a vector of four of them."""
+    return 'v%ds%d' % (lanes(t), elem(t)) if lanes(t) else 's%d' % t
+
+
 def to_sexpr(e):
     if is_var(e):
         return 'x%d' % e[1]
     if is_lit(e):
-        return '%s:s%d' % (e[2], e[1])
+        return '%s:%s' % (e[2], type_str(e[1]))
     if is_const(e):
-        return '%#x:s%d' % (e[2], e[1])
-    return '(%s:s%d %s)' % (e[0], e[1], ' '.join(to_sexpr(a) for a in e[2:]))
+        return '%#x:%s' % (e[2], type_str(e[1]))
+    return '(%s:%s %s)' % (e[0], type_str(e[1]),
+                           ' '.join(to_sexpr(a) for a in e[2:]))
 
 
 def to_json(e):
@@ -402,7 +432,7 @@ def from_json(j):
 def well_typed(e, vw):
     """Structural type check with the typing rule of each operator."""
     if is_const(e):
-        return 0 <= e[2] <= mask(e[1])
+        return 0 <= e[2] <= mask(elem(e[1]))
     if not is_op(e):
         return True
     args = e[2:]
@@ -410,10 +440,7 @@ def well_typed(e, vw):
         return False
     if not ops.known(e[0]):
         return False
-    info, attr, res = ops.parse(e[0])
-    if info.typecheck is None:
-        return False
-    return info.typecheck(e[1], [width(a, vw) for a in args], attr, res)
+    return ops.typecheck(e[0], e[1], [width(a, vw) for a in args])
 
 
 def _sext(v, w):

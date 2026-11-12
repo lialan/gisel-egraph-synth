@@ -443,7 +443,7 @@ def _schedule(insts, share):
 
 def cmd_synth(args):
     from girs import compose, corpus, discover, egraph, ir, region, \
-        sibling, smt, synth
+        sibling, smt, synth, vector
 
     if args.mode == 'semantics-only' and (args.egraph or args.compose_corpus
                                           or args.compose_axioms):
@@ -496,6 +496,14 @@ def cmd_synth(args):
             dstats['not_searched_time_budget'] += 1
             continue
         dstats['instances'] += 1
+        if vector.has_vector(inst.vw, inst.expr):
+            # The lanes of the source give the replacement.
+            dstats['vector_instances'] = dstats.get('vector_instances',
+                                                    0) + 1
+            for tgt in vector.candidates(inst.expr, inst.vw):
+                dstats['candidates'] += 1
+                sy.add(inst, tgt)
+            continue
         hit = cache.get(inst)
         if hit:
             cands, st, log = hit
@@ -787,7 +795,7 @@ def cmd_recheck(args):
     """Re-proves every rule in the library from its JSON form: every
     disjunct for each of its width schedules, and the emitted disjunction
     as a whole."""
-    from girs import ir, precond, region, sibling, smt, synth
+    from girs import ir, precond, region, sibling, smt, synth, vector
     db = _load_db(args.db)
     backend = smt.Z3Backend(timeout_ms=args.timeout_ms)
     bad = n = 0
@@ -803,11 +811,12 @@ def cmd_recheck(args):
                 else region.structural(r))
         else:
             ok = (set(ir.variables(tgt)) <= set(ir.variables(src)) and
-                  ir.is_linear_in(tgt, cv))
+                  vector.linear(tgt, r['vw'], cv))
         # A value below the root with bits that are not specified: the
         # proof is for each value of them, or the rule has the guard that
         # the values below the root have no other user.
-        choice = None if r.get('region') else smt.interior_choice([src])
+        choice = None if r.get('region') else \
+            synth.interior_choice(src, r['vw'])
         strong = choice == 'value' and not r['needs_one_use']
         if choice == 'model' and not r['needs_one_use']:
             ok = False

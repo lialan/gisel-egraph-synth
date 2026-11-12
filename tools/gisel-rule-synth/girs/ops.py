@@ -22,6 +22,13 @@ An operator *key* is the name with its attribute and result index:
     G_ICMP:ult       comparison predicate
     G_SEXT_INREG:8   immediate operand
     G_UADDO#1        result 1 of an operator with several results
+    G_SHUFFLE_VECTOR:0.3.u.1   the mask (u: a lane without a value)
+    G_EXTRACT_VECTOR_ELT:2     the constant index of the lane
+
+The width of a value is a *type code*: the number of bits of a scalar or
+of a pointer, and ``vec(lanes, width)`` for a fixed vector (``lanes`` and
+``elem`` read it). The models of this module are for scalars; ``vector.py``
+gives each lane of a vector its scalar expression.
 
 A value of the evaluator is an int, None (poison) or ``UB`` (the operation
 has undefined behaviour, e.g. a division by zero).
@@ -51,6 +58,39 @@ STAGES = ('import', 'typecheck', 'eval', 'smt', 'discovery', 'emit')
 
 def mask(w):
     return (1 << w) - 1
+
+
+# ------------------------------------------------------- type codes ---
+
+_LANE_SHIFT = 16
+# The largest number of lanes of a vector with a model (gisynth::
+# MaxVectorLanes in GISynthPredicates.h).
+MAX_LANES = 16
+
+
+def vec(n, w):
+    """The type code of a vector of ``n`` lanes of ``w`` bits (``n`` = 0:
+    the scalar)."""
+    return (n << _LANE_SHIFT) | w if n else w
+
+
+def lanes(t):
+    """The number of lanes of the type code ``t``; 0 for a scalar."""
+    return t >> _LANE_SHIFT
+
+
+def elem(t):
+    """The width of a lane of the type code ``t``."""
+    return t & ((1 << _LANE_SHIFT) - 1)
+
+
+def bits(t):
+    """The number of bits of a value of the type code ``t``."""
+    return max(lanes(t), 1) * elem(t)
+
+
+def type_text(t):
+    return '<%d x %d>' % (lanes(t), elem(t)) if lanes(t) else str(t)
 
 
 def sx(v, w):
@@ -157,6 +197,22 @@ class OpInfo:
         # applies only in a function with the IEEE denormal mode for the
         # formats (emit.py).
         self.denormal = False
+        # The operator builds, divides or reduces a vector (the shape
+        # 'vector'): its model is the scalar expression of each lane of
+        # its result (vector.py), and ``typecheck`` takes type codes.
+        self.vector = False
+        # Every other operator with a vector result computes each lane
+        # from the same lane of its operands, unless ``lanewise`` is
+        # false (G_MERGE_VALUES: scalars only).
+        self.lanewise = True
+        # (kind of each operand, kind of the result) of a vector
+        # operator: 'v' (the kind of the lanes of the vector), 'i' or 'f'.
+        # One operand kind stands for each operand if their number is not
+        # fixed.
+        self.vec_kinds = None
+        # LLVM permits more than one result and the model has one of them
+        # (the order of a floating-point reduction); see fixed_result.
+        self.vec_fixed_result = False
 
     # -- the contract of a search --
 
@@ -197,6 +253,19 @@ class OpInfo:
         result ``res`` for operands of the given kinds, or None if the
         operands do not have the kinds that the operator needs."""
         ks = list(operand_kinds)
+        if self.vector:
+            roles, rrole = self.vec_kinds
+            roles = roles if self.operands is not None and \
+                len(roles) == len(ks) else [roles[0]] * len(ks)
+            if self.attr == 'imm?' and len(ks) < len(self.vec_kinds[0]):
+                # The index is the attribute.
+                roles = self.vec_kinds[0][:len(ks)]
+            vk = {k for k, r in zip(ks, roles) if r == 'v'}
+            if len(vk) > 1 or any(k != r for k, r in zip(ks, roles)
+                                  if r != 'v'):
+                return None
+            return vk.pop() if rrole == 'v' and vk else \
+                (None if rrole == 'v' else rrole)
         if self.freeze:
             return ks[0]
         if self.ptr_operands or self.ptr_result:
@@ -261,9 +330,67 @@ def parse(key):
     if ':' in key:
         key, attr = key.split(':')
     info = REGISTRY[key]
-    if info.attr == 'imm':
+    if info.attr == 'imm' or (info.attr == 'imm?' and attr is not None):
         attr = int(attr)
     return info, attr, res
+
+
+# The attribute of a G_BITCAST between types with different numbers of
+# lanes.
+REGROUP = 'r'
+
+
+def mask_of(attr):
+    """The lanes of a shuffle mask attribute; -1 is a lane without a
+    value."""
+    return tuple(-1 if x == 'u' else int(x) for x in attr.split('.'))
+
+
+def mask_attr(lanes_):
+    return '.'.join('u' if x < 0 else str(x) for x in lanes_)
+
+
+def typecheck(key, w, ws):
+    """True if a node of the type code ``w`` with the operator ``key`` and
+    operands of the type codes ``ws`` is well typed. An operator on
+    scalars takes vectors lane by lane: all values are vectors with the
+    same number of lanes (the condition of a G_SELECT can be a scalar)."""
+    info, attr, res = parse(key)
+    if info.typecheck is None:
+        return False
+    ws = list(ws)
+    if info.vector or not any(lanes(x) for x in [w] + ws):
+        return bool(info.typecheck(w, ws, attr, res))
+    if info.bitcast and len(ws) == 1 and \
+            (attr == REGROUP or lanes(w) != lanes(ws[0])):
+        # The same bits with another number of lanes: the lanes of one
+        # type are whole lanes of the other. The key says so (REGROUP):
+        # the kinds of the lanes are then free (ir.operand_kind).
+        a, b = elem(w), elem(ws[0])
+        return attr == REGROUP and lanes(w) != lanes(ws[0]) and \
+            bits(w) == bits(ws[0]) and (a % b == 0 or b % a == 0)
+    if info.shape == 'unmerge' and len(ws) == 1 and lanes(ws[0]):
+        # Equal parts of a vector: lanes, vectors of lanes, or scalars
+        # that are equal parts of each lane or that have the bits of
+        # some lanes each (the bits in the order of a little-endian
+        # target, vector.py).
+        n, m = lanes(ws[0]), max(lanes(w), 1)
+        if not lanes(w) and w < elem(ws[0]):
+            return elem(ws[0]) % w == 0 and res < bits(ws[0]) // w
+        if not lanes(w) and w > elem(ws[0]):
+            k = w // elem(ws[0])
+            return w % elem(ws[0]) == 0 and n % k == 0 and n > k and \
+                res < n // k
+        return elem(w) == elem(ws[0]) and n % m == 0 and n > m and \
+            res < n // m
+    if not info.lanewise or not lanes(w):
+        return False
+    n = lanes(w)
+    for k, x in enumerate(ws):
+        if lanes(x) != n and not (info.shape == 'select' and k == 0 and
+                                  x == 1):
+            return False
+    return bool(info.typecheck(elem(w), [elem(x) for x in ws], attr, res))
 
 
 def make_key(name, attr=None, res=0):
@@ -1379,6 +1506,175 @@ _IMM_DOMAIN = {
 
 _NO_SEMANTICS = {}
 
+
+# -------------------------------------------------- vector operators ---
+# The typing of the operators that build, divide or reduce a fixed
+# vector, with type codes. Their model is in vector.py: the scalar
+# expression of each lane of the result.
+
+def _by_lanes(*_):
+    raise TypeError('a vector operator has no scalar model: vector.py '
+                    'gives the expression of each lane')
+
+
+def _vtc_build(trunc):
+    def tc(w, ws, attr, res):
+        return 2 <= len(ws) == lanes(w) <= MAX_LANES and \
+            not any(lanes(x) for x in ws) and \
+            all(x == ws[0] for x in ws) and \
+            (ws[0] > elem(w) if trunc else ws[0] == elem(w))
+    return tc
+
+
+def _vtc_concat(w, ws, attr, res):
+    return len(ws) >= 2 and lanes(ws[0]) >= 2 and \
+        all(x == ws[0] for x in ws) and elem(w) == elem(ws[0]) and \
+        lanes(w) == len(ws) * lanes(ws[0]) <= MAX_LANES
+
+
+def _vtc_extract_elt(w, ws, attr, res):
+    if not ws or lanes(ws[0]) < 2 or w != elem(ws[0]):
+        return False
+    if attr is not None:
+        # A constant index outside of the vector has no model.
+        return len(ws) == 1 and 0 <= attr < lanes(ws[0])
+    return len(ws) == 2 and not lanes(ws[1])
+
+
+def _vtc_insert_elt(w, ws, attr, res):
+    if len(ws) < 2 or lanes(w) < 2 or ws[0] != w or ws[1] != elem(w):
+        return False
+    if attr is not None:
+        return len(ws) == 2 and 0 <= attr < lanes(w)
+    return len(ws) == 3 and not lanes(ws[2])
+
+
+def _vtc_shuffle(w, ws, attr, res):
+    if len(ws) != 2 or ws[0] != ws[1] or lanes(ws[0]) < 2 or \
+            elem(w) != elem(ws[0]):
+        return False
+    m = mask_of(attr)
+    return 2 <= len(m) == lanes(w) <= MAX_LANES and \
+        all(-1 <= x < 2 * lanes(ws[0]) for x in m)
+
+
+def _vtc_extract_sub(w, ws, attr, res):
+    return len(ws) == 1 and 2 <= lanes(w) < lanes(ws[0]) and \
+        elem(w) == elem(ws[0]) and attr % lanes(w) == 0 and \
+        0 <= attr and attr + lanes(w) <= lanes(ws[0])
+
+
+def _vtc_insert_sub(w, ws, attr, res):
+    return len(ws) == 2 and ws[0] == w and \
+        2 <= lanes(ws[1]) < lanes(w) and elem(w) == elem(ws[1]) and \
+        attr % lanes(ws[1]) == 0 and \
+        0 <= attr and attr + lanes(ws[1]) <= lanes(w)
+
+
+# The expression of a lane of G_VECTOR_COMPRESS has a number of nodes
+# that grows with the square of the number of lanes.
+MAX_COMPRESS_LANES = 8
+
+
+def _vtc_compress(w, ws, attr, res):
+    return len(ws) == 3 and 2 <= lanes(w) <= MAX_COMPRESS_LANES and \
+        ws[0] == w and ws[2] == w and ws[1] == vec(lanes(w), 1)
+
+
+def _vtc_reduce_int(w, ws, attr, res):
+    # The result can be wider than a lane: its high bits are not
+    # specified.
+    return len(ws) == 1 and lanes(ws[0]) >= 2 and not lanes(w) and \
+        w >= elem(ws[0])
+
+
+def _vtc_reduce_fp(w, ws, attr, res):
+    return len(ws) == 1 and lanes(ws[0]) >= 2 and w == elem(ws[0]) and \
+        fp.is_format(w)
+
+
+def _vtc_reduce_seq(w, ws, attr, res):
+    return len(ws) == 2 and ws[0] == w and lanes(ws[1]) >= 2 and \
+        w == elem(ws[1]) and fp.is_format(w)
+
+
+# G_VECREDUCE_<name> -> the operator on two lanes.
+VECREDUCE_INT = {'ADD': 'G_ADD', 'MUL': 'G_MUL', 'AND': 'G_AND',
+                 'OR': 'G_OR', 'XOR': 'G_XOR', 'SMAX': 'G_SMAX',
+                 'SMIN': 'G_SMIN', 'UMAX': 'G_UMAX', 'UMIN': 'G_UMIN'}
+# A floating-point reduction "can reduce the elements in any order": the
+# model has the order of the lanes.
+VECREDUCE_FP = {'FADD': 'G_FADD', 'FMUL': 'G_FMUL', 'FMAX': 'G_FMAXNUM',
+                'FMIN': 'G_FMINNUM', 'FMAXIMUM': 'G_FMAXIMUM',
+                'FMINIMUM': 'G_FMINIMUM', 'FMAXIMUMNUM': 'G_FMAXIMUMNUM',
+                'FMINIMUMNUM': 'G_FMINIMUMNUM'}
+# The accumulator, then each lane in order.
+VECREDUCE_SEQ = {'SEQ_FADD': 'G_FADD', 'SEQ_FMUL': 'G_FMUL'}
+
+_MATCH_ONLY = 'a rule can match %s but does not create it'
+_SCALABLE = 'scalable vectors have no model'
+
+# name -> (typecheck, (operand kinds, result kind), attribute, the reason
+# why a rule does not create it or None).
+_VECTOR_OPS = {
+    'G_BUILD_VECTOR': (_vtc_build(False), (('v',), 'v'), None, None),
+    'G_BUILD_VECTOR_TRUNC': (_vtc_build(True), (('i',), 'i'), None,
+                             _MATCH_ONLY),
+    'G_CONCAT_VECTORS': (_vtc_concat, (('v',), 'v'), None, _MATCH_ONLY),
+    'G_EXTRACT_VECTOR_ELT': (_vtc_extract_elt, (('v', 'i'), 'v'), 'imm?',
+                             None),
+    'G_INSERT_VECTOR_ELT': (_vtc_insert_elt, (('v', 'v', 'i'), 'v'),
+                            'imm?', _MATCH_ONLY),
+    'G_SHUFFLE_VECTOR': (_vtc_shuffle, (('v', 'v'), 'v'), 'mask', None),
+    'G_EXTRACT_SUBVECTOR': (_vtc_extract_sub, (('v',), 'v'), 'imm',
+                            _MATCH_ONLY),
+    'G_INSERT_SUBVECTOR': (_vtc_insert_sub, (('v', 'v'), 'v'), 'imm',
+                           _MATCH_ONLY),
+    'G_VECTOR_COMPRESS': (_vtc_compress, (('v', 'i', 'v'), 'v'), None,
+                          _MATCH_ONLY),
+}
+for _n in VECREDUCE_INT:
+    _VECTOR_OPS['G_VECREDUCE_' + _n] = (
+        _vtc_reduce_int, (('i',), 'i'), None, _MATCH_ONLY)
+for _n in VECREDUCE_FP:
+    _VECTOR_OPS['G_VECREDUCE_' + _n] = (
+        _vtc_reduce_fp, (('f',), 'f'), None, _MATCH_ONLY)
+for _n in VECREDUCE_SEQ:
+    _VECTOR_OPS['G_VECREDUCE_' + _n] = (
+        _vtc_reduce_seq, (('f', 'f'), 'f'), None, _MATCH_ONLY)
+
+
+# Operators on scalars that LLVM does not permit with vectors: the machine
+# verifier refuses a bit-field extraction of a vector, and MachineIRBuilder
+# refuses a vector G_UADDE (the operators with a carry input are made by
+# the legalizer of scalars only).
+_SCALAR_ONLY = frozenset((
+    'G_EXTRACT', 'G_INSERT', 'G_SBFX', 'G_UBFX',
+    'G_UADDE', 'G_USUBE', 'G_SADDE', 'G_SSUBE'))
+
+
+def _load_vector(m):
+    name = m['name']
+    n = m['operands'] if m['operands'] >= 0 else None
+    if name not in _VECTOR_OPS:
+        # G_SPLAT_VECTOR, G_STEP_VECTOR, G_VSCALE.
+        info = OpInfo(name, 'vector', n, meta=m)
+        info.vector = True
+        for st in STAGES[1:]:
+            info.unsupported[st] = _SCALABLE
+        return register(info)
+    tc, kinds, attr, no_emit = _VECTOR_OPS[name]
+    info = OpInfo(name, 'vector', n, attr=attr, meta=m, strict=False)
+    info.vector = True
+    info.typecheck = tc
+    info.vec_kinds = kinds
+    info.vec_fixed_result = name[len('G_VECREDUCE_'):] in VECREDUCE_FP
+    info.eval = info.smt = _by_lanes
+    if no_emit:
+        info.unsupported['emit'] = no_emit % name
+    return register(info)
+
+
 # name -> (the operands that are pointers, the result is a pointer).
 _POINTERS = {'G_PTRTOINT': ((0,), False), 'G_INTTOPTR': ((), True),
              'G_PTR_ADD': ((0,), True), 'G_PTRMASK': ((0,), True)}
@@ -1411,7 +1707,7 @@ _EMIT_SHAPES = ('binary', 'unary', 'cast', 'bitcount', 'compare', 'select',
 # Shapes the emitter can write as a match pattern below the root. A rule
 # does not build G_UNMERGE_VALUES, and it is not the root of a pattern: it
 # has several results.
-_MATCH_SHAPES = _EMIT_SHAPES + ('unmerge',)
+_MATCH_SHAPES = _EMIT_SHAPES + ('unmerge', 'vector')
 
 _COSTS = {'G_MUL': 2, 'G_UMULH': 2, 'G_SMULH': 2, 'G_UDIV': 4, 'G_SDIV': 4,
           'G_UREM': 4, 'G_SREM': 4, 'G_UDIVREM': 4, 'G_SDIVREM': 4,
@@ -1435,6 +1731,9 @@ def _load_generic():
             metas.append(v)
     for m in metas:
         name, shape = m['name'], m['shape']
+        if shape == 'vector':
+            _load_vector(m)
+            continue
         results = len(m.get('result_kinds', [0]))
         attr = 'pred' if shape == 'compare' else \
             ('imm' if m.get('imm_attr') else None)
@@ -1445,6 +1744,11 @@ def _load_generic():
                       strict=shape != 'select')
         if shape == 'unmerge':
             info.results = None
+        # G_MERGE_VALUES, G_EXTRACT and G_INSERT take scalars only; a
+        # G_UNMERGE_VALUES of a vector gives its lanes (typecheck).
+        info.lanewise = shape not in ('merge', 'unmerge', 'phi',
+                                      'effect') and \
+            name not in _SCALAR_ONLY
         if shape in _NO_EXPR:
             for st in STAGES[1:]:
                 info.unsupported[st] = _NO_EXPR[shape]
@@ -1554,9 +1858,15 @@ def capability(info, stage):
     stage also says which engine finds the operator:
     'enumerative+egraph' if the enumerative search matches the operator in
     a source and builds replacements with it, 'enumerative-source+egraph'
-    if it only matches the operator in a source."""
+    if it only matches the operator in a source, 'lanes' / 'lanes-source'
+    for an operator on the lanes of a vector."""
     if stage in info.unsupported:
         return info.unsupported[stage]
+    if stage == 'discovery' and info.vector:
+        # The lanes of the source give the replacement (vector.py); the
+        # enumerative search has scalars only.
+        return 'lanes' if 'emit' not in info.unsupported else \
+            'lanes-source'
     if stage == 'discovery':
         # Every operator with a model can be in the source of a corpus
         # instance and of an e-graph candidate. The enumerative search

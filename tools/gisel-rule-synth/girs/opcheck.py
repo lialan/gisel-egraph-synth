@@ -112,7 +112,9 @@ def check_models(samples=40, seed=0, names=None):
     rng = random.Random(seed)
     bad, n = [], 0
     for name, info in ops.REGISTRY.items():
-        if info.eval is None or (names and name not in names):
+        # A vector operator has no scalar model (vector.check_models).
+        if info.eval is None or info.vector or \
+                (names and name not in names):
             continue
         for w, ws, attr, res in instances(info):
             envs = []
@@ -144,7 +146,7 @@ def check_llvm(table):
     bad, n, skipped = [], 0, []
     for m in table['operators']:
         info = ops.REGISTRY[m['name']]
-        if info.eval is None:
+        if info.eval is None or info.vector:
             continue
         if not m.get('samples'):
             skipped.append(m['name'])

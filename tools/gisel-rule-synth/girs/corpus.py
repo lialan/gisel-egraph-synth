@@ -9,10 +9,12 @@ GISelValueTracking at the actual match site.
 """
 
 import json
+import re
 
 from . import fp
 from . import ir
 from . import ops
+from . import vector
 
 
 class Instance:
@@ -51,6 +53,8 @@ class Instance:
         # order of ``interior_uses``), and the type name of each variable.
         self.node_regs = None
         self.input_types = None
+        # The source was read from vectors, lane by lane (vector.lift).
+        self.lifted = False
 
     def facts_of(self, e):
         """Known bits (zero, one) of a variable or of an operation node of
@@ -72,12 +76,33 @@ class Instance:
         }
 
 
-def node_key(node):
+def node_key(node, attr=None):
     """The operator key of a corpus node: the opcode with its attribute
-    (the predicate of a comparison, a trailing immediate) and, for an
-    instruction with several results, the index of the result."""
-    return ops.make_key(node['op'], node.get('pred', node.get('imm')),
-                        node.get('res', 0))
+    (the predicate of a comparison, a trailing immediate, the mask of a
+    G_SHUFFLE_VECTOR) and, for an instruction with several results, the
+    index of the result. ``attr``: the constant index of a lane."""
+    if attr is None:
+        attr = node.get('pred', node.get('imm'))
+    if 'mask' in node:
+        attr = ops.mask_attr(node['mask'])
+    return ops.make_key(node['op'], attr, node.get('res', 0))
+
+
+def type_code(node):
+    """The type code of a value of the corpus (ops.vec)."""
+    return ops.vec(node['lanes'], node['w']) if 'lanes' in node else \
+        node['w']
+
+
+def _const_index(node, inputs):
+    """The value of the last operand of ``node`` if the operator takes
+    the index of a lane and the operand is a constant, else None."""
+    if ops.REGISTRY[node['op']].attr != 'imm?':
+        return None
+    a = node['args'][-1]
+    if 'in' in a and 'const' in inputs[a['in']]:
+        return int(inputs[a['in']]['const'], 16)
+    return None
 
 
 def _count_regs(node, counts):
@@ -100,14 +125,22 @@ def _convert(node, inputs, interior_uses, flags, shared, root=False,
         return ('var', shared[node['reg']])
     flags.update(node.get('flags', []))
     args = []
-    for a in node['args']:
+    # A constant index of a lane is an attribute of the operator.
+    index = _const_index(node, inputs)
+    for a in node['args'][:-1] if index is not None else node['args']:
         if 'op' in a and a['reg'] not in shared:
             interior_uses.append(a.get('uses', 1))
             if regs is not None:
                 regs.append(a['reg'])
         args.append(_convert(a, inputs, interior_uses, flags, shared,
                              sub=sub, regs=regs))
-    e = (node_key(node), node['w']) + tuple(args)
+    if node['op'] == 'G_BITCAST':
+        a = node['args'][0]
+        if ('in' in a and inputs[a['in']].get('lanes', 0) or
+                a.get('lanes', 0)) != node.get('lanes', 0):
+            # The same bits with another number of lanes.
+            index = ops.REGROUP
+    e = (node_key(node, index), type_code(node)) + tuple(args)
     if sub is not None and not root and 'zero' in node:
         sub.append((e, (int(node['zero'], 16), int(node['one'], 16))))
     return e
@@ -137,6 +170,8 @@ def parse_record(rec, source='', why=None):
         shared[reg] = len(inputs)
         inputs.append({'reg': reg, 'w': node['w'], 'zero': node['zero'],
                        'type': node.get('type', ''),
+                       **({'lanes': node['lanes']} if 'lanes' in node
+                          else {}),
                        'noundef': node.get('noundef', False),
                        'one': node['one'], 'def': node['op']})
     sub = []
@@ -165,7 +200,7 @@ def parse_record(rec, source='', why=None):
                 raise ValueError('known bits that the constant does not '
                                  'have: %r' % inp)
             z, o = ~c & ir.mask(w), c
-        vw.append(w)
+        vw.append(type_code(inp))
         # 'noundef': the value is neither undef nor poison (a constant
         # never is). A corpus of an older extractor does not say it.
         if c is not None or inp.get('noundef'):
@@ -177,17 +212,37 @@ def parse_record(rec, source='', why=None):
         why.append('not well typed for the model: %s' %
                    ops.base(expr[0]))
         return None
+    lifted = False
+    if vector.has_vector(vw, expr):
+        # A source that computes each lane of its vectors from the same
+        # lane of its operands is the source of a rule for scalars: the
+        # rule holds for each lane.
+        low = vector.lift(expr, vw)
+        if low is not None:
+            sub_facts = {vector.lift(e, vw)[0]: f
+                         for e, f in sub_facts.items()}
+            (expr, vw), lifted = low, True
     inst = Instance(expr, vw, facts, consts, uses, sorted(flags),
                     [(source, rec['fn'], rec['root'])], sub_facts, kinds)
+    inst.lifted = lifted
     inst.regs = tuple(inp['reg'] for inp in inputs)
     inst.node_regs = tuple(node_regs)
     inst.input_types = tuple(inp.get('type', '') for inp in inputs)
     return inst
 
 
+_VECTOR_TYPE = re.compile(r'<(\d+) x (.*)>$')
+
+
+def _elem_type(name):
+    m = _VECTOR_TYPE.match(name)
+    return m.group(2) if m else name
+
+
 def _type_kind(name):
     """'f' / 'p' for the type name of a floating-point value / a pointer
-    (f32, p0), else None."""
+    (f32, p0) or of a vector of them, else None."""
+    name = _elem_type(name)
     if name.startswith('f'):
         return 'f'
     if name.startswith('p') and name[1:].isdigit():
@@ -212,7 +267,9 @@ def _bad_type(node):
     of an older extractor has no type names: every value is an integer.
     A floating-point value is its bit pattern, and its type must have the
     IEEE format of its width."""
-    t = node.get('type', '')
+    t = _elem_type(node.get('type', ''))
+    if 'lanes' in node and not 2 <= node['lanes'] <= ops.MAX_LANES:
+        return 'a vector with %d lanes has no model' % node['lanes']
     if t.startswith(('f', 'bf', 'ppcf', 'x86')) and \
             not (t == 'f%d' % node['w'] and fp.is_format(node['w'])):
         return 'type %s has no model' % t
@@ -271,6 +328,7 @@ def load(paths):
                 if k in by_key:
                     old = by_key[k]
                     old.prov.extend(inst.prov)
+                    old.lifted = old.lifted or inst.lifted
                     # The most users of each value below the root in any
                     # occurrence: a value with a user outside the tree is
                     # an output of the region (region.py).
@@ -285,6 +343,11 @@ def load(paths):
                    key=lambda i: (-len(i.prov), ir.to_sexpr(i.expr), i.vw,
                                   i.facts))
     stats['distinct'] = len(insts)
+    # The sources with vectors: read as the source of a rule for scalars
+    # (each lane), and read with their lanes.
+    stats['lifted'] = sum(1 for i in insts if i.lifted)
+    stats['vector'] = sum(1 for i in insts if vector.has_vector(i.vw,
+                                                                 i.expr))
     # Occurrences of each operator in the records that were read.
     counts = {}
     for i in insts:

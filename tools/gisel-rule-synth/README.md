@@ -227,10 +227,13 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
 ## How a rule gets into the library
 
 0. **Corpus** (`GISynthCorpusExtractor`, `corpus.py`). The extractor pass
-   has no list of opcodes: it writes a tree for each scalar instruction that
+   has no list of opcodes: it writes a tree for each instruction that
    is an operator of the operator table of the e-graph combiner (GIEGraph.h,
-   `OpProperties`), except the pointer operators, `G_PHI` and the
-   terminators. A node has the opcode (`op`), the predicate of a comparison
+   `OpProperties`), except `G_PHI` and the terminators. The values of a
+   tree are scalars, pointers, and fixed vectors of them with at most 16
+   lanes (`-gisel-synth-corpus-max-lanes`); a vector node has the width of
+   a lane (`w`) and the number of lanes (`lanes`), and a
+   `G_SHUFFLE_VECTOR` has its mask (`mask`). A node has the opcode (`op`), the predicate of a comparison
    (`pred`), a trailing immediate (`imm`), the index of the result if the
    instruction has several results (`res`), and the type name (`type`); a
    tree is written for each result. `corpus.py` accepts a tree if every
@@ -540,6 +543,7 @@ takes its place.
 | `girs/match.py` | rule matching on corpus trees, coverage |
 | `girs/smt.py` | z3 backend and gMIR bitvector/poison encoding |
 | `girs/fp.py` | IEEE formats of the conversion operators: exact evaluator and z3 encoding |
+| `girs/vector.py` | Fixed vectors: the scalar expression of each lane, the joint proof of the lanes, the search for a vector replacement, lane-wise rules |
 | `girs/targets.py` | per-target compiler flags and names |
 | `girs/measure.py` | running llc, instruction and rule counters |
 | `girs/select.py` | per-target coverage, novelty, redundancy, ranking, selection |
@@ -671,6 +675,42 @@ every disjunct of `P` and for the emitted disjunction as a whole.
   build a pointer constant. `G_ADDRSPACE_CAST` has no model: the conversion
   is a property of the target (on AMDGPU a null pointer is 0 or -1 per
   address space).
+- A fixed vector is its lanes (`girs/vector.py`), and each lane has a
+  poison flag of its own. An operator on scalars computes each lane from
+  the same lane of its operands; the condition of a `G_SELECT` can be one
+  scalar. `G_BUILD_VECTOR`, `G_BUILD_VECTOR_TRUNC`, `G_CONCAT_VECTORS`,
+  `G_SHUFFLE_VECTOR`, `G_EXTRACT_SUBVECTOR`, `G_INSERT_SUBVECTOR`,
+  `G_EXTRACT_VECTOR_ELT`, `G_INSERT_VECTOR_ELT`, `G_VECTOR_COMPRESS` and a
+  `G_UNMERGE_VALUES` of a vector move lanes. A reduction
+  (`G_VECREDUCE_*`) is the chain of its scalar operator over the lanes in
+  their order; the high bits of a result that is wider than a lane are not
+  specified. The proof of a rule with vectors is the joint proof of its
+  lanes.
+  - A lane with the mask entry -1, and the result for a variable index
+    outside of the vector, have no specified value. LLVM says poison or
+    undefined; the model takes some value, which is the more defined one,
+    and a rule does not build such an instruction. A rule builds
+    `G_BUILD_VECTOR`, `G_SHUFFLE_VECTOR` and `G_EXTRACT_VECTOR_ELT` with
+    a constant index; it matches the other vector operators and does not
+    build them.
+  - A floating-point reduction without `SEQ` "can reduce the elements in
+    any order". The model has the order of the lanes, which is one
+    permitted result, so the proof holds only for an instruction that the
+    rule replaces or removes (the same treatment as a fixed-point
+    operator).
+  - A `G_BITCAST` that changes the number of lanes, and a
+    `G_UNMERGE_VALUES` of a vector into scalars that are not its lanes,
+    join or divide lanes with the first lane least significant. A rule
+    with one of them applies only on a little-endian target (the guard
+    checks it).
+  - A rule for scalars whose source is in the corpus with vectors, and
+    whose operators all compute lane by lane, also accepts vectors
+    (`lift`): the proof for scalars is a proof for each lane. LLVM has no
+    `G_SBFX`, `G_UBFX`, `G_EXTRACT`, `G_INSERT` and no operator with a
+    carry input (`G_UADDE`, ...) on vectors, so a rule with one of them
+    stays a rule for scalars.
+  - Scalable vectors have no model (`G_SPLAT_VECTOR`, `G_STEP_VECTOR`,
+    `G_VSCALE`).
 - `G_MERGE_VALUES` and `G_UNMERGE_VALUES` of scalars are the concatenation
   and the parts of the bits. A rule matches and builds a merge. It matches
   an unmerge below the root and does not build one.

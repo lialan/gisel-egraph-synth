@@ -40,26 +40,51 @@
 namespace llvm {
 namespace gisynth {
 
-/// Writes the bit width of each register to \p W. Fails for vectors and
-/// invalid types: the rules are only proved for scalars and pointers. Also
-/// fails for a floating-point type that does not have the IEEE format of its
-/// width (bfloat): the conversions are proved for the IEEE formats.
+/// The largest number of lanes of a vector that a rule can have.
+constexpr unsigned MaxVectorLanes = 16;
+
+/// Writes the type code of each register to \p W: the bit width of a scalar
+/// or of a pointer, and (lanes << 16) | element width for a fixed vector.
+/// Fails for scalable vectors, for vectors with more than MaxVectorLanes
+/// lanes and for invalid types. Also fails for a floating-point type that
+/// does not have the IEEE format of its width (bfloat): the conversions are
+/// proved for the IEEE formats.
 ///
-/// The bit I of \p Pointers says that the register I is a pointer in the
-/// rule; every other register must be a scalar. A pointer is its bits in a
-/// proof, so its address space must be integral and its offsets must have the
-/// width of the pointer (G_PTR_ADD is then the addition of the bits). The
-/// pointers of one width must have one type: a new pointer of a replacement
-/// takes its type from one of them.
+/// The bit I of \p Pointers says that the register I is a pointer (or a
+/// vector of pointers) in the rule; every other register must be a scalar or
+/// a vector of scalars. A pointer is its bits in a proof, so its address
+/// space must be integral and its offsets must have the width of the pointer
+/// (G_PTR_ADD is then the addition of the bits). The pointers of one width
+/// must have one type: a new pointer of a replacement takes its type from one
+/// of them.
+///
+/// With \p Lift, the rule has only operators that compute each lane of a
+/// vector from the same lane of their operands. Such a rule that is proved
+/// for scalars holds for each lane of vectors: if every register is a fixed
+/// vector and all have the same number of lanes, \p W gets the element
+/// widths.
 inline bool getScalarWidths(const MachineRegisterInfo &MRI,
                             std::initializer_list<Register> Regs, unsigned *W,
-                            uint64_t Pointers = 0) {
+                            uint64_t Pointers = 0, bool Lift = false) {
   SmallVector<LLT, 4> PtrTys;
   unsigned Idx = 0;
+  unsigned *Begin = W;
+  unsigned CommonLanes = 0;
+  bool SameLanes = true;
   for (Register R : Regs) {
     LLT Ty = MRI.getType(R);
     if (!Ty.isValid())
       return false;
+    unsigned Lanes = 0;
+    if (Ty.isVector()) {
+      if (Ty.isScalable() || Ty.getNumElements() > MaxVectorLanes)
+        return false;
+      Lanes = Ty.getNumElements();
+      Ty = Ty.getElementType();
+    }
+    if (Idx == 0)
+      CommonLanes = Lanes;
+    SameLanes &= Lanes == CommonLanes;
     if ((Pointers >> Idx++) & 1) {
       const MachineInstr *Def = MRI.getVRegDef(R);
       if (!Ty.isPointer() || !Def)
@@ -79,9 +104,33 @@ inline bool getScalarWidths(const MachineRegisterInfo &MRI,
       if (Ty.isFloat() && !Ty.isFloatIEEE())
         return false;
     }
-    *W++ = Ty.getSizeInBits();
+    *W++ = (Lanes << 16) | Ty.getSizeInBits();
   }
+  if (Lift && CommonLanes && SameLanes)
+    for (unsigned *I = Begin; I != W; ++I)
+      *I &= 0xffff;
   return true;
+}
+
+/// The value of the constant \p R: a G_CONSTANT, or a G_BUILD_VECTOR whose
+/// operands are all the same G_CONSTANT (the value of each lane).
+inline std::optional<APInt> getConstantOrSplat(Register R,
+                                               const MachineRegisterInfo &MRI) {
+  if (MRI.getType(R).isVector())
+    return getIConstantSplatVal(R, MRI);
+  return getIConstantVRegVal(R, MRI);
+}
+
+/// True if \p MO is the mask \p Mask of a G_SHUFFLE_VECTOR.
+inline bool isShuffleMask(const MachineOperand &MO, ArrayRef<int> Mask) {
+  return MO.isShuffleMask() && MO.getShuffleMask() == Mask;
+}
+
+/// True if \p R is the integer constant \p Value (an index of a lane).
+inline bool isConstantIndex(Register R, const MachineRegisterInfo &MRI,
+                            uint64_t Value) {
+  std::optional<APInt> C = getIConstantVRegVal(R, MRI);
+  return C && C->getActiveBits() <= 64 && C->getZExtValue() == Value;
 }
 
 /// True if the function has the IEEE treatment of subnormal numbers
@@ -94,7 +143,7 @@ inline bool hasIEEEDenormalMode(const MachineRegisterInfo &MRI,
                                 std::initializer_list<Register> Regs) {
   for (Register R : Regs) {
     const fltSemantics *Sem;
-    switch (MRI.getType(R).getSizeInBits()) {
+    switch (MRI.getType(R).getScalarSizeInBits()) {
     case 16:
       Sem = &APFloat::IEEEhalf();
       break;
@@ -114,11 +163,10 @@ inline bool hasIEEEDenormalMode(const MachineRegisterInfo &MRI,
   return true;
 }
 
-/// True if the operand widths \p W equal one of the width schedules the rule
-/// was proved for.
-template <size_t N, size_t M>
-bool isVerifiedSchedule(const unsigned (&W)[N],
-                        const uint16_t (&Verified)[M][N]) {
+/// True if the type codes \p W (getScalarWidths) equal one of the schedules the
+/// rule was proved for.
+template <typename T, size_t N, size_t M>
+bool isVerifiedSchedule(const unsigned (&W)[N], const T (&Verified)[M][N]) {
   for (const auto &S : Verified) {
     bool Eq = true;
     for (size_t I = 0; I < N; ++I)

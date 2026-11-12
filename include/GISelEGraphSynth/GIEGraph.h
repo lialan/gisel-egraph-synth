@@ -600,6 +600,11 @@ struct OpProperties {
   /// an OpShape::Compare operator are integers). Only operators of
   /// getModelOnlyOpProperties have this property.
   bool IsFP = false;
+  /// The operator builds, divides or reduces a fixed vector (G_BUILD_VECTOR,
+  /// G_SHUFFLE_VECTOR, G_VECREDUCE_ADD): its result is not computed lane by
+  /// lane. Only the operators of getModelOnlyOpProperties have this
+  /// property. NumOperands is -1 if the number of operands is not fixed.
+  bool IsVector = false;
   /// OpShape::Typed: the kinds of the operands and of the results.
   SmallVector<TypeKind, 3> OperandKinds;
   SmallVector<TypeKind, 2> ResultKinds;

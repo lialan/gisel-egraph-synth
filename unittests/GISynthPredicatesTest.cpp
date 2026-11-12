@@ -409,7 +409,25 @@ TEST_F(AArch64GISelMITest, ScalarWidthsOfPointers) {
   EXPECT_FALSE(getScalarWidths(*MRI, {Ptr, Int, Sum}, W));
   EXPECT_FALSE(getScalarWidths(*MRI, {Ptr, Int, Sum}, W, 0b001));
   EXPECT_FALSE(getScalarWidths(*MRI, {Ptr, Int, Sum}, W, 0b111));
-  EXPECT_FALSE(getScalarWidths(*MRI, {Vec->getOperand(0).getReg()}, W));
+  // A fixed vector has the type code (lanes << 16) | element width, which
+  // is not the width of a scalar: a rule for scalars does not have it in
+  // its schedule.
+  Register V = Vec->getOperand(0).getReg();
+  EXPECT_TRUE(getScalarWidths(*MRI, {V}, W));
+  EXPECT_EQ(W[0], (2u << 16) | 32u);
+  // A lane-wise rule reads the element widths if all registers are vectors
+  // with one number of lanes.
+  EXPECT_TRUE(getScalarWidths(*MRI, {V, V}, W, 0, /*Lift=*/true));
+  EXPECT_EQ(W[0], 32u);
+  EXPECT_EQ(W[1], 32u);
+  EXPECT_TRUE(getScalarWidths(*MRI, {V, Int}, W, 0, /*Lift=*/true));
+  EXPECT_EQ(W[0], (2u << 16) | 32u);
+  EXPECT_EQ(W[1], 32u);
+  EXPECT_TRUE(getScalarWidths(*MRI, {Int, V}, W, 0, /*Lift=*/true));
+  EXPECT_EQ(W[0], 32u);
+  EXPECT_EQ(W[1], (2u << 16) | 32u);
+  // A vector of scalars is not a vector of pointers.
+  EXPECT_FALSE(getScalarWidths(*MRI, {V}, W, 0b1));
   // Two pointers of one width have one type: a new pointer takes its type
   // from one of them.
   EXPECT_FALSE(getScalarWidths(*MRI, {Ptr, Other}, W, 0b11));

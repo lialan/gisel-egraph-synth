@@ -236,15 +236,17 @@ class Encoder:
     def for_all_choices(self, bad, root=None):
         """A formula that is satisfiable only if ``bad`` holds for each
         value in a set of values of the unspecified bits of the source
-        (see the class comment). ``root`` is the value of the replacement.
+        (see the class comment). ``root`` is the value of the replacement,
+        or the values of the replacements of a region.
         """
         if not self.choices:
             return bad
         items = []
         # The value of the replacement first: the source has it if its
         # unspecified bits are the bits of the replacement.
-        pool = ([root] if root is not None else []) + \
-            self.tgt_values[::-1] + list(self.x)
+        roots = root if isinstance(root, (list, tuple)) else \
+            ([root] if root is not None else [])
+        pool = list(roots) + self.tgt_values[::-1] + list(self.x)
 
         def resized(t, w):
             if t.size() == w:
@@ -508,17 +510,18 @@ def joint_violation(enc, pairs, guard):
     for s, _ in pairs:
         enc.mark_source(s)
     su = z3.Or([enc.enc_full(s)[2] for s, _ in pairs])
-    bad = []
+    bad, tvs = [], []
     for src, tgt in pairs:
         sv, sp, _ = enc.enc_full(src)
         tv, tp, tu = enc.enc_full(tgt, side='tgt')
+        tvs.append(tv)
         same = z3.Or(sv == tv, _nan_of(enc, src, tv)) \
             if _is_fp(src) else sv == tv
         bad.append(z3.Or(tu, z3.And(z3.Not(sp), z3.Or(tp, z3.Not(same)))))
     return z3.And(enc.well_formed(), guard,
                   z3.And([enc.recipe_guard(t) for _, t in pairs]),
                   enc.assumptions(),
-                  enc.for_all_choices(z3.And(z3.Not(su), z3.Or(bad))))
+                  enc.for_all_choices(z3.And(z3.Not(su), z3.Or(bad)), tvs))
 
 
 def split_model(vals, n):

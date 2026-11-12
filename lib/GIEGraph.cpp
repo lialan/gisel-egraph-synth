@@ -1256,6 +1256,51 @@ static std::vector<OpProperties> buildModelOnlyOpProperties() {
   FPOp(G_FMAXIMUMNUM, "G_FMAXIMUMNUM", 2, MINMAX_FOLD(maximumnum), true);
 #undef MINMAX_FOLD
 
+  // The operators on the lanes of a fixed vector. The synthesizer has their
+  // model: each lane of a vector is a value with a poison flag of its own.
+  auto Vec = [&](unsigned Opc, const char *Name, int NumOperands,
+                 bool Imm = false) {
+    OpProperties *P = Op(Opc, Name, OpShape::Typed, {}, {Main});
+    P->IsVector = true;
+    P->NumOperands = NumOperands;
+    P->ImmAttr = Imm;
+  };
+  const int Variadic = -1;
+  Vec(G_BUILD_VECTOR, "G_BUILD_VECTOR", Variadic);
+  Vec(G_BUILD_VECTOR_TRUNC, "G_BUILD_VECTOR_TRUNC", Variadic);
+  Vec(G_CONCAT_VECTORS, "G_CONCAT_VECTORS", Variadic);
+  Vec(G_INSERT_VECTOR_ELT, "G_INSERT_VECTOR_ELT", 3);
+  Vec(G_EXTRACT_VECTOR_ELT, "G_EXTRACT_VECTOR_ELT", 2);
+  // The mask is the attribute.
+  Vec(G_SHUFFLE_VECTOR, "G_SHUFFLE_VECTOR", 2);
+  // The index of the first lane is the immediate.
+  Vec(G_INSERT_SUBVECTOR, "G_INSERT_SUBVECTOR", 2, /*Imm=*/true);
+  Vec(G_EXTRACT_SUBVECTOR, "G_EXTRACT_SUBVECTOR", 1, /*Imm=*/true);
+  Vec(G_VECTOR_COMPRESS, "G_VECTOR_COMPRESS", 3);
+  Vec(G_VECREDUCE_SEQ_FADD, "G_VECREDUCE_SEQ_FADD", 2);
+  Vec(G_VECREDUCE_SEQ_FMUL, "G_VECREDUCE_SEQ_FMUL", 2);
+  Vec(G_VECREDUCE_FADD, "G_VECREDUCE_FADD", 1);
+  Vec(G_VECREDUCE_FMUL, "G_VECREDUCE_FMUL", 1);
+  Vec(G_VECREDUCE_FMAX, "G_VECREDUCE_FMAX", 1);
+  Vec(G_VECREDUCE_FMIN, "G_VECREDUCE_FMIN", 1);
+  Vec(G_VECREDUCE_FMAXIMUM, "G_VECREDUCE_FMAXIMUM", 1);
+  Vec(G_VECREDUCE_FMINIMUM, "G_VECREDUCE_FMINIMUM", 1);
+  Vec(G_VECREDUCE_FMAXIMUMNUM, "G_VECREDUCE_FMAXIMUMNUM", 1);
+  Vec(G_VECREDUCE_FMINIMUMNUM, "G_VECREDUCE_FMINIMUMNUM", 1);
+  Vec(G_VECREDUCE_ADD, "G_VECREDUCE_ADD", 1);
+  Vec(G_VECREDUCE_MUL, "G_VECREDUCE_MUL", 1);
+  Vec(G_VECREDUCE_AND, "G_VECREDUCE_AND", 1);
+  Vec(G_VECREDUCE_OR, "G_VECREDUCE_OR", 1);
+  Vec(G_VECREDUCE_XOR, "G_VECREDUCE_XOR", 1);
+  Vec(G_VECREDUCE_SMAX, "G_VECREDUCE_SMAX", 1);
+  Vec(G_VECREDUCE_SMIN, "G_VECREDUCE_SMIN", 1);
+  Vec(G_VECREDUCE_UMAX, "G_VECREDUCE_UMAX", 1);
+  Vec(G_VECREDUCE_UMIN, "G_VECREDUCE_UMIN", 1);
+  // Scalable vectors only: no instruction of a tree has them.
+  Vec(G_SPLAT_VECTOR, "G_SPLAT_VECTOR", 1);
+  Vec(G_STEP_VECTOR, "G_STEP_VECTOR", 0);
+  Vec(G_VSCALE, "G_VSCALE", 0);
+
   // The canonical encoding of a value: a NaN becomes a quiet NaN.
   FPOp(G_FCANONICALIZE, "G_FCANONICALIZE", 1,
        [](ArrayRef<APInt> O, uint64_t, unsigned) -> std::optional<APInt> {
@@ -1829,9 +1874,10 @@ static void printModelOnlyOp(json::OStream &J, const OpProperties &P,
                              bool WithSamples) {
   J.object([&] {
     J.attribute("name", P.Name);
-    J.attribute("shape", getShapeName(P.Shape));
+    J.attribute("shape",
+                P.IsVector ? StringRef("vector") : getShapeName(P.Shape));
     J.attribute("operands", P.NumOperands);
-    if (P.Shape == OpShape::Typed) {
+    if (P.Shape == OpShape::Typed && !P.IsVector) {
       J.attributeArray("operand_kinds", [&] {
         for (TypeKind K : P.OperandKinds)
           J.value(getTypeKindName(K));

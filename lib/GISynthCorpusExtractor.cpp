@@ -55,6 +55,11 @@ static cl::opt<unsigned> MaxTreesPerRoot(
     cl::desc("Maximum number of expression trees written per root "
              "instruction"));
 
+static cl::opt<unsigned> MaxLanes(
+    "gisel-synth-corpus-max-lanes", cl::Hidden, cl::init(16),
+    cl::desc("Maximum number of lanes of a fixed vector that is a value of "
+             "an extracted expression tree"));
+
 static cl::opt<std::string> LegalityOut(
     "gisel-synth-legality", cl::Hidden,
     cl::desc("Also write the action of the legalizer for each operator of "
@@ -97,13 +102,21 @@ bool isSupportedPointer(const DataLayout &DL, LLT Ty) {
 }
 
 /// A value of a tree: a virtual register with a scalar type of at most 64
-/// bits, or with a pointer type of at most 64 bits (isSupportedPointer).
+/// bits, with a pointer type of at most 64 bits (isSupportedPointer), or with
+/// the type of a fixed vector of at most MaxLanes such elements.
 bool isSupportedValue(const MachineRegisterInfo &MRI, const DataLayout &DL,
                       Register R) {
   if (!R.isVirtual())
     return false;
   LLT Ty = MRI.getType(R);
-  if (!Ty.isValid() || Ty.getSizeInBits() > 64)
+  if (!Ty.isValid())
+    return false;
+  if (Ty.isVector()) {
+    if (Ty.isScalable() || Ty.getNumElements() > MaxLanes)
+      return false;
+    Ty = Ty.getElementType();
+  }
+  if (Ty.getSizeInBits() > 64)
     return false;
   return Ty.isScalar() || (Ty.isPointer() && isSupportedPointer(DL, Ty));
 }
@@ -119,7 +132,7 @@ bool isSupportedInstr(const MachineRegisterInfo &MRI, const MachineInstr &MI) {
   // The synthesizer has a value with unspecified bits for integers only: a
   // floating-point or pointer G_IMPLICIT_DEF is an input.
   if (MI.getOpcode() == TargetOpcode::G_IMPLICIT_DEF) {
-    LLT Ty = MRI.getType(MI.getOperand(0).getReg());
+    LLT Ty = MRI.getType(MI.getOperand(0).getReg()).getScalarType();
     if (Ty.isFloat() || Ty.isPointer())
       return false;
   }
@@ -133,6 +146,8 @@ bool isSupportedInstr(const MachineRegisterInfo &MRI, const MachineInstr &MI) {
     if (MO.isPredicate() && P->Shape == egraph::OpShape::Compare)
       continue;
     if (MO.isImm() && P->ImmAttr)
+      continue;
+    if (MO.isShuffleMask() && P->IsVector)
       continue;
     return false;
   }
@@ -261,11 +276,14 @@ public:
       J.attributeArray("inputs", [&] {
         for (Register R : Inputs) {
           J.object([&] {
-            unsigned W = MRI.getType(R).getSizeInBits();
+            LLT Ty = MRI.getType(R);
             KnownBits KB = VT.getKnownBits(R);
             J.attribute("reg", regName(R));
-            J.attribute("w", W);
-            J.attribute("type", typeName(MRI.getType(R)));
+            // The width of a lane, and the number of lanes of a vector.
+            J.attribute("w", Ty.getScalarSizeInBits());
+            if (Ty.isVector())
+              J.attribute("lanes", Ty.getNumElements());
+            J.attribute("type", typeName(Ty));
             J.attribute("zero", hex(KB.Zero));
             J.attribute("one", hex(KB.One));
             // A fact like the known bits: a rule that needs it checks it
@@ -277,8 +295,18 @@ public:
             // A floating-point constant is its bit pattern. A pointer
             // constant is an input like every other: a rule does not match
             // or build a G_CONSTANT with a pointer type.
-            if (MRI.getType(R).isPointer())
+            if (Ty.getScalarType().isPointer())
               return;
+            // A vector constant with the same value in each lane is the
+            // value of a lane.
+            if (Ty.isVector()) {
+              if (auto C = getIConstantSplatVal(R, MRI))
+                J.attribute("const", hex(*C));
+              else if (auto FC = getFConstantSplat(R, MRI,
+                                                   /*AllowUndef=*/false))
+                J.attribute("const", hex(FC->Value.bitcastToAPInt()));
+              return;
+            }
             if (auto C = getIConstantVRegVal(R, MRI))
               J.attribute("const", hex(*C));
             else if (Def && Def->getOpcode() == TargetOpcode::G_FCONSTANT)
@@ -318,15 +346,24 @@ private:
       else if (P->ImmAttr)
         J.attribute("imm",
                     N.MI->getOperand(N.MI->getNumOperands() - 1).getImm());
+      else if (N.MI->getOpcode() == TargetOpcode::G_SHUFFLE_VECTOR)
+        // The index of a lane of the two operands, or -1: the lane has no
+        // specified value.
+        J.attributeArray("mask", [&] {
+          for (int M : N.MI->getOperand(3).getShuffleMask())
+            J.value(M);
+        });
       // The first result names the instruction: two results of one
       // instruction have the same "mi".
       if (N.MI->getNumExplicitDefs() > 1) {
         J.attribute("res", static_cast<int64_t>(defIndex(*N.MI, N.Reg)));
         J.attribute("mi", regName(N.MI->getOperand(0).getReg()));
       }
-      J.attribute("w",
-                  static_cast<int64_t>(MRI.getType(N.Reg).getSizeInBits()));
-      J.attribute("type", typeName(MRI.getType(N.Reg)));
+      LLT Ty = MRI.getType(N.Reg);
+      J.attribute("w", static_cast<int64_t>(Ty.getScalarSizeInBits()));
+      if (Ty.isVector())
+        J.attribute("lanes", Ty.getNumElements());
+      J.attribute("type", typeName(Ty));
       J.attribute("reg", regName(N.Reg));
       KnownBits KB = VT.getKnownBits(N.Reg);
       J.attribute("zero", hex(KB.Zero));
@@ -419,7 +456,9 @@ void writeLegality(const MachineFunction &MF) {
     J.attributeObject("operators", [&] {
       for (unsigned Opc = TargetOpcode::PRE_ISEL_GENERIC_OPCODE_START;
            Opc <= TargetOpcode::PRE_ISEL_GENERIC_OPCODE_END; ++Opc) {
-        if (!getSupportedOp(Opc))
+        const egraph::OpProperties *P = getSupportedOp(Opc);
+        // An operator on a vector has no combination of scalar types.
+        if (!P || P->IsVector)
           continue;
         const MCInstrDesc &Desc = TII->get(Opc);
         if (Desc.isVariadic())

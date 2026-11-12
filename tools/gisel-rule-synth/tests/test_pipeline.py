@@ -356,29 +356,34 @@ class RealExtractionTest(unittest.TestCase):
         self.assertIn(('lit', 64, '1'), [c['tgt'] for c in cands])
 
     def test_shapes_that_are_not_extracted(self):
-        """No tree has a vector, a value wider than 64 bits or a G_PHI, as
-        a node or as an input. A pointer value is extracted with its
-        pointer type."""
+        """No tree has a scalar or a lane wider than 64 bits or a G_PHI,
+        as a node or as an input. A fixed vector is extracted with the
+        width of a lane and the number of its lanes, and a pointer value
+        with its pointer type."""
         ops_seen = set()
         for r in self.records:
             for n in _trees(r['expr']) + r['inputs']:
                 self.assertLessEqual(n['w'], 64)
-                self.assertFalse(n['type'].startswith('<'), n)
+                self.assertEqual(n['type'].startswith('<'),
+                                 'lanes' in n, n)
+                self.assertLessEqual(n.get('lanes', 1), 16)
             ops_seen |= {n['op'] for n in _trees(r['expr'])}
-        self.assertEqual(ops_seen & {
-            'G_PHI', 'G_BUILD_VECTOR', 'G_BRCOND'}, set())
+        self.assertEqual(ops_seen & {'G_PHI', 'G_BRCOND'}, set())
+        self.assertIn('G_BUILD_VECTOR', ops_seen)
         self.assertLessEqual({'G_PTR_ADD', 'G_INTTOPTR', 'G_PTRTOINT'},
                              ops_seen)
         for r in self.records:
             for n in _trees(r['expr']):
                 if n['op'] in ('G_PTR_ADD', 'G_INTTOPTR'):
                     self.assertEqual(n['type'], 'p0', n)
-        # The s128 addition and the vector addition are not roots, and the
-        # truncation of the s128 value has no tree: its operand is not a
-        # supported scalar.
+        # The s128 addition is not a root, and the truncation of the s128
+        # value has no tree: its operand is not a supported scalar. The
+        # vector addition is a root.
         adds = [r for r in self.records if r['fn'] == 'chain' and
                 r['interior'] == 1 and r['expr']['op'] == 'G_ADD']
-        self.assertEqual(len(adds), 2)
+        self.assertEqual(len(adds), 3)
+        self.assertEqual([r['expr'].get('lanes') for r in adds
+                          if 'lanes' in r['expr']], [2])
         # The value of a G_PHI is an input of the tree of its user.
         sub = next(r for r in self.records
                    if r['fn'] == 'phi' and r['expr']['op'] == 'G_SUB')
