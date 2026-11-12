@@ -348,3 +348,51 @@ view exposes the low halves of the operands, and the e-graph then rewrites
 the whole expansion of the division (51 to 48 nodes), which selects to one
 or two more instructions; and the funnel shifts of `i128`, `v2i128` and
 `v2i24` change in both directions (from -3 to +5 per function).
+
+## Synthesizer integration
+
+The synthesizer (`tools/gisel-rule-synth`) reads the same operator
+properties (`gmir_ops.json`) and uses the views and facts in three places.
+Nothing it takes from the e-graph is trusted: every candidate is proved by
+the synthesizer's own SMT model before it is a rule.
+
+* **Views as a candidate family** (`girs/views.py`). The AC, linear and
+  slice views are computed on the sources of the corpus with the semantics
+  of this document: AC terms of the operators that `gmir_ops.json` marks
+  commutative and associative, through unflagged nodes of one integer type
+  (G_ADD and G_MUL keep the count of a leaf, G_XOR its parity, the
+  idempotent operators one leaf; constants fold modulo `2^W`); linear forms
+  `c + sum(k * t) mod 2^W` through G_ADD, G_SUB, negation and G_MUL and
+  G_SHL by constants; slices through shifts by constants, contiguous masks,
+  truncations, zero extensions and G_UBFX. A flagged node, a vector, a
+  floating-point, saturating or carry operator and a shift by the width
+  or more are leaves. The canonical forms are signatures: grouping keys
+  for statistics and for removing identical implementations, never a
+  reason to drop a different implementation. The implementations of a view
+  (the folded AC term, the linear form with its multiplications and
+  shifts, the direct form of a slice) are proposals of the family
+  `views-<kind>`: proved under the facts of the instance, then generalized
+  with CEGIS and width schedules. Undef and poison are decided by those
+  proofs (a proposal reads each input at most once), not by the view.
+* **Facts and preconditions** (`girs/egraph.py`). An e-graph candidate is
+  first proved with no fact of its inputs. If that proof holds, the
+  precondition follows from the matched source (`precondition_source`
+  `lhs`, no guard). If not, its known bits are the input of CEGIS, which
+  finds a precondition over known-bit atoms that the emitted guard tests
+  with `GISelValueTracking` (`guard`), or the candidate is rejected and
+  counted (`no_precondition_in_grammar`, `solver_unknown`). The records of
+  version 3 with `context_facts` are cross-checked: each one gives a guarded
+  rule, a counted rejection, candidates proved without facts, or no
+  candidate, and the count of each is in `rules.stats.json`
+  (`egraph.context_facts`).
+* **Tuples.** When the selected DAG computes two roots of a region with one
+  instruction of several results (`"res"` projections of one G_UADDO), the
+  root that reads the other is a seed of a rule with several outputs, which
+  `region.py` proves with every output in one query. Roots that do not read
+  each other are counted as a rule for several roots that the import does
+  not make.
+
+`eval/rule_chain.py` runs a conditional rule (x + y -> x | y with the guard
+"no bit is one in both", found from x + 1 with the low bit of x known zero)
+and the rule of a sum with its carry from a corpus to a scratch build of
+llc and the lit tests of `test/SynthChain`.

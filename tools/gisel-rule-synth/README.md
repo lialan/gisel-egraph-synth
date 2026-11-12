@@ -312,7 +312,7 @@ manual step between the stages:
   `--until STAGE` stops after a stage; `--force STAGE...` runs stages again.
 - **Configuration.** `configs/*.json`: `mode`, `target`, `manifests` (role ->
   file with one `.ll` path per line), `search` (grammar, budgets, seed,
-  `regions`, `siblings`), `select`. `girs/mine.py` (`DEFAULTS`) has every key. `--local
+  `regions`, `siblings`, `views`), `select`. `girs/mine.py` (`DEFAULTS`) has every key. `--local
   FILE` gives the values of one machine (compiler paths, reference
   compilers, jobs).
 - **Roles.** `discovery` files give the corpus. `discovery` and `validation`
@@ -519,18 +519,22 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
 4. **E-graph candidates** (`egraph.py`). `llc -gisel-egraph-export=FILE`
    makes the e-graph combiner write, for each region with a cheaper form,
    the original expression DAG, the DAG that the extractor selected, the
-   inputs with their known bits and the roots (format version 2, one JSON
-   object per line; the function is not changed). The importer reads each
+   inputs with their known bits and the roots (format version 3, one JSON
+   object per line; the function is not changed; the importer also reads
+   versions 1 and 2). Version 3 adds the features of the engine, the
+   statistics of its views and the rules that needed context facts; see
+   "Views, preconditions and the export of the e-graph" below. The importer reads each
    record in three steps. (a) The maximal subterms that the two DAGs have in
    common become variables. (b) The pair is divided at the operators that
    did not change, until each part is proved with the known bits of the
    region. (c) Each subterm of a part becomes a variable if the part is
    still proved. A part is a *candidate*: it goes through `Synthesizer.add`
    as an enumerative discovery does (generalization, CEGIS, width schedules,
-   proofs), with the provenance `egraph` and the names of the e-graph rules
-   that fired. The e-graph is not trusted: a candidate that is not proved
-   gives no rule. A rewrite that gives no candidate is counted with its
-   reason in `rules.stats.json` (`egraph.rejected`).
+   proofs), with the provenance `egraph`, the names of the e-graph rules
+   that fired and the source of its precondition. The e-graph is not
+   trusted: a candidate that is not proved gives no rule. A rewrite that
+   gives no candidate is counted with its reason in `rules.stats.json`
+   (`egraph.rejected`).
 
 5. **Regions with several outputs** (`region.py`, `synth --regions`). A
    rule of the search above replaces the root of a tree. A value below the
@@ -744,6 +748,94 @@ changes that were not committed). The commit is necessarily older than the
 commit that contains the generated file; the hash identifies the tool
 without a commit.
 
+## Views, preconditions and the export of the e-graph
+
+[TargetAwareViews.md](../../docs/TargetAwareViews.md) describes the views
+and facts of GIEGraph; this is what the synthesizer does with them.
+
+**The views as a candidate family** (`views.py`, on by default,
+`synth --no-views` turns it off). For each source with scalars, next to
+the terms of the enumerative search, the views of the source propose
+replacements:
+
+| Kind | Proposals |
+|---|---|
+| `ac` | The folded AC term: the operators that `gmir_ops.json` marks commutative and associative, flattened through nodes of the same operator and type. G_ADD and G_MUL keep the count of equal leaves, G_XOR their parity, G_AND, G_OR and the minimum and maximum one leaf. The constants fold into one computed constant of the constant inputs (`(x ^ c1) ^ c2 -> x ^ (c1 ^ c2)`). Where the folded constant is absorbing or the identity for the constants of the instance only, also the literal or the term without it: CEGIS finds the precondition (`all(KZ(c1) \| KZ(c2))` for `(x & c1) & c2 -> 0`) or the rule is rejected. |
+| `linear` | The canonical linear form `c + sum(k * t) mod 2^W` through G_ADD, G_SUB, negation, G_MUL and G_SHL by constants: each leaf once, with a shift for a coefficient `1 << s`, a multiplication otherwise, and the sum of the leaves times a common coefficient (`(a << c) + (b << c) -> (a + b) << c`, `(x + y) + (x - y) -> x << 1`). |
+| `slice` | The bits `[lo, lo + width)` of a value through shifts by constants, contiguous masks, G_TRUNC, G_ZEXT and G_UBFX: the base, a mask of it, a shift, a G_UBFX, or a truncation or extension of one of them, if each constant has an expression (a constant input, a literal, `-1 >> c`, `-1 << c`, the mask of a narrower type of the source): `(x << c) >> c -> x & (-1 >> c)`, `zext(trunc x) -> x & mask`, `(x >> c) & 1 -> G_UBFX x, c, 1`. |
+
+A proposal is a candidate, not a result. It reads the variables of the
+source, each at most once (the constant inputs of a computed constant
+excepted), it is not the source or a subtree of it, and it is within the
+cost bound of the search. `discover.prove_candidates` proves it under the
+facts of the instance and `Synthesizer.add` generalizes it like a term of a
+bank, so undef, poison and the width schedules are decided by the proofs,
+not by the view. The rules have the provenance `views-<kind>+smt` (an
+enumerative source: the views are analyses of the operator semantics, not
+rewrites of the e-graph, and they are allowed in `semantics-only` runs).
+`--views-max-proposals` (default 8) bounds the proofs of one instance;
+`rules.stats.json` has `views` with the proposals and proofs per kind, the
+proposals that were filtered and why, the seconds, and the signatures of
+the searched sources.
+
+**Signatures.** `views.ac_signature`, `linear_signature` and
+`slice_signature` are canonical forms of an expression: flagged nodes are
+leaves, as in GIEGraph, constants fold modulo `2^W`, a shift by the width or
+more is a leaf (poison), a vector is a leaf. Two expressions with one
+signature have the same value when each read of an input is the same
+defined value. A signature is a grouping key: `views.group_stats` counts the
+sources that are equal modulo a view, and `views.dedupe` removes only
+*identical* implementations (equal up to the operand order of commutative
+operators); two implementations with one signature are both kept.
+
+**The source of a precondition.** Each new rule has `precondition_source`:
+`lhs` if its emitted precondition is `true` (the condition follows from the
+matched source; no guard), `guard` if each emitted disjunct tests known bits
+or facts of the inputs (the guard calls `GISelValueTracking`), `mixed`
+otherwise. An e-graph candidate also has it in its provenance, decided
+before the generalization: `lhs` if the candidate is proved with no fact of
+its inputs, `guard` if the proof needs their known bits.
+`rules.stats.json` (`egraph.precondition`) counts per source the
+candidates, the rules, the candidates that a rule of the catalog covers,
+and the rejected candidates by reason: `no_precondition_in_grammar` (the
+facts that the proof needs have no expression in the precondition grammar,
+e.g. `y == 2` for `x * y -> x << 1`) and `solver_unknown`. Such a candidate
+is never dropped silently.
+
+**Export version 3.** The importer reads `features`, `views` (summed in
+`egraph.features` and `egraph.views`) and `context_facts`: the e-graph
+rules whose precondition needed the known bits of the inputs
+(`FactSource::Context`), and `known-constant`. Each record with context facts
+ends in one bucket of `egraph.context_facts.outcome`: `guarded` (a candidate
+of it is a rule with a guard), `rejected` (a rejection was counted for it),
+`proved_without_facts` (each candidate of it was proved without facts: the
+rewrite that needed them gave no candidate), `not_synthesized` or
+`no_candidate`, with examples of the last three. The provenance of a rule
+has `egraph_context_facts`.
+
+**Roots with one instruction of several results.** If the selected DAG
+computes two roots of a record with one instruction (the sum and the carry
+of one G_UADDO), the root that reads the other (`c = icmp ult s, a` with
+`s = add a, b`) is a seed of a rule with several outputs: with
+`synth --regions`, `region.py` proves the rule with both outputs in one
+query. The roots alone (one result each) are not candidates. Roots that do
+not read each other (`x - y` and `icmp ult x, y`, one G_USUBO) would be a
+rule for several roots: the import counts them (`egraph.multi_root`,
+`egraph.rejected.multi-root`) and `synth --siblings` searches such groups in
+the corpus.
+
+**From a corpus to the compiler.** `eval/rule_chain.py --run-dir DIR`
+extracts `tests/data/chain/corpus.mir`, searches it without the catalog
+(`--known '' --cache '' --cost-slack 0 --regions --grammar
+registry`), checks that the search
+found `x + y -> x | y` with the guard `all(KZ(x0) | KZ(x1))` (from x + 1
+with the low bit of x known zero) and the sum with its carry as one
+G_UADDO, emits them alone into a copy of the source tree, builds that copy
+and runs the lit tests of `test/SynthChain` with its llc (`llvm-lit
+--param synth_chain=1`): the rules fire on samples that are not in the
+corpus and not where the guard fails. Without the parameter these tests are
+unsupported; the repository, its build and its profiles are not changed.
+
 ## How a target selects (`select.py`)
 
 Candidates are the library rules that reduce cost and are not dominated. A
@@ -814,6 +906,7 @@ takes its place.
 | `girs/fp.py` | IEEE formats of the conversion operators: exact evaluator and z3 encoding |
 | `girs/vector.py` | Fixed vectors: the scalar expression of each lane, definedness, the joint proof of the lanes with a precondition, the conditions of a sound replacement, lane-wise rules and shared scalars |
 | `girs/vector_search.py` | The search for a replacement of a source with vectors: lane forms, scalar templates, permutations; budgets and the legality of the target (a search strategy: known.search_sha) |
+| `girs/views.py` | The analysis views: AC, linear and slice signatures, and the proposals of each view (a search strategy: known.search_sha) |
 | `girs/targets.py` | per-target compiler flags and names |
 | `girs/measure.py` | running llc, instruction and rule counters |
 | `girs/select.py` | per-target coverage, novelty, redundancy, ranking, selection |
@@ -824,6 +917,7 @@ takes its place.
 | `proofs/` | SMT-LIB2 queries of the proofs, named by SHA-256 |
 | `eval/compare.py` | compiles a file list as base / synthesized rules / e-graph and compares the final code |
 | `eval/make_manifest.py` | writes a corpus manifest with the baseline compiler |
+| `eval/rule_chain.py` | a conditional rule and a rule with two outputs from a corpus to a scratch build and its lit tests (`test/SynthChain`) |
 | `configs/*.json` | run configurations of `mine` |
 | `manifests/*.txt` | corpus manifests: discovery, validation, held-out |
 | `tests/*.py` | unit tests (`python3 -m unittest discover -s tools/gisel-rule-synth/tests`); the tests of the real extraction chain need `build/plugin/bin/llc` or `GIRS_LLC` |
