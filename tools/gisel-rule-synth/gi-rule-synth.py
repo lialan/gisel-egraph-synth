@@ -408,10 +408,12 @@ class _DiscoveryCache:
     search with a solver answer that is not a proof and not a refutation is
     not stored: the next run tries again."""
 
-    def __init__(self, path, limits, timeout_ms, knowledge=None):
+    def __init__(self, path, limits, timeout_ms, knowledge=None,
+                 views=None):
         self.path = path
         self.ident = repr((sorted(limits.identity().items()), timeout_ms,
-                           _model_sha(), knowledge))
+                           _model_sha(), knowledge) +
+                          ((sorted(views.items()),) if views else ()))
         self.hits = self.stored = 0
         if path:
             os.makedirs(path, exist_ok=True)
@@ -497,6 +499,31 @@ def precondition_source(rule):
     return 'guard' if not any(empty) else 'mixed'
 
 
+def _merge_view_stats(st, vst):
+    from girs import views
+    views.merge_stats(st, vst)
+
+
+def _count_view_stats(out, k, v, cached):
+    """Adds the counter ``k`` of views.search of one instance; the time of
+    a search that the cache gave is not spent again."""
+    if k == 'seconds':
+        out['instances'] += 1
+        out['cached'] = out.get('cached', 0) + cached
+        if not cached:
+            out['seconds'] += v
+    elif k in ('smt_checks', 'smt_unknown'):
+        out[k] += v
+    elif k.startswith('proposed_') or k.startswith('proved_'):
+        what, kind = k.split('_', 1)
+        out['proposals' if what == 'proposed' else 'proved'] += v
+        b = out['by_kind'].setdefault(kind, {'proposed': 0, 'proved': 0})
+        b[what] += v
+    elif k != 'smt_refuted':
+        out.setdefault('filtered', {})
+        out['filtered'][k] = out['filtered'].get(k, 0) + v
+
+
 def cmd_synth(args):
     from girs import parallel
     if args.search_jobs < 0 or args.slow_jobs < 1 or args.search_batch < 1:
@@ -511,7 +538,7 @@ def cmd_synth(args):
 
 def _cmd_synth(args, session=None):
     from girs import compose, corpus, discover, egraph, ir, ops, region, \
-        sibling, smt, synth, vector, vector_search, known, history
+        sibling, smt, synth, vector, vector_search, views, known, history
 
     if args.mode == 'semantics-only' and (args.egraph or args.compose_corpus
                                           or args.compose_axioms):
@@ -586,10 +613,18 @@ def _cmd_synth(args, session=None):
     # The budgets of the search of a source with vectors follow those of
     # the search for scalars.
     vlim = vector_search.Limits.of(dlim)
+    # The analysis views (views.py): a candidate family of each source
+    # with scalars, proved like the terms of a bank.
+    view_lim = views.Limits(max_proposals=args.views_max_proposals) \
+        if getattr(args, 'views', True) else None
+    vwstats = {'instances': 0, 'proposals': 0, 'proved': 0, 'rules': 0,
+               'smt_checks': 0, 'smt_unknown': 0, 'seconds': 0.0,
+               'by_kind': {}}
     cache = _DiscoveryCache(os.path.join(args.cache, 'instances')
                             if args.cache and not args.refresh_search else None,
                             dlim, args.timeout_ms,
-                            known.digest(knowledge['rules']))
+                            known.digest(knowledge['rules']),
+                            view_lim.identity() if view_lim else None)
     slog = open(args.search_log, 'w') if args.search_log else None
     seconds = {}
     t = time.monotonic()
@@ -627,12 +662,21 @@ def _cmd_synth(args, session=None):
                                                  ctx, log)
             else:
                 cands, st = discover.discover(inst, backend, dlim, ctx, log)
+                if view_lim is not None:
+                    vc, vst = views.search(inst, backend, view_lim, dlim,
+                                           ctx, log,
+                                           have=[c['tgt'] for c in cands])
+                    cands = cands + vc
+                    _merge_view_stats(st, vst)
             cache.put(inst, cands, st, log)
         stop = st.pop('stop')
         stops[stop] = stops.get(stop, 0) + 1
         st['stop'] = stop
         for k in st:
-            if k != 'stop':
+            if k.startswith('views_'):
+                _count_view_stats(vwstats, k[len('views_'):], st[k],
+                                  bool(hit))
+            elif k != 'stop':
                 dstats[k] = dstats.get(k, 0) + st[k]
         if cands:
             dstats['with_candidates'] += 1
@@ -648,10 +692,12 @@ def _cmd_synth(args, session=None):
                 cinst.const_vars = tuple(c['const_vars'])
                 dstats['computed_constants'] = dstats.get(
                     'computed_constants', 0) + 1
-            prov = {'discovery': 'vector-search-%s+smt' % c['family']} \
-                if c.get('family') else None
+            fam = c.get('family')
+            prov = views.provenance(fam)
             rids.append(row['rids'][cand_idx] if session else
                         sy.add(cinst, c['tgt'], provenance=prov))
+            if fam and fam.startswith('views-') and rids[-1]:
+                vwstats['rules'] += 1
             if rids[-1]:
                 found.setdefault(inst.key(), []).append(c['tgt'])
             if args.regions and rids[-1] and not is_vec and \
@@ -946,6 +992,11 @@ def _cmd_synth(args, session=None):
                              'stored': backend.history.stored}
                             if backend.history else {},
              'composition': pstats, 'egraph': estats,
+             'views': dict(vwstats, enabled=view_lim is not None,
+                           limits=view_lim.identity() if view_lim else None,
+                           seconds=round(vwstats['seconds'], 2),
+                           signatures=views.group_stats(insts)
+                           if view_lim is not None else {}),
              'synthesis': sy.stats, 'emission': emission,
              'disjuncts': fstats, 'regions': rstats, 'siblings': sstats,
              'rules_by_class': by_class,
@@ -1428,6 +1479,14 @@ def build_parser():
     p.add_argument('--compose-axioms', action='store_true',
                    help='also use equal-cost reassociation identities as '
                    'composition steps')
+    p.add_argument('--no-views', dest='views', action='store_false',
+                   help='do not propose the candidates of the analysis '
+                   'views (girs/views.py: folded AC terms, canonical '
+                   'linear forms, direct bit slices) next to the terms of '
+                   'the enumerative search')
+    p.add_argument('--views-max-proposals', type=int, default=8,
+                   help='budget: proposals of the views of one instance '
+                   'that are proved')
     p.set_defaults(fn=cmd_synth)
 
     p = sub.add_parser('egraph-export', help='write the candidates of the '

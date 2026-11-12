@@ -16,7 +16,7 @@ import tempfile
 import time
 
 from . import discover, history, ir, known, region, sibling, smt, synth, vector
-from . import vector_search
+from . import vector_search, views
 
 
 def add_stats(dst, src):
@@ -163,6 +163,14 @@ def _discover(data, config, backend, ctx):
                 ctx.limits, ctx, log)
         else:
             cands, st = discover.discover(inst, backend, ctx.limits, ctx, log)
+            # The analysis views (views.py), as in the serial search.
+            if config['views']:
+                vc, vst = views.search(
+                    inst, backend,
+                    views.Limits(max_proposals=config['views_max_proposals']),
+                    ctx.limits, ctx, log, have=[c['tgt'] for c in cands])
+                cands = cands + vc
+                views.merge_stats(st, vst)
         # Only plain expressions and records cross the process boundary.
         cands = [{k: v for k, v in c.items() if k != 'proof'} for c in cands]
         alternatives = []
@@ -274,7 +282,9 @@ class Session:
                            use_known=use_known, deadline=deadline,
                            timeout_ms=a.timeout_ms, semantics=semantics,
                            cache=cache, attempts=attempts, proofs=a.proofs,
-                           regions=a.regions)
+                           regions=a.regions, views=getattr(a, 'views', True),
+                           views_max_proposals=getattr(
+                               a, 'views_max_proposals', 8))
         # spawn never inherits a live solver or SQLite connection.
         mp = multiprocessing.get_context('spawn')
         self.fast = futures.ProcessPoolExecutor(
@@ -364,9 +374,7 @@ class Session:
                     if c.get('const_vars'):
                         inst.const_vars = tuple(c['const_vars'])
                     provenance = ({'discovery': 'joint-region-alternative+smt'}
-                                  if alt else
-                                  {'discovery': 'vector-search-%s+smt' % c['family']}
-                                  if c.get('family') else None)
+                                  if alt else views.provenance(c.get('family')))
                     key = candidate_key(inst, c['tgt'])
                     groups.setdefault(key, []).append(
                         ((idx, alt, j), inst, c['tgt'], provenance))
