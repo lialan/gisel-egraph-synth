@@ -1,9 +1,73 @@
 # gisel-rule-synth
 
 Offline tool that discovers, generalizes, proves and generates GlobalISel
-combine rules (GIRuleSynthesizer). Normal compilation only runs the
-generated `GICombineRule`s through the existing combiner. No solver, search
-engine or e-graph runs inside LLVM.
+combine rules (GIRuleSynthesizer). With synthesized rules enabled,
+compilation runs the generated `GICombineRule`s through this project's
+combiners after the native pre-legalizer combiners. It needs no solver or
+offline search engine. The separate e-graph pass is opt-in.
+
+## Target-Aware Superoptimization and Rule Synthesis for LLVM GlobalISel
+
+The project explores offline superoptimization of Generic MIR and the
+synthesis of reusable GlobalISel combine rules. Here, superoptimization
+means searching a bounded space of modeled expressions for a cheaper,
+valid replacement. It does not imply exhaustive search or a globally
+optimal result.
+
+- **GIEGraph** represents Generic MIR expressions in an e-graph and applies
+  registered rewrites under bounded equality saturation. It keeps
+  equivalence separate from one-way refinement, so an undef/poison
+  refinement is not treated as an equality. Its extractor uses operation
+  costs and target legality to choose a replacement. The experimental
+  [GIEGraphCombiner](../../docs/GIEGraphCombiner-Design.md) can export
+  before/after DAGs as candidates for the offline synthesizer.
+- **GIRuleSynthesizer** also discovers replacements independently by
+  enumerating typed expressions from an operator registry. Samples filter
+  candidates; SMT checks refinement, and CEGIS synthesizes preconditions
+  that generalize concrete known-bit facts. Rules are proved for their
+  recorded width schedules and guards. An e-graph candidate goes through
+  the same proof pipeline; it is not trusted because a rewrite fired.
+  The `semantics-only` mode uses enumerative discovery alone, while
+  `hybrid` also uses e-graph candidates and rule composition.
+- **Rule generation** turns the proved library and target profiles into
+  TableGen `GICombineRule` records, C++ guards and replacement builders,
+  and per-target `GICombineGroup`s. With the generated combines enabled,
+  compilation applies those rules through this project's combiners after
+  the native pre-legalizer combiners; it does not repeat the offline search
+  or invoke a solver. The separate experimental e-graph pass remains
+  opt-in.
+- **Corpus-driven discovery** starts with Generic MIR extracted from
+  compiler test inputs after native combines and the pinned selected
+  rules, including known bits and type information. Incremental runs
+  discover and measure additions to that baseline. The `mine` workflow
+  supports direct and `opt -O2` inputs, discovery and validation manifests,
+  and a held-out evaluation after the rule set is frozen. It records search
+  budgets, proof outcomes, coverage and measured effects. A discovered
+  candidate is not by itself evidence of a code-generation improvement.
+
+### What is target-aware today
+
+GIEGraph's cost model combines configurable operation weights with
+`LegalizerInfo` checks, with stricter requirements for new instructions
+after legalization. The synthesizer can use an extracted legality table
+to prioritize target-supported operators in its `auto` grammar. This
+guides search; it is not a proof that every candidate lowers profitably.
+
+AMDGPU and AArch64 profiles select rules using corpus coverage, probes
+against the existing combiner, and measurements of final static
+instruction counts. The complete run also checks compilation failures,
+machine-verifier errors, changed SelectionDAG fallbacks and instruction
+count regressions. These are code-generation measurements, not hardware
+latency or throughput measurements; the current costs are not a complete
+microarchitectural performance model.
+
+The operator registry includes models for a limited set of AMDGPU
+intrinsics, with restrictions on the types and intrinsics a rule can
+create. It does not provide arbitrary target ISA instruction synthesis.
+Broader target-operator coverage and richer target cost models remain
+extension directions. Search and proofs are limited to the implemented
+semantic models, supported types, proved width schedules and configured
+budgets; an UNKNOWN solver result is not accepted as a proof.
 
 ## Requirements
 
@@ -28,8 +92,9 @@ engine or e-graph runs inside LLVM.
 
 `emit` writes each rule record once and one `GICombineGroup` per target
 (`gi_synth_combines_amdgpu`, `gi_synth_combines_aarch64`). To add a target:
-describe it in `girs/targets.py`, include the group in its pre-legalizer
-combiner behind a flag, and run `select`.
+describe it in `girs/targets.py`, add its group to a synthesized-rule
+combiner after the native pre-legalizer combiner behind a flag, and run
+`select`.
 
 ## Incremental discovery (default)
 

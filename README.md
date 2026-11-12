@@ -1,12 +1,18 @@
 # gisel-egraph-synth
 
+**Target-Aware Superoptimization and Rule Synthesis for LLVM GlobalISel**
+
 This project finds new GlobalISel combine rules automatically, proves them
-correct, and compiles them into LLVM as ordinary `GICombineRule`s.
+within its semantic model, and compiles them into LLVM as ordinary
+`GICombineRule`s. It combines bounded superoptimization of Generic MIR
+with offline rule synthesis: search for a cheaper, valid replacement once,
+then reuse it through generated rules. The search does not promise a
+globally optimal result.
 
 It has two parts:
 
 * **GIRuleSynthesizer** (`tools/gisel-rule-synth`). An offline Python tool.
-  It reads real compiler output, searches for shorter equivalent code, proves
+  It reads real compiler output, searches for lower-cost refinements, proves
   each rewrite with the Z3 SMT solver, and measures which rules make the
   final machine code smaller. The selected rules become TableGen records.
 * **The e-graph combiner** (`lib/GIEGraph*.cpp`). An experimental GlobalISel
@@ -14,9 +20,10 @@ It has two parts:
   e-graph. It is a reference for what the rules can reach, and a second
   source of rule candidates.
 
-The project builds against an unpatched LLVM, which is a git submodule. The
-normal compilation never runs a solver or a search: it runs only the
-generated match, guard and apply code.
+The project builds against an unpatched LLVM, which is a git submodule.
+Compilation with the synthesized rules runs the generated match, guard and
+apply code, without repeating the offline search or invoking a solver.
+The separate e-graph pass runs only when explicitly enabled.
 
 ```
           offline (Python, Z3)                    compile time (C++)
@@ -41,6 +48,11 @@ generated match, guard and apply code.
 The `mine` command runs the complete loop. Each stage writes its result into
 a run directory, so an interrupted run continues from the last stage that
 completed.
+
+In `semantics-only` mode, discovery enumerates replacements from operator
+semantics without using the e-graph rewrites. `hybrid` mode also accepts
+e-graph candidates and rule composition. Every candidate source goes
+through the synthesizer's proof and generalization pipeline.
 
 ```
   manifests (.ll files)
@@ -107,7 +119,9 @@ the rule.
 
 A rule is correct if the replacement **refines** the source: for each input,
 each value that the replacement can give is a value that the source can
-give. The proof uses the same semantics as LLVM:
+give. The proof uses an explicit model of supported LLVM operations and
+applies to the rule's recorded width schedules and guards. Its validity
+also depends on that model matching LLVM:
 
 ```
    for all inputs x (each bit pattern, poison or not):
@@ -121,14 +135,16 @@ The model covers these cases:
 
 | Area | What the proof models |
 |---|---|
-| Integers | Each integer operator, flags (`nuw`, `nsw`, `exact`), overflow and carry results |
+| Integers | Supported integer operators, flags (`nuw`, `nsw`, `exact`), overflow and carry results |
 | Undefined values | Poison per input, `G_FREEZE`, `G_IMPLICIT_DEF`, bits that `G_ANYEXT` leaves unspecified |
 | Floating point | Bit-exact IEEE 754: conversions, min/max (each NaN and signed-zero rule), rounding, arithmetic, NaN payloads |
 | Strict float | The ten `G_STRICT_*` operators in each rounding mode, with the exception flags |
 | Other kinds | Pointers as integers, fixed vectors (lane by lane), `G_PHI`, a load after a store to the same address, some AMDGPU intrinsics |
 
-Each operator model is compared with LLVM's own constant folding
-(`gi-rule-synth.py check-ops`), so a model cannot drift from the compiler.
+`gi-rule-synth.py check-ops` compares model evaluators with SMT encodings
+and, where a reference is available, LLVM's constant folding or known bits.
+These sampled checks help detect model drift; they do not prove complete
+agreement with the compiler. UNKNOWN is never accepted as a proof.
 
 ### Knowledge that persists
 
@@ -153,8 +169,9 @@ A run that finds nothing new stops after discovery and reports
 ## How the e-graph combiner works
 
 The e-graph combiner takes a region of generic instructions, puts it into an
-e-graph, and applies rewrite rules until no rule adds a new form. Then it
-extracts the cheapest form that is legal for the target:
+e-graph, and applies rewrite rules until saturation or a configured node,
+iteration or match limit. It then extracts a lower-cost form under its
+cost model and target-legality checks:
 
 ```
   MIR region                 e-graph (one class = one value)        extract
@@ -179,7 +196,35 @@ the real output of `-gisel-egraph-report` for this region.
 * `-gisel-egraph-export=FILE` writes each optimized region as a candidate
   for the synthesizer.
 
-`docs/GIEGraphCombiner-Design.md` has the full design.
+The graph keeps equivalence separate from directed refinement edges. A
+one-way undef/poison refinement cannot be used to merge interchangeable
+e-classes. [GIEGraphCombiner-Design.md](docs/GIEGraphCombiner-Design.md) has
+the full design.
+
+## Target-aware search and selection
+
+GIEGraph uses configurable operation weights and `LegalizerInfo` checks.
+New instructions have stricter legality requirements after legalization.
+GIRuleSynthesizer can read a target legality table and prioritize
+supported operators in its `auto` grammar; it still uses bounded search,
+and the legality table is not a hardware cost model.
+
+AMDGPU and AArch64 have separate rule profiles. Selection uses corpus
+coverage, probes against the existing combines, and measurements of final
+static instruction counts, with compilation, verifier, fallback and
+regression checks. Incremental runs measure new candidates on top of the
+pinned selected rules, then evaluate the frozen set on held-out inputs.
+An SMT-proved candidate is not by itself a measured improvement, and fewer
+static instructions do not establish lower latency or higher throughput.
+
+The registry includes models for a limited set of AMDGPU intrinsics, with
+restrictions on the types and intrinsics a replacement may create. This
+is not arbitrary target ISA instruction synthesis. Operator coverage,
+supported types, proved width schedules and search budgets bound the
+current implementation; richer hardware cost models are not implemented.
+
+See the [GIRuleSynthesizer README](tools/gisel-rule-synth/README.md) for the
+commands, proof model, search budgets and corpus-driven discovery workflow.
 
 ## Layout
 
@@ -197,7 +242,7 @@ the real output of `-gisel-egraph-report` for this region.
 ## Build
 
 ```sh
-git clone --recurse-submodules <url> gisel-egraph-synth
+git clone --recurse-submodules https://github.com/lialan/gisel-egraph-synth.git
 cd gisel-egraph-synth
 scripts/build-llvm.sh   # stock LLVM into build/llvm (one time)
 scripts/build.sh        # this project into build/plugin
