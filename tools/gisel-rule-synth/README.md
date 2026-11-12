@@ -31,6 +31,97 @@ engine or e-graph runs inside LLVM.
 describe it in `girs/targets.py`, include the group in its pre-legalizer
 combiner behind a flag, and run `select`.
 
+## Incremental discovery (default)
+
+The repository is the starting point of a run:
+
+* **K**, `rules.json` plus `proofs/`, contains all verified known rules,
+  including rules that no target currently selects. Pulling the repository
+  reuses this knowledge without rediscovering or re-proving it.
+* **B**, `targets/<Target>.json`, pins the selected rule content revisions
+  and their emission order. A discovery run cannot remove, weaken, replace,
+  or reorder B. A broader guard or additional width schedule of the same
+  source/replacement family is a separate `_v<digest>` revision.
+* **Delta** consists of verified rules or revisions absent from K. `mine`
+  builds B plus Delta, disables Delta for the baseline measurement, and
+  selects/ablates only Delta. Both sides run the same synth combiner and
+  `all_combines`; its generic cleanup is not credited to new rules.
+
+The extraction stage runs after native combines and B, so it searches the
+remaining MIR. Before concrete SMT checks and generalization, a known-rule
+index skips an identical source/replacement pair only when its proved widths,
+constant requirements, guard, and one-use requirements cover the instance.
+It does not blacklist a source opcode, root, or rule family. Multi-output
+and sibling searches retain their single-root seeds, even if already known.
+
+```sh
+# Normal run: use committed K/B and shared local progress.
+python3 tools/gisel-rule-synth/gi-rule-synth.py mine \
+  --config tools/gisel-rule-synth/configs/m4-auto.json \
+  --run-dir build/runs/incremental
+
+# Explicitly revisit known pairs after improving discovery/preconditions.
+# Previously completed SAT/UNSAT obligations remain reusable.
+python3 tools/gisel-rule-synth/gi-rule-synth.py mine \
+  --config tools/gisel-rule-synth/configs/m4-auto.json \
+  --run-dir build/runs/refreshed --refresh-search
+
+# After changing semantics, typing or matcher/emitter contracts:
+python3 tools/gisel-rule-synth/gi-rule-synth.py refresh-known
+
+# Promote only a finished, non-regressing measured run.
+python3 tools/gisel-rule-synth/gi-rule-synth.py mine \
+  --config tools/gisel-rule-synth/configs/m4-auto.json \
+  --run-dir build/runs/incremental --export
+python3 tools/gisel-rule-synth/gi-rule-synth.py emit
+```
+
+`refresh-known` rechecks every stored disjunct and final disjunction, saves
+the proof artifacts and updates the semantic identity. Failure or UNKNOWN
+leaves the catalog unchanged. If revalidation would change a pinned rule's
+runtime requirements, or its semantic/matcher contract changes, the profile
+is marked `needs_reselection`. Rebuild with `emit --all-candidates`, measure
+and run `select` to establish a new profile; `mine` and normal `emit` refuse
+the stale profile. Refresh does not silently promote it. The committed catalog has already been
+refreshed, so other users do not need this command on a normal checkout.
+`recheck` remains the read-only verification command.
+
+`mine --export` merges verified additions into K and promotes only this
+target's profile. Other targets and old rule revisions remain available.
+It refuses a changed baseline, missing evaluation, compile/fallback changes,
+or per-file regressions. Commit the merged catalog, referenced proof files,
+target profile and regenerated files together. Full corpora, term banks,
+machine measurements and local caches do not belong in Git.
+
+Local progress defaults to `.cache/girs/` (ignored by Git). Set `cache_dir`
+in a mine configuration or `synth --cache DIR` to share it across run
+directories. It contains atomic instance checkpoints, newly verified local
+rules and their proofs, a SQLite proof-obligation cache, and compiler builds.
+Proof keys include complete SMT declarations, requested model values and
+semantic identity, independent of execution quotas. Increasing time, term
+or proof budgets reuses decided SAT/UNSAT obligations; UNKNOWN is retried.
+Completed instances are reused only for the same search domain and knowledge.
+Truncated searches are never marked exhausted. Measurement checkpoints also
+bind compiler bytes, input bytes, target, flags and disabled rule records.
+
+No new verified rules means no candidate rebuild, selection, or held-out
+evaluation. The report records `no_new_rules`, not an exhaustive-search claim.
+Increasing a budget does not invalidate the baseline build or corpus
+extraction. Search-method changes invalidate instance checkpoints but not
+valid proof obligations; semantic changes require explicit revalidation.
+
+The current checkpoint boundary is a candidate/proof or completed instance.
+Partially built term banks are regenerated; this is not a serialized bank
+iterator. `time_budget_s` covers discovery and proof work, including slow
+solver retries, with cooperative checks between enumeration batches. Output
+and checkpoint writing can finish after the deadline. It does not limit LLVM
+build, selection or held-out evaluation time. Local learned rules remain
+candidates until a successful measured export.
+
+For a deliberate cold-start experiment use `synth --known '' --cache ''`.
+Use an isolated `cache_dir` for independent search-matrix arms: sharing local
+learned rules between arms measures cumulative discovery, not cold starts.
+
 ## Searching beyond cheap local identities
 
 `mine` can discover from `opt -O2` output: set `discovery_pipelines` to

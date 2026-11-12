@@ -445,6 +445,7 @@ class RealExtractionTest(unittest.TestCase):
             'all', '--llc', LLC, '--corpus-dir', os.path.join(d, 'corpus'),
             '--db', os.path.join(d, 'rules.json'),
             '--proofs', os.path.join(d, 'proofs'),
+            '--cache', os.path.join(d, 'cache'),
             '--td', os.path.join(d, 'out.td'),
             '--inc', os.path.join(d, 'out.inc'),
             '--max-instances', '30', '--grammar', 'all'])
@@ -490,7 +491,7 @@ class ProbeLoopTest(unittest.TestCase):
         def run(llc, target, mir, synth=False, disabled=()):
             if synth and 'loops' not in disabled:
                 raise measure.CombinerLoop('llc did not end')
-            if synth:
+            if synth and 'fails' not in disabled:
                 raise RuntimeError('llc failed')
             return ''
         with mock.patch.object(select.emit, 'record_names',

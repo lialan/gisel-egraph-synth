@@ -473,6 +473,10 @@ class Synthesizer:
             self.stats['nondet_rejected'] = \
                 self.stats.get('nondet_rejected', 0) + 1
             return None
+        known = getattr(self, 'known', None)
+        if known is not None and known.covers(inst, tgt):
+            self.stats['known'] = self.stats.get('known', 0) + 1
+            return None
         # The edge of a G_PHI is not a value of a register: a replacement
         # cannot read it (ir.edge_vars).
         if ir.phi_error(inst.expr) is not None or (

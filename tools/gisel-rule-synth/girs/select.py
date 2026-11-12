@@ -521,10 +521,12 @@ def examples(rule):
 
 # ------------------------------------------------------------- evidence ---
 
-def novelty(llc, target, rules):
+def novelty(llc, target, rules, pinned=(), all_names=None):
     """Runs every rule alone on its examples. Returns id -> record."""
     names = {r['id']: emit.record_names(r) for r in rules}
-    all_recs = [n for r in rules for n in names[r['id']]]
+    all_names = all_names or names
+    all_recs = [n for rid in all_names if rid not in pinned
+                for n in all_names[rid]]
     out = {}
     for r in rules:
         try:
@@ -537,7 +539,8 @@ def novelty(llc, target, rules):
         mir = '\n'.join(t for _, t in fns) + '\n'
         src = size(mir)
         try:
-            base = size(measure.run_combiner(llc, target, mir))
+            # Both sides execute the same synth pass (including all_combines).
+            base = size(measure.run_combiner(llc, target, mir, True, all_recs))
             others = [n for n in all_recs if n not in names[r['id']]]
             alone = size(measure.run_combiner(llc, target, mir, True,
                                               others))
@@ -565,16 +568,17 @@ def novelty(llc, target, rules):
     return out
 
 
-def redundancy(llc, target, rules, nov, order):
+def redundancy(llc, target, rules, nov, order, pinned=()):
     """Greedy: a rule is redundant if the still-active rules reach the same
     result on all of its examples without it. ``order`` lists rule ids,
     least valuable first. Returns the set of redundant ids."""
     names = {r['id']: emit.record_names(r) for r in rules}
     by_id = {r['id']: r for r in rules}
-    active = {r['id'] for r in rules if nov[r['id']]['class'] == 'new'}
+    active = set(pinned) | {r['id'] for r in rules
+                            if nov.get(r['id'], {}).get('class') == 'new'}
     redundant = set()
     for rid in order:
-        if rid not in active:
+        if rid not in active or rid in pinned:
             continue
         r = by_id[rid]
         fns = [(n, build_mir(r, ex, n, target)) for n, ex in examples(r)]
@@ -583,7 +587,8 @@ def redundancy(llc, target, rules, nov, order):
         # A rule and its one-use variant are one rule here: the other of
         # the two does not make this one redundant.
         pair = r.get('variant_of') or rid + emit.ONE_USE_SUFFIX
-        off += names.get(pair, [])
+        if pair not in pinned:
+            off += names.get(pair, [])
         try:
             with_r = size(measure.run_combiner(llc, target, mir, True,
                                                off))
@@ -792,13 +797,16 @@ def check_set(llc, target, paths, base, names, sel, jobs):
 
 
 def enforce(llc, target, paths, base, names, sel, jobs, log=print,
-            max_rounds=40):
+            max_rounds=40, pinned=()):
     """Removes rules from ``sel`` until no file of ``paths`` is worse with
     the set than without it (see _violations). ``paths`` are all the files
     of the corpus, also the files that do not compile with every candidate.
     Returns (set, rule -> {'reason', 'files'}, file -> result, violations
     that no rule explains)."""
     sel = set(sel)
+    pinned = set(pinned)
+    if not pinned <= sel:
+        raise ValueError('selected set omitted a pinned baseline rule')
     dropped = {}
     unexplained = {}
     for _ in range(max_rounds):
@@ -813,9 +821,10 @@ def enforce(llc, target, paths, base, names, sel, jobs, log=print,
             if kind == 'compile_failure':
                 ids = [i for i in measure.failing_rules(llc, target, p,
                                                         disabled=off)
-                       if i in sel]
+                       if i in sel and i not in pinned]
             else:
-                ids = [r for r in cur[p].get('passed', {}) if r in sel]
+                ids = [r for r in cur[p].get('passed', {})
+                       if r in sel and r not in pinned]
             good, gain = [], {}
             for r in ids:
                 res = measure.compile_ll(llc, target, p, synth=True,
@@ -847,11 +856,15 @@ def enforce(llc, target, paths, base, names, sel, jobs, log=print,
                           'violations': len(files)}
             log('select: drop %s (%d files worse with the selected set: '
                 '%s)' % (r, len(files), files[0][1]))
+    # The final round may have removed a rule; return its actual result.
+    if dropped:
+        cur, _, unexplained = check_set(llc, target, paths, base, names,
+                                         sel, jobs)
     return sel, dropped, cur, unexplained
 
 
 def refine(llc, target, compare, names, sel, guard, keep_unmeasured, jobs,
-           log=print, alt=None, need_gain=(), no_regressions=False):
+           log=print, alt=None, need_gain=(), no_regressions=False, pinned=()):
     """Shrinks the selected set until every rule in it is worth its place
     *inside the set*. Returns (set, id -> marginal, id -> reason dropped,
     summary of the set). ``alt`` maps a rule to its one-use variant: the
@@ -863,11 +876,12 @@ def refine(llc, target, compare, names, sel, guard, keep_unmeasured, jobs,
                    if r['base']['rc'] == 0 and r['synth'].get('rc') == 0 and
                    r['synth'].get('matched'))
     sel = set(sel)
+    pinned = set(pinned)
     dropped = {}
     while True:
         cur, off = _measure_set(llc, target, files, names, sel, jobs)
-        loo = _loo_in_set(llc, target, cur, off, names, sel, jobs)
-        bad = sorted((r for r in sel if loo[r]['insns'] > 0),
+        loo = _loo_in_set(llc, target, cur, off, names, sel - pinned, jobs)
+        bad = sorted((r for r in sel - pinned if loo[r]['insns'] > 0),
                      key=lambda r: (-loo[r]['insns'], r))
         if bad:
             dropped[bad[0]] = ('measured_regression', loo[bad[0]])
@@ -885,7 +899,7 @@ def refine(llc, target, compare, names, sel, guard, keep_unmeasured, jobs,
             for rid, n in res.get('matched', {}).items():
                 matched[rid] = matched.get(rid, 0) + n
         weak = sorted(
-            (r for r in sel if loo[r]['insns'] == 0 and
+            (r for r in sel - pinned if loo[r]['insns'] == 0 and
              (r in need_gain or (guard[r] > 0 and not keep_unmeasured))),
             key=lambda r: (r not in need_gain,
                            -guard[r] * matched.get(r, 0), r))
@@ -902,7 +916,7 @@ def refine(llc, target, compare, names, sel, guard, keep_unmeasured, jobs,
             viol = _violations(cur, base)
             score = {}
             for p, kind in viol.items():
-                for rid in sel:
+                for rid in sel - pinned:
                     e = loo[rid]['_per_file'].get(p)
                     if e is None:
                         continue
@@ -961,16 +975,24 @@ def guard_cost(rule):
 
 
 def select(db, target, insts=None, llc=None, compare=None, jobs=8,
-           log=print, keep_unmeasured=False, no_regressions=False):
+           log=print, keep_unmeasured=False, no_regressions=False,
+           baseline=None, active_ids=None):
     """Builds the target profile. ``insts`` is the target's corpus (for
     coverage), ``compare`` an eval/compare.py result for the candidate
     build. Evidence that needs llc is skipped without it."""
     cands = emit.candidates(db, target)
-    rules = [r for r in cands if emit.emittable(r)]
+    if active_ids is not None:
+        cands = [r for r in cands if r['id'] in active_ids]
+    all_rules = [r for r in cands if emit.emittable(r)]
+    pinned = set((baseline or {}).get('baseline', {}).get('order', []))
+    rules = [r for r in all_rules if r['id'] not in pinned]
+    names = {r['id']: emit.record_names(r) for r in all_rules}
     prof = {r['id']: {'records': len(emit.record_names(r)),
                       'pattern_nodes': pattern_nodes(r),
                       'guard_cost': guard_cost(r)} for r in rules}
     for r in cands:
+        if r['id'] in pinned:
+            continue
         if r['id'] not in prof:
             prof[r['id']] = {'selection': 'not_emittable'}
     if insts is not None:
@@ -982,7 +1004,7 @@ def select(db, target, insts=None, llc=None, compare=None, jobs=8,
     if llc:
         log('select: novelty of %d rules against %s' % (len(rules),
                                                         target.combiner))
-        nov = novelty(llc, target, rules)
+        nov = novelty(llc, target, rules, pinned, names)
         for rid, n in nov.items():
             prof[rid]['novelty'] = n
     onl = marg = None
@@ -1015,7 +1037,7 @@ def select(db, target, insts=None, llc=None, compare=None, jobs=8,
         # patterns, rarely observed.
         order = sorted((r['id'] for r in rules), key=lambda i: (
             gain(i), -prof[i]['pattern_nodes'], observed(i), i))
-        red = redundancy(llc, target, rules, nov, order)
+        red = redundancy(llc, target, all_rules, nov, order, pinned)
     for r in rules:
         rid = r['id']
         p = prof[rid]
@@ -1055,6 +1077,9 @@ def select(db, target, insts=None, llc=None, compare=None, jobs=8,
         base = r.get('variant_of')
         if base is None:
             continue
+        if base in pinned or base not in prof:
+            # A pinned revision/variant is never swapped by this run.
+            continue
         v, b = prof[r['id']], prof[base]
         if marg is None:
             v['selection'] = 'variant_not_measured'
@@ -1088,9 +1113,8 @@ def select(db, target, insts=None, llc=None, compare=None, jobs=8,
         del alt[base]
     set_summary = None
     if marg is not None:
-        names = {r['id']: emit.record_names(r) for r in rules}
         first = {r['id'] for r in rules
-                 if prof[r['id']]['selection'] == 'emitted'}
+                 if prof[r['id']]['selection'] == 'emitted'} | pinned
         log('select: refining %d rules inside the selected set' % len(first))
         final, loo, dropped, set_summary = refine(
             llc, target, compare, names, first,
@@ -1099,11 +1123,11 @@ def select(db, target, insts=None, llc=None, compare=None, jobs=8,
             # A rule that moves an operation to a wider type changes code
             # that the target can prefer as it is.
             {r['id'] for r in rules if r['class'] == 'widens_operation'},
-            no_regressions)
+            no_regressions, pinned)
         for rid, (why, m) in dropped.items():
             prof[rid]['selection'] = why
             prof[rid]['in_set'] = _public(m)
-        for rid in final:
+        for rid in final - pinned:
             prof[rid]['selection'] = 'emitted'
             prof[rid]['in_set'] = _public(loo[rid])
 
@@ -1117,6 +1141,11 @@ def select(db, target, insts=None, llc=None, compare=None, jobs=8,
                                    i))
     for n, rid in enumerate(ranked):
         prof[rid]['rank'] = n + 1
+    if baseline:
+        import copy
+        for rid in pinned:
+            prof[rid] = copy.deepcopy(baseline['rules'][rid])
+            prof[rid]['pinned'] = True
     summary = {}
     for p in prof.values():
         summary[p['selection']] = summary.get(p['selection'], 0) + 1
@@ -1131,5 +1160,5 @@ def select(db, target, insts=None, llc=None, compare=None, jobs=8,
                          'no_regressions': no_regressions},
             'selected_set': set_summary,
             'summary': dict(sorted(summary.items())),
-            'emitted_records': sum(prof[i]['records'] for i in ranked),
+            'emitted_records': sum(len(names[i]) for i in set(ranked) | pinned),
             'rules': dict(sorted(prof.items()))}

@@ -47,33 +47,43 @@ SEED_MIR = os.path.join(HERE, 'corpus', 'seed.mir')
 EXTRACT_TIMEOUT = 120  # seconds per llc run
 
 
-def _extract_one(llc, path, out_dir, kind, target, extra=()):
+def _extract_one(llc, path, out_dir, kind, target, extra=(), baseline=False,
+                 disabled=()):
     h = hashlib.sha256(os.path.abspath(path).encode()).hexdigest()[:10]
     out = os.path.join(out_dir, '%s.%s.jsonl' % (os.path.basename(path), h))
     tail = ['-gisel-synth-corpus-out=' + out] + target.corpus_flags() + \
         list(extra)
-    run_pass = [llc] + target.triple_flags + ['-run-pass=gisel-synth-corpus']
+    pipeline = ([target.enable_flag] if baseline else []) + ([
+        target.disable_rule_flag + ','.join(disabled)] if disabled else [])
+    passes = ((target.synth_pass + ',') if baseline else '') + \
+        'gisel-synth-corpus'
+    run_pass = [llc] + target.triple_flags + ['-run-pass=' + passes]
     quiet = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                  timeout=EXTRACT_TIMEOUT)
     try:
         if kind == 'mir':
-            rc = subprocess.run(run_pass + [path, '-o', os.devnull] + tail,
+            rc = subprocess.run(run_pass + [path, '-o', os.devnull] + tail +
+                                pipeline,
                                 **quiet).returncode
         elif target.corpus_flag:
             rc = subprocess.run([llc] + target.ll_flags +
                                 [target.corpus_flag, path, '-o', os.devnull]
-                                + tail, **quiet).returncode
+                                + tail + pipeline, **quiet).returncode
         else:
             # No extractor in this target's pipeline: take the MIR after
             # its pre-legalizer combiner and run the extractor pass on it.
             p1 = subprocess.run([llc] + target.ll_flags +
-                                ['-stop-after=' + target.combiner, path,
-                                 '-o', '-'], stdout=subprocess.PIPE,
+                                ['-stop-after=' + (target.synth_pass if
+                                  baseline else target.combiner), path,
+                                 '-o', '-'] + pipeline, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL,
                                 timeout=EXTRACT_TIMEOUT)
             rc = p1.returncode
             if rc == 0:
-                rc = subprocess.run(run_pass + ['-x', 'mir', '-', '-o',
+                # The synth pass already ran in p1.
+                post = [llc] + target.triple_flags + [
+                    '-run-pass=gisel-synth-corpus']
+                rc = subprocess.run(post + ['-x', 'mir', '-', '-o',
                                                 os.devnull] + tail,
                                     input=p1.stdout, **quiet).returncode
     except subprocess.TimeoutExpired:
@@ -129,7 +139,7 @@ def cmd_extract(args):
 
 # ------------------------------------------------------ egraph-export ---
 
-def _egraph_export_one(llc, path, out_dir, kind, target, stages):
+def _egraph_export_one(llc, path, out_dir, kind, target, stages, baseline=False):
     """Runs the e-graph combiner in shadow mode (it does not change the
     MIR) and writes its candidates for ``path``."""
     h = hashlib.sha256(os.path.abspath(path).encode()).hexdigest()[:10]
@@ -140,22 +150,26 @@ def _egraph_export_one(llc, path, out_dir, kind, target, stages):
             '-gisel-egraph-stages=' + stages]
     run_pass = [llc] + target.triple_flags + \
         ['-run-pass=gisel-egraph-combiner']
+    pipeline = [target.enable_flag] if baseline else []
     quiet = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                  timeout=EXTRACT_TIMEOUT)
     try:
         if kind == 'mir':
-            rc = subprocess.run(run_pass + [path, '-o', os.devnull] + tail,
+            pre = [llc] + target.triple_flags + ['-run-pass=' +
+                target.synth_pass + ',gisel-egraph-combiner'] if baseline else run_pass
+            rc = subprocess.run(pre + [path, '-o', os.devnull] + tail,
                                 **quiet).returncode
         elif target.egraph_flag:
             rc = subprocess.run([llc] + target.ll_flags +
                                 [target.egraph_flag, path, '-o', os.devnull]
-                                + tail, **quiet).returncode
+                                + tail + pipeline, **quiet).returncode
         else:
             # The pass is not in this target's pipeline: run it on the MIR
             # after the pre-legalizer combiner.
             p1 = subprocess.run([llc] + target.ll_flags +
-                                ['-stop-after=' + target.combiner, path,
-                                 '-o', '-'], stdout=subprocess.PIPE,
+                                ['-stop-after=' + (target.synth_pass if
+                                  baseline else target.combiner), path,
+                                 '-o', '-'] + pipeline, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL,
                                 timeout=EXTRACT_TIMEOUT)
             rc = p1.returncode
@@ -309,8 +323,9 @@ GENERATOR_VERSION = '2.1'
 
 def _git(*args):
     try:
-        return subprocess.check_output(('git', '-C', LLVM) + args,
-                                       text=True).strip()
+        return subprocess.check_output(('git', '-c', 'core.fsmonitor=false',
+                                        '-C', LLVM) + args,
+                                       text=True, timeout=30).strip()
     except Exception:
         return None
 
@@ -329,7 +344,8 @@ def _provenance():
     older than the commit that contains the generated file; ``llvm_dirty``
     says if the llvm directory had changes that were not committed. The
     hash of the tool identifies it without a commit."""
-    status = _git('status', '--porcelain', '--untracked-files=no', '--',
+    status = _git('status', '--porcelain', '--ignore-submodules=dirty',
+                  '--untracked-files=no', '--',
                   '.')
     return {'generator_version': GENERATOR_VERSION,
             'generator_sha256': _generator_sha(),
@@ -379,7 +395,8 @@ def _model_sha():
     with the semantics would miss a module that one of them imports (the
     models of the intrinsics are in amdgcn.py, the lanes in vector.py)."""
     girs = os.path.join(HERE, 'girs')
-    return _sha([os.path.join(girs, 'gmir_ops.json')] + sorted(
+    return _sha([os.path.join(HERE, 'gi-rule-synth.py'),
+                 os.path.join(girs, 'gmir_ops.json')] + sorted(
         os.path.join(girs, f) for f in os.listdir(girs)
         if f.endswith('.py')))
 
@@ -391,16 +408,18 @@ class _DiscoveryCache:
     search with a solver answer that is not a proof and not a refutation is
     not stored: the next run tries again."""
 
-    def __init__(self, path, limits, timeout_ms):
+    def __init__(self, path, limits, timeout_ms, knowledge=None):
         self.path = path
         self.ident = repr((sorted(limits.identity().items()), timeout_ms,
-                           _model_sha()))
+                           _model_sha(), knowledge))
         self.hits = self.stored = 0
         if path:
             os.makedirs(path, exist_ok=True)
 
     def _file(self, inst):
-        h = hashlib.sha256(repr((self.ident, inst.key())).encode())
+        h = hashlib.sha256(repr((self.ident, inst.key(), inst.vk,
+                                 inst.interior_uses, inst.const_vars,
+                                 inst.flags)).encode())
         return os.path.join(self.path, h.hexdigest()[:24] + '.json')
 
     def get(self, inst):
@@ -415,16 +434,14 @@ class _DiscoveryCache:
                 rec['stats'], rec['log'])
 
     def put(self, inst, cands, st, log):
-        from girs import ir
-        if not self.path or st['smt_unknown']:
+        from girs import ir, known
+        if not self.path or st['smt_unknown'] or st['stop'] not in (
+                'complete', 'no_signature', 'source_always_poison'):
             return
-        tmp = self._file(inst) + '.tmp'
-        with open(tmp, 'w') as f:
-            json.dump({'candidates': [ir.to_json(c['tgt']) for c in cands],
+        known.write({'candidates': [ir.to_json(c['tgt']) for c in cands],
                        'const_vars': [list(c.get('const_vars', ()))
                                       for c in cands],
-                       'stats': st, 'log': log}, f)
-        os.replace(tmp, self._file(inst))
+                       'stats': st, 'log': log}, self._file(inst))
         self.stored += 1
 
 
@@ -466,7 +483,7 @@ def _schedule(insts, share):
 
 def cmd_synth(args):
     from girs import compose, corpus, discover, egraph, ir, region, \
-        sibling, smt, synth, vector
+        sibling, smt, synth, vector, known, history
 
     if args.mode == 'semantics-only' and (args.egraph or args.compose_corpus
                                           or args.compose_axioms):
@@ -474,6 +491,17 @@ def cmd_synth(args):
                  'combiner and rule composition are not candidate sources '
                  'of this mode')
     t0 = time.monotonic()
+    empty = known.stamp({'format': 'gi-rule-synth-library-v2', 'rules': []})
+    baseline = known.load(args.known) if args.known else empty
+    knowledge = baseline
+    learned_path = os.path.join(args.cache, 'learned.json') if args.cache else None
+    if learned_path and os.path.exists(learned_path):
+        try:
+            local = known.load(learned_path)
+        except ValueError:
+            local = empty  # Old semantic model: keep the file for inspection.
+        knowledge, _ = known.merge(baseline, local['rules'])
+    known_index = known.Index(knowledge)
     files = _corpus_files(args.corpus)
     insts, cstats = corpus.load(files)
     # Most valuable first: occurrences times the instructions at stake.
@@ -483,6 +511,10 @@ def cmd_synth(args):
     if args.max_instances:
         insts = insts[:args.max_instances]
     backend = smt.Z3Backend(timeout_ms=args.timeout_ms)
+    if args.cache:
+        backend.history = history.Proofs(args.cache, known.semantics_sha())
+    if args.time_budget_s:
+        backend.deadline = t0 + args.time_budget_s
     from girs import targets
     cap = targets.Capability.load(args.legality) if args.legality else None
     dlim = discover.Limits(seed=args.seed, grammar=args.grammar,
@@ -496,7 +528,12 @@ def cmd_synth(args):
                            capability=cap)
     slim = synth.SynthLimits(max_atoms=args.max_atoms)
     ctx = discover.Context(dlim)
+    dlim.deadline = backend.deadline
+    # A known single-output rewrite may seed a new multi-output rule.
+    ctx.known = None if (args.refresh_search or args.regions or
+                         args.siblings) else known_index
     sy = synth.Synthesizer(backend, slim, proof_dir=args.proofs)
+    sy.known = ctx.known
     dstats = {'instances': 0, 'with_candidates': 0, 'candidates': 0,
               'not_searched_time_budget': 0}
     dstats.update(discover.new_stats())
@@ -507,14 +544,16 @@ def cmd_synth(args):
     # Instance -> the replacements of its root that became rules: a rule
     # for two roots must be cheaper than they are.
     found = {}
-    cache = _DiscoveryCache(args.cache, dlim, args.timeout_ms)
+    cache = _DiscoveryCache(os.path.join(args.cache, 'instances')
+                            if args.cache and not args.refresh_search else None,
+                            dlim, args.timeout_ms,
+                            known.digest(knowledge['rules']))
     slog = open(args.search_log, 'w') if args.search_log else None
     seconds = {}
     t = time.monotonic()
     t_synth = 0.0
     for inst in insts:
-        if args.time_budget_s and \
-                time.monotonic() - t - t_synth > args.time_budget_s:
+        if backend.deadline is not None and time.monotonic() >= backend.deadline:
             # The budget ended the search: these instances have no result.
             dstats['not_searched_time_budget'] += 1
             continue
@@ -539,7 +578,7 @@ def cmd_synth(args):
         st['stop'] = stop
         for k in st:
             if k != 'stop':
-                dstats[k] += st[k]
+                dstats[k] = dstats.get(k, 0) + st[k]
         if cands:
             dstats['with_candidates'] += 1
         ts = time.monotonic()
@@ -599,7 +638,7 @@ def cmd_synth(args):
     # A candidate goes through the same generalization and proofs.
     efiles = egraph.export_files(args.egraph or [])
     einsts, estats = [], {}
-    if efiles:
+    if efiles and (backend.deadline is None or time.monotonic() < backend.deadline):
         t = time.monotonic()
         imp = egraph.Importer(backend, egraph.Limits(
             max_cost=args.egraph_max_cost))
@@ -611,6 +650,8 @@ def cmd_synth(args):
         generalized = 0
         done = set()
         for c in cands:
+            if backend.deadline is not None and time.monotonic() >= backend.deadline:
+                break
             # The first recipe of a computed constant that is proved.
             gkey = (ir.to_sexpr(c.inst.expr), c.group) if c.group else None
             if gkey in done:
@@ -638,7 +679,7 @@ def cmd_synth(args):
     cinsts, ccstats = [], {}
     pstats = {'instances': 0, 'proposals': 0, 'proved': 0, 'macro_rules': 0}
     pstats.update(discover.new_stats())
-    if cfiles:
+    if cfiles and (backend.deadline is None or time.monotonic() < backend.deadline):
         t = time.monotonic()
         clim = compose.Limits(max_steps=args.compose_steps)
         seen = {i.key() for i in insts}
@@ -649,10 +690,13 @@ def cmd_synth(args):
         # a single step on every larger source that contains it.
         deep.sort(key=lambda i: (ir.cost(i.expr), -len(i.prov),
                                  ir.to_sexpr(i.expr), i.vw, i.facts))
-        index = compose.Index(sy.rules.values(),
+        index = compose.Index([known.private(r) for r in knowledge['rules']] +
+                              list(sy.rules.values()),
                               with_axioms=args.compose_axioms)
         before = set(sy.rules)
         for inst in deep:
+            if backend.deadline is not None and time.monotonic() >= backend.deadline:
+                break
             pstats['instances'] += 1
             envs = discover.instance_envs(inst, dlim, ctx)
             props = compose.propose(inst, index, envs, clim)
@@ -677,11 +721,11 @@ def cmd_synth(args):
         seconds['composition'] = round(time.monotonic() - t, 2)
 
     t = time.monotonic()
-    known = {i.key() for i in insts}
+    seen_instances = {i.key() for i in insts}
     extra = []
     for i in cinsts + einsts:
-        if i.key() not in known:
-            known.add(i.key())
+        if i.key() not in seen_instances:
+            seen_instances.add(i.key())
             extra.append(i)
     target_cost_search = args.cost_slack is not None and args.cost_slack >= 0
     fstats = sy.finalize(insts + extra, preserve_alternatives=(
@@ -691,14 +735,14 @@ def cmd_synth(args):
     # Rules with several outputs: the same term bank and the same proofs,
     # for the root and for the values below it that have other users.
     rstats = {}
-    if args.regions:
+    if args.regions and (backend.deadline is None or time.monotonic() < backend.deadline):
         t = time.monotonic()
         rstats = region.extend(sy, joint, backend, dlim, ctx)
         seconds['regions'] = round(time.monotonic() - t, 2)
     # Rules for several roots: the root of a tree and other instructions
     # of the block that read values of the region.
     sstats = {}
-    if args.siblings:
+    if args.siblings and (backend.deadline is None or time.monotonic() < backend.deadline):
         t = time.monotonic()
         pair_stats = {}
         pairs = sibling.load_pairs(files, pair_stats)
@@ -747,9 +791,39 @@ def cmd_synth(args):
         'rules': rules,
         'rejected': rejected,
     }
-    with open(args.o, 'w') as f:
-        json.dump(db, f, indent=1, sort_keys=True)
-        f.write('\n')
+    combined, _ = known.merge(knowledge, rules)
+    base_revs = {known.revision(r) for r in baseline['rules']}
+    db['rules'] = combined['rules']
+    db['incremental'] = {
+        'known_rules': len(baseline['rules']),
+        'known_candidates': known_index.hits,
+        'delta': [r['id'] for r in combined['rules']
+                  if known.revision(r) not in base_revs],
+        'search_sha256': known.search_sha(),
+        'deadline_reached': backend.deadline is not None and
+                            time.monotonic() >= backend.deadline}
+    known.stamp(db)
+    shared_proofs = os.path.join(args.cache, 'verified-proofs') if args.cache else None
+    known.copy_proofs(db, args.proofs, [
+        os.path.join(os.path.dirname(args.known), 'proofs') if args.known else None,
+        shared_proofs])
+    known.write(db, args.o)
+    if learned_path:
+        import fcntl
+        with open(learned_path + '.lock', 'w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if os.path.exists(learned_path):
+                try:
+                    previous = known.load(learned_path)
+                    combined, _ = known.merge(previous, combined['rules'])
+                except ValueError:
+                    pass
+            known.copy_proofs(combined, shared_proofs, [args.proofs])
+            known.write(combined, learned_path)
+    if backend.history:
+        # Capture statistics before closing; no outstanding transaction.
+        backend.history.close()
+    rules = db['rules']
     by_class = {}
     for r in rules:
         by_class[r['class']] = by_class.get(r['class'], 0) + 1
@@ -757,10 +831,15 @@ def cmd_synth(args):
     import resource
     stats = {'provenance': _provenance(), 'seconds': seconds,
              'peak_rss_mb': resource.getrusage(
-                 resource.RUSAGE_SELF).ru_maxrss // 1024,
+                 resource.RUSAGE_SELF).ru_maxrss //
+                 (1024 * 1024 if sys.platform == 'darwin' else 1024),
              'solver_calls': backend.calls,
              'solver_seconds': round(backend.seconds, 2),
              'discovery': dstats, 'enumeration': ctx.stats(),
+             'incremental': db['incremental'],
+             'proof_cache': {'hits': backend.history.hits,
+                             'stored': backend.history.stored}
+                            if backend.history else {},
              'composition': pstats, 'egraph': estats,
              'synthesis': sy.stats, 'emission': emission,
              'disjuncts': fstats, 'regions': rstats, 'siblings': sstats,
@@ -790,9 +869,13 @@ def _load_db(path):
 
 
 def cmd_emit(args):
-    from girs import emit
+    from girs import emit, known, targets
     db = _load_db(args.db)
+    known.require_current(db)
     profiles = emit.load_profiles(args.profiles)
+    if not args.all_candidates:
+        for name, p in profiles.items():
+            known.validate_profile(db, p, targets.get(name))
     td, inc, info = emit.emit(db, profiles, args.all_candidates)
     stale = []
     for path, text in ((args.td, td), (args.inc, inc)):
@@ -849,7 +932,8 @@ def cmd_recheck(args):
         choice = None if r.get('region') else \
             synth.interior_choice(src, r['vw'])
         strong = choice == 'value' and not r['needs_one_use']
-        if choice == 'model' and not r['needs_one_use']:
+        if (choice == 'model' or synth.repeated_choice(src, r['vw'])) and \
+                not r['needs_one_use']:
             ok = False
         status = 'valid' if ok else 'structural'
         slow = max([p.get('timeout_ms', 0)
@@ -893,14 +977,46 @@ def cmd_recheck(args):
     return 1 if bad else 0
 
 
+def cmd_refresh_known(args):
+    """Explicitly refresh shared proofs and pin target baseline contents."""
+    from girs import known, smt, targets
+    db = known.refresh(_load_db(args.db),
+                       smt.Z3Backend(timeout_ms=args.timeout_ms), args.proofs)
+    profiles = {}
+    invalid = []
+    for name, t in targets.TARGETS.items():
+        path = os.path.join(args.profiles, name + '.json')
+        if os.path.exists(path):
+            with open(path) as f:
+                p = json.load(f)
+            # Existing pins may never be silently rewritten by refresh.
+            if 'baseline' in p:
+                try:
+                    known.validate_profile(db, p, t)
+                except ValueError:
+                    p['baseline_status'] = 'needs_reselection'
+                    invalid.append(name)
+                    profiles[path] = p
+                    continue
+            profiles[path] = known.pin(db, p, t)
+    known.write(db, args.db)
+    for path, p in profiles.items():
+        known.write(p, path)
+    print('refresh-known: %d rules revalidated; %d profiles pinned' %
+          (len(db['rules']), len(profiles) - len(invalid)))
+    if invalid:
+        print('profiles need measured reselection: ' + ', '.join(invalid))
+
+
 # ------------------------------------------------------------- select ---
 
 def cmd_select(args):
     """Writes the target profile: coverage, novelty, redundancy, measured
     effect, ranking and the selection of emitted rules."""
-    from girs import corpus, select, targets
+    from girs import corpus, select, targets, known
     target = targets.get(args.target)
     db = _load_db(args.db)
+    known.require_current(db)
     insts = None
     if args.corpus:
         insts, _ = corpus.load(_corpus_files(args.corpus))
@@ -915,6 +1031,7 @@ def cmd_select(args):
     prof['evidence']['compare'] = os.path.basename(args.compare) \
         if args.compare else None
     prof['evidence']['provenance'] = _provenance()
+    prof = known.pin(db, prof, target)
     out = args.o or target.profile_path
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, 'w') as f:
@@ -978,6 +1095,7 @@ def cmd_all(args):
                              ll_list=args.ll_list, j=args.j))
     cmd_synth(default_args('synth', corpus=[corpus_dir], o=args.db,
                            proofs=args.proofs, timeout_ms=args.timeout_ms,
+                           cache=args.cache,
                            max_instances=args.max_instances,
                            grammar=args.grammar))
     return cmd_emit(default_args('emit', db=args.db, td=args.td,
@@ -992,6 +1110,9 @@ def cmd_mine(args):
     from girs import mine
     run = mine.Run(args.config, args.run_dir, sys.modules[__name__],
                    local=args.local)
+    if args.refresh_search:
+        run.cfg['refresh_search'] = True
+        mine._dump(run.cfg, run.p('config.json'))
     if args.export:
         return mine.export(run, sys.modules[__name__])
     run.run(until=args.until, force=args.force)
@@ -1130,8 +1251,8 @@ def build_parser():
     p.add_argument('--max-candidates', type=int, default=6,
                    help='budget: proved candidates of one instance')
     p.add_argument('--time-budget-s', type=float, default=0,
-                   help='budget: seconds of the enumerative search (0: no '
-                        'limit); the instances after it are not searched')
+                   help='overall search and proof deadline (0: no limit); '
+                        'checkpoints and final output are saved afterward')
     p.add_argument('--regions', action='store_true',
                    help='also search rules with several outputs: the root '
                         'and the values below it that have other users '
@@ -1152,8 +1273,14 @@ def build_parser():
     p.add_argument('--search-log', help='JSON-lines file: the record of '
                    'the search of each instance with a candidate or with '
                    'a budget that ended the search')
-    p.add_argument('--cache', help='directory with the proved candidates '
-                   'of earlier runs with the same model and budgets')
+    p.add_argument('--known', default=DEFAULT_DB,
+                   help='shared rule catalog (default: repository rules.json; '
+                        'empty string: start without shared knowledge)')
+    p.add_argument('--refresh-search', action='store_true',
+                   help='search known pairs again for broader guards; keep '
+                        'valid proofs, ignore completed-instance checkpoints')
+    p.add_argument('--cache', default=os.path.join(paths.REPO, '.cache', 'girs'),
+                   help='local cross-run history (empty string: disable)')
     p.add_argument('--compose-corpus', nargs='*', default=[],
                    help='deeper corpus (extract --depth 3) for rule '
                    'composition and coverage')
@@ -1214,6 +1341,14 @@ def build_parser():
                    'every target (the build `select` measures)')
     p.set_defaults(fn=cmd_emit)
 
+    p = sub.add_parser('refresh-known', help='revalidate and publish shared '
+                       'proofs after a semantic model change')
+    p.add_argument('--db', default=DEFAULT_DB)
+    p.add_argument('--proofs', default=DEFAULT_PROOFS)
+    p.add_argument('--profiles', default=os.path.join(HERE, 'targets'))
+    p.add_argument('--timeout-ms', type=int, default=10000)
+    p.set_defaults(fn=cmd_refresh_known)
+
     p = sub.add_parser('recheck', help='re-prove every rule in the database')
     p.add_argument('db', nargs='?', default=DEFAULT_DB)
     p.add_argument('--timeout-ms', type=int, default=60000)
@@ -1245,6 +1380,7 @@ def build_parser():
     p.set_defaults(fn=cmd_report)
 
     p = sub.add_parser('all', help='extract (seed corpus) + synth + emit')
+    p.add_argument('--cache', default=os.path.join(LLVM, '.cache', 'girs'))
     p.add_argument('--llc', required=True)
     p.add_argument('--corpus-dir', default=os.path.join(HERE, 'corpus',
                                                         'out'))
@@ -1274,6 +1410,8 @@ def build_parser():
     p.add_argument('--until', help='stop after this stage')
     p.add_argument('--force', nargs='*', default=[],
                    help='stages to run again')
+    p.add_argument('--refresh-search', action='store_true',
+                   help='revisit known pairs while retaining valid proofs')
     p.add_argument('--export', action='store_true',
                    help='copy the library and the profile of the finished '
                    'run to rules.json and targets/')

@@ -131,6 +131,12 @@ def selection(db, profiles, all_candidates=False):
             sel = prof['rules']
             out[name] = [r for r in cands if
                          sel.get(r['id'], {}).get('selection') == 'emitted']
+            order = prof.get('baseline', {}).get('order')
+            if order is not None:
+                by_id = {r['id']: r for r in out[name]}
+                if set(order) != set(by_id) or len(order) != len(by_id):
+                    raise ValueError('profile order differs from emitted rules')
+                out[name] = [by_id[i] for i in order]
     return out
 
 

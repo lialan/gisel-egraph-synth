@@ -98,6 +98,7 @@ class Z3Backend:
         # The time (time.monotonic) after which each check is 'unknown',
         # or None (limit).
         self.deadline = None
+        self.history = None
 
     @contextlib.contextmanager
     def limit(self, timeout_ms, budget_s):
@@ -107,7 +108,8 @@ class Z3Backend:
         (a floating-point multiplication or division with 64 bits)."""
         old = self.timeout_ms, self.deadline
         self.timeout_ms = timeout_ms
-        self.deadline = time.monotonic() + budget_s
+        end = time.monotonic() + budget_s
+        self.deadline = min(old[1], end) if old[1] is not None else end
         try:
             yield
         finally:
@@ -125,6 +127,17 @@ class Z3Backend:
         return z3.get_version_string()
 
     def check(self, formula, want_model_of=None):
+        key = self.history.key(formula, want_model_of) if self.history else None
+        if key is not None:
+            cached = self.history.get(key)
+            if cached is not None:
+                return cached
+        result = self._check(formula, want_model_of)
+        if key is not None:
+            self.history.put(key, result)
+        return result
+
+    def _check(self, formula, want_model_of=None):
         """Checks satisfiability of ``formula``. ``want_model_of`` is a list
         of z3 bitvector terms whose values are returned for 'sat'.
 

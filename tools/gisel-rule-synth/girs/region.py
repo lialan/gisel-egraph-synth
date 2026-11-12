@@ -34,6 +34,7 @@ Limits (each is a rejection, not an assumption):
 import copy
 import hashlib
 import itertools
+import time
 
 from . import discover
 from . import ir
@@ -437,6 +438,9 @@ def extend(sy, pending, backend, limits, ctx):
              'not_in_pattern': 0, 'rules': 0, 'reused': 0}
     made = {}
     for inst, tgt0, rid in pending:
+        if limits.deadline is not None and time.monotonic() >= limits.deadline:
+            stats['deadline_reached'] = True
+            break
         base = sy.rules.get(rid)
         if base is None or \
                 base.get('const_vars') or not base['disjuncts'] or \
