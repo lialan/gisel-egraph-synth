@@ -55,6 +55,7 @@ Limits (each is a rejection, not an assumption):
 
 import hashlib
 import itertools
+import time
 import json
 
 from . import corpus
@@ -1001,6 +1002,9 @@ def extend(sy, pairs, found, backend, limits, ctx, max_pairs=0):
              'not_searched': 0}
     by_key = {}
     for n, pair in enumerate(pairs):
+        if limits.deadline is not None and time.monotonic() >= limits.deadline:
+            stats['not_searched'] = len(pairs) - n
+            break
         if max_pairs and n >= max_pairs:
             stats['not_searched'] = len(pairs) - n
             break

@@ -89,12 +89,14 @@ class Limits:
         self.seed = seed
         self.bank_samples = bank_samples
         self.max_cex_samples = max_cex_samples
+        self.deadline = None
 
 
     def identity(self):
         """The limits as plain values: the key of a cache and the record
         of a run."""
         d = dict(vars(self))
+        d.pop('deadline', None)
         cap = d.pop('capability')
         d['capability'] = None if cap is None else cap.digest
         d['namespaces'] = list(d['namespaces'])
@@ -593,6 +595,9 @@ class Bank:
         arity = info.operands
         comm = info.commutative and arity >= 2
         for costs in _compositions(rest, arity):
+            if self.limits.deadline is not None and \
+                    time.monotonic() >= self.limits.deadline:
+                raise _Full(key, 'time')
             # (b op a) is the same term as (a op b).
             if comm and costs[0] > costs[1]:
                 continue
@@ -611,6 +616,9 @@ class Bank:
                         sel &= idx[0] < idx[1]
                     todo = [i[sel] for i in idx] if sel.any() else None
                     while todo is not None:
+                        if self.limits.deadline is not None and \
+                                time.monotonic() >= self.limits.deadline:
+                            raise _Full(key, 'time')
                         todo = self._add_segment(key, k, kas, c, todo, cap)
                         yield
 
@@ -975,7 +983,16 @@ def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
 
     stats['stop'] = 'complete'
     for n, tgt in enumerate(cands):
+        if limits.deadline is not None and time.monotonic() >= limits.deadline:
+            stats['stop'] = 'time_budget'
+            stats['not_tried'] = len(cands) - n
+            break
         ctx.count_ops(tgt, 'fingerprint_matches')
+        known = getattr(ctx, 'known', None)
+        if known is not None and known.covers(inst, tgt, const_vars.get(tgt)):
+            stats['known_candidates'] = stats.get('known_candidates', 0) + 1
+            note(tgt, 'known_rule')
+            continue
         if any(not refines_on(inst, tgt, e) for e in cex):
             stats['cex_filtered'] += 1
             note(tgt, 'refuted_by_counterexample')
@@ -988,9 +1005,10 @@ def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
             stats['stop'] = 'proof_budget'
             stats['not_tried'] = len(cands) - n
             break
-        stats['smt_checks'] += 1
+        before = getattr(backend, 'calls', 0)
         t0 = time.monotonic()
         r = prove_concrete(inst, tgt, backend, const_vars.get(tgt))
+        stats['smt_checks'] += getattr(backend, 'calls', before + 1) - before
         ctx.seconds['smt'] += time.monotonic() - t0
         if r.status == 'sat':
             stats['smt_refuted'] += 1
@@ -1046,7 +1064,7 @@ def literal_spellings(inst):
 def new_stats():
     return {'terms': 0, 'fingerprint_matches': 0, 'smt_checks': 0,
             'smt_refuted': 0, 'smt_unknown': 0, 'cex_filtered': 0,
-            'dominated': 0, 'not_tried': 0}
+            'dominated': 0, 'not_tried': 0, 'known_candidates': 0}
 
 
 # Why the search of one instance ended. 'complete': every term of the
@@ -1054,7 +1072,8 @@ def new_stats():
 # match was decided. The other values say that a budget ended the search:
 # no result then does not mean that the grammar has none.
 STOPS = ('complete', 'no_signature', 'source_always_poison',
-         'bank_truncated', 'proof_budget', 'candidate_limit', 'smt_unknown')
+         'bank_truncated', 'proof_budget', 'candidate_limit', 'smt_unknown',
+         'time_budget')
 
 
 def discover(inst, backend, limits=None, ctx=None, log=None):

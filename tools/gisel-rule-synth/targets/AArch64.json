@@ -1,4 +1,35 @@
 {
+ "baseline": {
+  "order": [
+   "synth_xor_66308b8b",
+   "synth_sub_c1235ab0_1u",
+   "synth_and_83abd1ae_1u",
+   "synth_lshr_c497647d",
+   "synth_select_4cdb868a",
+   "synth_select_4f35dc63",
+   "synth_shl_a7bba6d0_1u",
+   "synth_shl_edbd16af_1u",
+   "synth_smax_d4d1ff0e_1u",
+   "synth_or_ecb7e28d",
+   "synth_icmp_7274715e",
+   "synth_icmp_8f303343"
+  ],
+  "revisions": {
+   "synth_and_83abd1ae_1u": "ac1c6b03b6ad54c23f940bd38df47febaeee86b011bcb3ca9c76361d8f1178a6",
+   "synth_icmp_7274715e": "46c6a853714077a6bfde1b9dc4a5727317bdcf7079a9b1f121d79baa6932439f",
+   "synth_icmp_8f303343": "462191767ccd7f1d994ba0c757012c001a1d310008312735894b21fc2fbb11ce",
+   "synth_lshr_c497647d": "0fb037f8608df6e8d738311550dc2c98302784c2c7aa71e389f9ac52f2a91243",
+   "synth_or_ecb7e28d": "d36c5af74b0368cd8c01dd21072c629898ead2a7bea80ba418d7bb20365ded7c",
+   "synth_select_4cdb868a": "713589e9526d78a008aa54af1b5f2924a612d540fcab12466ca9c263b5ca4e9d",
+   "synth_select_4f35dc63": "81508d877a477b7126c25ddd25f566c565328a5ea88971ace36e1e9afd7bb8a4",
+   "synth_shl_a7bba6d0_1u": "317825351d6b39b45eb08939b9e9bcb57e3782742308ec18de9727e7a5ce4d50",
+   "synth_shl_edbd16af_1u": "e609c6a35106f4642ad75c80ff80729fc744381cd07364f8429e8e7164d03728",
+   "synth_smax_d4d1ff0e_1u": "f9351ea67bd191336d65d7b6796d17d64ab3e3b8ba3ba46034420b14c984e01b",
+   "synth_sub_c1235ab0_1u": "61e20025da0717bc020a90e1872b8318a67af806d87136ffd6fdb5e25d49f0cd",
+   "synth_xor_66308b8b": "59b185ec6a5cb14846511c0c4683ca55bf50fce94bfe2890364ee34f27b0cfd7"
+  },
+  "semantics_sha256": "0f303a1cc0479fb4ab10a29e7a2b0f80e13eeba1998753e8d3af46e39a4a1ad5"
+ },
  "combiner": "aarch64-prelegalizer-combiner",
  "emitted_records": 32,
  "enable_flag": "-aarch64-gisel-synth-combines",

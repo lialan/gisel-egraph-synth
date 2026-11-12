@@ -5,12 +5,12 @@ checked rule set and its report, without a manual step between the stages:
 
     identity   what the run is made from (source, tool, model, compiler,
                the frozen library, manifests, budgets)
+    baseline   a cached compiler with the fixed repository rule set B
     prepare    the `opt -O2` form of every file, for the second pipeline
-    extract    the corpus of the discovery files (the synthesized rules are
-               off: the baseline pipeline of the target)
+    extract    residual MIR after the target's native combines and B
     discover   candidates, preconditions, proofs -> the rule library
-    build      a compiler with every candidate of the library
-    measure    the selection files with and without every candidate
+    build      a compiler with B followed by the new candidates Delta
+    measure    the selection files with B and with B plus Delta
     select     the target profile
     verify     the selected set on every selection file: compile failures,
                machine verifier, SelectionDAG fallbacks, files with more
@@ -40,6 +40,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 from . import corpus
@@ -50,8 +51,9 @@ from . import measure
 from . import ops
 from . import select
 from . import targets
+from . import known
 
-STAGES = ('identity', 'prepare', 'extract', 'discover', 'build', 'measure',
+STAGES = ('identity', 'baseline', 'prepare', 'extract', 'discover', 'build', 'measure',
           'select', 'verify', 'freeze', 'heldout', 'report')
 
 DEFAULTS = {
@@ -64,6 +66,8 @@ DEFAULTS = {
     'llc': None,          # default: <build_dir>/bin/llc
     'opt': None,          # default: the opt of the stock LLVM build
     'build_dir': None,    # default: the plugin build (build/plugin)
+    'cache_dir': None,    # default: <repo>/.cache/girs, shared across run dirs
+    'refresh_search': False,
     # role -> file with one .ll path per line, relative to the root of the
     # LLVM source tree (third_party/llvm-project).
     'manifests': {},
@@ -183,6 +187,8 @@ class Run:
             c['build_dir'] or paths.PLUGIN_BUILD)
         c['llc'] = os.path.abspath(c['llc'] or paths.llc(c['build_dir']))
         c['opt'] = os.path.abspath(c['opt'] or paths.llvm_tool('opt'))
+        c['cache_dir'] = os.path.abspath(c['cache_dir'] or
+                                         os.path.join(paths.REPO, '.cache', 'girs'))
         cdir = os.path.dirname(os.path.abspath(config_path))
         for role, p in list(c['manifests'].items()):
             if not os.path.isabs(p):
@@ -208,6 +214,11 @@ class Run:
         with open(self.cfg['manifests'][role]) as f:
             return [l.strip() for l in f if l.strip()]
 
+    def source_identity(self, group=None):
+        roles = self.roles(group) if group else self.cfg['manifests']
+        return {role: {p: _sha_content(p) for p in self.manifest(role)}
+                for role in sorted(roles)}
+
     def roles(self, group):
         return [r for r in self.cfg['roles'][group]
                 if r in self.cfg['manifests']]
@@ -230,9 +241,37 @@ class Run:
     def candidate_llc(self):
         return self.p('build', 'llc')
 
+    def baseline_library(self):
+        return known.load(self.p('frozen-baseline', 'rules.json'))
+
+    def baseline_profile(self):
+        return _load(self.p('frozen-baseline', self.target.name + '.json'))
+
+    def pinned(self):
+        return known.validate_profile(self.baseline_library(),
+                                      self.baseline_profile(), self.target)
+
+    def delta(self):
+        return self.library()['incremental']['delta']
+
+    def active_ids(self):
+        delta = set(self.delta())
+        return self.pinned() + [r['id'] for r in
+            emit.candidates(self.library(), self.target)
+            if (r.get('variant_of', r['id']) in delta and emit.emittable(r))]
+
+    def baseline_llc(self):
+        return self.p('baseline', 'llc')
+
+    def baseline_off(self):
+        pinned = set(self.pinned())
+        return [n for rid, ns in self.names(self.library()).items()
+                if rid not in pinned for n in ns]
+
     def names(self, db):
+        active = set(self.active_ids())
         rules = [r for r in emit.candidates(db, self.target)
-                 if emit.emittable(r)]
+                 if emit.emittable(r) and r['id'] in active]
         return {r['id']: emit.record_names(r) for r in rules}
 
     def final_set(self):
@@ -249,6 +288,17 @@ class Run:
         part = out_path + '.part'
         ident = self._compile_identity(llc, synth, disabled, flags,
                                        count_rules)
+        identity = {'compiler': ident,
+                    'sources': {p: _sha_content(p) for p in paths}}
+        # Completed results also need an input identity. The per-file
+        # partial cache below handles interrupted compilations separately.
+        marker = out_path + '.inputs.json'
+        if _load(marker) != identity:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(out_path)
+        elif os.path.exists(out_path) and not os.path.exists(part):
+            return _load(out_path)
+        _dump(identity, marker)
         done = {}
         if os.path.exists(part):
             with open(part) as f:
@@ -293,6 +343,8 @@ class Run:
         files."""
         return _sha_text(json.dumps({
             'llc': _sha_file(llc), 'target': self.target.name,
+            'target_model': _sha_file(targets.__file__),
+            'measure': _sha_file(measure.__file__),
             'flags': list(flags), 'synth': bool(synth),
             'disabled': sorted(disabled), 'count_rules': bool(count_rules)},
             sort_keys=True))
@@ -301,6 +353,15 @@ class Run:
 
     def run(self, until=None, force=()):
         for name in STAGES:
+            if name in ('build', 'measure', 'select', 'verify', 'freeze',
+                        'heldout') and not self.delta():
+                self.state['stages'][name] = {
+                    'status': 'skipped', 'summary': {'reason': 'no_new_rules'}}
+                _dump(self.state, self.state_path)
+                self.log('mine: %-8s skipped (no new rules)' % name)
+                if name == until:
+                    break
+                continue
             fn = getattr(self, 'stage_' + name)
             key = _sha_text(json.dumps(getattr(self, 'inputs_' + name)(),
                                        sort_keys=True))
@@ -316,7 +377,9 @@ class Run:
                 _dump(self.state, self.state_path)
                 summary = fn() or {}
                 self.state['stages'][name] = {
-                    'status': 'done', 'inputs': key, 'started': t0,
+                    'status': 'pending' if name == 'discover' and
+                              summary.get('incomplete') else 'done',
+                    'inputs': key, 'started': t0,
                     'seconds': round(time.time() - t0, 1),
                     'summary': summary}
                 _dump(self.state, self.state_path)
@@ -340,11 +403,17 @@ class Run:
         return {'config': c, 'generator': self.cli._generator_sha(),
                 'head': self.cli._git('rev-parse', 'HEAD'),
                 'llc': _sha_file(c['llc']),
+                'catalog': _sha_file(self.cli.DEFAULT_DB),
+                'profiles': {n: _sha_file(t.profile_path) for n, t in
+                             targets.TARGETS.items()},
                 'manifests': {r: _sha_file(p)
                               for r, p in sorted(c['manifests'].items())}}
 
     def stage_identity(self):
         c, cli = self.cfg, self.cli
+        fdb = known.load(cli.DEFAULT_DB)
+        for name, t in targets.TARGETS.items():
+            known.validate_profile(fdb, _load(t.profile_path), t)
         os.makedirs(self.p('manifests'), exist_ok=True)
         man = {}
         for role, path in sorted(c['manifests'].items()):
@@ -362,7 +431,8 @@ class Run:
                              '(e.g. %s)' % (len(shared), sorted(shared)[0]))
         # Also the files that git does not track: a new module of the tool
         # is a change of the source.
-        status = cli._git('status', '--porcelain', '--', '.') or ''
+        status = cli._git('status', '--porcelain', '--ignore-submodules=dirty',
+                          '--', '.')
         version = subprocess.run([c['llc'], '--version'], text=True,
                                  capture_output=True).stdout
         frozen = {'rules.json': _sha_file(cli.DEFAULT_DB)}
@@ -376,6 +446,8 @@ class Run:
         os.makedirs(self.p('frozen-baseline'), exist_ok=True)
         shutil.copyfile(cli.DEFAULT_DB, self.p('frozen-baseline',
                                                'rules.json'))
+        known.copy_proofs(fdb, self.p('frozen-baseline', 'proofs'),
+                         [cli.DEFAULT_PROOFS])
         for name, t in sorted(targets.TARGETS.items()):
             if os.path.exists(t.profile_path):
                 shutil.copyfile(t.profile_path, self.p(
@@ -385,9 +457,9 @@ class Run:
         ident = {
             'run': c['name'], 'mode': c['mode'], 'target': self.target.name,
             'source': {'llvm_commit': cli._git('rev-parse', 'HEAD'),
-                       'dirty': bool(status),
+                       'dirty': bool(status) if status is not None else None,
                        'modified_files': [l[3:] for l in
-                                          status.splitlines()]},
+                                          (status or '').splitlines()]},
             'tool': {'generator_version': cli.GENERATOR_VERSION,
                      'generator_sha256': cli._generator_sha(),
                      'model_sha256': cli._model_sha(),
@@ -403,14 +475,11 @@ class Run:
                          'version': version.strip().splitlines()[:4],
                          'opt_sha256': _sha_file(c['opt'])
                          if os.path.exists(c['opt']) else None},
-            # The pipeline that writes the corpus and that every
-            # measurement compares with. The synthesized rules are off in
-            # it: they need the enable flag of the target.
+            # Both measurement sides run the same combiner with B enabled.
             'baseline_pipeline': {
-                'flags': self.target.ll_flags,
-                'synthesized_rules': 'off (%s not passed)' %
-                                     self.target.enable_flag,
-                'extraction_point': 'after ' + self.target.combiner,
+                'flags': self.target.ll_flags + [self.target.enable_flag],
+                'synthesized_rules': 'fixed repository baseline',
+                'extraction_point': 'after ' + self.target.synth_pass,
                 'opt-O2': ['opt', '-O2'] + self.target.triple_flags},
             'frozen_baseline': {
                 'files': frozen, 'rules': len(fdb['rules']),
@@ -466,15 +535,51 @@ class Run:
         return {'files': len(files),
                 'opt_failed': sum(1 for v in index.values() if v is None)}
 
+    # -- pinned baseline build --
+
+    def inputs_baseline(self):
+        return {'catalog': _sha_file(self.p('frozen-baseline', 'rules.json')),
+                'profiles': {n: _sha_file(self.p('frozen-baseline', n + '.json'))
+                             for n in targets.TARGETS},
+                'compiler_sources': self.build_identity()}
+
+    def build_identity(self):
+        # No search budget or training-corpus identity in a compiler cache.
+        files = [paths.GEN_TD, paths.GEN_INC]
+        sources = {}
+        for folder in ('lib', 'include', 'td'):
+            for root, _, names in os.walk(os.path.join(paths.REPO, folder)):
+                for name in sorted(names):
+                    p = os.path.join(root, name)
+                    if p not in files:
+                        sources[os.path.relpath(p, paths.REPO)] = _sha_file(p)
+        for p in (os.path.join(paths.REPO, 'CMakeLists.txt'),
+                  os.path.join(self.cfg['build_dir'], 'CMakeCache.txt')):
+            sources[p] = _sha_file(p) if os.path.exists(p) else None
+        for label, args in (('llvm_commit', ['rev-parse', 'HEAD']),
+                            ('llvm_changes', ['diff', 'HEAD', '--', 'llvm'])):
+            result = subprocess.run(['git', '-c', 'core.fsmonitor=false',
+                                     '-C', paths.LLVM_ROOT] + args,
+                                    capture_output=True, check=True)
+            sources[label] = hashlib.sha256(result.stdout).hexdigest()
+        return sources
+
+    def stage_baseline(self):
+        db = self.baseline_library()
+        profiles = {n: _load(self.p('frozen-baseline', n + '.json'))
+                    for n in targets.TARGETS}
+        return self._build(db, profiles, 'baseline')
+
     # -- extract --
 
     def inputs_extract(self):
         c = self.cfg
-        return {'identity': self._done('identity'),
+        return {'baseline': self._done('baseline'),
                 'prepare': self._done('prepare'),
                 'extract': c['extract'], 'mode': c['mode'],
                 'hybrid': c['hybrid'] if c['mode'] == 'hybrid' else None,
-                'pipelines': c['discovery_pipelines']}
+                'pipelines': c['discovery_pipelines'],
+                'source_files': self.source_identity('discovery')}
 
     def _extract(self, out_dir, units, fn, *args):
         """Runs ``fn`` (an extractor of the command line) on each unit.
@@ -483,7 +588,7 @@ class Run:
         index = _load(os.path.join(out_dir, 'index.json'), {})
         todo = [u for u in units if u.path not in index]
         with concurrent.futures.ThreadPoolExecutor(self.cfg['jobs']) as ex:
-            futs = {ex.submit(fn, self.cfg['llc'], u.path, out_dir, 'll',
+            futs = {ex.submit(fn, self.baseline_llc(), u.path, out_dir, 'll',
                               self.target, *args): u for u in todo}
             for n, fu in enumerate(concurrent.futures.as_completed(futs)):
                 u = futs[fu]
@@ -509,20 +614,20 @@ class Run:
             extra.append('-gisel-synth-corpus-max-trees=%d' %
                          c['extract']['max_trees'])
         out = {'corpus': self._extract(self.p('corpus'), units,
-                                       self.cli._extract_one, extra)}
+                                       self.cli._extract_one, extra, True)}
         # What the target can do with each operator: the grammar 'auto'
         # adds these operators first.
         out['legality'] = bool(units and self.cli._legality(
-            c['llc'], self.target, units[0].path,
+            self.baseline_llc(), self.target, units[0].path,
             self.p('corpus', 'legality.json')))
         if c['mode'] == 'hybrid':
             h = c['hybrid']
             out['deep_corpus'] = self._extract(
                 self.p('corpus-deep'), units, self.cli._extract_one,
-                ['-gisel-synth-corpus-max-depth=%d' % h['compose_depth']])
+                ['-gisel-synth-corpus-max-depth=%d' % h['compose_depth']], True)
             out['egraph'] = self._extract(
                 self.p('egraph'), units, self.cli._egraph_export_one,
-                h['egraph_stages'])
+                h['egraph_stages'], True)
         return out
 
     # -- discover --
@@ -530,6 +635,7 @@ class Run:
     def inputs_discover(self):
         c = self.cfg
         return {'extract': self._done('extract'), 'search': c['search'],
+                'refresh_search': c['refresh_search'],
                 'mode': c['mode'], 'model': self.cli._model_sha(),
                 'generator': self.cli._generator_sha()}
 
@@ -541,7 +647,8 @@ class Run:
             proofs=self.p('library', 'proofs'),
             stats=self.p('library', 'rules.stats.json'), mode=c['mode'],
             search_log=self.p('library', 'search.jsonl'),
-            cache=self.p('cache', 'discover'),
+            cache=c['cache_dir'], known=self.p('frozen-baseline', 'rules.json'),
+            refresh_search=c['refresh_search'],
             legality=self.p('corpus', 'legality.json')
             if os.path.exists(self.p('corpus', 'legality.json')) else None,
             **{k: s[k] for k in ('grammar', 'seed', 'max_instances',
@@ -562,11 +669,18 @@ class Run:
         self.cli.cmd_synth(self.cli.default_args('synth', **over))
         db = self.library()
         if c['mode'] == 'semantics-only':
-            other = [r['id'] for r in db['rules']
-                     if r['provenance']['sources'] != ['enumerative']]
+            other = [r['id'] for r in db['rules'] if r['id'] in self.delta()
+                     and r['provenance']['sources'] != ['enumerative']]
             assert not other, 'semantics-only run with other sources'
         st = _load(self.p('library', 'rules.stats.json'))
-        return {'rules': len(db['rules']), 'by_class': st['rules_by_class'],
+        incomplete = bool(st['incremental']['deadline_reached'] or
+            st['discovery']['not_searched_time_budget'] or
+            st['disjuncts'].get('final_guard_unknown') or
+            any(n for stop, n in st['discovery']['stop'].items()
+                if stop not in ('complete', 'no_signature', 'source_always_poison')))
+        return {'rules': len(db['rules']), 'delta': len(self.delta()),
+                'incomplete': incomplete,
+                'by_class': st['rules_by_class'],
                 'instances': st['discovery']['instances'],
                 'stop': st['discovery']['stop'],
                 'seconds': st['seconds']['total'],
@@ -575,70 +689,104 @@ class Run:
     # -- build --
 
     def inputs_build(self):
-        return {'library': _sha_file(self.p('library', 'rules.json'))
-                if os.path.exists(self.p('library', 'rules.json')) else None,
-                'discover': self._done('discover'),
+        db = self.library()
+        return {'library': {r['id']: known.revision(r) for r in db['rules']},
+                'active': self.active_ids(),
                 'emitter': _sha_file(emit.__file__),
-                'head': self.cli._git('rev-parse', 'HEAD')}
+                'compiler_sources': self.build_identity()}
 
     def stage_build(self):
         """Builds bin/llc with every candidate of the library and keeps a
         copy of it. The generated files of the tree are replaced only for
         the time of the build."""
+        db = self.library()
+        profiles = {n: _load(self.p('frozen-baseline', n + '.json'))
+                    for n in targets.TARGETS}
+        profiles[self.target.name] = {
+            'rules': {i: {'selection': 'emitted'} for i in self.active_ids()},
+            'baseline': {'order': self.active_ids()}}
+        return self._build(db, profiles, 'build')
+
+    def _build(self, db, profiles, directory):
         c, cli = self.cfg, self.cli
-        os.makedirs(self.p('build'), exist_ok=True)
-        td, inc, info = emit.emit(self.library(), {}, all_candidates=True)
+        os.makedirs(self.p(directory), exist_ok=True)
+        td, inc, info = emit.emit(db, profiles)
+        build_key = known.digest([td, inc, self.build_identity()])
+        cached = os.path.join(c['cache_dir'], 'builds', build_key)
+        output = self.p(directory, 'llc')
+        if os.path.exists(cached):
+            shutil.copy2(cached, output)
+            return {'cached': True, 'llc_sha256': _sha_file(output),
+                    'rules': info['rules'], 'records': info['records']}
         gen = {cli.DEFAULT_TD: td, cli.DEFAULT_INC: inc}
         for path, text in gen.items():
-            with open(self.p('build', os.path.basename(path)), 'w') as f:
+            with open(self.p(directory, os.path.basename(path)), 'w') as f:
                 f.write(text)
 
         def ninja(log_name):
-            with open(self.p('build', log_name), 'w') as lf:
-                rc = subprocess.run(['ninja', '-C', c['build_dir'],
+            with open(self.p(directory, log_name), 'w') as lf:
+                rc = subprocess.run(['ninja', '-j', str(c['jobs']),
+                                     '-C', c['build_dir'],
                                      paths.LLC_TARGET],
                                     stdout=lf, stderr=subprocess.STDOUT
                                     ).returncode
             if rc:
                 raise SystemExit('mine: the build failed, see %s' %
-                                 self.p('build', log_name))
+                                 self.p(directory, log_name))
         t0 = time.time()
         lock = os.path.join(c['build_dir'], '.gi-rule-synth.lock')
         with open(lock, 'w') as lf:
             fcntl.flock(lf, fcntl.LOCK_EX)
+            if os.path.exists(cached):
+                shutil.copy2(cached, output)
+                return {'cached': True, 'llc_sha256': _sha_file(output),
+                        'rules': info['rules'], 'records': info['records']}
             saved = {path: open(path).read() for path in gen}
             try:
                 for path, text in gen.items():
-                    with open(path, 'w') as f:
-                        f.write(text)
+                    if text != saved[path]:
+                        with open(path, 'w') as f:
+                            f.write(text)
                 ninja('ninja.log')
-                shutil.copy2(paths.llc(c['build_dir']), self.candidate_llc())
+                shutil.copy2(paths.llc(c['build_dir']), output)
             finally:
                 for path, text in saved.items():
-                    with open(path, 'w') as f:
-                        f.write(text)
+                    if text != gen[path]:
+                        with open(path, 'w') as f:
+                            f.write(text)
                 if c['restore_build']:
                     ninja('ninja-restore.log')
+        os.makedirs(os.path.dirname(cached), exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(cached), prefix='.build-')
+        os.close(fd)
+        try:
+            shutil.copy2(output, tmp)
+            os.replace(tmp, cached)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
         res = {'rules': info['rules'], 'records': info['records'],
-               'llc_sha256': _sha_file(self.candidate_llc()),
+               'llc_sha256': _sha_file(output),
                'seconds': round(time.time() - t0, 1)}
-        _dump(res, self.p('build', 'build.json'))
+        _dump(res, self.p(directory, 'build.json'))
         return res
 
     # -- measure --
 
     def inputs_measure(self):
-        return {'build': self._done('build'),
+        return {'compiler': _sha_file(self.candidate_llc()),
                 'prepare': self._done('prepare'),
                 'roles': self.cfg['roles']['selection'],
                 'pipelines': self.cfg['pipelines'],
-                'manifests': self.inputs_identity()['manifests']}
+                'manifests': self.inputs_identity()['manifests'],
+                'source_files': self.source_identity('selection')}
 
     def stage_measure(self):
         os.makedirs(self.p('measure'), exist_ok=True)
         paths = [u.path for u in self.units('selection')]
         llc = self.candidate_llc()
-        base = self._compile_many(llc, paths, self.p('measure', 'base.json'))
+        base = self._compile_many(llc, paths, self.p('measure', 'base.json'),
+                                  synth=True, disabled=self.baseline_off())
         cand = self._compile_many(llc, paths,
                                   self.p('measure', 'candidates.json'),
                                   synth=True)
@@ -670,7 +818,8 @@ class Run:
             db, self.target, insts, self.candidate_llc(), compare,
             c['jobs'], log=self.log,
             keep_unmeasured=c['select']['keep_unmeasured'],
-            no_regressions=c['select']['no_regressions'])
+            no_regressions=c['select']['no_regressions'],
+            baseline=self.baseline_profile(), active_ids=self.active_ids())
         os.makedirs(self.p('profile'), exist_ok=True)
         _dump(prof, self.p('profile', self.target.name + '.selected.json'))
         return {'summary': prof['summary'],
@@ -699,7 +848,7 @@ class Run:
         if c['select']['no_regressions']:
             final, dropped, cur, unexplained = select.enforce(
                 llc, self.target, paths, base, names, sel, c['jobs'],
-                self.log)
+                self.log, pinned=self.pinned())
         else:
             final, dropped, unexplained = sel, {}, {}
             cur, _, _ = select.check_set(llc, self.target, paths, base,
@@ -717,6 +866,8 @@ class Run:
             'files': len(paths), 'violations': viol,
             'unexplained': unexplained,
             'rules_removed': sorted(dropped)}
+        prof['baseline'] = {'order': [i for i in self.active_ids() if i in final]}
+        prof = known.pin(db, prof, self.target)
         _dump(prof, self.p('profile', self.target.name + '.json'))
         _dump(cur, self.p('measure', 'final.json'))
         res = {'rules': len(final), 'removed': len(dropped),
@@ -733,7 +884,8 @@ class Run:
     # -- freeze --
 
     def inputs_freeze(self):
-        return {'verify': self._done('verify')}
+        return {'verify': self._done('verify'),
+                'source_files': self.source_identity()}
 
     def stage_freeze(self):
         cli = self.cli
@@ -747,6 +899,7 @@ class Run:
             'profile_sha256': _sha_file(prof_path),
             'compiler_sha256': _sha_file(self.candidate_llc()),
             'manifests': self.inputs_identity()['manifests'],
+            'source_files': self.source_identity(),
             'rules': self.final_set(),
             'statement': 'The held-out files were not compiled with a '
                          'candidate and were not read by a search, a '
@@ -773,7 +926,8 @@ class Run:
         return {'freeze': self._done('freeze'),
                 'frozen': _sha_file(self.p('frozen.json'))
                 if os.path.exists(self.p('frozen.json')) else None,
-                'references': self.cfg['references']}
+                'references': self.cfg['references'],
+                'source_files': self.source_identity()}
 
     def stage_heldout(self):
         """The frozen set, and each reference set, on every file of every
@@ -788,10 +942,12 @@ class Run:
         units = self.units('selection') + self.units('heldout')
         paths = [u.path for u in units]
         llc = self.candidate_llc()
-        base = self._compile_many(llc, paths, self.p('eval', 'base.json'))
+        base = self._compile_many(llc, paths, self.p('eval', 'base.json'),
+                                  synth=True, disabled=self.baseline_off(),
+                                  count_rules=False)
         runs = {'final': self._compile_many(
             llc, paths, self.p('eval', 'final.json'), synth=True,
-            disabled=off)}
+            disabled=off, count_rules=False)}
         for name, ref in sorted(c['references'].items()):
             rllc = os.path.abspath(ref['llc'])
             runs[name] = self._compile_many(
@@ -825,12 +981,25 @@ class Run:
     # -- report --
 
     def inputs_report(self):
-        return {'heldout': self._done('heldout'),
+        return {'discover': self._done('discover'), 'heldout': self._done('heldout'),
+                'statistics': _sha_file(self.p('library', 'rules.stats.json')),
                 'reporter': _sha_file(__file__)}
 
     def stage_report(self):
         from . import report
+        if not self.delta():
+            profile = self.baseline_profile()
+            for p in profile['rules'].values():
+                p['pinned'] = True
+            os.makedirs(self.p('profile'), exist_ok=True)
+            _dump(profile, self.p('profile', self.target.name + '.json'))
         rep = report.build(self)
+        rep['incremental'] = self.library()['incremental']
+        rep['status'] = 'evaluated' if self.delta() else 'no_new_rules'
+        rep['evaluated'] = bool(self.delta())
+        if not self.delta():
+            rep['evaluation'] = {}
+            rep['frozen'] = None
         _dump(rep, self.p('report.json'))
         with open(self.p('report.md'), 'w') as f:
             f.write(report.markdown(rep))
@@ -883,13 +1052,46 @@ def export(run, cli, log=print):
     are then stale until `gi-rule-synth.py emit`."""
     if run.state['stages'].get('report', {}).get('status') != 'done':
         raise SystemExit('mine --export: the run is not finished')
-    shutil.copyfile(run.p('library', 'rules.json'), cli.DEFAULT_DB)
-    shutil.copyfile(run.p('library', 'rules.stats.json'),
-                    os.path.splitext(cli.DEFAULT_DB)[0] + '.stats.json')
-    shutil.copyfile(run.p('profile', run.target.name + '.json'),
-                    run.target.profile_path)
-    with contextlib.suppress(FileNotFoundError):
-        shutil.rmtree(cli.DEFAULT_PROOFS)
-    shutil.copytree(run.p('library', 'proofs'), cli.DEFAULT_PROOFS)
+    if not run.delta():
+        log('mine --export: no new rules; baseline unchanged')
+        return
+    known.require_current(run.library())
+    frozen = _load(run.p('frozen.json'), {})
+    expected = {'library_sha256': _sha_file(run.p('library', 'rules.json')),
+                'profile_sha256': _sha_file(run.p('profile', run.target.name + '.json')),
+                'model_sha256': cli._model_sha(),
+                'compiler_sha256': _sha_file(run.candidate_llc()),
+                'config_sha256': _sha_file(run.p('config.json')),
+                'source_files': run.source_identity()}
+    if any(frozen.get(k) != v for k, v in expected.items()):
+        raise SystemExit('mine --export: frozen evaluation artifacts changed')
+    profile = _load(run.p('profile', run.target.name + '.json'))
+    if not profile or profile.get('final_check', {}).get('violations'):
+        raise SystemExit('mine --export: final set has unverified regressions')
+    evaluations = _load(run.p('eval', 'summary.json'), {}).get('final', {})
+    heldout = {k: v for k, v in evaluations.items()
+               if k.split('/')[0] in run.roles('heldout')}
+    if not heldout or any(not v['compared'] or v['compile_failures'] or
+                          v['fallback_changed'] or v['files_worse']
+                          for v in evaluations.values()):
+        raise SystemExit('mine --export: held-out evaluation is missing or regresses')
+    # Compare-and-swap the selected target; another run may have promoted
+    # a new baseline since this run started. Other target profiles survive.
+    with open(cli.DEFAULT_DB + '.lock', 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = known.load(cli.DEFAULT_DB)
+        live = _load(run.target.profile_path)
+        if live != run.baseline_profile():
+            raise SystemExit('mine --export: target baseline changed; rerun '
+                             'measurement against the new baseline')
+        merged, _ = known.merge(current, run.library()['rules'])
+        known.validate_profile(merged, profile, run.target)
+        for name, t in targets.TARGETS.items():
+            if name != run.target.name:
+                known.validate_profile(merged, _load(t.profile_path), t)
+        known.copy_proofs(merged, cli.DEFAULT_PROOFS,
+                         [run.p('library', 'proofs')])
+        known.write(merged, cli.DEFAULT_DB)
+        known.write(profile, run.target.profile_path)
     log('mine --export: wrote %s, its proofs and %s; run `gi-rule-synth.py '
         'emit` and build' % (cli.DEFAULT_DB, run.target.profile_path))

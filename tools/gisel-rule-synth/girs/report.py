@@ -186,6 +186,9 @@ def build(run):
     frozen_families = {family_key(r) for r in frozen_db['rules']}
 
     cands = emit.candidates(db, run.target)
+    if 'incremental' in db:
+        active = set(run.active_ids())
+        cands = [r for r in cands if r['id'] in active]
     names = {r['id']: emit.record_names(r) for r in cands
              if emit.emittable(r)}
     final = [rid for rid, p in prof['rules'].items()
@@ -196,10 +199,15 @@ def build(run):
         return by_id.get(rid) or by_id[rid[:-len(emit.ONE_USE_SUFFIX)]]
 
     def gain(rid):
+        if prof['rules'][rid].get('pinned'):
+            return 0  # Historical baseline measurements are not this run's gain.
         return -prof['rules'][rid].get('in_set', {}).get('insns', 0)
 
     rel = {r['id']: relation(r, frozen_by_id, frozen_families)
            for r in db['rules']}
+    if 'incremental' in db:
+        rel = {rid: ('known_rule' if v == 'rediscovered' else v)
+               for rid, v in rel.items()}
     fam = {r['id']: family_key(r) for r in db['rules']}
     final_base = sorted({base_rule(rid)['id'] for rid in final})
     with_gain = sorted({base_rule(rid)['id'] for rid in final
@@ -217,8 +225,8 @@ def build(run):
         'library_rules_by_class': stats['rules_by_class'],
         'emittable_library_rules': sum(1 for r in db['rules']
                                        if r.get('emission') == 'yes'),
-        'candidate_rules': len([r for r in cands if 'variant_of' not in r
-                                and r['id'] in names]),
+        'candidate_rules': len({r.get('variant_of', r['id']) for r in cands
+                                if r['id'] in names}),
         'candidate_records_with_variants': sum(len(n)
                                                for n in names.values()),
         'selected_rules': len(final_base),
@@ -227,12 +235,15 @@ def build(run):
         'selected_rules_with_measured_gain': len(with_gain),
         'families_with_measured_gain': len({fam[i] for i in with_gain}),
     }
+    if 'incremental' in db:
+        counts['delta_rules'] = len(db['incremental']['delta'])
+        counts['pinned_baseline_rules'] = len(run.pinned())
     rules = []
     for r in db['rules']:
         rid = r['id']
         sel = {i: prof['rules'][i] for i in (rid, rid + emit.ONE_USE_SUFFIX)
                if i in prof['rules']}
-        if not (rid in final_base or rel[rid] != 'rediscovered' or
+        if not (rid in final_base or rel[rid] not in ('rediscovered', 'known_rule') or
                 any(p['selection'] == 'emitted' for p in sel.values())):
             continue
         rules.append(dict(
@@ -334,7 +345,9 @@ def acceptance(rep, run):
         v['fallback_changed'] == 0 for v in ho.values()) and \
         sum(v['insns_delta'] for v in ho.values()) < 0
     return {
-        'cold_start_semantics_only': rep['mode'] == 'semantics-only',
+        'cold_start_semantics_only': rep['mode'] == 'semantics-only' and
+                                    not run.library().get('incremental', {}).get(
+                                        'known_rules'),
         'selected_rule_families': {'need': 3, 'have': len(fams(sel))},
         'operator_groups_outside_base_grammar_in_selected_replacements': {
             'need': 2, 'have': len(groups), 'groups': groups},
@@ -391,6 +404,17 @@ def markdown(rep):
                  s['enumeration']['banks'],
                  s['enumeration']['banks_truncated']), '',
              '## Evaluation', '']
+    if 'incremental' in rep:
+        k = rep['incremental']
+        lines[2:2] = [
+            'Known catalog: %d rules; new revisions: %d; known candidates '
+            'skipped: %d. All measurements compare the pinned baseline B '
+            'with B plus selected new rules, using the same synth pass.' % (
+                k['known_rules'], len(k['delta']), k['known_candidates']), '']
+        if not rep.get('evaluated', True):
+            lines[2:2] = ['No new rules in this run. Candidate build and '
+                          'evaluation were skipped. The search space is '
+                          'not claimed to be exhausted.', '']
     for name, ev in rep['evaluation'].items():
         if not isinstance(ev, dict):
             lines += ['Baseline of `%s` differs from the baseline of the '
