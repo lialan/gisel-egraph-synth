@@ -47,7 +47,8 @@ EXTRACT_TIMEOUT = 120  # seconds per llc run
 def _extract_one(llc, path, out_dir, kind, target, extra=()):
     h = hashlib.sha256(os.path.abspath(path).encode()).hexdigest()[:10]
     out = os.path.join(out_dir, '%s.%s.jsonl' % (os.path.basename(path), h))
-    tail = ['-gisel-synth-corpus-out=' + out] + list(extra)
+    tail = ['-gisel-synth-corpus-out=' + out] + target.corpus_flags() + \
+        list(extra)
     run_pass = [llc] + target.triple_flags + ['-run-pass=gisel-synth-corpus']
     quiet = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                  timeout=EXTRACT_TIMEOUT)
@@ -200,13 +201,14 @@ def cmd_capabilities(args):
     """Prints the capability matrix: per operator, the pipeline stages
     that support it and the reason for each stage that does not."""
     from girs import ops
-    rows = ops.capability_matrix()
+    rows = ops.capability_matrix(args.namespace)
     if args.json:
         json.dump(rows, sys.stdout, indent=1)
         print()
         return 0
     short = {'yes': 'yes', 'enumerative+egraph': 'enum+egraph',
-             'enumerative-source+egraph': 'enum-src+egraph'}
+             'enumerative-source+egraph': 'enum-src+egraph',
+             'enumerative': 'enum'}
     print('| Operator | Shape | ' + ' | '.join(
         s.capitalize() for s in ops.STAGES) + ' |')
     print('|---|---|' + '---|' * len(ops.STAGES))
@@ -277,6 +279,19 @@ def cmd_check_ops(args):
         if skipped:
             print('  no fold function in the compiler (not compared): %s' %
                   ', '.join(skipped))
+        rc |= bool(bad)
+        opt = os.path.join(os.path.dirname(args.llc), 'opt')
+        n, bad, none = opcheck.check_intrinsics(
+            args.llc, opt, target.triple_flags, samples=args.samples,
+            seed=args.seed)
+        print('check-ops: evaluator of the intrinsics against the compiler: '
+              '%d comparisons, %d mismatches' % (n, len(bad)))
+        for b in bad[:20]:
+            print('  %s w=%d ws=%s operands=%s: evaluator %r, compiler %r'
+                  % b)
+        for name, k in sorted(none.items()):
+            print('  %s: the compiler gives no constant for %d cases (not '
+                  'compared)' % (name, k))
         rc |= bool(bad)
     return rc
 
@@ -1146,6 +1161,9 @@ def build_parser():
     p = sub.add_parser('capabilities', help='print the capability matrix '
                        'of the operators')
     p.add_argument('--json', action='store_true')
+    p.add_argument('--namespace', default='generic',
+                   help='the operators of this namespace (amdgcn: the '
+                        'intrinsics of AMDGPU with a model)')
     p.set_defaults(fn=cmd_capabilities)
 
     p = sub.add_parser('check-ops', help='compare the operator models with '

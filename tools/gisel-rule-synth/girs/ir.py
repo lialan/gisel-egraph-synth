@@ -377,6 +377,23 @@ def phi_error(e):
     return None
 
 
+def intrinsic_error(sources, targets, vw):
+    """None if each intrinsic of the replacements ``targets`` is in the
+    ``sources`` with the same types, else the reason. A rule creates an
+    intrinsic only where the code has the same instruction: the tool does
+    not know for which types and for which subtargets the target has
+    it (OpInfo.intrinsic)."""
+    def calls(es):
+        return {(n[0], n[1]) + tuple(width(a, vw) for a in n[2:])
+                for e in es for n in nodes(e)
+                if ops.parse(n[0])[0].intrinsic}
+    new = calls(targets) - calls(sources)
+    if new:
+        return 'the source has no %s with the types of the replacement' % \
+            sorted(new)[0][0]
+    return None
+
+
 def nodes(e, out=None):
     """The distinct operation nodes of ``e``, operands first."""
     if out is None:

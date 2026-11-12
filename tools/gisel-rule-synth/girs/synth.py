@@ -278,7 +278,7 @@ def weakest(valid, vw, backend, rw=None):
 def rule_id(src, tgt, vw, const_vars=()):
     h = hashlib.sha256(repr(class_key(src, tgt, vw, const_vars))
                        .encode()).hexdigest()
-    return 'synth_%s_%s' % (ops.base(src[0])[2:].lower(), h[:8])
+    return 'synth_%s_%s' % (ops.parse(src[0])[0].ident(), h[:8])
 
 
 def save_proofs(proofs, proof_dir):
@@ -424,6 +424,10 @@ class Synthesizer:
                 ir.edge_vars(inst.expr) & set(ir.variables(tgt))):
             self.stats['phi_rejected'] = \
                 self.stats.get('phi_rejected', 0) + 1
+            return None
+        if ir.intrinsic_error([inst.expr], [tgt], inst.vw) is not None:
+            self.stats['intrinsic_rejected'] = \
+                self.stats.get('intrinsic_rejected', 0) + 1
             return None
         if vector.has_vector(inst.vw, inst.expr, tgt):
             return self._add_vector(inst, tgt, provenance)

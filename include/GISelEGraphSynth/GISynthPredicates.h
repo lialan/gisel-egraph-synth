@@ -31,6 +31,9 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Register.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/Intrinsics.h"
+// The intrinsics of the generated rules of a target.
+#include "llvm/IR/IntrinsicsAMDGPU.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/KnownBits.h"
 #include "llvm/Support/raw_ostream.h"
@@ -120,6 +123,13 @@ inline std::optional<APInt> getConstantOrSplat(Register R,
   if (MRI.getType(R).isVector())
     return getIConstantSplatVal(R, MRI);
   return getIConstantVRegVal(R, MRI);
+}
+
+/// True if \p MI is a call of the intrinsic \p ID that a rule can replace: a
+/// G_INTRINSIC has no side effect and is not convergent.
+inline bool isIntrinsic(const MachineInstr &MI, Intrinsic::ID ID) {
+  return MI.getOpcode() == TargetOpcode::G_INTRINSIC &&
+         cast<GIntrinsic>(MI).is(ID);
 }
 
 /// True if \p MO is the mask \p Mask of a G_SHUFFLE_VECTOR.

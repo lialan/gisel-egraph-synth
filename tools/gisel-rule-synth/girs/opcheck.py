@@ -11,9 +11,17 @@ e-graph combiner, as written by
 
 A fold of the compiler gives no value for poison and for undefined
 behaviour; the evaluator must give None or UB exactly there.
+
+``check_intrinsics`` compares the evaluator of the intrinsics of a target
+(amdgcn.py) with the compiler on constant arguments: with the constant
+that InstCombine folds a call to (``opt``), or with the known bits of the
+call (``llc -passes=print<gisel-value-tracking>``), as the operator says
+(``OpInfo.meta['reference']``).
 """
 
 import random
+import re
+import subprocess
 
 import z3
 
@@ -46,7 +54,7 @@ def _fp_specials(w):
 def instances(info, widths=(1, 8, 16, 32)):
     """(w, ws, attr, res) tuples of ``info`` that type check."""
     out = []
-    if info.fp_operand or info.fp_result:
+    if info.fp_operand or info.fp_result or info.intrinsic:
         widths = tuple(widths) + (64,)
     n = info.operands if info.operands is not None else 2
     attrs = [None]
@@ -179,3 +187,113 @@ def check_llvm(table):
                 bad.append((ops.make_key(m['name'], attr, res), w, ws,
                             vals, a, want))
     return n, bad, skipped
+
+
+def _ir_type(w, fp_kind):
+    return {16: 'half', 32: 'float', 64: 'double'}[w] if fp_kind else \
+        'i%d' % w
+
+
+def _mangled(w, fp_kind):
+    return ('f%d' if fp_kind else 'i%d') % w
+
+
+def _intrinsic_cases(info, samples, rng):
+    """(w, ws, vals) for the sample arguments of each type instance."""
+    for w, ws, attr, res in instances(info):
+        sp = [(_fp_specials(x) if info.fp_operand and
+               i not in info.int_operands else []) or _specials(x)
+              for i, x in enumerate(ws)]
+        for _ in range(samples):
+            yield w, ws, [rng.choice(s) if rng.random() < 0.6
+                          else rng.getrandbits(x) for s, x in zip(sp, ws)]
+
+
+def _fold_reference(opt, flags, info, cases):
+    """The constant that InstCombine gives for each case, or None if it
+    does not fold the call."""
+    decls, fns = set(), []
+    for n, (w, ws, vals) in enumerate(cases):
+        okinds = [info.fp_operand and i not in info.int_operands
+                  for i in range(len(ws))]
+        rt = _ir_type(w, info.fp_result)
+        ots = [_ir_type(x, k) for x, k in zip(ws, okinds)]
+        # The types of an overload: the result is 'r'.
+        suffix = ''.join(
+            '.' + (_mangled(w, info.fp_result) if t == 'r' else
+                   _mangled(ws[t], okinds[t]))
+            for t in info.meta['overload'])
+        name = '@%s%s' % (info.name, suffix)
+        decls.add('declare %s %s(%s)' % (rt, name, ', '.join(ots)))
+        args = ', '.join(
+            '%s bitcast (i%d %d to %s)' % (t, x, v, t) if k else
+            '%s %d' % (t, v) for t, x, v, k in zip(ots, ws, vals, okinds))
+        body = '  %%r = call %s %s(%s)\n' % (rt, name, args)
+        if info.fp_result:
+            body += '  %%b = bitcast %s %%r to i%d\n  ret i%d %%b\n' % (
+                rt, w, w)
+        else:
+            body += '  ret %s %%r\n' % rt
+        fns.append('define i%d @f%d() {\n%s}\n' % (w, n, body))
+    out = subprocess.run(
+        [opt] + flags + ['-passes=instcombine', '-S', '-o', '-', '-'],
+        input=('\n'.join(sorted(decls)) + '\n' + ''.join(fns)).encode(),
+        stdout=subprocess.PIPE, check=True).stdout.decode()
+    got = {}
+    for m in re.finditer(r'define i(\d+) @f(\d+)\(\)[^{\n]*\{\n  ret i\d+ '
+                         r'(-?\d+|true|false)\n\}', out):
+        v = {'true': 1, 'false': 0}.get(m.group(3))
+        got[int(m.group(2))] = (int(m.group(3)) if v is None else v) & \
+            ops.mask(int(m.group(1)))
+    return [got.get(n) for n in range(len(cases))]
+
+
+def _known_bits_reference(llc, flags, info, cases):
+    """The value that the known bits of the compiler give for each case,
+    or None if a bit is not known."""
+    lines, reg = [], 0
+    results = []
+    for w, ws, vals in cases:
+        args = []
+        for x, v in zip(ws, vals):
+            lines.append('    %%%d:_(i%d) = G_CONSTANT i%d %d' % (
+                reg, x, x, ops.sx(v, x)))
+            args.append('%%%d' % reg)
+            reg += 1
+        lines.append('    %%%d:_(i%d) = G_INTRINSIC intrinsic(@%s), %s' % (
+            reg, w, info.name, ', '.join(args)))
+        results.append(reg)
+        reg += 1
+    mir = '---\nname: f\ntracksRegLiveness: false\nbody: |\n  bb.0:\n' + \
+        '\n'.join(lines) + '\n...\n'
+    out = subprocess.run(
+        [llc] + flags + ['-x', 'mir', '-passes=print<gisel-value-tracking>',
+                         '-filetype=null', '-'], input=mir.encode(),
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        check=True).stderr.decode()
+    known = dict(re.findall(r'%(\d+):_ KnownBits:([01?]+)', out))
+    return [None if '?' in known.get(str(r), '?') else int(known[str(r)], 2)
+            for r in results]
+
+
+def check_intrinsics(llc, opt, flags, samples=40, seed=0):
+    """Compares the evaluator of each intrinsic with the compiler. Returns
+    (comparisons, mismatches, {operator: cases without a reference})."""
+    rng = random.Random(seed)
+    n, bad, none = 0, [], {}
+    for name, info in ops.REGISTRY.items():
+        if not info.intrinsic:
+            continue
+        cases = list(_intrinsic_cases(info, samples, rng))
+        ref = _fold_reference(opt, flags, info, cases) \
+            if info.meta['reference'] == 'instcombine' else \
+            _known_bits_reference(llc, flags, info, cases)
+        for (w, ws, vals), want in zip(cases, ref):
+            if want is None:
+                none[name] = none.get(name, 0) + 1
+                continue
+            n += 1
+            got = info.eval(w, ws, None, 0, vals)
+            if not _same(info, w, got, want):
+                bad.append((name, w, ws, vals, got, want))
+    return n, bad, none

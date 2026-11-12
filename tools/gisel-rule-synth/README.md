@@ -536,8 +536,9 @@ takes its place.
 | Path | Contents |
 |---|---|
 | `girs/ops.py` | the operator registry: shape, typing, evaluator and SMT encoding of each generic opcode; `Provider` for target operators |
+| `girs/amdgcn.py` | the provider of the AMDGPU intrinsics with a model, and the reasons for the pure intrinsics without one |
 | `girs/gmir_ops.json` | typing metadata of the operators, written by `llc -gisel-egraph-print-ops` from the property table of the e-graph |
-| `girs/opcheck.py` | checks of the operator models (evaluator against SMT, evaluator against the folds of llc) |
+| `girs/opcheck.py` | checks of the operator models (evaluator against SMT, evaluator against the folds of llc, intrinsics against InstCombine and the known bits) |
 | `girs/ir.py` | typed expressions: operators with attributes and result indices, constants, computed constants |
 | `girs/egraph.py` | import of the e-graph export: candidates, recipes of computed constants |
 | `girs/corpus.py` | corpus reader, DAG-aware tree conversion |
@@ -776,6 +777,43 @@ every disjunct of `P` and for the emitted disjunction as a whole.
     takes no value across one of them. The registry lists them with this
     reason (`capabilities`). A rule never moves, copies or removes one of
     them, and it removes a load only if the load is its root.
+- An intrinsic of a target is an operator of the namespace of the target
+  (`girs/amdgcn.py`; `ops.Provider`). The name of the operator is the name
+  of the intrinsic without the types of an overload.
+  - An intrinsic has a model only if it is a function of its arguments
+    (the instruction is a `G_INTRINSIC`: no side effect, not convergent,
+    and the value does not depend on the hardware generation or on a mode
+    of the function) and the compiler has an exact definition of it.
+    `check-ops` compares the model with that definition on constant
+    arguments: the constant that InstCombine folds a call to, or the known
+    bits of the call. AMDGPU has eight such intrinsics:
+    `llvm.amdgcn.mul.u24` and `llvm.amdgcn.mul.i24` (the product of the low
+    24 bits of the operands, zero-extended or sign-extended to the result),
+    `llvm.amdgcn.ubfe` and `llvm.amdgcn.sbfe` (a field of bits; index and
+    width are modulo the width of the value, the width 0 gives 0, and a
+    field that ends above the value is a shift), `llvm.amdgcn.class` (the
+    class of the operand is in an FPClassTest set), `llvm.amdgcn.frexp.mant`
+    and `llvm.amdgcn.frexp.exp` (the parts of `G_FFREXP`; the exponent of a
+    NaN and of an infinity is 0), and `llvm.amdgcn.cvt.off.f32.i4` (1/16 of
+    the low 4 bits of the operand as a signed number). `amdgcn.NO_MODEL`
+    gives the reason for each of the 78 other AMDGPU intrinsics that are a
+    `G_INTRINSIC` in the CodeGen tests: the value depends on the
+    invocation, the lane or the function; the call is a part of the
+    control flow; the result is an approximation or depends on a mode or
+    on the hardware; the compiler has no definition to compare a model
+    with; the result is a vector made from scalars (`cvt.pkrtz`); or the
+    definition is a table (`trig.preop`). An intrinsic of another
+    namespace has no operator.
+  - The corpus extractor has no list of its own. It takes the names from
+    the tool (`-gisel-synth-corpus-intrinsics=`, `Target.corpus_flags`),
+    and the result of each other intrinsic is an input.
+  - A rule creates an intrinsic only if its source has the same intrinsic
+    with the same types (`ir.intrinsic_error`): the tool does not know for
+    which types and subtargets the target has the instruction. A search
+    grammar gets an intrinsic from the source only.
+  - A rule with an intrinsic is a candidate only for a target that has
+    the namespace (`Target.namespaces`). An intrinsic takes scalars, so
+    such a rule is not applied lane by lane.
 - `G_MERGE_VALUES` and `G_UNMERGE_VALUES` of scalars are the concatenation
   and the parts of the bits. A rule matches and builds a merge. It matches
   an unmerge below the root and does not build one.
@@ -806,3 +844,12 @@ every disjunct of `P` and for the emitted disjunction as a whole.
   flags.
 
 An UNKNOWN solver result is never accepted.
+
+A check first has each product of two operands that are not constants as
+an uninterpreted function (`smt.abstract_products`). Each model of the
+formula is a model of this weaker formula, so UNSAT of the weaker formula
+is UNSAT of the formula; the proof record then holds the weaker formula.
+This step proves that two products with equal operands are equal, which
+the circuits of two 24-bit or 32-bit products do not show in the time
+limit. Each other result of the step is ignored, and the formula is then
+checked as it is.

@@ -33,9 +33,10 @@ gives each lane of a vector its scalar expression.
 A value of the evaluator is an int, None (poison) or ``UB`` (the operation
 has undefined behaviour, e.g. a division by zero).
 
-Operators of a target are added with ``register`` (see ``Provider``); the
-generic library never contains them unless a target profile asks for the
-namespace.
+Operators of a target are added with ``register`` (see ``Provider``):
+``amdgcn.py`` has the intrinsics of AMDGPU with a model. A rule with such
+an operator is a candidate only for a target with the namespace
+(targets.py).
 """
 
 import functools
@@ -227,6 +228,23 @@ class OpInfo:
         # LLVM permits more than one result and the model has one of them
         # (the order of a floating-point reduction); see fixed_result.
         self.vec_fixed_result = False
+        # The operator is an intrinsic: the enumerator of the namespace
+        # Intrinsic of the compiler (``amdgcn_ubfe``), else None. The name
+        # of the operator is the name of the intrinsic without the types
+        # of an overload (``llvm.amdgcn.ubfe``). The instruction is a
+        # G_INTRINSIC: the intrinsic has no side effect and is not
+        # convergent. A search creates one only where the source has the
+        # same intrinsic: the tool does not know which intrinsics the
+        # subtarget of a function has.
+        self.intrinsic = None
+
+    def ident(self):
+        """The operator in the name of a rule."""
+        return self.intrinsic or self.name[2:].lower()
+
+    def td_name(self):
+        """The record of the operator in a TableGen pattern."""
+        return 'int_' + self.intrinsic if self.intrinsic else self.name
 
     # -- the contract of a search --
 
@@ -322,7 +340,10 @@ class Provider:
     """Interface of a set of operators outside the generic table (a target
     namespace). A provider registers OpInfo objects with their typing, their
     evaluator and their SMT encoding; legality and cost are properties of
-    the target profile (targets.py). No provider is registered by default."""
+    the target profile (targets.py). The providers of the targets of
+    targets.py are installed with this module (the end of the file): a
+    stored rule with an operator of a target can then be read. A target
+    takes the operators of its namespaces only (Target.namespaces)."""
 
     namespace = None
 
@@ -1981,13 +2002,39 @@ _READS_MEMORY = 'the value is what the memory has: it is an input of a ' \
 _load_memory()
 
 
+def _load_intrinsic_calls():
+    """The four instructions of an intrinsic call. An intrinsic is an
+    operator of the namespace of its target (Provider), not the
+    instruction: the rows say what a call without such an operator is."""
+    pure = 'the operator is the intrinsic, in the namespace of its ' \
+        'target, if it has a model; the result of each other call is an ' \
+        'input of a tree'
+    effect = 'the call has a side effect or is convergent: its result ' \
+        'is an input of a tree, and no rule moves, copies or removes it'
+    for name, why in (('G_INTRINSIC', pure),
+                      ('G_INTRINSIC_W_SIDE_EFFECTS', effect),
+                      ('G_INTRINSIC_CONVERGENT', effect),
+                      ('G_INTRINSIC_CONVERGENT_W_SIDE_EFFECTS', effect)):
+        info = OpInfo(name, 'effect', None, 0, None,
+                      meta={'name': name, 'shape': 'effect',
+                            'operands': -1})
+        info.lanewise = False
+        for st in STAGES[1:]:
+            info.unsupported[st] = why
+        register(info)
+
+
+_load_intrinsic_calls()
+
+
 def capability(info, stage):
     """'yes', or the reason why ``stage`` is not supported. The discovery
     stage also says which engine finds the operator:
     'enumerative+egraph' if the enumerative search matches the operator in
     a source and builds replacements with it, 'enumerative-source+egraph'
-    if it only matches the operator in a source, 'lanes' / 'lanes-source'
-    for an operator on the lanes of a vector."""
+    if it only matches the operator in a source, 'enumerative' for an
+    intrinsic (no e-graph candidate has one), 'lanes' / 'lanes-source' for
+    an operator on the lanes of a vector."""
     if stage in info.unsupported:
         return info.unsupported[stage]
     if stage == 'discovery' and info.vector:
@@ -1995,6 +2042,10 @@ def capability(info, stage):
         # enumerative search has scalars only.
         return 'lanes' if 'emit' not in info.unsupported else \
             'lanes-source'
+    if stage == 'discovery' and info.intrinsic:
+        # The e-graph combiner has no intrinsic; a search builds one only
+        # where the source has it.
+        return 'enumerative'
     if stage == 'discovery':
         # Every operator with a model can be in the source of a corpus
         # instance and of an e-graph candidate. The enumerative search
@@ -2018,3 +2069,8 @@ def capability_matrix(namespace='generic'):
 
 def has_semantics(key):
     return known(key) and parse(key)[0].smt is not None
+
+
+# The operators of the targets. The import is here because the module of
+# a provider needs the registry; the module installs its provider.
+from . import amdgcn  # noqa: E402,F401

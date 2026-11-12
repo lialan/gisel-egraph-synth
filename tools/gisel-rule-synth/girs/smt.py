@@ -25,6 +25,60 @@ class Result:
         self.seconds = seconds
 
 
+def abstract_products(formula):
+    """``formula`` with each product of two operands that are not constants
+    replaced by an application of an uninterpreted function (one function
+    for each width), or None if the formula has no such product.
+
+    Each model of the formula is a model of the result (the function is
+    the product), so the formula is unsatisfiable if the result is. The
+    operands of an application are in a fixed order: a product does not
+    depend on the order of its operands. A solver that expands each
+    product to a circuit does not see that two products with equal
+    operands are equal; with the functions that is a congruence."""
+    ctx = formula.ctx
+    order, seen, todo = [], set(), [(formula, False)]
+    while todo:
+        t, done = todo.pop()
+        if done:
+            if z3.is_app_of(t, z3.Z3_OP_BMUL) and \
+                    sum(not z3.is_bv_value(c) for c in t.children()) >= 2:
+                order.append(t)
+            continue
+        if t.get_id() in seen:
+            continue
+        seen.add(t.get_id())
+        todo.append((t, True))
+        todo.extend((c, False) for c in t.children())
+    if not order:
+        return None
+    pairs, fns = [], {}
+    for t in order:
+        # ``order`` has the operands of a product before the product.
+        args = [z3.substitute(c, *pairs) if pairs else c
+                for c in t.children()]
+        consts = [a for a in args if z3.is_bv_value(a)]
+        rest = sorted((a for a in args if not z3.is_bv_value(a)),
+                      key=lambda a: a.sexpr())
+        w = t.size()
+        if w not in fns:
+            sort = z3.BitVecSort(w, ctx)
+            fns[w] = z3.Function('product!%d' % w, sort, sort, sort)
+        acc = fns[w](rest[0], rest[1])
+        for a in rest[2:]:
+            acc = fns[w](acc, a)
+        for c in consts:
+            acc = acc * c
+        pairs.append((t, acc))
+    return z3.substitute(formula, *pairs)
+
+
+_ABSTRACT_NOTE = (
+    '; Each product of two operands that are not constants is an\n'
+    '; application of the uninterpreted function product!<width>. The\n'
+    '; formula with the products is unsatisfiable if this one is.\n')
+
+
 class Z3Backend:
     name = 'z3'
 
@@ -49,14 +103,29 @@ class Z3Backend:
         ctx = z3.Context()
         # The conversions between integers and floating-point values need
         # the floating-point theory.
-        logic = 'QF_BVFP' if fp.uses_theory(formula) else 'QF_BV'
-        s = z3.SolverFor(logic, ctx=ctx)
-        s.set('timeout', self.timeout_ms)
-        s.add(formula.translate(ctx))
+        theory = fp.uses_theory(formula)
+        formula = formula.translate(ctx)
+        self.calls += 1
         t0 = time.monotonic()
+        # First with the products as uninterpreted functions: that proves
+        # an equality of two products with equal operands, which the
+        # circuits of the products do not show in the time limit. Only
+        # 'unsat' is a result of this step.
+        weak = None if theory else abstract_products(formula)
+        if weak is not None:
+            s = z3.SolverFor('QF_UFBV', ctx=ctx)
+            s.set('timeout', self.timeout_ms)
+            s.add(weak)
+            if s.check() == z3.unsat:
+                dt = time.monotonic() - t0
+                self.seconds += dt
+                return Result('unsat', smt2=_ABSTRACT_NOTE + s.to_smt2(),
+                              seconds=dt)
+        s = z3.SolverFor('QF_BVFP' if theory else 'QF_BV', ctx=ctx)
+        s.set('timeout', self.timeout_ms)
+        s.add(formula)
         r = s.check()
         dt = time.monotonic() - t0
-        self.calls += 1
         self.seconds += dt
         smt2 = s.to_smt2()
         if r == z3.unsat:

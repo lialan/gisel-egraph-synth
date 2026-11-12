@@ -72,7 +72,8 @@ def candidates(db, target=None):
     """Rules a target may select (any target if ``target`` is None): proved,
     cheaper than their source under the generic cost model (or explicitly
     admitted by a target-cost search), and not dominated by a rule with
-    the same source. Eligibility is not evidence of profitability. A rule that moves an operation
+    the same source, and with operators of the namespaces of the target
+    only. Eligibility is not evidence of profitability. A rule that moves an operation
     to a wider type is a candidate only if that type is not wider than the
     registers of the target (Target.native_bits). Each rule is followed by
     its one-use variant, if it has one. The rules are ordered as the
@@ -81,6 +82,7 @@ def candidates(db, target=None):
     bits = target.native_bits if target else targets.NATIVE_BITS
     out = [r for r in db['rules']
            if r['semantic_status']['kind'] == 'verified_refinement' and
+           (target is None or target.has(_rule_exprs(r))) and
            (r.get('target_cost_candidate', False) or
             r['class'] == 'reduces_cost' or
             (r['class'] == 'widens_operation' and
@@ -325,7 +327,7 @@ def _lines(n, out, checks=None):
         operands.append('$%s_m' % tag)
         checks.append('gisynth::isShuffleMask(${%s_m}, {%s})' % (
             tag, ', '.join(str(x) for x in ops.mask_of(attr))))
-    out.append('(%s %s)' % (info.name, ', '.join(defs + operands)))
+    out.append('(%s %s)' % (info.td_name(), ', '.join(defs + operands)))
     return out
 
 
@@ -385,7 +387,8 @@ def _lit_imm(k):
 def _needs_cpp_apply(tgt, const_vars=()):
     """True if the replacement has a node that an apply pattern cannot
     write: a constant that is not a literal, a computed constant, an
-    operator with an attribute or an instruction with several results."""
+    operator with an attribute, an instruction with several results or an
+    intrinsic."""
     if ir.is_const(tgt):
         return True
     if not ir.is_op(tgt):
@@ -394,7 +397,7 @@ def _needs_cpp_apply(tgt, const_vars=()):
         return True
     info, attr, _ = ops.parse(tgt[0])
     return info.attr is not None or attr is not None or \
-        info.results != 1 or info.vector or \
+        info.results != 1 or info.vector or bool(info.intrinsic) or \
         any(_needs_cpp_apply(a, const_vars) for a in tgt[2:])
 
 
@@ -620,12 +623,19 @@ def _cpp_find_siblings(rule):
         fresh = {r[1] for r in refs
                  if r[0] == 'var' and r[1] in svars and r[1] not in bound}
         anchor = [r for r in refs if not (r[0] == 'var' and r[1] in fresh)][0]
-        conds = ['MI.getOpcode() != TargetOpcode::%s' % info.name]
+        if info.intrinsic:
+            conds = ['!gisynth::isIntrinsic(MI, Intrinsic::%s)' %
+                     info.intrinsic]
+        else:
+            conds = ['MI.getOpcode() != TargetOpcode::%s' % info.name]
         if info.shape == 'unmerge':
             conds.append('MI.getNumExplicitDefs() <= %d' % res)
             first = 'MI.getNumOperands() - 1'
         else:
-            first = '%d' % (info.results + (info.attr == 'pred'))
+            # After the results: the predicate, or the name of an
+            # intrinsic.
+            first = '%d' % (info.results + (info.attr == 'pred') +
+                            bool(info.intrinsic))
         if info.attr == 'imm':
             conds.append('MI.getOperand(%s + %d).getImm() != %d' % (
                 first, len(b) - 2, attr))
@@ -1043,6 +1053,11 @@ def _cpp_apply(rule):
                 assert info.name == 'G_EXTRACT_VECTOR_ELT'
                 text = 'B.buildExtractVectorElementConstant(%s, %s, %d)' % (
                     rtys[0], args[0], attr)
+            elif info.intrinsic:
+                text = 'B.buildIntrinsic(Intrinsic::%s, ' \
+                    'ArrayRef<DstOp>({%s}))%s' % (
+                        info.intrinsic, ', '.join(rtys),
+                        ''.join('.addUse(%s)' % a for a in args))
             else:
                 srcs = list(args)
                 if info.attr == 'imm':
@@ -1168,6 +1183,14 @@ def why_not_emittable(rule):
         why = ops.capability(ops.parse(n[0])[0], 'emit')
         if why != 'yes':
             return '%s: %s' % (n[0], why)
+    # Every source and every replacement of the rule (a rule for a
+    # region has several).
+    exprs = _rule_exprs(rule)
+    srcs = [src] + [b for b, _, _ in sibs]
+    why = ir.intrinsic_error(srcs, [e for e in exprs if e not in srcs],
+                             rule['vw'])
+    if why is not None:
+        return why
     try:
         _annotate(src)
         _bitcast_checks(rule)

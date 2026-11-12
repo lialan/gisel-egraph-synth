@@ -205,8 +205,14 @@ def grammar_stages(inst, limits, types=None):
     function of the operators and the types of the source, of the
     registry and of the capability of the target."""
     rhs = {n for ns in limits.namespaces for n in ops.rhs_operators(ns)}
+    # An intrinsic is in a grammar only if the source has it (OpInfo.
+    # intrinsic), with or without its namespace in the limits.
+    own = source_operators(inst)
+    rhs = {n for n in rhs if not ops.REGISTRY[n].intrinsic} | \
+        {n for n in own if ops.REGISTRY[n].intrinsic and
+         ops.REGISTRY[n].rhs() == 'yes'}
     base = set(ops.ENUMERATED)
-    src = base | (source_operators(inst) & rhs)
+    src = base | (own & rhs)
     g = limits.grammar
     if g == 'base':
         return [('base', _ordered(base))]
@@ -772,6 +778,10 @@ def signature(inst):
     canon = canonical_types(types)
     if canon is None:
         return None
+    if any(ops.parse(n[0])[0].intrinsic for n in ir.nodes(inst.expr)):
+        # An intrinsic has a result only for the types of its
+        # instructions: the bank has the types of the instance.
+        canon = types
     cls = {t: i for i, t in enumerate(types)}
     return (tuple(cls[(w, k)] for w, k in zip(inst.vw, inst.vk)), types,
             canon)

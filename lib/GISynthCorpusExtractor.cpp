@@ -14,6 +14,7 @@
 
 #include "llvm/CodeGen/GlobalISel/GISynthCorpusExtractor.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
@@ -30,8 +31,10 @@
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
@@ -62,6 +65,12 @@ static cl::opt<unsigned> MaxLanes(
     "gisel-synth-corpus-max-lanes", cl::Hidden, cl::init(16),
     cl::desc("Maximum number of lanes of a fixed vector that is a value of "
              "an extracted expression tree"));
+
+static cl::list<std::string> ModeledIntrinsics(
+    "gisel-synth-corpus-intrinsics", cl::Hidden, cl::CommaSeparated,
+    cl::desc("Names of the intrinsics without side effects that the rule "
+             "synthesizer has a model for: a G_INTRINSIC with one of these "
+             "names is a node of an expression tree"));
 
 static cl::opt<std::string> LegalityOut(
     "gisel-synth-legality", cl::Hidden,
@@ -157,6 +166,45 @@ bool isSupportedInstr(const MachineRegisterInfo &MRI, const MachineInstr &MI) {
   return true;
 }
 
+/// True if \p ID is an intrinsic of -gisel-synth-corpus-intrinsics. The
+/// extractor has no list of intrinsics of its own: the operators of a target
+/// are in the registry of llvm/utils/gisel-rule-synth.
+bool isModeledIntrinsic(Intrinsic::ID ID) {
+  static const DenseSet<unsigned> IDs = [] {
+    DenseSet<unsigned> Set;
+    for (const std::string &Name : ModeledIntrinsics) {
+      Intrinsic::ID ID = Intrinsic::lookupIntrinsicID(Name);
+      if (ID == Intrinsic::not_intrinsic)
+        reportFatalUsageError("-gisel-synth-corpus-intrinsics: no intrinsic "
+                              "has the name '" +
+                              Twine(Name) + "'");
+      Set.insert(ID);
+    }
+    return Set;
+  }();
+  return IDs.contains(ID);
+}
+
+/// True if the intrinsic call \p MI can be a node of a tree: a G_INTRINSIC
+/// (no side effect, not convergent) of the list, with one result, whose
+/// result and arguments are values of a tree.
+bool isSupportedIntrinsic(const MachineRegisterInfo &MRI,
+                          const MachineInstr &MI) {
+  if (MI.getOpcode() != TargetOpcode::G_INTRINSIC ||
+      MI.getNumExplicitDefs() != 1 ||
+      !isModeledIntrinsic(cast<GIntrinsic>(MI).getIntrinsicID()))
+    return false;
+  const DataLayout &DL = MI.getMF()->getDataLayout();
+  for (const MachineOperand &MO : MI.operands()) {
+    if (MO.isIntrinsicID())
+      continue;
+    if (!MO.isReg() || MO.isImplicit() ||
+        !isSupportedValue(MRI, DL, MO.getReg()))
+      return false;
+  }
+  return true;
+}
+
 /// True if the G_PHI \p MI can be a node of a tree: a rule can read its
 /// incoming values (gisynth::hasStablePhiInputs), and they and its result
 /// are values of a tree.
@@ -245,6 +293,8 @@ public:
   bool isNode(const MachineInstr &MI) const {
     if (MI.getOpcode() == TargetOpcode::G_PHI)
       return isSupportedPhi(MRI, MDT, MI);
+    if (isa<GIntrinsic>(MI))
+      return isSupportedIntrinsic(MRI, MI);
     return isSupportedInstr(MRI, MI);
   }
 
@@ -431,12 +481,17 @@ private:
                     static_cast<int64_t>(gisynth::getFixedMemBits(*Load)));
         if (!N.Forwarded)
           J.attribute("load", true);
-      } else
+      } else if (const auto *Call = dyn_cast<GIntrinsic>(N.MI)) {
+        // The name of the intrinsic without the types of an overload, as in
+        // the registry of the synthesizer.
+        J.attribute("op", Intrinsic::getBaseName(Call->getIntrinsicID()));
+      } else {
         J.attribute("op", opcodeName(N.MI));
+      }
       // The attribute of the operator, and the index of the result if the
       // instruction has several results.
       if (!P) {
-        // A G_PHI or a load: no other attribute and one result.
+        // A G_PHI, a load or an intrinsic: no other attribute and one result.
       } else if (P->Shape == egraph::OpShape::Compare)
         J.attribute("pred", egraph::getComparePredicateName(
                                 N.MI->getOperand(1).getPredicate()));

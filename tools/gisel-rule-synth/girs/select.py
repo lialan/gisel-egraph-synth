@@ -265,6 +265,9 @@ def build_mir(rule, example, name, target):
             text = '%s %s, shufflemask(%s)' % (
                 info.name, ', '.join(args), ', '.join(
                     'undef' if x < 0 else str(x) for x in ops.mask_of(attr)))
+        elif info.intrinsic:
+            text = 'G_INTRINSIC intrinsic(@%s), %s' % (
+                info.name, ', '.join(args))
         else:
             text = '%s %s' % (info.name, ', '.join(args))
         if info.shape == 'unmerge':

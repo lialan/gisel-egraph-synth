@@ -18,8 +18,13 @@ class Target:
     def __init__(self, name, triple_flags, combiner, enable_flag,
                  corpus_flag, arg32, arg64, ret, insn_regex,
                  native_bits=32, egraph_flag=None, pointer_as=None,
-                 vector_idx_bits=64):
+                 vector_idx_bits=64, namespaces=('generic',)):
         self.name = name
+        # The operator namespaces of the registry that the target has
+        # (ops.Provider): a rule with an operator of another namespace is
+        # not a candidate, and the corpus extractor takes the intrinsics
+        # of these namespaces.
+        self.namespaces = tuple(namespaces)
         # The width of the index of a lane (TargetLowering::
         # getVectorIdxWidth): the type of the index constant of a probe
         # function.
@@ -49,10 +54,26 @@ class Target:
         # The corpus extractor also writes the legality table of the
         # target (Capability) with this flag and a file name.
         self.legality_flag = '-gisel-synth-legality='
+        # The corpus extractor takes the names of the intrinsics that are
+        # nodes of a tree with this flag (corpus_flags).
+        self.intrinsics_flag = '-gisel-synth-corpus-intrinsics='
         self.arg32, self.arg64, self.ret = arg32, arg64, ret
         self.insn_regex = insn_regex
         self.group = 'gi_synth_combines_' + name.lower()
         self.names_array = 'SynthRuleNames' + name
+
+    def has(self, exprs):
+        """True if the target has the namespace of each operator of the
+        expressions."""
+        from . import ir, ops
+        return all(ops.parse(n[0])[0].namespace in self.namespaces
+                   for e in exprs for n in ir.nodes(e))
+
+    def corpus_flags(self):
+        """The flags of the corpus extractor that depend on the target."""
+        from . import amdgcn
+        names = amdgcn.intrinsic_names(self.namespaces)
+        return [self.intrinsics_flag + ','.join(names)] if names else []
 
     @property
     def profile_path(self):
@@ -111,7 +132,8 @@ TARGETS = {
         lambda n: '$vgpr%d_vgpr%d' % (n, n + 1),
         lambda r: 'SI_RETURN implicit %s' % r,
         r'^\s+[sv]_[a-z0-9_]+', egraph_flag='-amdgpu-gisel-egraph',
-        pointer_as={64: 0, 32: 3}, vector_idx_bits=32),
+        pointer_as={64: 0, 32: 3}, vector_idx_bits=32,
+        namespaces=('generic', 'amdgcn')),
     'AArch64': Target(
         'AArch64', ['-mtriple=aarch64'],
         'aarch64-prelegalizer-combiner', '-aarch64-gisel-synth-combines',
