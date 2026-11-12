@@ -208,6 +208,8 @@ struct ACView {
 /// terms in a canonical form and the matcher works modulo AC.
 bool isACOperator(unsigned Opcode);
 
+struct ViewStats;
+
 /// A typed e-graph over gMIR operators.
 class EGraph {
 public:
@@ -323,7 +325,13 @@ public:
   /// node's flattening (see addACTerm), so that terms that are equal modulo
   /// AC end up in the same class. Requires a clean graph; returns the number
   /// of merges. Stops adding nodes once the graph has \p MaxNodes nodes.
-  unsigned canonicalizeAC(unsigned MaxLeaves, unsigned MaxNodes);
+  /// If \p Stats is not null, it counts the flattenings with three or more
+  /// leaves (Views), the canonical forms that added nodes (Candidates), the
+  /// merges, the flattenings abandoned at \p MaxLeaves and the stop at
+  /// \p MaxNodes (Budget), and the flagged AC nodes, which stay leaves
+  /// (Unsupported).
+  unsigned canonicalizeAC(unsigned MaxLeaves, unsigned MaxNodes,
+                          ViewStats *Stats = nullptr);
 
   /// N-ary idempotence, op(a, ..., a) == a, as canonicalization: merge every
   /// class containing a node of an idempotent OpShape::Phi operator whose
@@ -1195,7 +1203,8 @@ struct SaturationStats {
   SmallVector<unsigned, 32> ContextFactApplications;
   /// Per analysis view or rule family: "facts" (the rules with a fact
   /// precondition), "known-constants" (classes whose bits are all known),
-  /// "linear", "slice", "tuples" (see SaturationLimits).
+  /// "linear", "slice", "tuples" (see SaturationLimits), and "ac" (the AC
+  /// canonical forms, see EGraph::canonicalizeAC).
   std::map<std::string, ViewStats> Views;
 };
 

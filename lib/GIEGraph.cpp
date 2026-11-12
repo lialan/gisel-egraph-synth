@@ -2819,11 +2819,15 @@ bool EGraph::flattenAC(EClassId Root, const ENode &N, bool StopAtMixed,
                        bool *UsedFlagged) const {
   // Flatten through the first unflagged node of the same operator in each
   // operand class (deterministic), never through a class on the current
-  // path. Flagged nodes are leaves unless UsedFlagged is given: flattening
-  // them drops their flags, which is only a refinement, so the caller is
-  // told whether that happened. With StopAtMixed, classes that also contain
-  // another kind of node (e.g. a G_MUL in a class of sums) stay leaves, so
-  // that patterns can match that other node.
+  // path. A class whose flattening has a leaf that is the class itself or
+  // that uses it as an operand (a cycle, e.g. x == (x + x) + (0 - x) or
+  // y == (y - x) + x after a merge) stays a leaf: that expansion does not
+  // simplify the term, and it would make every term that uses the class
+  // larger. Flagged nodes are leaves unless UsedFlagged is given:
+  // flattening them drops their flags, which is only a refinement, so the
+  // caller is told whether that happened. With StopAtMixed, classes that
+  // also contain another kind of node (e.g. a G_MUL in a class of sums) stay
+  // leaves, so that patterns can match that other node.
   Leaves.clear();
   if (UsedFlagged)
     *UsedFlagged = false;
@@ -2857,10 +2861,23 @@ bool EGraph::flattenAC(EClassId Root, const ENode &N, bool StopAtMixed,
       return;
     }
     Path.push_back(L);
+    size_t Start = Leaves.size();
     SmallVector<EClassId, 2> Ops(Inner->Ops.begin(), Inner->Ops.end());
     for (EClassId Op : Ops)
       Flatten(Op);
     Path.pop_back();
+    // Over the budget, Leaves holds a prefix of the flattening: a cycle in
+    // it still makes L a leaf.
+    auto UsesL = [&](EClassId X) {
+      return X == L || any_of(Classes[find(X)].Nodes, [&](const ENode &M) {
+               return any_of(M.Ops, [&](EClassId Op) { return find(Op) == L; });
+             });
+    };
+    if (any_of(ArrayRef<EClassId>(Leaves).drop_front(Start), UsesL)) {
+      Leaves.resize(Start);
+      Leaves.push_back(L);
+      TooBig = Leaves.size() > MaxLeaves;
+    }
   };
   for (EClassId Op : N.Ops)
     Flatten(Op);
@@ -2910,24 +2927,43 @@ void EGraph::getACViews(EClassId C, unsigned Opc, SmallVectorImpl<ACView> &Out,
   }
 }
 
-unsigned EGraph::canonicalizeAC(unsigned MaxLeaves, unsigned MaxNodes) {
+unsigned EGraph::canonicalizeAC(unsigned MaxLeaves, unsigned MaxNodes,
+                                ViewStats *Stats) {
   assert(!Dirty && "rebuild() the e-graph before canonicalizing");
+  ViewStats Ignored;
+  ViewStats &S = Stats ? *Stats : Ignored;
   unsigned Merges = 0;
   SmallVector<EClassId, 8> Leaves;
   for (EClassId Id : getClassIds()) {
     // Copy: adding nodes may reallocate the class vector.
     SmallVector<ENode, 2> Nodes = Classes[find(Id)].Nodes;
     for (const ENode &N : Nodes) {
-      if (NumNodes >= MaxNodes)
+      if (NumNodes >= MaxNodes) {
+        ++S.Budget;
         return Merges;
-      if (!N.isOperation() || N.Flags || !isACOperator(N.Opcode))
+      }
+      if (!N.isOperation() || !isACOperator(N.Opcode))
         continue;
+      // A flagged node is a leaf of the terms that use it.
+      if (N.Flags) {
+        ++S.Unsupported;
+        continue;
+      }
+      // More leaves than the budget: the term keeps its node-by-node form.
+      if (!flattenAC(Id, N, /*StopAtMixed=*/false, MaxLeaves, Leaves)) {
+        ++S.Budget;
+        continue;
+      }
       // Two leaves: the node is its own canonical form.
-      if (!flattenAC(Id, N, /*StopAtMixed=*/false, MaxLeaves, Leaves) ||
-          Leaves.size() < 3)
+      if (Leaves.size() < 3)
         continue;
+      ++S.Views;
+      unsigned Before = NumNodes;
       EClassId K = addACTerm(N.Opcode, N.Ty, Leaves);
-      Merges += merge(Id, K);
+      S.Candidates += NumNodes != Before;
+      bool Merged = merge(Id, K);
+      Merges += Merged;
+      S.Merges += Merged;
     }
   }
   return Merges;
@@ -4662,7 +4698,8 @@ SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
   G.rebuild();
   // Associativity and commutativity are not rules but a canonical form.
   auto CanonicalizeAC = [&] {
-    if (unsigned N = G.canonicalizeAC(Limits.MaxACLeaves, Limits.MaxNodes)) {
+    if (unsigned N = G.canonicalizeAC(Limits.MaxACLeaves, Limits.MaxNodes,
+                                      &Stats.Views["ac"])) {
       Stats.ACMerges += N;
       G.rebuild();
     }

@@ -396,3 +396,50 @@ the synthesizer's own SMT model before it is a rule.
 "no bit is one in both", found from x + 1 with the low bit of x known zero)
 and the rule of a sum with its carry from a corpus to a scratch build of
 llc and the lit tests of `test/SynthChain`.
+
+## AC views
+
+AC canonical forms and AC matching are described in
+`GIEGraphCombiner-Design.md` (AC terms). The terms are multisets of leaves;
+what happens to repeated leaves depends on the operator, and every rewrite
+that changes the number of reads of a leaf is a table rule with the usual
+classification:
+
+| Operator | Repeated leaf | Constants |
+|---|---|---|
+| `G_ADD` | kept (`a + a` stays two reads; `add-self` relates it to `a * 2`) | folded modulo `2^W` (`fold-add`) |
+| `G_XOR` | a pair cancels (`xor-self`): exact only for a leaf that is neither undef nor poison | folded |
+| `G_AND`, `G_OR` | deduplicated (`and-self`, `or-self`): exact only for a leaf that is not undef | masks folded |
+| `G_MUL` | kept | folded |
+
+Merges: after every rebuild `canonicalizeAC` flattens the terms again, so a
+term whose leaves became one class (`(a + b) + c` once `a == b`) gets the
+canonical form of its new multiset, and terms of the same multiset meet.
+
+Cycles: flattening goes through the first unflagged node of the operator in
+each operand class, except through a class on the current path, and except
+through a class whose flattening has a leaf that is the class itself or
+uses it as an operand. Such a cycle appears after a merge, e.g. `x + 0`
+merged with `x`, or `y` merged with `(y - x) + x`; expanding through it
+would not simplify the term and would make every term that uses the class
+larger. A flattening over the leaf budget keeps a prefix of its leaves, and
+a cycle in the prefix still makes the class a leaf.
+
+Several decompositions of one class (two AC nodes in one class) give several
+views for matching (one per node), each flattened consistently through the
+first node of every operand class; the leaves of two decompositions are
+never combined in one view. Nothing is deleted: an inner sum that another
+node uses stays available, and extraction counts it once.
+
+Budget: a flattening with more than `MaxACLeaves` leaves (8,
+`-gisel-egraph-max-ac-leaves`) is abandoned and the term keeps its
+node-by-node form; equalities that congruence finds (regrouped prefixes)
+are still found. Canonicalization stops adding nodes at `MaxNodes`.
+
+`SaturationStats::Views` `"ac"` counts, over all canonicalization passes of
+a saturation (several per iteration): the flattenings with three or more
+leaves (`Views`), the canonical forms that added nodes (`Candidates`), the
+merges (equal to `SaturationStats::ACMerges`), the flattenings abandoned at
+`MaxACLeaves` and the stops at `MaxNodes` (`Budget`), and the flagged AC
+nodes, which stay leaves (`Unsupported`). Flattenings that the matcher
+abandons (`getACViews`) are not counted.

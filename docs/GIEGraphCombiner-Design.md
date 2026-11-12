@@ -431,9 +431,10 @@ operator. Two pieces make the graph and the matcher work modulo AC:
   right, `((l0 op l1) op l2) op ...` (`addACTerm()`). Terms that are equal
   modulo AC therefore end up in the same class without any rule, and the
   canonical form of any multiset can be looked up (`lookupACTerm()`).
-  Flattening goes through the first unflagged node of each operand class.
-  Flagged nodes are leaves, because regrouping `add nsw` does not preserve
-  `nsw`.
+  Flattening goes through the first unflagged node of each operand class,
+  unless that would reach the class again (a cycle after a merge, see
+  "AC views" in `TargetAwareViews.md`). Flagged nodes are leaves, because
+  regrouping `add nsw` does not preserve `nsw`.
 * **AC matching.** A binary pattern of an AC operator, `(op P1 P2)`, matches
   a class against its *views* (`getACViews()`). Each AC node of the class
   gives up to four views: its operands; its full flattening; its flattening
