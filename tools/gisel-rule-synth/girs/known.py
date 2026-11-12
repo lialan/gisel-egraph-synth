@@ -83,7 +83,7 @@ def write(obj, path):
 def revision(rule):
     """Content used by the matcher/apply, not coverage or solver timing."""
     fields = ('source_json', 'replacement_json', 'vw', 'const_vars',
-              'needs_one_use', 'region', 'variant_of', 'target_cost_candidate')
+              'needs_one_use', 'lift', 'region', 'variant_of', 'target_cost_candidate')
     payload = {k: rule[k] for k in fields if k in rule}
     payload['disjuncts'] = [
         {k: d[k] for k in ('pred_json', 'width_maps')}
@@ -213,6 +213,12 @@ class Index:
         cv = tuple(sorted(i for i, old in enumerate(perm) if old in cv))
         key = synth.class_key(src, tgt, vw, cv)
         for r in self.by_key.get(key, ()):
+            # A scalar proof is a seed for a newly observed lane-wise
+            # vector rule; scalar-only emission does not cover that domain.
+            if getattr(inst, 'lifted', False):
+                from . import emit
+                if not emit.lifts(r):
+                    continue
             if r['needs_one_use'] and (not inst.interior_uses or
                                       any(n != 1 for n in inst.interior_uses)):
                 continue

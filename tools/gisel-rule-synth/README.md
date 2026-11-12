@@ -40,8 +40,9 @@ The repository is the starting point of a run:
   reuses this knowledge without rediscovering or re-proving it.
 * **B**, `targets/<Target>.json`, pins the selected rule content revisions
   and their emission order. A discovery run cannot remove, weaken, replace,
-  or reorder B. A broader guard or additional width schedule of the same
-  source/replacement family is a separate `_v<digest>` revision.
+  or reorder B. A broader guard, vector applicability or additional width
+  schedule of the same source/replacement family is a separate `_v<digest>`
+  revision.
 * **Delta** consists of verified rules or revisions absent from K. `mine`
   builds B plus Delta, disables Delta for the baseline measurement, and
   selects/ablates only Delta. Both sides run the same synth combiner and
@@ -50,7 +51,8 @@ The repository is the starting point of a run:
 The extraction stage runs after native combines and B, so it searches the
 remaining MIR. Before concrete SMT checks and generalization, a known-rule
 index skips an identical source/replacement pair only when its proved widths,
-constant requirements, guard, and one-use requirements cover the instance.
+constant requirements, vector applicability, guard, and one-use requirements
+cover the instance.
 It does not blacklist a source opcode, root, or rule family. Multi-output
 and sibling searches retain their single-root seeds, even if already known.
 

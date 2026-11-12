@@ -725,7 +725,8 @@ class Run:
 
         def ninja(log_name):
             with open(self.p(directory, log_name), 'w') as lf:
-                rc = subprocess.run(['ninja', '-C', c['build_dir'],
+                rc = subprocess.run(['ninja', '-j', str(c['jobs']),
+                                     '-C', c['build_dir'],
                                      paths.LLC_TARGET],
                                     stdout=lf, stderr=subprocess.STDOUT
                                     ).returncode

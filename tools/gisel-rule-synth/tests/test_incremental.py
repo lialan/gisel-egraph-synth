@@ -76,6 +76,28 @@ class KnowledgeTest(unittest.TestCase):
         i.facts = ((0, 0, True),)
         self.assertIsNotNone(idx.covers(i, ('var', 0)))
 
+    def test_scalar_knowledge_does_not_hide_a_new_vector_domain(self):
+        db = library()
+        rid = db['rules'][0]['id']
+        target = targets.get('AMDGPU')
+        profile = known.pin(db, {'rules': {rid: {'selection': 'emitted'}}}, target)
+        inst = instance()
+        inst.lifted = True
+        idx = known.Index(db)
+        self.assertIsNone(idx.covers(inst, ('var', 0)))
+        sy = synth.Synthesizer(smt.Z3Backend())
+        sy.known = idx
+        new = sy.add(inst, ('var', 0))
+        self.assertIsNotNone(new)
+        sy.finalize([inst])
+        rule = synth.strip_private(sy.rules[new])
+        self.assertTrue(emit.lifts(rule))
+        combined, delta = known.merge(db, [rule])
+        self.assertEqual(len(delta), 1)
+        self.assertNotEqual(delta[0], rid)
+        self.assertEqual(known.validate_profile(combined, profile, target), [rid])
+        self.assertIsNotNone(known.Index(combined).covers(inst, ('var', 0)))
+
     def test_one_use_and_region_not_pruned_as_plain_tree(self):
         db = library()
         db['rules'][0]['needs_one_use'] = True
@@ -213,6 +235,16 @@ class HistoryTest(unittest.TestCase):
             st['stop'] = 'complete'
             c.put(instance(), [], st, {})
             self.assertIsNotNone(c.get(instance()))
+
+    def test_scalar_checkpoint_cannot_exhaust_a_new_vector_instance(self):
+        with tempfile.TemporaryDirectory() as d:
+            cache = cli._DiscoveryCache(d, discover.Limits(), 1000)
+            stats = discover.new_stats()
+            stats['stop'] = 'complete'
+            cache.put(instance(), [], stats, {})
+            vector_inst = instance()
+            vector_inst.lifted = True
+            self.assertIsNone(cache.get(vector_inst))
 
 
 class PipelineTest(unittest.TestCase):

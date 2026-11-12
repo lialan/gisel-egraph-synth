@@ -418,6 +418,7 @@ class _DiscoveryCache:
 
     def _file(self, inst):
         h = hashlib.sha256(repr((self.ident, inst.key(), inst.vk,
+                                 getattr(inst, 'lifted', False),
                                  inst.interior_uses, inst.const_vars,
                                  inst.flags)).encode())
         return os.path.join(self.path, h.hexdigest()[:24] + '.json')
