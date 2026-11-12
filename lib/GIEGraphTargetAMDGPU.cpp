@@ -204,6 +204,7 @@ public:
       return ST.checkFeatures((Twine("+") + Feature).str());
     };
     HasGFX10Insts = Has("gfx10-insts");
+    HasRealTrue16 = Has("real-true16");
     // ThreeOpFrag: Subtarget->getConstantBusLimit(V_ADD3_U32_e64), which is
     // 1 before GFX10 and 2 from GFX10 on for these instructions.
     ConstantBusLimit = HasGFX10Insts ? 2 : 1;
@@ -227,6 +228,18 @@ public:
                          const CostVector &Default) const override;
   void findCovers(const EGraph &G, const CostDag &D,
                   SmallVectorImpl<PatternCover> &Covers) const override;
+  // After the legalizer, with true 16-bit registers (gfx11 and later), a
+  // new 16-bit scalar operation is not created: on permute_i8.ll
+  // (zext_store_div, gfx1100) a rewrite that truncated a shared 32-bit
+  // value into a lane of a <2 x i16> build was valid generic MIR, verified
+  // after the pass, but the registers of the 16-bit lanes were corrupted
+  // after register allocation ("Using an undefined physical register" in a
+  // V_PERM_B32). The instructions of the region itself stay allowed.
+  bool restrictsNewNode(const EGraph &G, const ENode &N) const override {
+    return IsLegalized && HasRealTrue16 && N.isOperation() &&
+           N.Ty.isValid() && !N.Ty.isVector() && N.Ty.getSizeInBits() == 16;
+  }
+
   void describe(raw_ostream &OS) const override;
 
 private:
@@ -239,6 +252,7 @@ private:
   bool IsLegalized, IsRegBankSelected;
   std::string CPU;
   bool HasGFX10Insts = false;
+  bool HasRealTrue16 = false;
   unsigned ConstantBusLimit = 1;
   bool VOP3Literal = false;
   bool Inv2PiInline = false;

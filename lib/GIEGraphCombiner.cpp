@@ -768,11 +768,17 @@ public:
     return true;
   }
 
+  /// Start a new region: the nodes of the previous region's e-graph are
+  /// gone.
+  void beginRegion() { OriginalNodes.clear(); }
+
   /// Record the operation \p N of the region; it is always allowed.
   void addOriginal(const EGraph &G, const ENode &N) {
     SmallVector<LLT, 4> Types;
     unsigned Opc = getQuery(G, N, Types);
     Original.insert(getKey(Opc, Types));
+    if (N.isOperation())
+      OriginalNodes.push_back(N);
   }
 
   bool isAllowed(const EGraph &G, const ENode &N) const override {
@@ -781,6 +787,12 @@ public:
       if (!P->hasResult() || P->Shape == OpShape::Phi)
         return true;
     }
+    // A node that the target cannot take at this position, unless it is an
+    // instruction of the region (TargetCosts::restrictsNewNode).
+    if (TC && N.isOperation() && TC->restrictsNewNode(G, N) &&
+        none_of(OriginalNodes,
+                [&](const ENode &O) { return G.canonicalize(O) == N; }))
+      return false;
     if (!LI)
       return true;
     // A constant is an instruction of its own after the legalizer only.
@@ -864,6 +876,9 @@ private:
   }
 
   std::set<std::vector<uint64_t>> Original;
+  /// The operations of the region (their operands are classes at the time
+  /// they were added).
+  std::vector<ENode> OriginalNodes;
 };
 
 class EGraphCombinerImpl {
@@ -880,9 +895,9 @@ public:
       CM.IdxTy = TLI->getVectorIdxLLT(MF.getDataLayout());
     CM.RequireLegal = IsLegalized;
     // The target model, if the target has one (AMDGPU only so far; on
-    // other targets the patterns and bank states are not used).
-    if (Features.Patterns || Features.Banks)
-      TC = createAMDGPUTargetCosts(MF, IsLegalized, IsRegBankSelected);
+    // other targets the patterns and bank states are not used). Its
+    // restrictions of new nodes apply with or without these features.
+    TC = createAMDGPUTargetCosts(MF, IsLegalized, IsRegBankSelected);
     CM.TC = TC.get();
     CM.Patterns = TC && Features.Patterns;
     CM.Banks = TC && Features.Banks && TC->hasUniformBank();
@@ -1063,6 +1078,7 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
 
   // 1. Translate the region into an e-graph.
   EGraph G;
+  CM.beginRegion();
   // The class of a register's value in this block and, for a register that
   // is defined in this block and used by a PHI of this block, the class of
   // its value in the previous iteration.

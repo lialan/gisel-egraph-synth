@@ -47,6 +47,13 @@ public:
                           SmallVectorImpl<PatternCover> &Covers) const = 0;
   /// What the model decides at this position of the pass, for the report.
   virtual void describe(raw_ostream &OS) const = 0;
+  /// True if the target cannot take a new node like \p N at this position
+  /// although the legalizer accepts it (the nodes of the original region
+  /// are always allowed). This is a correctness restriction, applied with
+  /// or without the cost features.
+  virtual bool restrictsNewNode(const EGraph &G, const ENode &N) const {
+    return false;
+  }
 };
 
 /// The model of AMDGPU (lib/GIEGraphTargetAMDGPU.cpp). \p IsLegalized is the
