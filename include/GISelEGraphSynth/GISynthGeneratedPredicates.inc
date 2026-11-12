@@ -775,6 +775,7 @@ inline bool guard_synth_or_2a6976e5(const MachineRegisterInfo &MRI, GISelValueTr
     "synth_shl_edbd16af_1u_c1",
     "synth_smax_d4d1ff0e_1u",
     "synth_smax_d4d1ff0e_1u_c1",
+    "synth_trunc_110bd23a_1u",
     "synth_or_ecb7e28d",
     "synth_or_ecb7e28d_c1",
     "synth_or_ecb7e28d_c2",

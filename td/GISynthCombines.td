@@ -955,7 +955,7 @@ def synth_or_2a6976e5_c3 : GICombineRule<
          (G_OR GITypeOf<"$x0">:$n0, $n1, $x0),
          (G_TRUNC $dst, $n0))>;
 
-// AArch64: 12 rules, 32 records.
+// AArch64: 13 rules, 33 records.
 def gi_synth_combines_aarch64 : GICombineGroup<[
   synth_xor_66308b8b, synth_xor_66308b8b_c1, synth_xor_66308b8b_c2,
   synth_xor_66308b8b_c3, synth_sub_c1235ab0_1u, synth_sub_c1235ab0_1u_c1,
@@ -963,11 +963,11 @@ def gi_synth_combines_aarch64 : GICombineGroup<[
   synth_and_83abd1ae_1u_c1, synth_lshr_c497647d, synth_select_4cdb868a,
   synth_select_4cdb868a_c1, synth_select_4f35dc63, synth_select_4f35dc63_c1,
   synth_shl_a7bba6d0_1u, synth_shl_edbd16af_1u, synth_shl_edbd16af_1u_c1,
-  synth_smax_d4d1ff0e_1u, synth_smax_d4d1ff0e_1u_c1, synth_or_ecb7e28d,
-  synth_or_ecb7e28d_c1, synth_or_ecb7e28d_c2, synth_or_ecb7e28d_c3,
-  synth_icmp_7274715e, synth_icmp_7274715e_c1, synth_icmp_7274715e_c2,
-  synth_icmp_7274715e_c3, synth_icmp_8f303343, synth_icmp_8f303343_c1,
-  synth_icmp_8f303343_c2, synth_icmp_8f303343_c3
+  synth_smax_d4d1ff0e_1u, synth_smax_d4d1ff0e_1u_c1, synth_trunc_110bd23a_1u,
+  synth_or_ecb7e28d, synth_or_ecb7e28d_c1, synth_or_ecb7e28d_c2,
+  synth_or_ecb7e28d_c3, synth_icmp_7274715e, synth_icmp_7274715e_c1,
+  synth_icmp_7274715e_c2, synth_icmp_7274715e_c3, synth_icmp_8f303343,
+  synth_icmp_8f303343_c1, synth_icmp_8f303343_c2, synth_icmp_8f303343_c3
 ]>;
 
 // AMDGPU: 26 rules, 77 records.

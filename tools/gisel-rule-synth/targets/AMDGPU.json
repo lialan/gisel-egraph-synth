@@ -56,7 +56,7 @@
    "synth_xor_70267483": "5615614608bcf4bc6c316e9ff6268b45335f4b920425a2751ee2a636feec879b",
    "synth_zext_a25c36b8_1u": "a7f434302b14c0d6aa30731a4cb3b37999807f8c2ba5981d876371bc679e91f4"
   },
-  "semantics_sha256": "0f303a1cc0479fb4ab10a29e7a2b0f80e13eeba1998753e8d3af46e39a4a1ad5"
+  "semantics_sha256": "bb46b0bc04bd9609c9c17a45437cd544c2ac082c213c7dae7348d413d0b0e3b3"
  },
  "combiner": "amdgpu-prelegalizer-combiner",
  "emitted_records": 77,
@@ -64,18 +64,18 @@
  "evidence": {
   "compare": "cand_train.json",
   "corpus_coverage": true,
-  "corpus_files": 1417,
+  "corpus_files": 1416,
   "keep_unmeasured": false,
   "leave_one_out": true,
   "measured": true,
   "no_regressions": false,
   "novelty_and_redundancy": true,
   "provenance": {
-   "generator_sha256": "1f94d3234b0b4bbd5920c9a34798eef961063dea332b34be301dc37fbaf540ec",
+   "generator_sha256": "0e407ddd24c51e9a6a9b946d6d33a4cfcacb094940b82513aa41e60a5971bb42",
    "generator_version": "2.1",
-   "llvm_commit": "1c50b07b188b0402fb364f4719d58060c37a04ee",
+   "llvm_commit": "05e61e1465473904db590a960a8b3c4a39e20cc4",
    "llvm_dirty": true,
-   "python": "3.10.12"
+   "python": "3.12.13"
   }
  },
  "format": "gi-rule-synth-target-v1",
@@ -90,6 +90,9 @@
   "covered_by_existing_combine: the existing combiner reaches the same result on every example, and no measured gain",
   "redundant_with_synthesized: other selected rules reach the same result on every example, and no measured gain",
   "not_fired: does not apply to its own example, and no measured gain",
+  "probe_error: the run of the rule alone on its example failed, so its novelty is not known; never counted as a new rule, and not selected without a measured gain",
+  "probe_loop: alone with the existing combines, the combiner does not end on the example of the rule; never selected",
+  "final_set_violation: with the selected set, a file does not compile, has other SelectionDAG fallbacks or has more instructions than without the rules, and the file is good again without this rule",
   "unobserved: its guard never passes on the target corpus (it was learned from seed inputs only), and no measured gain",
   "never_fires: applicable in the corpus but never fired when the corpus was compiled with every candidate (another rule gets there first)",
   "no_measured_gain: inside the selected set it removes no instruction from the final code and its guard queries known bits (cost without measured benefit); rules without a known-bits guard are kept, but not a rule that moves an operation to a wider type",
@@ -101,8 +104,8 @@
     "disjunct_occurrences": [
      2
     ],
-    "match_instances": 15,
-    "match_occurrences": 26,
+    "match_instances": 16,
+    "match_occurrences": 28,
     "pass_instances": 1,
     "pass_occurrences": 2
    },
@@ -127,9 +130,9 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 14,
+    "files_matched": 12,
     "fired": 0,
-    "matched": 32
+    "matched": 23
    },
    "pattern_nodes": 2,
    "records": 2,
@@ -140,8 +143,8 @@
     "disjunct_occurrences": [
      2
     ],
-    "match_instances": 15,
-    "match_occurrences": 26,
+    "match_instances": 16,
+    "match_occurrences": 28,
     "pass_instances": 1,
     "pass_occurrences": 2
    },
@@ -175,9 +178,9 @@
    },
    "online": {
     "files_fired": 2,
-    "files_matched": 12,
+    "files_matched": 11,
     "fired": 2,
-    "matched": 28
+    "matched": 21
    },
    "pattern_nodes": 2,
    "records": 2,
@@ -186,12 +189,12 @@
   "synth_add_2c1da8a7": {
    "corpus": {
     "disjunct_occurrences": [
-     5
+     6
     ],
-    "match_instances": 4,
-    "match_occurrences": 5,
-    "pass_instances": 4,
-    "pass_occurrences": 5
+    "match_instances": 5,
+    "match_occurrences": 6,
+    "pass_instances": 5,
+    "pass_occurrences": 6
    },
    "guard_cost": 0,
    "in_set": {
@@ -225,7 +228,7 @@
     "files_fired": 5,
     "files_matched": 7,
     "fired": 11,
-    "matched": 14
+    "matched": 13
    },
    "pattern_nodes": 3,
    "records": 1,
@@ -234,12 +237,12 @@
   "synth_add_3046d7af": {
    "corpus": {
     "disjunct_occurrences": [
-     7
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 7,
-    "pass_instances": 1,
-    "pass_occurrences": 7
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -273,12 +276,12 @@
   "synth_add_44397536": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 1,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -307,17 +310,17 @@
    },
    "pattern_nodes": 3,
    "records": 4,
-   "selection": "never_fires"
+   "selection": "unobserved"
   },
   "synth_add_44397536_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 1,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -346,17 +349,17 @@
    },
    "pattern_nodes": 3,
    "records": 4,
-   "selection": "never_fires"
+   "selection": "unobserved"
   },
   "synth_and_205dce25": {
    "corpus": {
     "disjunct_occurrences": [
-     3
+     2
     ],
-    "match_instances": 19,
-    "match_occurrences": 27,
-    "pass_instances": 2,
-    "pass_occurrences": 3
+    "match_instances": 16,
+    "match_occurrences": 24,
+    "pass_instances": 1,
+    "pass_occurrences": 2
    },
    "guard_cost": 9,
    "marginal": {
@@ -379,9 +382,9 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 17,
+    "files_matched": 10,
     "fired": 0,
-    "matched": 122
+    "matched": 58
    },
    "pattern_nodes": 2,
    "records": 4,
@@ -390,12 +393,12 @@
   "synth_and_205dce25_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     3
+     2
     ],
-    "match_instances": 19,
-    "match_occurrences": 27,
-    "pass_instances": 2,
-    "pass_occurrences": 3
+    "match_instances": 16,
+    "match_occurrences": 24,
+    "pass_instances": 1,
+    "pass_occurrences": 2
    },
    "guard_cost": 9,
    "marginal": {
@@ -418,9 +421,9 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 17,
+    "files_matched": 10,
     "fired": 0,
-    "matched": 116
+    "matched": 58
    },
    "pattern_nodes": 2,
    "records": 4,
@@ -429,12 +432,12 @@
   "synth_and_25938e4b": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 6,
-    "match_occurrences": 7,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 5,
+    "match_occurrences": 6,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 9,
    "marginal": {
@@ -459,21 +462,21 @@
     "files_fired": 0,
     "files_matched": 6,
     "fired": 0,
-    "matched": 15
+    "matched": 10
    },
    "pattern_nodes": 2,
    "records": 2,
-   "selection": "never_fires"
+   "selection": "unobserved"
   },
   "synth_and_27a6e3f2": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 19,
-    "match_occurrences": 27,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 16,
+    "match_occurrences": 24,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 9,
    "marginal": {
@@ -495,10 +498,10 @@
     ]
    },
    "online": {
-    "files_fired": 1,
-    "files_matched": 17,
-    "fired": 1,
-    "matched": 123
+    "files_fired": 0,
+    "files_matched": 10,
+    "fired": 0,
+    "matched": 58
    },
    "pattern_nodes": 2,
    "records": 4,
@@ -507,29 +510,29 @@
   "synth_and_5466e589": {
    "corpus": {
     "disjunct_occurrences": [
-     4
+     2
     ],
     "match_instances": 2,
-    "match_occurrences": 4,
+    "match_occurrences": 2,
     "pass_instances": 2,
-    "pass_occurrences": 4
+    "pass_occurrences": 2
    },
    "guard_cost": 9,
    "in_set": {
     "better": 1,
     "evidence": [
-     "bitop3-shared-operand.ll: -1"
+     "bitop3-shared-operand.ll: -2"
     ],
-    "fired": 1,
-    "insns": -1,
+    "fired": 2,
+    "insns": -2,
     "worse": 0
    },
    "marginal": {
     "better": 1,
     "evidence": [
-     "bitop3-shared-operand.ll: -1"
+     "bitop3-shared-operand.ll: -2"
     ],
-    "insns": -1,
+    "insns": -2,
     "worse": 0
    },
    "novelty": {
@@ -547,11 +550,11 @@
    "online": {
     "files_fired": 1,
     "files_matched": 1,
-    "fired": 1,
-    "matched": 1
+    "fired": 2,
+    "matched": 2
    },
    "pattern_nodes": 3,
-   "rank": 19,
+   "rank": 9,
    "records": 8,
    "selection": "emitted"
   },
@@ -586,9 +589,9 @@
    },
    "online": {
     "files_fired": 3,
-    "files_matched": 16,
+    "files_matched": 15,
     "fired": 18,
-    "matched": 162
+    "matched": 158
    },
    "pattern_nodes": 2,
    "records": 4,
@@ -632,9 +635,9 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 15,
+    "files_matched": 14,
     "fired": 0,
-    "matched": 104
+    "matched": 100
    },
    "pattern_nodes": 2,
    "records": 4,
@@ -643,12 +646,12 @@
   "synth_and_643d7d3e": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 1,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 10,
    "marginal": {
@@ -712,7 +715,7 @@
     "files_fired": 0,
     "files_matched": 8,
     "fired": 0,
-    "matched": 38
+    "matched": 35
    },
    "pattern_nodes": 2,
    "records": 2,
@@ -758,7 +761,7 @@
     "files_fired": 1,
     "files_matched": 5,
     "fired": 2,
-    "matched": 20
+    "matched": 17
    },
    "pattern_nodes": 2,
    "records": 2,
@@ -769,8 +772,8 @@
     "disjunct_occurrences": [
      1
     ],
-    "match_instances": 21,
-    "match_occurrences": 71,
+    "match_instances": 22,
+    "match_occurrences": 95,
     "pass_instances": 1,
     "pass_occurrences": 1
    },
@@ -797,7 +800,7 @@
     "files_fired": 0,
     "files_matched": 24,
     "fired": 0,
-    "matched": 464
+    "matched": 432
    },
    "pattern_nodes": 2,
    "records": 4,
@@ -808,8 +811,8 @@
     "disjunct_occurrences": [
      1
     ],
-    "match_instances": 21,
-    "match_occurrences": 71,
+    "match_instances": 22,
+    "match_occurrences": 95,
     "pass_instances": 1,
     "pass_occurrences": 1
    },
@@ -836,7 +839,7 @@
     "files_fired": 0,
     "files_matched": 24,
     "fired": 0,
-    "matched": 416
+    "matched": 388
    },
    "pattern_nodes": 2,
    "records": 4,
@@ -845,12 +848,12 @@
   "synth_and_90819c65": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 131,
-    "match_occurrences": 927,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 148,
+    "match_occurrences": 1034,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 9,
    "marginal": {
@@ -872,10 +875,10 @@
     ]
    },
    "online": {
-    "files_fired": 15,
-    "files_matched": 158,
-    "fired": 37,
-    "matched": 1869
+    "files_fired": 0,
+    "files_matched": 142,
+    "fired": 0,
+    "matched": 1219
    },
    "pattern_nodes": 1,
    "records": 1,
@@ -923,12 +926,12 @@
   "synth_and_b1e9087f": {
    "corpus": {
     "disjunct_occurrences": [
-     2
+     1
     ],
     "match_instances": 3,
-    "match_occurrences": 5,
+    "match_occurrences": 4,
     "pass_instances": 1,
-    "pass_occurrences": 2
+    "pass_occurrences": 1
    },
    "guard_cost": 6,
    "marginal": {
@@ -962,12 +965,12 @@
   "synth_and_b1e9087f_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     2
+     1
     ],
     "match_instances": 3,
-    "match_occurrences": 5,
+    "match_occurrences": 4,
     "pass_instances": 1,
-    "pass_occurrences": 2
+    "pass_occurrences": 1
    },
    "guard_cost": 6,
    "in_set": {
@@ -1041,7 +1044,7 @@
     "files_fired": 0,
     "files_matched": 8,
     "fired": 0,
-    "matched": 38
+    "matched": 35
    },
    "pattern_nodes": 2,
    "records": 2,
@@ -1089,7 +1092,7 @@
     "files_fired": 1,
     "files_matched": 5,
     "fired": 1,
-    "matched": 18
+    "matched": 15
    },
    "pattern_nodes": 2,
    "rank": 13,
@@ -1099,12 +1102,12 @@
   "synth_and_dd9a6636": {
    "corpus": {
     "disjunct_occurrences": [
-     8
+     0
     ],
-    "match_instances": 2,
-    "match_occurrences": 8,
-    "pass_instances": 2,
-    "pass_occurrences": 8
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 5,
    "in_set": {
@@ -1150,12 +1153,12 @@
   "synth_and_f10a015d": {
    "corpus": {
     "disjunct_occurrences": [
-     3
+     0
     ],
-    "match_instances": 131,
-    "match_occurrences": 927,
-    "pass_instances": 3,
-    "pass_occurrences": 3
+    "match_instances": 148,
+    "match_occurrences": 1034,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 9,
    "marginal": {
@@ -1177,10 +1180,10 @@
     ]
    },
    "online": {
-    "files_fired": 29,
-    "files_matched": 158,
-    "fired": 74,
-    "matched": 3314
+    "files_fired": 1,
+    "files_matched": 142,
+    "fired": 1,
+    "matched": 2283
    },
    "pattern_nodes": 1,
    "records": 2,
@@ -1189,12 +1192,12 @@
   "synth_and_f3cdf3e0": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 1,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -1223,17 +1226,17 @@
    },
    "pattern_nodes": 2,
    "records": 4,
-   "selection": "never_fires"
+   "selection": "unobserved"
   },
   "synth_ashr_13a718e0": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 1,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 9,
    "marginal": {
@@ -1267,12 +1270,12 @@
   "synth_ashr_d319ee19": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 47,
-    "match_occurrences": 196,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 50,
+    "match_occurrences": 252,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 9,
    "marginal": {
@@ -1294,10 +1297,10 @@
     ]
    },
    "online": {
-    "files_fired": 1,
-    "files_matched": 37,
-    "fired": 2,
-    "matched": 529
+    "files_fired": 0,
+    "files_matched": 30,
+    "fired": 0,
+    "matched": 314
    },
    "pattern_nodes": 1,
    "records": 1,
@@ -1306,12 +1309,12 @@
   "synth_icmp_482ffe70": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     1
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
    },
    "guard_cost": 9,
    "marginal": {
@@ -1321,8 +1324,16 @@
     "worse": 0
    },
    "novelty": {
-    "class": "error",
-    "error": "llc failed:\nerror: <stdin>:12:22: expected a machine operand\n    %5:_(s1) = G_ICMP:ne %4, %2\n                     ^\n\n"
+    "class": "new",
+    "examples": [
+     {
+      "alone": 3,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_icmp_482ffe70_d0",
+      "source": 4
+     }
+    ]
    },
    "online": {
     "files_fired": 0,
@@ -1337,12 +1348,12 @@
   "synth_icmp_482ffe70_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     1
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
    },
    "guard_cost": 9,
    "in_set": {
@@ -1361,8 +1372,16 @@
     "worse": 0
    },
    "novelty": {
-    "class": "error",
-    "error": "llc failed:\nerror: <stdin>:12:22: expected a machine operand\n    %5:_(s1) = G_ICMP:ne %4, %2\n                     ^\n\n"
+    "class": "new",
+    "examples": [
+     {
+      "alone": 3,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_icmp_482ffe70_1u_d0",
+      "source": 4
+     }
+    ]
    },
    "online": {
     "files_fired": 1,
@@ -1393,8 +1412,16 @@
     "worse": 0
    },
    "novelty": {
-    "class": "error",
-    "error": "llc failed:\nerror: <stdin>:16:22: expected a machine operand\n    %9:_(s1) = G_ICMP:sge %8, %4\n                     ^\n\n"
+    "class": "new",
+    "examples": [
+     {
+      "alone": 6,
+      "class": "new",
+      "existing": 7,
+      "fn": "synth_icmp_69a3f895_d0",
+      "source": 7
+     }
+    ]
    },
    "online": {
     "files_fired": 0,
@@ -1404,7 +1431,7 @@
    },
    "pattern_nodes": 5,
    "records": 8,
-   "selection": "not_fired"
+   "selection": "redundant_with_synthesized"
   },
   "synth_icmp_7274715e": {
    "corpus": {
@@ -1426,8 +1453,16 @@
     "worse": 1
    },
    "novelty": {
-    "class": "error",
-    "error": "llc failed:\nerror: <stdin>:17:23: expected a machine operand\n    %10:_(s1) = G_ICMP:eq %9, %7\n                      ^\n\n"
+    "class": "new",
+    "examples": [
+     {
+      "alone": 6,
+      "class": "new",
+      "existing": 7,
+      "fn": "synth_icmp_7274715e_d0",
+      "source": 7
+     }
+    ]
    },
    "online": {
     "files_fired": 1,
@@ -1459,8 +1494,16 @@
     "worse": 1
    },
    "novelty": {
-    "class": "error",
-    "error": "llc failed:\nerror: <stdin>:17:23: expected a machine operand\n    %10:_(s1) = G_ICMP:ne %9, %7\n                      ^\n\n"
+    "class": "new",
+    "examples": [
+     {
+      "alone": 6,
+      "class": "new",
+      "existing": 7,
+      "fn": "synth_icmp_8f303343_d0",
+      "source": 7
+     }
+    ]
    },
    "online": {
     "files_fired": 1,
@@ -1475,12 +1518,12 @@
   "synth_icmp_df1ee794": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     1
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
    },
    "guard_cost": 9,
    "marginal": {
@@ -1506,12 +1549,12 @@
   "synth_icmp_df1ee794_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     1
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
    },
    "guard_cost": 9,
    "in_set": {
@@ -1547,12 +1590,12 @@
   "synth_icmp_fa5e7560": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     4
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 1,
+    "match_occurrences": 4,
+    "pass_instances": 1,
+    "pass_occurrences": 4
    },
    "guard_cost": 5,
    "marginal": {
@@ -1562,8 +1605,16 @@
     "worse": 0
    },
    "novelty": {
-    "class": "error",
-    "error": "llc failed:\nerror: <stdin>:13:22: expected a machine operand\n    %6:_(s1) = G_ICMP:ne %5, %4\n                     ^\n\n"
+    "class": "new",
+    "examples": [
+     {
+      "alone": 3,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_icmp_fa5e7560_d0",
+      "source": 4
+     }
+    ]
    },
    "online": {
     "files_fired": 0,
@@ -1578,12 +1629,12 @@
   "synth_icmp_fa5e7560_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     4
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 1,
+    "match_occurrences": 4,
+    "pass_instances": 1,
+    "pass_occurrences": 4
    },
    "guard_cost": 5,
    "in_set": {
@@ -1602,8 +1653,16 @@
     "worse": 0
    },
    "novelty": {
-    "class": "error",
-    "error": "llc failed:\nerror: <stdin>:13:22: expected a machine operand\n    %6:_(s1) = G_ICMP:ne %5, %4\n                     ^\n\n"
+    "class": "new",
+    "examples": [
+     {
+      "alone": 3,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_icmp_fa5e7560_1u_d0",
+      "source": 4
+     }
+    ]
    },
    "online": {
     "files_fired": 2,
@@ -1619,12 +1678,12 @@
   "synth_lshr_105c0608": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 2,
-    "match_occurrences": 2,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 9,
    "marginal": {
@@ -1658,12 +1717,12 @@
   "synth_lshr_309050a0": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 67,
-    "match_occurrences": 641,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 68,
+    "match_occurrences": 678,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 9,
    "marginal": {
@@ -1686,9 +1745,9 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 118,
+    "files_matched": 100,
     "fired": 0,
-    "matched": 1105
+    "matched": 799
    },
    "pattern_nodes": 1,
    "records": 1,
@@ -1736,12 +1795,12 @@
    },
    "online": {
     "files_fired": 1,
-    "files_matched": 7,
+    "files_matched": 6,
     "fired": 2,
-    "matched": 20
+    "matched": 16
    },
    "pattern_nodes": 2,
-   "rank": 18,
+   "rank": 17,
    "records": 1,
    "selection": "emitted"
   },
@@ -1787,12 +1846,12 @@
   "synth_lshr_f9d26973": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 3,
-    "match_occurrences": 10,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 1,
+    "match_occurrences": 4,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 9,
    "marginal": {
@@ -1802,11 +1861,11 @@
     "worse": 0
    },
    "novelty": {
-    "class": "new",
+    "class": "covered",
     "examples": [
      {
-      "alone": 1,
-      "class": "new",
+      "alone": 2,
+      "class": "covered",
       "existing": 2,
       "fn": "synth_lshr_f9d26973_d0",
       "source": 3
@@ -1815,23 +1874,23 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 3,
+    "files_matched": 1,
     "fired": 0,
-    "matched": 34
+    "matched": 4
    },
    "pattern_nodes": 2,
    "records": 1,
-   "selection": "redundant_with_synthesized"
+   "selection": "covered_by_existing_combine"
   },
   "synth_mul_8b175515": {
    "corpus": {
     "disjunct_occurrences": [
-     31
+     32
     ],
-    "match_instances": 8,
-    "match_occurrences": 31,
-    "pass_instances": 8,
-    "pass_occurrences": 31
+    "match_instances": 9,
+    "match_occurrences": 32,
+    "pass_instances": 9,
+    "pass_occurrences": 32
    },
    "guard_cost": 0,
    "in_set": {
@@ -1874,12 +1933,12 @@
   "synth_or_155b7f74": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 1,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -1913,12 +1972,12 @@
   "synth_or_2a6976e5": {
    "corpus": {
     "disjunct_occurrences": [
-     8
+     0
     ],
-    "match_instances": 2,
-    "match_occurrences": 8,
-    "pass_instances": 2,
-    "pass_occurrences": 8
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 5,
    "in_set": {
@@ -2003,12 +2062,12 @@
   "synth_or_5bffc4a7": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 136,
-    "match_occurrences": 751,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 145,
+    "match_occurrences": 839,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 9,
    "marginal": {
@@ -2030,10 +2089,10 @@
     ]
    },
    "online": {
-    "files_fired": 9,
-    "files_matched": 131,
-    "fired": 14,
-    "matched": 2110
+    "files_fired": 1,
+    "files_matched": 124,
+    "fired": 1,
+    "matched": 1796
    },
    "pattern_nodes": 1,
    "records": 2,
@@ -2083,8 +2142,8 @@
     "disjunct_occurrences": [
      2
     ],
-    "match_instances": 40,
-    "match_occurrences": 206,
+    "match_instances": 44,
+    "match_occurrences": 218,
     "pass_instances": 1,
     "pass_occurrences": 2
    },
@@ -2109,9 +2168,9 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 25,
+    "files_matched": 24,
     "fired": 0,
-    "matched": 452
+    "matched": 428
    },
    "pattern_nodes": 2,
    "records": 4,
@@ -2122,8 +2181,8 @@
     "disjunct_occurrences": [
      2
     ],
-    "match_instances": 40,
-    "match_occurrences": 206,
+    "match_instances": 44,
+    "match_occurrences": 218,
     "pass_instances": 1,
     "pass_occurrences": 2
    },
@@ -2148,9 +2207,9 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 24,
+    "files_matched": 23,
     "fired": 0,
-    "matched": 442
+    "matched": 420
    },
    "pattern_nodes": 2,
    "records": 4,
@@ -2159,19 +2218,21 @@
   "synth_or_9c2e7958": {
    "corpus": {
     "disjunct_occurrences": [
-     4
+     1
     ],
-    "match_instances": 2,
-    "match_occurrences": 4,
-    "pass_instances": 2,
-    "pass_occurrences": 4
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
    },
    "guard_cost": 0,
    "in_set": {
-    "better": 0,
-    "evidence": [],
-    "fired": 3,
-    "insns": 0,
+    "better": 1,
+    "evidence": [
+     "bitop3-shared-operand.ll: -1"
+    ],
+    "fired": 2,
+    "insns": -1,
     "worse": 0
    },
    "marginal": {
@@ -2201,19 +2262,19 @@
     "matched": 1
    },
    "pattern_nodes": 2,
-   "rank": 26,
+   "rank": 18,
    "records": 4,
    "selection": "emitted"
   },
   "synth_or_9c2e7958_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     4
+     1
     ],
-    "match_instances": 2,
-    "match_occurrences": 4,
-    "pass_instances": 2,
-    "pass_occurrences": 4
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
    },
    "guard_cost": 0,
    "marginal": {
@@ -2235,10 +2296,10 @@
     ]
    },
    "online": {
-    "files_fired": 2,
-    "files_matched": 2,
-    "fired": 2,
-    "matched": 2
+    "files_fired": 1,
+    "files_matched": 1,
+    "fired": 1,
+    "matched": 1
    },
    "pattern_nodes": 2,
    "records": 4,
@@ -2247,12 +2308,12 @@
   "synth_or_d4ad0f19": {
    "corpus": {
     "disjunct_occurrences": [
-     2
+     1
     ],
     "match_instances": 1,
-    "match_occurrences": 2,
+    "match_occurrences": 1,
     "pass_instances": 1,
-    "pass_occurrences": 2
+    "pass_occurrences": 1
    },
    "guard_cost": 9,
    "marginal": {
@@ -2286,12 +2347,12 @@
   "synth_or_d4ad0f19_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     2
+     1
     ],
     "match_instances": 1,
-    "match_occurrences": 2,
+    "match_occurrences": 1,
     "pass_instances": 1,
-    "pass_occurrences": 2
+    "pass_occurrences": 1
    },
    "guard_cost": 9,
    "in_set": {
@@ -2335,12 +2396,12 @@
   "synth_or_d54b7fbe": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 1,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "in_set": {
@@ -2386,12 +2447,12 @@
   "synth_or_d7cb9f3c": {
    "corpus": {
     "disjunct_occurrences": [
-     2
+     1
     ],
     "match_instances": 1,
-    "match_occurrences": 2,
+    "match_occurrences": 1,
     "pass_instances": 1,
-    "pass_occurrences": 2
+    "pass_occurrences": 1
    },
    "guard_cost": 14,
    "marginal": {
@@ -2425,12 +2486,12 @@
   "synth_or_d7cb9f3c_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     2
+     1
     ],
     "match_instances": 1,
-    "match_occurrences": 2,
+    "match_occurrences": 1,
     "pass_instances": 1,
-    "pass_occurrences": 2
+    "pass_occurrences": 1
    },
    "guard_cost": 14,
    "in_set": {
@@ -2485,7 +2546,7 @@
    "in_set": {
     "better": 0,
     "evidence": [],
-    "fired": 3,
+    "fired": 1,
     "insns": 0,
     "worse": 0
    },
@@ -2508,42 +2569,42 @@
     ]
    },
    "online": {
-    "files_fired": 2,
-    "files_matched": 2,
-    "fired": 3,
-    "matched": 3
+    "files_fired": 1,
+    "files_matched": 1,
+    "fired": 1,
+    "matched": 1
    },
    "pattern_nodes": 3,
-   "rank": 24,
+   "rank": 25,
    "records": 4,
    "selection": "emitted"
   },
   "synth_select_0c7a2693": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     1
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
    },
    "guard_cost": 0,
    "in_set": {
     "better": 1,
     "evidence": [
-     "integer-select-src-modifiers.ll: -2"
+     "integer-select-src-modifiers.ll: -1"
     ],
-    "fired": 2,
-    "insns": -2,
+    "fired": 1,
+    "insns": -1,
     "worse": 0
    },
    "marginal": {
     "better": 1,
     "evidence": [
-     "integer-select-src-modifiers.ll: -2"
+     "integer-select-src-modifiers.ll: -1"
     ],
-    "insns": -2,
+    "insns": -1,
     "worse": 0
    },
    "novelty": {
@@ -2561,11 +2622,11 @@
    "online": {
     "files_fired": 1,
     "files_matched": 1,
-    "fired": 2,
-    "matched": 2
+    "fired": 1,
+    "matched": 1
    },
    "pattern_nodes": 3,
-   "rank": 9,
+   "rank": 19,
    "records": 4,
    "selection": "emitted"
   },
@@ -2587,8 +2648,16 @@
     "worse": 0
    },
    "novelty": {
-    "class": "error",
-    "error": "llc failed:\nerror: <stdin>:14:22: expected a machine operand\n    %7:_(s1) = G_ICMP:ne %6, %2\n                     ^\n\n"
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_select_244758a1_d0",
+      "source": 4
+     }
+    ]
    },
    "online": {
     "files_fired": 0,
@@ -2598,7 +2667,7 @@
    },
    "pattern_nodes": 3,
    "records": 1,
-   "selection": "not_fired"
+   "selection": "redundant_with_synthesized"
   },
   "synth_select_244758a1_1u": {
    "corpus": {
@@ -2618,8 +2687,16 @@
     "worse": 0
    },
    "novelty": {
-    "class": "error",
-    "error": "llc failed:\nerror: <stdin>:14:22: expected a machine operand\n    %7:_(s1) = G_ICMP:ne %6, %2\n                     ^\n\n"
+    "class": "new",
+    "examples": [
+     {
+      "alone": 2,
+      "class": "new",
+      "existing": 4,
+      "fn": "synth_select_244758a1_1u_d0",
+      "source": 4
+     }
+    ]
    },
    "online": {
     "files_fired": 0,
@@ -2629,7 +2706,7 @@
    },
    "pattern_nodes": 3,
    "records": 1,
-   "selection": "not_fired"
+   "selection": "redundant_with_synthesized"
   },
   "synth_select_279ec1f1": {
    "corpus": {
@@ -2712,12 +2789,12 @@
   "synth_select_4cdb868a": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     8
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 2,
+    "match_occurrences": 8,
+    "pass_instances": 2,
+    "pass_occurrences": 8
    },
    "guard_cost": 0,
    "marginal": {
@@ -2727,14 +2804,22 @@
     "worse": 0
    },
    "novelty": {
-    "class": "error",
-    "error": "llc failed:\nerror: <stdin>:9:22: expected a machine operand\n    %2:_(s1) = G_ICMP:sgt %0, %1\n                     ^\n\n"
+    "class": "covered",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "covered",
+      "existing": 1,
+      "fn": "synth_select_4cdb868a_d0",
+      "source": 2
+     }
+    ]
    },
    "online": {
     "files_fired": 1,
-    "files_matched": 5,
+    "files_matched": 2,
     "fired": 3,
-    "matched": 27
+    "matched": 8
    },
    "pattern_nodes": 2,
    "records": 2,
@@ -2743,18 +2828,18 @@
   "synth_select_4cdb868a_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     8
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 2,
+    "match_occurrences": 8,
+    "pass_instances": 2,
+    "pass_occurrences": 8
    },
    "guard_cost": 0,
    "in_set": {
     "better": 0,
     "evidence": [],
-    "fired": 45,
+    "fired": 0,
     "insns": 0,
     "worse": 0
    },
@@ -2765,17 +2850,25 @@
     "worse": 0
    },
    "novelty": {
-    "class": "error",
-    "error": "llc failed:\nerror: <stdin>:9:22: expected a machine operand\n    %2:_(s1) = G_ICMP:sgt %0, %1\n                     ^\n\n"
+    "class": "covered",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "covered",
+      "existing": 1,
+      "fn": "synth_select_4cdb868a_1u_d0",
+      "source": 2
+     }
+    ]
    },
    "online": {
-    "files_fired": 10,
-    "files_matched": 12,
-    "fired": 45,
-    "matched": 64
+    "files_fired": 0,
+    "files_matched": 0,
+    "fired": 0,
+    "matched": 0
    },
    "pattern_nodes": 2,
-   "rank": 21,
+   "rank": 26,
    "records": 2,
    "selection": "emitted"
   },
@@ -2844,12 +2937,12 @@
   "synth_select_4f35dc63": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     8
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 2,
+    "match_occurrences": 8,
+    "pass_instances": 2,
+    "pass_occurrences": 8
    },
    "guard_cost": 0,
    "marginal": {
@@ -2859,14 +2952,22 @@
     "worse": 0
    },
    "novelty": {
-    "class": "error",
-    "error": "llc failed:\nerror: <stdin>:9:22: expected a machine operand\n    %2:_(s1) = G_ICMP:sgt %0, %1\n                     ^\n\n"
+    "class": "covered",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "covered",
+      "existing": 1,
+      "fn": "synth_select_4f35dc63_d0",
+      "source": 2
+     }
+    ]
    },
    "online": {
     "files_fired": 1,
-    "files_matched": 6,
+    "files_matched": 2,
     "fired": 1,
-    "matched": 18
+    "matched": 6
    },
    "pattern_nodes": 2,
    "records": 2,
@@ -2875,21 +2976,19 @@
   "synth_select_4f35dc63_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     8
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 2,
+    "match_occurrences": 8,
+    "pass_instances": 2,
+    "pass_occurrences": 8
    },
    "guard_cost": 0,
    "in_set": {
-    "better": 1,
-    "evidence": [
-     "min3.ll: -1"
-    ],
-    "fired": 41,
-    "insns": -1,
+    "better": 0,
+    "evidence": [],
+    "fired": 0,
+    "insns": 0,
     "worse": 0
    },
    "marginal": {
@@ -2899,29 +2998,37 @@
     "worse": 0
    },
    "novelty": {
-    "class": "error",
-    "error": "llc failed:\nerror: <stdin>:9:22: expected a machine operand\n    %2:_(s1) = G_ICMP:sgt %0, %1\n                     ^\n\n"
+    "class": "covered",
+    "examples": [
+     {
+      "alone": 1,
+      "class": "covered",
+      "existing": 1,
+      "fn": "synth_select_4f35dc63_1u_d0",
+      "source": 2
+     }
+    ]
    },
    "online": {
-    "files_fired": 7,
-    "files_matched": 8,
-    "fired": 43,
-    "matched": 55
+    "files_fired": 1,
+    "files_matched": 1,
+    "fired": 2,
+    "matched": 2
    },
    "pattern_nodes": 2,
-   "rank": 17,
+   "rank": 24,
    "records": 2,
    "selection": "emitted"
   },
   "synth_sext_1f6741a2": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 1,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -2955,12 +3062,12 @@
   "synth_sext_44d18594": {
    "corpus": {
     "disjunct_occurrences": [
-     13
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 13,
-    "pass_instances": 1,
-    "pass_occurrences": 13
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -2994,12 +3101,12 @@
   "synth_sext_44d18594_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     13
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 13,
-    "pass_instances": 1,
-    "pass_occurrences": 13
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -3035,8 +3142,8 @@
     "disjunct_occurrences": [
      4
     ],
-    "match_instances": 2,
-    "match_occurrences": 5,
+    "match_instances": 1,
+    "match_occurrences": 4,
     "pass_instances": 1,
     "pass_occurrences": 4
    },
@@ -3061,9 +3168,9 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 7,
+    "files_matched": 6,
     "fired": 0,
-    "matched": 13
+    "matched": 8
    },
    "pattern_nodes": 2,
    "records": 1,
@@ -3074,8 +3181,8 @@
     "disjunct_occurrences": [
      4
     ],
-    "match_instances": 2,
-    "match_occurrences": 5,
+    "match_instances": 1,
+    "match_occurrences": 4,
     "pass_instances": 1,
     "pass_occurrences": 4
    },
@@ -3107,9 +3214,9 @@
    },
    "online": {
     "files_fired": 3,
-    "files_matched": 22,
+    "files_matched": 12,
     "fired": 4,
-    "matched": 66
+    "matched": 27
    },
    "pattern_nodes": 2,
    "records": 1,
@@ -3118,12 +3225,12 @@
   "synth_sext_c77f3965": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 2,
-    "match_occurrences": 5,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 1,
+    "match_occurrences": 4,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -3146,9 +3253,9 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 7,
+    "files_matched": 6,
     "fired": 0,
-    "matched": 13
+    "matched": 8
    },
    "pattern_nodes": 2,
    "records": 1,
@@ -3157,18 +3264,18 @@
   "synth_sext_c77f3965_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 2,
-    "match_occurrences": 5,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 1,
+    "match_occurrences": 4,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "in_set": {
     "better": 0,
     "evidence": [],
-    "fired": 21,
+    "fired": 13,
     "insns": 0,
     "worse": 0
    },
@@ -3191,10 +3298,10 @@
     ]
    },
    "online": {
-    "files_fired": 7,
-    "files_matched": 21,
-    "fired": 22,
-    "matched": 62
+    "files_fired": 3,
+    "files_matched": 10,
+    "fired": 14,
+    "matched": 23
    },
    "pattern_nodes": 2,
    "records": 1,
@@ -3232,8 +3339,8 @@
    "online": {
     "files_fired": 1,
     "files_matched": 2,
-    "fired": 2,
-    "matched": 4
+    "fired": 1,
+    "matched": 3
    },
    "pattern_nodes": 2,
    "records": 1,
@@ -3282,19 +3389,19 @@
     "matched": 4
    },
    "pattern_nodes": 2,
-   "rank": 25,
+   "rank": 23,
    "records": 1,
    "selection": "emitted"
   },
   "synth_shl_edbd16af": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 14,
-    "match_occurrences": 160,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 13,
+    "match_occurrences": 159,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 9,
    "marginal": {
@@ -3317,9 +3424,9 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 26,
+    "files_matched": 25,
     "fired": 0,
-    "matched": 478
+    "matched": 322
    },
    "pattern_nodes": 2,
    "records": 2,
@@ -3328,12 +3435,12 @@
   "synth_shl_edbd16af_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 14,
-    "match_occurrences": 160,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 13,
+    "match_occurrences": 159,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 9,
    "in_set": {
@@ -3363,9 +3470,9 @@
    },
    "online": {
     "files_fired": 3,
-    "files_matched": 26,
+    "files_matched": 25,
     "fired": 9,
-    "matched": 481
+    "matched": 325
    },
    "pattern_nodes": 2,
    "records": 2,
@@ -3374,12 +3481,12 @@
   "synth_sitofp_9bd751dd": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     15
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 2,
+    "match_occurrences": 15,
+    "pass_instances": 2,
+    "pass_occurrences": 15
    },
    "guard_cost": 0,
    "marginal": {
@@ -3413,12 +3520,12 @@
   "synth_sitofp_9bd751dd_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     15
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 2,
+    "match_occurrences": 15,
+    "pass_instances": 2,
+    "pass_occurrences": 15
    },
    "guard_cost": 0,
    "in_set": {
@@ -3453,19 +3560,19 @@
     "matched": 10
    },
    "pattern_nodes": 2,
-   "rank": 23,
+   "rank": 22,
    "records": 1,
    "selection": "emitted"
   },
   "synth_smax_d4d1ff0e": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     13
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 2,
+    "match_occurrences": 13,
+    "pass_instances": 2,
+    "pass_occurrences": 13
    },
    "guard_cost": 10,
    "marginal": {
@@ -3499,12 +3606,12 @@
   "synth_smax_d4d1ff0e_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     13
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 2,
+    "match_occurrences": 13,
+    "pass_instances": 2,
+    "pass_occurrences": 13
    },
    "guard_cost": 10,
    "in_set": {
@@ -3681,12 +3788,12 @@
   "synth_sub_ebf10e1b": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 1,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -3715,17 +3822,17 @@
    },
    "pattern_nodes": 3,
    "records": 2,
-   "selection": "never_fires"
+   "selection": "unobserved"
   },
   "synth_sub_ebf10e1b_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 1,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -3754,7 +3861,7 @@
    },
    "pattern_nodes": 3,
    "records": 2,
-   "selection": "never_fires"
+   "selection": "unobserved"
   },
   "synth_trunc_110bd23a": {
    "corpus": {
@@ -3786,10 +3893,10 @@
     ]
    },
    "online": {
-    "files_fired": 3,
-    "files_matched": 4,
-    "fired": 7,
-    "matched": 11
+    "files_fired": 1,
+    "files_matched": 2,
+    "fired": 3,
+    "matched": 7
    },
    "pattern_nodes": 2,
    "records": 1,
@@ -3809,7 +3916,7 @@
    "in_set": {
     "better": 0,
     "evidence": [],
-    "fired": 200,
+    "fired": 199,
     "insns": 0,
     "worse": 0
    },
@@ -3832,10 +3939,10 @@
     ]
    },
    "online": {
-    "files_fired": 35,
-    "files_matched": 36,
-    "fired": 196,
-    "matched": 200
+    "files_fired": 34,
+    "files_matched": 35,
+    "fired": 199,
+    "matched": 203
    },
    "pattern_nodes": 2,
    "rank": 20,
@@ -3847,8 +3954,8 @@
     "disjunct_occurrences": [
      2
     ],
-    "match_instances": 2,
-    "match_occurrences": 2,
+    "match_instances": 3,
+    "match_occurrences": 3,
     "pass_instances": 2,
     "pass_occurrences": 2
    },
@@ -3873,9 +3980,9 @@
    },
    "online": {
     "files_fired": 1,
-    "files_matched": 11,
+    "files_matched": 4,
     "fired": 2,
-    "matched": 83
+    "matched": 6
    },
    "pattern_nodes": 2,
    "records": 1,
@@ -3886,19 +3993,12 @@
     "disjunct_occurrences": [
      2
     ],
-    "match_instances": 81,
-    "match_occurrences": 5878,
+    "match_instances": 91,
+    "match_occurrences": 6049,
     "pass_instances": 2,
     "pass_occurrences": 2
    },
    "guard_cost": 5,
-   "in_set": {
-    "better": 0,
-    "evidence": [],
-    "fired": 3,
-    "insns": 0,
-    "worse": 0
-   },
    "marginal": {
     "better": 0,
     "evidence": [],
@@ -3911,31 +4011,31 @@
      {
       "alone": 0,
       "class": "new",
-      "existing": 4,
+      "existing": 5,
       "fn": "synth_trunc_7f3d4530_d0",
       "source": 3
      }
     ]
    },
    "online": {
-    "files_fired": 1,
-    "files_matched": 445,
-    "fired": 1,
-    "matched": 7458
+    "files_fired": 0,
+    "files_matched": 430,
+    "fired": 0,
+    "matched": 6421
    },
    "pattern_nodes": 1,
    "records": 1,
-   "selection": "no_measured_gain"
+   "selection": "never_fires"
   },
   "synth_trunc_ae393859": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 3,
-    "match_occurrences": 3,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 6,
+    "match_occurrences": 6,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 5,
    "marginal": {
@@ -3958,9 +4058,9 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 27,
+    "files_matched": 5,
     "fired": 0,
-    "matched": 292
+    "matched": 28
    },
    "pattern_nodes": 2,
    "records": 2,
@@ -3969,12 +4069,12 @@
   "synth_trunc_ae393859_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 3,
-    "match_occurrences": 3,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 6,
+    "match_occurrences": 6,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 5,
    "marginal": {
@@ -3997,9 +4097,9 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 26,
+    "files_matched": 4,
     "fired": 0,
-    "matched": 284
+    "matched": 22
    },
    "pattern_nodes": 2,
    "records": 2,
@@ -4008,12 +4108,12 @@
   "synth_trunc_dc391593": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 1,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -4047,12 +4147,12 @@
   "synth_trunc_dc391593_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 1,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -4086,12 +4186,12 @@
   "synth_uitofp_1e203d50": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     22
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 2,
+    "match_occurrences": 22,
+    "pass_instances": 2,
+    "pass_occurrences": 22
    },
    "guard_cost": 0,
    "marginal": {
@@ -4125,12 +4225,12 @@
   "synth_uitofp_1e203d50_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     0
+     22
     ],
-    "match_instances": 0,
-    "match_occurrences": 0,
-    "pass_instances": 0,
-    "pass_occurrences": 0
+    "match_instances": 2,
+    "match_occurrences": 22,
+    "pass_instances": 2,
+    "pass_occurrences": 22
    },
    "guard_cost": 0,
    "in_set": {
@@ -4165,7 +4265,7 @@
     "matched": 15
    },
    "pattern_nodes": 2,
-   "rank": 22,
+   "rank": 21,
    "records": 1,
    "selection": "emitted"
   },
@@ -4223,12 +4323,12 @@
   "synth_xor_4d0f9294": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 1,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -4257,17 +4357,17 @@
    },
    "pattern_nodes": 3,
    "records": 4,
-   "selection": "never_fires"
+   "selection": "unobserved"
   },
   "synth_xor_4d0f9294_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 1,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -4296,15 +4396,15 @@
    },
    "pattern_nodes": 3,
    "records": 4,
-   "selection": "never_fires"
+   "selection": "unobserved"
   },
   "synth_xor_535a60d9": {
    "corpus": {
     "disjunct_occurrences": [
      1
     ],
-    "match_instances": 57,
-    "match_occurrences": 2682,
+    "match_instances": 63,
+    "match_occurrences": 2796,
     "pass_instances": 1,
     "pass_occurrences": 1
    },
@@ -4314,7 +4414,7 @@
     "evidence": [
      "post-ra-16bit-mov-folding-src-is-first-dst.ll: -5"
     ],
-    "fired": 6,
+    "fired": 1,
     "insns": -5,
     "worse": 0
    },
@@ -4339,10 +4439,10 @@
     ]
    },
    "online": {
-    "files_fired": 3,
-    "files_matched": 316,
-    "fired": 6,
-    "matched": 7369
+    "files_fired": 1,
+    "files_matched": 253,
+    "fired": 1,
+    "matched": 5702
    },
    "pattern_nodes": 1,
    "rank": 3,
@@ -4403,12 +4503,12 @@
   "synth_xor_70267483": {
    "corpus": {
     "disjunct_occurrences": [
-     2
+     1
     ],
     "match_instances": 1,
-    "match_occurrences": 2,
+    "match_occurrences": 1,
     "pass_instances": 1,
-    "pass_occurrences": 2
+    "pass_occurrences": 1
    },
    "guard_cost": 0,
    "in_set": {
@@ -4452,12 +4552,12 @@
   "synth_xor_8fc1a2be": {
    "corpus": {
     "disjunct_occurrences": [
-     2
+     1
     ],
     "match_instances": 1,
-    "match_occurrences": 2,
+    "match_occurrences": 1,
     "pass_instances": 1,
-    "pass_occurrences": 2
+    "pass_occurrences": 1
    },
    "guard_cost": 0,
    "marginal": {
@@ -4491,12 +4591,12 @@
   "synth_xor_8fc1a2be_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     2
+     1
     ],
     "match_instances": 1,
-    "match_occurrences": 2,
+    "match_occurrences": 1,
     "pass_instances": 1,
-    "pass_occurrences": 2
+    "pass_occurrences": 1
    },
    "guard_cost": 0,
    "marginal": {
@@ -4656,12 +4756,12 @@
   "synth_zext_66b95a30": {
    "corpus": {
     "disjunct_occurrences": [
-     34
+     32
     ],
     "match_instances": 6,
-    "match_occurrences": 35,
+    "match_occurrences": 33,
     "pass_instances": 5,
-    "pass_occurrences": 34
+    "pass_occurrences": 32
    },
    "guard_cost": 0,
    "marginal": {
@@ -4684,9 +4784,9 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 15,
+    "files_matched": 9,
     "fired": 0,
-    "matched": 39
+    "matched": 16
    },
    "pattern_nodes": 2,
    "records": 1,
@@ -4695,18 +4795,18 @@
   "synth_zext_66b95a30_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     34
+     32
     ],
     "match_instances": 6,
-    "match_occurrences": 35,
+    "match_occurrences": 33,
     "pass_instances": 5,
-    "pass_occurrences": 34
+    "pass_occurrences": 32
    },
    "guard_cost": 0,
    "in_set": {
     "better": 0,
     "evidence": [],
-    "fired": 50,
+    "fired": 43,
     "insns": 0,
     "worse": 0
    },
@@ -4729,10 +4829,10 @@
     ]
    },
    "online": {
-    "files_fired": 22,
-    "files_matched": 29,
-    "fired": 54,
-    "matched": 73
+    "files_fired": 20,
+    "files_matched": 26,
+    "fired": 47,
+    "matched": 62
    },
    "pattern_nodes": 2,
    "records": 1,
@@ -4744,7 +4844,7 @@
      1
     ],
     "match_instances": 6,
-    "match_occurrences": 35,
+    "match_occurrences": 33,
     "pass_instances": 1,
     "pass_occurrences": 1
    },
@@ -4769,9 +4869,9 @@
    },
    "online": {
     "files_fired": 0,
-    "files_matched": 34,
+    "files_matched": 27,
     "fired": 0,
-    "matched": 93
+    "matched": 63
    },
    "pattern_nodes": 2,
    "records": 1,
@@ -4783,7 +4883,7 @@
      1
     ],
     "match_instances": 6,
-    "match_occurrences": 35,
+    "match_occurrences": 33,
     "pass_instances": 1,
     "pass_occurrences": 1
    },
@@ -4791,7 +4891,7 @@
    "in_set": {
     "better": 0,
     "evidence": [],
-    "fired": 2,
+    "fired": 1,
     "insns": 0,
     "worse": 0
    },
@@ -4814,10 +4914,10 @@
     ]
    },
    "online": {
-    "files_fired": 2,
-    "files_matched": 29,
-    "fired": 2,
-    "matched": 75
+    "files_fired": 1,
+    "files_matched": 26,
+    "fired": 1,
+    "matched": 63
    },
    "pattern_nodes": 2,
    "records": 1,
@@ -4856,7 +4956,7 @@
     "files_fired": 0,
     "files_matched": 7,
     "fired": 0,
-    "matched": 64
+    "matched": 62
    },
    "pattern_nodes": 2,
    "records": 2,
@@ -4905,7 +5005,7 @@
     "files_fired": 2,
     "files_matched": 4,
     "fired": 6,
-    "matched": 12
+    "matched": 10
    },
    "pattern_nodes": 2,
    "rank": 2,
@@ -4956,8 +5056,8 @@
     "disjunct_occurrences": [
      1
     ],
-    "match_instances": 67,
-    "match_occurrences": 2596,
+    "match_instances": 69,
+    "match_occurrences": 2666,
     "pass_instances": 1,
     "pass_occurrences": 1
    },
@@ -4982,9 +5082,9 @@
    },
    "online": {
     "files_fired": 1,
-    "files_matched": 320,
+    "files_matched": 290,
     "fired": 1,
-    "matched": 2940
+    "matched": 2698
    },
    "pattern_nodes": 1,
    "records": 1,
@@ -4993,12 +5093,12 @@
   "synth_zext_cb65fd72": {
    "corpus": {
     "disjunct_occurrences": [
-     1
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 1,
-    "pass_instances": 1,
-    "pass_occurrences": 1
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 10,
    "marginal": {
@@ -5032,12 +5132,12 @@
   "synth_zext_cf95a956": {
    "corpus": {
     "disjunct_occurrences": [
-     9
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 9,
-    "pass_instances": 1,
-    "pass_occurrences": 9
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -5071,12 +5171,12 @@
   "synth_zext_cf95a956_1u": {
    "corpus": {
     "disjunct_occurrences": [
-     9
+     0
     ],
-    "match_instances": 1,
-    "match_occurrences": 9,
-    "pass_instances": 1,
-    "pass_occurrences": 9
+    "match_instances": 0,
+    "match_occurrences": 0,
+    "pass_instances": 0,
+    "pass_occurrences": 0
    },
    "guard_cost": 0,
    "marginal": {
@@ -5109,26 +5209,27 @@
   }
  },
  "selected_set": {
-  "applications": 395,
+  "applications": 300,
   "failed": 0,
-  "files_better": 15,
-  "files_compiled": 814,
+  "files_better": 14,
+  "files_compiled": 753,
   "files_worse": 0,
-  "guard_evaluations": 7831,
-  "insns_delta": -66,
+  "guard_evaluations": 6038,
+  "insns_delta": -65,
   "regressions": []
  },
  "summary": {
-  "covered_by_existing_combine": 16,
+  "covered_by_existing_combine": 17,
   "emitted": 26,
   "measured_regression": 5,
-  "never_fires": 14,
-  "no_measured_gain": 11,
+  "never_fires": 7,
+  "no_measured_gain": 10,
   "not_emittable": 4,
-  "not_fired": 5,
+  "not_fired": 2,
   "one_use_variant_selected": 24,
   "plain_variant_selected": 3,
-  "redundant_with_synthesized": 18
+  "redundant_with_synthesized": 20,
+  "unobserved": 8
  },
  "target": "AMDGPU"
 }
