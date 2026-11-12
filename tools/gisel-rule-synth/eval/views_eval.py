@@ -16,7 +16,8 @@ target's flags of girs/targets.py, AMDGPU gfx1100 by default):
 Per file and configuration it records: the instruction count of the
 assembly, the encoded code size (sum of `; codeLenInByte`), SGPRs and
 VGPRs, the counts of a few instructions (moves and copies between banks,
-v_add3_u32, bit-field extracts, carry adds), the CPU time, the functions
+v_add3_u32, bit-field extracts, carry adds), the CPU time and the peak
+resident set size of llc, the functions
 that fell back to SelectionDAG, and the -stats counters of the e-graph pass
 (an assertions build has them). A file whose fallback set differs between
 configurations is not comparable and is reported separately.
@@ -35,6 +36,7 @@ import concurrent.futures
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 
@@ -69,16 +71,35 @@ def flags_of(config):
     raise SystemExit('unknown configuration ' + config)
 
 
+def run(cmd, timeout):
+    """measure.run_timed, with the peak resident set size (KiB) of the
+    compilation: wait4 reports the largest of the processes it waited for,
+    i.e. llc under `timeout`."""
+    with tempfile.TemporaryFile() as err:
+        p = subprocess.Popen(['timeout', '-k', '5', str(timeout)] + cmd,
+                             stdout=subprocess.DEVNULL, stderr=err)
+        _, status, ru = os.wait4(p.pid, 0)
+        rc = os.waitstatus_to_exitcode(status)
+        p.returncode = rc
+        err.seek(0)
+        text = err.read().decode(errors='replace')
+    if rc in (124, 137):
+        rc = -1
+    return rc, text, ru.ru_utime + ru.ru_stime, ru.ru_maxrss
+
+
 def compile_one(llc, target, mcpu, path, config, timeout):
     with tempfile.NamedTemporaryFile(suffix='.s', delete=False) as tf:
         out = tf.name
-    ll_flags = [f for f in target.ll_flags if not f.startswith('-mcpu=')]
+    # The CPU of the target (gfx1100 for AMDGPU) unless --mcpu is given.
+    ll_flags = list(target.ll_flags)
     if mcpu:
+        ll_flags = [f for f in ll_flags if not f.startswith('-mcpu=')]
         ll_flags.append('-mcpu=' + mcpu)
     cmd = ([llc] + ll_flags + ['-verify-machineinstrs', '-stats'] +
            flags_of(config) + [path, '-o', out])
-    rc, stderr, cpu = measure.run_timed(cmd, timeout)
-    res = {'rc': rc, 'user': cpu,
+    rc, stderr, cpu, rss = run(cmd, timeout)
+    res = {'rc': rc, 'user': cpu, 'rss_kib': rss,
            'fallback': sorted(set(measure.FALLBACK.findall(stderr)))}
     if rc == 0:
         with open(out) as f:
@@ -127,9 +148,11 @@ def summarize(res, configs, out=sys.stdout):
             for k in ('insns', 'code_bytes', 'sgpr', 'vgpr'):
                 tot[c][k] += r[k]
             tot[c]['user'] += r['user']
+            tot[c]['max_rss_mib'] = max(tot[c]['max_rss_mib'],
+                                        r.get('rss_kib', 0) // 1024)
             for m, n in r.get('mnemonics', {}).items():
                 tot[c]['#' + m] += n
-    keys = ['insns', 'code_bytes', 'sgpr', 'vgpr', 'user']
+    keys = ['insns', 'code_bytes', 'sgpr', 'vgpr', 'user', 'max_rss_mib']
     print('%-10s' % 'config' + ''.join('%14s' % k for k in keys), file=out)
     for c in configs:
         print('%-10s' % c + ''.join(
