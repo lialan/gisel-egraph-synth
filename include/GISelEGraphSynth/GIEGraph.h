@@ -40,6 +40,7 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/FloatingPointMode.h"
 #include "llvm/ADT/FunctionExtras.h"
 #include "llvm/ADT/Hashing.h"
@@ -1269,17 +1270,120 @@ SaturationStats saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
 // Extraction
 //===----------------------------------------------------------------------===//
 
+/// The cost of an instruction, or of a DAG of instructions, in three metrics
+/// that are kept apart:
+///  * Instrs: the estimated number of instructions, the node costs of the
+///    cost model (DefaultCostModel weighs a multiplication, a division and a
+///    value wider than 32 bits as the instructions it is estimated to take);
+///  * Bytes: the estimated code size in bytes (a proxy);
+///  * Depth: the estimated critical path, the longest path through the DAG
+///    in the latency estimates of the cost model, in units of a simple ALU
+///    operation (a proxy). For one instruction it is its latency. It is not
+///    derived from the instruction count.
+/// Extraction and profitability compare Instrs, then Bytes; Depth is only
+/// reported.
+struct CostVector {
+  static constexpr uint64_t Infinite = ~uint64_t(0);
+  uint64_t Instrs = 0;
+  uint64_t Bytes = 0;
+  uint64_t Depth = 0;
+
+  static CostVector infinite() { return {Infinite, Infinite, Infinite}; }
+  bool isInfinite() const { return Instrs == Infinite; }
+  /// Instrs, then Bytes.
+  bool operator<(const CostVector &O) const {
+    return Instrs != O.Instrs ? Instrs < O.Instrs : Bytes < O.Bytes;
+  }
+};
+
+/// The bank state of a value in extraction: a bounded set of two states.
+/// The generic core only knows that a value in the state Uniform is computed
+/// from nodes that the cost model accepts in that state (CostModel::
+/// canBeUniform), all of whose operands are in that state too. What it means
+/// is the target's: on AMDGPU a uniform value is kept in an SGPR (before
+/// register bank selection, a prediction from the uniformity analysis), and
+/// a value with a divergent operand is computed in VGPRs.
+enum class BankState : uint8_t { Any = 0, Uniform = 1 };
+
+/// A DAG of e-nodes whose cost evaluateDag computes: the nodes that the
+/// extractor chose for a set of roots (Extractor::getDag), or the
+/// instructions of the original program.
+struct CostDag {
+  struct Item {
+    const ENode *N = nullptr;
+    /// The class of the node (for facts and constants).
+    EClassId Class = 0;
+    /// The items of the operands, in the order of N->Ops.
+    SmallVector<unsigned, 3> Ops;
+    /// Set by evaluateDag: the number of reads of the value by items of the
+    /// DAG (operand slots; the results of one instruction read their
+    /// operands once).
+    unsigned Uses = 0;
+    /// The value is used outside of the DAG (a root of a region).
+    bool IsRoot = false;
+    /// For a root: the bank state that its value must have.
+    BankState Required = BankState::Any;
+    /// Another result of the instruction of the item with this index: the
+    /// instruction is counted with that item. -1 if none.
+    int SameInstr = -1;
+    /// Set by evaluateDag: the bank state of the value (Uniform if the cost
+    /// model has bank states, accepts the node in that state, and every
+    /// operand is in it).
+    BankState Bank = BankState::Any;
+  };
+  /// Operands before users.
+  std::vector<Item> Items;
+};
+
+/// A target instruction that implements an item of a CostDag (Root) together
+/// with items of its operands (Inner) that only it reads, e.g. v_add3_u32 for
+/// an add of an add on AMDGPU. Cost is the cost of the instruction including
+/// the copies that it needs; it replaces the costs of Root and of Inner. A
+/// cover without inner items is a cheaper implementation of one node.
+struct PatternCover {
+  unsigned Root = 0;
+  SmallVector<unsigned, 2> Inner;
+  CostVector Cost;
+  /// The name of the instruction, for reports.
+  const char *Name = "";
+};
+
 /// Cost model for extraction. Targets may subclass this.
 class CostModel {
 public:
   virtual ~CostModel();
-  /// Cost of a single node, not including operands. Operations must cost at
-  /// least 1 so that extraction is cycle-free.
+  /// Cost of a single node in instructions (CostVector::Instrs), not
+  /// including operands. Operations must cost at least 1 so that extraction
+  /// is cycle-free.
   virtual unsigned getNodeCost(const ENode &N) const;
   /// False if the operation or constant \p N must not be extracted, e.g.
   /// because it is not legal for the target. The nodes of the original
   /// program must be allowed.
   virtual bool isAllowed(const EGraph &G, const ENode &N) const { return true; }
+  /// The latency estimate of \p N in units of a simple ALU operation, for
+  /// the critical path (a proxy): 1 per instruction by default.
+  virtual unsigned getNodeLatency(const ENode &N) const;
+  /// The cost of item \p I of \p D on its own (the instruction of an item
+  /// that is not covered by a pattern). By default getNodeCost (at least 1
+  /// for an operation), 4 bytes per instruction and getNodeLatency. A target
+  /// can use the bank state and the operands of the item (an encoding with
+  /// a literal constant, an instruction that it selects for one node).
+  virtual CostVector getItemCost(const EGraph &G, const CostDag &D,
+                                 unsigned I) const;
+  /// Target patterns: append the covers of \p D that the instruction
+  /// selection of the target forms (the bank states of \p D are set). They
+  /// are candidates: evaluateDag applies them with the rules of sharing
+  /// (see there). None by default.
+  virtual void findCovers(const EGraph &G, const CostDag &D,
+                          SmallVectorImpl<PatternCover> &Covers) const {}
+  /// True if the model distinguishes the bank state Uniform; then extraction
+  /// keeps a choice per class for each state.
+  virtual bool hasBankStates() const { return false; }
+  /// True if \p N may be in the state Uniform when its operands are (a leaf:
+  /// if its value is uniform).
+  virtual bool canBeUniform(const EGraph &G, const ENode &N) const {
+    return true;
+  }
 };
 
 /// Simple configurable cost model (see the design document for rationale).
@@ -1290,14 +1394,66 @@ public:
   unsigned SimpleOpCost = 1; // add/sub/and/or/xor/shifts, casts, compares...
   unsigned MulCost = 2;
   unsigned DivCost = 16; // division and remainder
+  /// Latency estimates (CostModel::getNodeLatency, a proxy).
+  unsigned SimpleOpLatency = 1;
+  unsigned MulLatency = 4;
+  unsigned DivLatency = 32;
   /// Multiply operation cost by ceil(width / 32) when set.
   bool ScaleByWidth = true;
   unsigned getNodeCost(const ENode &N) const override;
+  unsigned getNodeLatency(const ENode &N) const override;
+};
+
+/// The result of evaluateDag.
+struct DagEvaluation {
+  CostVector Cost;
+  /// The covers that were applied, users first.
+  SmallVector<PatternCover, 4> Covers;
+  /// Roots whose required bank state was not met (the cost is infinite).
+  unsigned BankViolations = 0;
+};
+
+/// The cost of \p D under \p CM, the same function for the original program
+/// and for a candidate:
+///  1. the bank state of each item, operands first (CostModel::canBeUniform);
+///     a root whose state is not its required state makes the cost
+///     infinite (no value moves from a divergent to a uniform register);
+///  2. the cost of each item on its own (CostModel::getItemCost), an
+///     instruction with several results counted once;
+///  3. the covers of the target (CostModel::findCovers), applied greedily,
+///     users first (the order of instruction selection): a cover is applied
+///     only if its root is not covered yet and every inner item is read
+///     exactly once, by the root or by another inner item of the cover, is
+///     not a root, and is not covered yet. An inner item that has another
+///     user stays, so a cover never subtracts the cost of a value that is
+///     still computed, and no item is covered twice;
+///  4. the sums of Instrs and Bytes, and the longest path of latencies
+///     (Depth).
+CostVector evaluateDag(const EGraph &G, const CostModel &CM, CostDag &D,
+                       DagEvaluation *Out = nullptr);
+
+/// Options of Extractor::extract.
+struct ExtractionOptions {
+  /// Sharing-aware improvement of the tree-cost choices: a bounded local
+  /// search over the classes of the DAG that accepts a different node or
+  /// refinement target of one class only if the DAG cost (evaluateDag)
+  /// becomes strictly smaller and the choices stay acyclic. Off: the
+  /// tree-cost choices.
+  bool ImproveDag = true;
+  /// Rounds over the classes of the DAG, and DAG evaluations in total.
+  unsigned MaxRounds = 4;
+  unsigned MaxEvaluations = 512;
+  /// Accept a change that only makes the DAG smaller in bytes (same
+  /// instruction count). Off: only fewer instructions count.
+  bool SizeTieBreak = true;
+  /// Also change the choice of a class of a vector type.
+  bool ImproveVectors = true;
 };
 
 /// Tree-cost extractor with refinement-aware choices. Shared subexpressions
 /// are counted once per use when choosing (tree cost) but getDagCost() counts
-/// each class once.
+/// each class once. extract() improves the choices for a set of roots by
+/// DAG cost.
 class Extractor {
 public:
   static constexpr uint64_t Infinite = ~uint64_t(0);
@@ -1319,6 +1475,23 @@ public:
   /// in more than one way. The DAG cost and the emission use this key, so
   /// the cost counts the instructions that the emission builds.
   std::vector<uint64_t> getMultiResultKey(const ENode &N) const;
+
+  /// Choose the implementation of \p Roots. A root whose state in
+  /// \p RootStates (empty: all BankState::Any) is Uniform takes the
+  /// tree-cost choice among implementations in that state, and so does
+  /// every class that it reads; the other classes take the tree-cost
+  /// choice. With Opts.ImproveDag the choices of the classes of the DAG are
+  /// then improved by DAG cost (see ExtractionOptions); deterministic.
+  /// Afterwards resolve, getChosenNode, getDagCost and getDag reflect the
+  /// choices. Returns the number of accepted improvements.
+  unsigned extract(ArrayRef<EClassId> Roots, ArrayRef<BankState> RootStates,
+                   const CostModel &CM, const ExtractionOptions &Opts);
+  /// Set \p D to the DAG of the chosen nodes of \p Roots (each root an item
+  /// with IsRoot and its state in \p RootStates as Required). False if a
+  /// root has no choice.
+  bool getDag(ArrayRef<EClassId> Roots, ArrayRef<BankState> RootStates,
+              CostDag &D) const;
+
   /// Print the chosen expression as an S-expression.
   void printExpr(
       raw_ostream &OS, EClassId Id,
@@ -1326,17 +1499,31 @@ public:
   std::string getExprString(EClassId Id) const;
 
 private:
-  const EGraph &G;
-  // The cost model is only used during construction; the local cost of each
-  // chosen node is cached so that the extractor does not keep a reference to
-  // the (possibly temporary) cost model.
+  // The cost model is only used during construction and by extract(); the
+  // local cost of each chosen node is cached so that the extractor does not
+  // keep a reference to the (possibly temporary) cost model.
   struct Choice {
     uint64_t Cost = Infinite;
     uint64_t LocalCost = 0; // cost of the chosen node without operands
     int NodeIdx = -1;       // index into class nodes
     EClassId RefTarget = 0; // valid if NodeIdx == -1 and Cost finite
   };
-  std::vector<Choice> Choices; // indexed by canonical class id
+  /// The choice that implements the canonical class \p Id now.
+  const Choice &getChoice(EClassId Id) const;
+  /// Build the DAG of \p Roots from the current choices; a class that a
+  /// Uniform root reads takes its Uniform choice unless it has a Final one.
+  /// \p Visited, if not null, receives the classes that the DAG reads
+  /// (including the classes of chosen refinement edges), in visit order.
+  /// Returns false on a cycle or on a class without a choice.
+  bool buildDag(ArrayRef<EClassId> Roots, ArrayRef<BankState> RootStates,
+                CostDag &D, SmallVectorImpl<EClassId> *Visited,
+                DenseMap<EClassId, Choice> *Used) const;
+
+  const EGraph &G;
+  std::vector<Choice> Choices;        // indexed by canonical class id
+  std::vector<Choice> UniformChoices; // BankState::Uniform, if any
+  /// The choices of extract(), which take precedence.
+  DenseMap<EClassId, Choice> Final;
 };
 
 } // namespace egraph

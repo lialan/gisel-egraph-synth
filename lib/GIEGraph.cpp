@@ -4859,18 +4859,31 @@ unsigned CostModel::getNodeCost(const ENode &N) const {
   return N.isOperation() ? 1 : 0;
 }
 
-unsigned DefaultCostModel::getNodeCost(const ENode &N) const {
-  switch (N.Kind) {
-  case ENodeKind::Input:
-    return InputCost;
-  case ENodeKind::Constant:
-    return ConstantCost;
-  case ENodeKind::Operation:
-    break;
-  }
-  const OpProperties *P = getOpProperties(N.Opcode);
-  unsigned Base = SimpleOpCost;
-  switch (N.Opcode) {
+unsigned CostModel::getNodeLatency(const ENode &N) const {
+  return N.isOperation() ? 1 : 0;
+}
+
+/// Saturating sums of costs.
+static uint64_t addCost(uint64_t A, uint64_t B) {
+  if (A == Extractor::Infinite || B == Extractor::Infinite)
+    return Extractor::Infinite;
+  uint64_t S = A + B;
+  return S < A ? Extractor::Infinite : S;
+}
+
+CostVector CostModel::getItemCost(const EGraph &G, const CostDag &D,
+                                  unsigned I) const {
+  const ENode &N = *D.Items[I].N;
+  uint64_t Instrs = getNodeCost(N);
+  if (N.isOperation())
+    Instrs = std::max<uint64_t>(Instrs, 1);
+  return {Instrs, addCost(Instrs, addCost(Instrs, addCost(Instrs, Instrs))),
+          getNodeLatency(N)};
+}
+
+/// True if \p Opc is a multiplication (DefaultCostModel::MulCost).
+static bool isMultiplication(unsigned Opc) {
+  switch (Opc) {
   case TargetOpcode::G_MUL:
   case TargetOpcode::G_UMULH:
   case TargetOpcode::G_SMULH:
@@ -4883,30 +4896,175 @@ unsigned DefaultCostModel::getNodeCost(const ENode &N) const {
   case TargetOpcode::G_UMULFIX:
   case TargetOpcode::G_SMULFIXSAT:
   case TargetOpcode::G_UMULFIXSAT:
-    Base = MulCost;
-    break;
+    return true;
   default:
-    if (P && P->MayTrap)
-      Base = DivCost;
+    return false;
+  }
+}
+
+unsigned DefaultCostModel::getNodeCost(const ENode &N) const {
+  switch (N.Kind) {
+  case ENodeKind::Input:
+    return InputCost;
+  case ENodeKind::Constant:
+    return ConstantCost;
+  case ENodeKind::Operation:
     break;
   }
+  const OpProperties *P = getOpProperties(N.Opcode);
+  unsigned Base = SimpleOpCost;
+  if (isMultiplication(N.Opcode))
+    Base = MulCost;
+  else if (P && P->MayTrap)
+    Base = DivCost;
   if (ScaleByWidth && N.Ty.isValid())
     Base *= std::max<unsigned>(1, (N.Ty.getSizeInBits() + 31) / 32);
   return std::max(1u, Base);
 }
 
-static uint64_t addCost(uint64_t A, uint64_t B) {
-  if (A == Extractor::Infinite || B == Extractor::Infinite)
-    return Extractor::Infinite;
-  uint64_t S = A + B;
-  return S < A ? Extractor::Infinite : S;
+unsigned DefaultCostModel::getNodeLatency(const ENode &N) const {
+  if (!N.isOperation())
+    return 0;
+  const OpProperties *P = getOpProperties(N.Opcode);
+  unsigned Base = SimpleOpLatency;
+  if (isMultiplication(N.Opcode))
+    Base = MulLatency;
+  else if (P && P->MayTrap)
+    Base = DivLatency;
+  if (ScaleByWidth && N.Ty.isValid())
+    Base *= std::max<unsigned>(1, (N.Ty.getSizeInBits() + 31) / 32);
+  return std::max(1u, Base);
+}
+
+static void addTo(CostVector &Total, const CostVector &C) {
+  Total.Instrs = addCost(Total.Instrs, C.Instrs);
+  Total.Bytes = addCost(Total.Bytes, C.Bytes);
+}
+
+CostVector llvm::egraph::evaluateDag(const EGraph &G, const CostModel &CM,
+                                     CostDag &D, DagEvaluation *Out) {
+  if (Out)
+    *Out = DagEvaluation();
+  unsigned NumItems = D.Items.size();
+  // The reads of each item by the items that count an instruction (the
+  // results of one instruction read their operands once), and whether an
+  // item is one result of an instruction with several.
+  SmallVector<SmallVector<unsigned, 2>, 32> Readers(NumItems);
+  SmallVector<bool, 32> HasSiblings(NumItems, false);
+  for (unsigned I = 0; I != NumItems; ++I) {
+    CostDag::Item &It = D.Items[I];
+    assert(all_of(It.Ops, [&](unsigned Op) { return Op < I; }) &&
+           "items are not in topological order");
+    if (It.SameInstr >= 0) {
+      HasSiblings[It.SameInstr] = HasSiblings[I] = true;
+      continue;
+    }
+    for (unsigned Op : It.Ops)
+      Readers[Op].push_back(I);
+  }
+
+  // 1. Bank states, operands first, and the required states of the roots.
+  bool Banks = CM.hasBankStates();
+  unsigned Violations = 0;
+  for (unsigned I = 0; I != NumItems; ++I) {
+    CostDag::Item &It = D.Items[I];
+    It.Uses = Readers[I].size();
+    bool Uniform =
+        Banks && CM.canBeUniform(G, *It.N) && all_of(It.Ops, [&](unsigned Op) {
+          return D.Items[Op].Bank == BankState::Uniform;
+        });
+    It.Bank = Uniform ? BankState::Uniform : BankState::Any;
+    if (Banks && It.IsRoot && It.Required == BankState::Uniform && !Uniform)
+      ++Violations;
+  }
+  if (Violations) {
+    if (Out) {
+      Out->Cost = CostVector::infinite();
+      Out->BankViolations = Violations;
+    }
+    return CostVector::infinite();
+  }
+
+  // 2. The cost of each item on its own.
+  SmallVector<CostVector, 32> Own(NumItems);
+  for (unsigned I = 0; I != NumItems; ++I)
+    if (D.Items[I].SameInstr < 0)
+      Own[I] = CM.getItemCost(G, D, I);
+
+  // 3. Covers, users first (instruction selection goes from the users to
+  // the operands); among the covers of one item, in the order of the
+  // target.
+  SmallVector<PatternCover, 8> Cands;
+  CM.findCovers(G, D, Cands);
+  SmallVector<unsigned, 8> Order;
+  for (unsigned CI = 0, CE = Cands.size(); CI != CE; ++CI)
+    Order.push_back(CI);
+  llvm::stable_sort(Order, [&](unsigned A, unsigned B) {
+    return Cands[A].Root > Cands[B].Root;
+  });
+  SmallVector<int, 32> CoveredBy(NumItems, -1), RootOf(NumItems, -1);
+  SmallVector<unsigned, 8> Accepted;
+  for (unsigned CI : Order) {
+    const PatternCover &C = Cands[CI];
+    if (C.Root >= NumItems || C.Cost.isInfinite() || CoveredBy[C.Root] >= 0 ||
+        RootOf[C.Root] >= 0 || HasSiblings[C.Root])
+      continue;
+    bool OK = true;
+    for (unsigned K = 0, KE = C.Inner.size(); K != KE && OK; ++K) {
+      unsigned J = C.Inner[K];
+      // An inner item is computed only for the cover: it is read once, by
+      // the root or by another inner item, it is not a root, and it is not
+      // a part of another cover.
+      OK = J < C.Root && !is_contained(ArrayRef(C.Inner).take_front(K), J) &&
+           D.Items[J].N->isOperation() && !D.Items[J].IsRoot &&
+           !HasSiblings[J] && CoveredBy[J] < 0 && RootOf[J] < 0 &&
+           Readers[J].size() == 1 &&
+           (Readers[J][0] == C.Root || is_contained(C.Inner, Readers[J][0]));
+    }
+    if (!OK)
+      continue;
+    RootOf[C.Root] = Accepted.size();
+    for (unsigned J : C.Inner)
+      CoveredBy[J] = Accepted.size();
+    Accepted.push_back(CI);
+  }
+
+  // 4. Sums, and the longest path of latencies.
+  CostVector Total;
+  SmallVector<uint64_t, 32> Finish(NumItems, 0);
+  for (unsigned I = 0; I != NumItems; ++I) {
+    const CostDag::Item &It = D.Items[I];
+    if (It.SameInstr >= 0) {
+      Finish[I] = Finish[It.SameInstr];
+      continue;
+    }
+    uint64_t Latency = 0;
+    if (RootOf[I] >= 0) {
+      const CostVector &C = Cands[Accepted[RootOf[I]]].Cost;
+      addTo(Total, C);
+      Latency = C.Depth;
+    } else if (CoveredBy[I] < 0) {
+      addTo(Total, Own[I]);
+      Latency = Own[I].Depth;
+    }
+    uint64_t Start = 0;
+    for (unsigned Op : It.Ops)
+      Start = std::max(Start, Finish[Op]);
+    Finish[I] = addCost(Start, Latency);
+    Total.Depth = std::max(Total.Depth, Finish[I]);
+  }
+  if (Out) {
+    Out->Cost = Total;
+    for (unsigned CI : Accepted)
+      Out->Covers.push_back(Cands[CI]);
+  }
+  return Total;
 }
 
 Extractor::Extractor(const EGraph &G, const CostModel &CM) : G(G) {
   assert(G.isClean() && "rebuild() the e-graph before extraction");
   SmallVector<EClassId, 32> Ids = G.getClassIds();
   EClassId MaxId = Ids.empty() ? 0 : Ids.back();
-  Choices.assign(MaxId + 1, Choice());
 
   auto LocalCost = [&](const ENode &N) -> uint64_t {
     uint64_t C = CM.getNodeCost(N);
@@ -4914,45 +5072,60 @@ Extractor::Extractor(const EGraph &G, const CostModel &CM) : G(G) {
       C = std::max<uint64_t>(C, 1); // Guarantees acyclic choices.
     return C;
   };
-  auto NodeCost = [&](const ENode &N) -> uint64_t {
-    if (!N.isInput() && !CM.isAllowed(G, N))
-      return Infinite;
-    uint64_t C = LocalCost(N);
-    for (EClassId Op : N.Ops)
-      C = addCost(C, Choices[G.find(Op)].Cost);
-    return C;
-  };
-
-  // Bellman-Ford style fixpoint. Costs only decrease, so this terminates.
-  // Refinement edges are only taken when strictly cheaper, which (together
-  // with operation costs >= 1) guarantees that choices are acyclic.
-  bool Changed = true;
-  while (Changed) {
-    Changed = false;
-    for (EClassId Id : Ids) {
-      const EClass &C = G.getClass(Id);
-      Choice &Cur = Choices[Id];
-      for (unsigned NI = 0, NE = C.Nodes.size(); NI != NE; ++NI) {
-        uint64_t Cost = NodeCost(C.Nodes[NI]);
-        if (Cost < Cur.Cost) {
-          Cur.Cost = Cost;
-          Cur.LocalCost = LocalCost(C.Nodes[NI]);
-          Cur.NodeIdx = NI;
-          Changed = true;
+  // The choices of one bank state. In the state Uniform, a node is only
+  // available if the cost model accepts it in that state, and its operands
+  // take their choices in that state too.
+  auto Solve = [&](std::vector<Choice> &Table, bool Uniform) {
+    Table.assign(MaxId + 1, Choice());
+    auto NodeCost = [&](const ENode &N) -> uint64_t {
+      if (!N.isInput() && !CM.isAllowed(G, N))
+        return Infinite;
+      if (Uniform && !CM.canBeUniform(G, N))
+        return Infinite;
+      uint64_t C = LocalCost(N);
+      for (EClassId Op : N.Ops)
+        C = addCost(C, Table[G.find(Op)].Cost);
+      return C;
+    };
+    // Bellman-Ford style fixpoint. Costs only decrease, so this terminates.
+    // Refinement edges are only taken when strictly cheaper, which (together
+    // with operation costs >= 1) guarantees that choices are acyclic.
+    bool Changed = true;
+    while (Changed) {
+      Changed = false;
+      for (EClassId Id : Ids) {
+        const EClass &C = G.getClass(Id);
+        Choice &Cur = Table[Id];
+        for (unsigned NI = 0, NE = C.Nodes.size(); NI != NE; ++NI) {
+          uint64_t Cost = NodeCost(C.Nodes[NI]);
+          if (Cost < Cur.Cost) {
+            Cur.Cost = Cost;
+            Cur.LocalCost = LocalCost(C.Nodes[NI]);
+            Cur.NodeIdx = NI;
+            Changed = true;
+          }
         }
-      }
-      for (EClassId R : C.RefinesTo) {
-        uint64_t Cost = Choices[G.find(R)].Cost;
-        if (Cost < Cur.Cost) {
-          Cur.Cost = Cost;
-          Cur.LocalCost = 0;
-          Cur.NodeIdx = -1;
-          Cur.RefTarget = G.find(R);
-          Changed = true;
+        for (EClassId R : C.RefinesTo) {
+          uint64_t Cost = Table[G.find(R)].Cost;
+          if (Cost < Cur.Cost) {
+            Cur.Cost = Cost;
+            Cur.LocalCost = 0;
+            Cur.NodeIdx = -1;
+            Cur.RefTarget = G.find(R);
+            Changed = true;
+          }
         }
       }
     }
-  }
+  };
+  Solve(Choices, /*Uniform=*/false);
+  if (CM.hasBankStates())
+    Solve(UniformChoices, /*Uniform=*/true);
+}
+
+const Extractor::Choice &Extractor::getChoice(EClassId Id) const {
+  auto It = Final.find(Id);
+  return It != Final.end() ? It->second : Choices[Id];
 }
 
 uint64_t Extractor::getTreeCost(EClassId Id) const {
@@ -4962,7 +5135,7 @@ uint64_t Extractor::getTreeCost(EClassId Id) const {
 EClassId Extractor::resolve(EClassId Id) const {
   Id = G.find(Id);
   for (unsigned Steps = 0; Steps < Choices.size(); ++Steps) {
-    const Choice &C = Choices[Id];
+    const Choice &C = getChoice(Id);
     if (C.NodeIdx >= 0 || C.Cost == Infinite)
       return Id;
     Id = G.find(C.RefTarget);
@@ -4972,7 +5145,7 @@ EClassId Extractor::resolve(EClassId Id) const {
 
 const ENode *Extractor::getChosenNode(EClassId Id) const {
   Id = resolve(Id);
-  const Choice &C = Choices[Id];
+  const Choice &C = getChoice(Id);
   if (C.NodeIdx < 0)
     return nullptr;
   return &G.getClass(Id).Nodes[C.NodeIdx];
@@ -4997,7 +5170,7 @@ uint64_t Extractor::getDagCost(ArrayRef<EClassId> Roots) const {
     if (N->isOperation() && getOpProperties(N->Opcode)->hasProjections())
       Counted = !Instructions.insert(getMultiResultKey(*N)).second;
     if (!Counted)
-      Total = addCost(Total, Choices[Id].LocalCost);
+      Total = addCost(Total, getChoice(Id).LocalCost);
     for (EClassId Op : N->Ops)
       Work.push_back(resolve(Op));
   }
@@ -5013,6 +5186,255 @@ std::vector<uint64_t> Extractor::getMultiResultKey(const ENode &N) const {
   for (EClassId Op : N.Ops)
     Key.push_back(resolve(Op));
   return Key;
+}
+
+bool Extractor::buildDag(ArrayRef<EClassId> Roots,
+                         ArrayRef<BankState> RootStates, CostDag &D,
+                         SmallVectorImpl<EClassId> *Visited,
+                         DenseMap<EClassId, Choice> *Used) const {
+  D.Items.clear();
+  auto StateOf = [&](unsigned I) {
+    return I < RootStates.size() && !UniformChoices.empty() ? RootStates[I]
+                                                            : BankState::Any;
+  };
+  // The classes that a root in the state Uniform reads: they take their
+  // choice in that state (unless extract() chose one).
+  DenseSet<EClassId> InUniform;
+  auto ChoiceOf = [&](EClassId C) -> const Choice & {
+    auto It = Final.find(C);
+    if (It != Final.end())
+      return It->second;
+    if (InUniform.contains(C) && UniformChoices[C].Cost != Infinite)
+      return UniformChoices[C];
+    return Choices[C];
+  };
+  // Follow the chosen refinement edges from \p C to the class whose node
+  // implements it; std::nullopt on a cycle or a class without a choice.
+  auto Resolve =
+      [&](EClassId C,
+          function_ref<void(EClassId)> Fn) -> std::optional<EClassId> {
+    C = G.find(C);
+    for (unsigned Steps = 0; Steps <= Choices.size(); ++Steps) {
+      Fn(C);
+      const Choice &Ch = ChoiceOf(C);
+      if (Ch.Cost == Infinite)
+        return std::nullopt;
+      if (Ch.NodeIdx >= 0)
+        return C;
+      C = G.find(Ch.RefTarget);
+    }
+    return std::nullopt;
+  };
+  bool Failed = false;
+  DenseSet<EClassId> Expanded;
+  std::function<void(EClassId)> Mark = [&](EClassId C) {
+    if (Failed)
+      return;
+    std::optional<EClassId> Rc =
+        Resolve(C, [&](EClassId X) { InUniform.insert(X); });
+    if (!Rc) {
+      Failed = true;
+      return;
+    }
+    // Expanded before the operands, so that a cycle terminates (Visit below
+    // reports it).
+    if (!Expanded.insert(*Rc).second)
+      return;
+    const ENode &N = G.getClass(*Rc).Nodes[ChoiceOf(*Rc).NodeIdx];
+    for (EClassId Op : N.Ops)
+      Mark(Op);
+  };
+  for (unsigned I = 0, E = Roots.size(); I != E; ++I)
+    if (StateOf(I) == BankState::Uniform)
+      Mark(Roots[I]);
+  if (Failed)
+    return false;
+
+  DenseMap<EClassId, unsigned> ItemOf;
+  DenseSet<EClassId> OnStack, Seen;
+  std::map<std::vector<uint64_t>, unsigned> Instructions;
+  std::function<std::optional<unsigned>(EClassId)> Visit =
+      [&](EClassId C) -> std::optional<unsigned> {
+    std::optional<EClassId> Rc = Resolve(C, [&](EClassId X) {
+      if (Seen.insert(X).second) {
+        if (Visited)
+          Visited->push_back(X);
+        if (Used)
+          (*Used)[X] = ChoiceOf(X);
+      }
+    });
+    if (!Rc)
+      return std::nullopt;
+    auto It = ItemOf.find(*Rc);
+    if (It != ItemOf.end())
+      return It->second;
+    if (!OnStack.insert(*Rc).second)
+      return std::nullopt;
+    const ENode &N = G.getClass(*Rc).Nodes[ChoiceOf(*Rc).NodeIdx];
+    CostDag::Item Item;
+    Item.N = &N;
+    Item.Class = *Rc;
+    for (EClassId Op : N.Ops) {
+      std::optional<unsigned> OpItem = Visit(Op);
+      if (!OpItem)
+        return std::nullopt;
+      Item.Ops.push_back(*OpItem);
+    }
+    OnStack.erase(*Rc);
+    unsigned Idx = D.Items.size();
+    // The results of one instruction: the same operator, flags and operand
+    // items (and the type of the parts of an unmerge).
+    if (N.isOperation() && getOpProperties(N.Opcode)->hasProjections()) {
+      std::vector<uint64_t> Key = {N.Opcode, N.Flags};
+      if (getOpProperties(N.Opcode)->Shape == OpShape::Unmerge)
+        Key.push_back(getTypeKey(N.Ty));
+      Key.insert(Key.end(), Item.Ops.begin(), Item.Ops.end());
+      auto [KIt, Inserted] = Instructions.try_emplace(std::move(Key), Idx);
+      if (!Inserted)
+        Item.SameInstr = KIt->second;
+    }
+    D.Items.push_back(std::move(Item));
+    ItemOf[*Rc] = Idx;
+    return Idx;
+  };
+  for (unsigned I = 0, E = Roots.size(); I != E; ++I) {
+    std::optional<unsigned> Idx = Visit(Roots[I]);
+    if (!Idx)
+      return false;
+    CostDag::Item &Item = D.Items[*Idx];
+    Item.IsRoot = true;
+    if (StateOf(I) == BankState::Uniform)
+      Item.Required = BankState::Uniform;
+  }
+  return true;
+}
+
+bool Extractor::getDag(ArrayRef<EClassId> Roots, ArrayRef<BankState> RootStates,
+                       CostDag &D) const {
+  return buildDag(Roots, RootStates, D, nullptr, nullptr);
+}
+
+unsigned Extractor::extract(ArrayRef<EClassId> Roots,
+                            ArrayRef<BankState> RootStates, const CostModel &CM,
+                            const ExtractionOptions &Opts) {
+  Final.clear();
+  SmallVector<BankState, 8> States(Roots.size(), BankState::Any);
+  if (CM.hasBankStates() && !UniformChoices.empty())
+    for (unsigned I = 0, E = std::min(Roots.size(), RootStates.size()); I != E;
+         ++I)
+      States[I] = RootStates[I];
+
+  unsigned Improvements = 0;
+  if (Opts.ImproveDag) {
+    auto Evaluate = [&]() -> CostVector {
+      CostDag D;
+      if (!buildDag(Roots, States, D, nullptr, nullptr))
+        return CostVector::infinite();
+      return evaluateDag(G, CM, D);
+    };
+    // The alternatives of a class: its allowed nodes whose operands have a
+    // choice, then its refinement targets that have one.
+    auto Alternatives = [&](EClassId C, SmallVectorImpl<Choice> &Alts) {
+      const EClass &Cls = G.getClass(C);
+      for (unsigned NI = 0, NE = Cls.Nodes.size(); NI != NE; ++NI) {
+        const ENode &N = Cls.Nodes[NI];
+        if (!N.isInput() && !CM.isAllowed(G, N))
+          continue;
+        if (any_of(N.Ops, [&](EClassId Op) {
+              return Choices[G.find(Op)].Cost == Infinite &&
+                     (UniformChoices.empty() ||
+                      UniformChoices[G.find(Op)].Cost == Infinite);
+            }))
+          continue;
+        Choice Ch;
+        Ch.Cost = 0;
+        Ch.LocalCost = CM.getNodeCost(N);
+        if (N.isOperation())
+          Ch.LocalCost = std::max<uint64_t>(Ch.LocalCost, 1);
+        Ch.NodeIdx = NI;
+        Alts.push_back(Ch);
+      }
+      for (EClassId R : Cls.RefinesTo) {
+        EClassId Rc = G.find(R);
+        if (Choices[Rc].Cost == Infinite || Rc == C)
+          continue;
+        Choice Ch;
+        Ch.Cost = 0;
+        Ch.RefTarget = Rc;
+        Alts.push_back(Ch);
+      }
+    };
+    CostVector Best = Evaluate();
+    unsigned Evaluations = 1;
+    for (unsigned Round = 0; Round < Opts.MaxRounds && !Best.isInfinite() &&
+                             Evaluations < Opts.MaxEvaluations;
+         ++Round) {
+      CostDag D;
+      SmallVector<EClassId, 32> Classes;
+      DenseMap<EClassId, Choice> Used;
+      if (!buildDag(Roots, States, D, &Classes, &Used))
+        break;
+      DenseSet<EClassId> InDag(Classes.begin(), Classes.end());
+      bool Changed = false;
+      // The classes of the DAG at the start of the round, in DAG order.
+      const SmallVector<EClassId, 32> RoundClasses = Classes;
+      for (EClassId C : RoundClasses) {
+        if (Evaluations >= Opts.MaxEvaluations)
+          break;
+        // An earlier change can take a class out of the DAG.
+        if (!InDag.contains(C))
+          continue;
+        if (!Opts.ImproveVectors && G.getType(C).isValid() &&
+            G.getType(C).isVector())
+          continue;
+        SmallVector<Choice, 4> Alts;
+        Alternatives(C, Alts);
+        if (Alts.size() < 2)
+          continue;
+        const Choice Cur = Used.lookup(C);
+        std::optional<Choice> Saved;
+        if (auto It = Final.find(C); It != Final.end())
+          Saved = It->second;
+        for (const Choice &Alt : Alts) {
+          if (Evaluations >= Opts.MaxEvaluations)
+            break;
+          if (Alt.NodeIdx == Cur.NodeIdx &&
+              (Alt.NodeIdx >= 0 || Alt.RefTarget == Cur.RefTarget))
+            continue;
+          Final[C] = Alt;
+          ++Evaluations;
+          CostVector Cost = Evaluate();
+          if (Opts.SizeTieBreak ? Cost < Best : Cost.Instrs < Best.Instrs) {
+            Best = Cost;
+            ++Improvements;
+            Changed = true;
+            // The classes of the new DAG and their choices.
+            Classes.clear();
+            Used.clear();
+            CostDag NewDag;
+            buildDag(Roots, States, NewDag, &Classes, &Used);
+            InDag = DenseSet<EClassId>(Classes.begin(), Classes.end());
+            break;
+          }
+          if (Saved)
+            Final[C] = *Saved;
+          else
+            Final.erase(C);
+        }
+      }
+      if (!Changed)
+        break;
+    }
+  }
+
+  // Keep the choices of the final DAG, so that resolve() and
+  // getChosenNode() give them without the bank states of the roots.
+  CostDag D;
+  DenseMap<EClassId, Choice> Used;
+  if (buildDag(Roots, States, D, nullptr, &Used))
+    for (const auto &[C, Ch] : Used)
+      Final[C] = Ch;
+  return Improvements;
 }
 
 void Extractor::printExpr(
