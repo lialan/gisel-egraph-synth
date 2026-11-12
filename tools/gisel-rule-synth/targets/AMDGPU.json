@@ -56,7 +56,7 @@
    "synth_xor_70267483": "5615614608bcf4bc6c316e9ff6268b45335f4b920425a2751ee2a636feec879b",
    "synth_zext_a25c36b8_1u": "a7f434302b14c0d6aa30731a4cb3b37999807f8c2ba5981d876371bc679e91f4"
   },
-  "semantics_sha256": "fb7eaaefc9069ca3673aa9bbae3a0d532c5329d51619090223dfca989b8973be"
+  "semantics_sha256": "c32c3266559e83acdab82c226dbd6c182fe71fdb82736cf52f80ee588a8e7566"
  },
  "combiner": "amdgpu-prelegalizer-combiner",
  "emitted_records": 77,

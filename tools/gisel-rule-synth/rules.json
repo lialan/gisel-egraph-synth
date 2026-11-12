@@ -13,7 +13,7 @@
  "generator_version": "2.1",
  "knowledge": {
   "schema": 1,
-  "semantics_sha256": "fb7eaaefc9069ca3673aa9bbae3a0d532c5329d51619090223dfca989b8973be"
+  "semantics_sha256": "c32c3266559e83acdab82c226dbd6c182fe71fdb82736cf52f80ee588a8e7566"
  },
  "limits": {
   "discovery": {
@@ -2446,7 +2446,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ADD:s32 (G_ZEXT:s32 x0) x1)",
    "source_json": {
@@ -2627,7 +2627,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ADD:s1 x0 x1)",
    "source_json": {
@@ -3098,7 +3098,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ADD:s16 (G_TRUNC:s16 x0) (G_TRUNC:s16 x1))",
    "source_json": {
@@ -3574,7 +3574,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ADD:s16 (G_MUL:s16 (G_TRUNC:s16 x0) (G_TRUNC:s16 x1)) (G_TRUNC:s16 x2))",
    "source_json": {
@@ -3886,7 +3886,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ADD:s32 (G_AND:s32 x0 x1) (G_OR:s32 x0 x1))",
    "source_json": {
@@ -4096,7 +4096,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ADD:s32 (G_ZEXT:s32 x0) x1)",
    "source_json": {
@@ -4277,7 +4277,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ADD:s1 x0 x1)",
    "source_json": {
@@ -4628,7 +4628,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ADD:s32 x0 x1)",
    "source_json": {
@@ -4936,7 +4936,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ADD:s32 x0 x1)",
    "source_json": {
@@ -5124,7 +5124,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ADD:s1 x0 x1)",
    "source_json": {
@@ -5460,7 +5460,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ADD:s1 x0 x1)",
    "source_json": {
@@ -5721,7 +5721,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ADD:s32 x0 x0)",
    "source_json": {
@@ -5906,7 +5906,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ADD:s1 x0 x1)",
    "source_json": {
@@ -6204,7 +6204,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s32 (G_OR:s32 x0 x1) x2)",
    "source_json": {
@@ -6511,7 +6511,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s32 (G_SHL:s32 x0 x1) x2)",
    "source_json": {
@@ -6813,7 +6813,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s32 (G_OR:s32 x0 x1) x2)",
    "source_json": {
@@ -7133,7 +7133,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s32 (G_XOR:s32 x0 x1) (G_XOR:s32 x0 x2))",
    "source_json": {
@@ -7447,7 +7447,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s32 (G_ADD:s32 x0 x1) x2)",
    "source_json": {
@@ -7678,7 +7678,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s8 (G_XOR:s8 (G_ZEXT:s8 x0) x1) x2)",
    "source_json": {
@@ -8155,7 +8155,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s16 (G_TRUNC:s16 x0) (G_XOR:s16 (G_TRUNC:s16 x1) x2))",
    "source_json": {
@@ -8480,7 +8480,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s32 (G_ASHR:s32 x0 x1) x2)",
    "source_json": {
@@ -8804,7 +8804,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s8 (G_XOR:s8 x0 x1) x2)",
    "source_json": {
@@ -9089,7 +9089,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s32 x0 x1)",
    "source_json": {
@@ -9397,7 +9397,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s32 (G_XOR:s32 x0 x1) (G_XOR:s32 x0 x2))",
    "source_json": {
@@ -9733,7 +9733,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s32 (G_LSHR:s32 x0 x1) (G_OR:s32 x2 x3))",
    "source_json": {
@@ -10187,7 +10187,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s32 (G_SEXT:s32 x0) x1)",
    "source_json": {
@@ -10492,7 +10492,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s32 (G_XOR:s32 x0 x1) (G_XOR:s32 x0 x2))",
    "source_json": {
@@ -11108,7 +11108,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s64 (G_ASHR:s64 x0 x1) x2)",
    "source_json": {
@@ -11586,7 +11586,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s16 (G_TRUNC:s16 x0) (G_XOR:s16 (G_TRUNC:s16 x1) x2))",
    "source_json": {
@@ -11884,7 +11884,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s32 x0 x1)",
    "source_json": {
@@ -12167,7 +12167,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_AND:s32 (G_OR:s32 x0 x1) x0)",
    "source_json": {
@@ -12587,7 +12587,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ASHR:s32 (G_ZEXT:s32 x0) x1)",
    "source_json": {
@@ -12874,7 +12874,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ASHR:s32 x0 x1)",
    "source_json": {
@@ -13145,7 +13145,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ASHR:s32 x0 x1)",
    "source_json": {
@@ -13300,7 +13300,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_FPTOSI:s32 (G_SITOFP:s32 x0))",
    "source_json": {
@@ -13453,7 +13453,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_FPTOUI:s32 (G_UITOFP:s32 x0))",
    "source_json": {
@@ -13804,7 +13804,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ICMP:ne:s1 (G_SELECT:s32 x0 x1 x2) x1)",
    "source_json": {
@@ -14287,7 +14287,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ICMP:sge:s1 (G_ADD:s8 (G_AND:s8 (G_TRUNC:s8 (G_TRUNC:s32 x0)) x1) x2) x3)",
    "source_json": {
@@ -14814,7 +14814,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ICMP:eq:s1 (G_ADD:s27 (G_MUL:s27 x0 x1) x2) x3)",
    "source_json": {
@@ -15281,7 +15281,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ICMP:ne:s1 (G_ADD:s4 (G_MUL:s4 x0 x1) x2) x3)",
    "source_json": {
@@ -15631,7 +15631,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ICMP:eq:s1 (G_SELECT:s32 x0 x1 x2) x2)",
    "source_json": {
@@ -16304,7 +16304,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ICMP:ne:s1 (G_XOR:s32 x0 x1) x2)",
    "source_json": {
@@ -16732,7 +16732,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_LSHR:s32 (G_ZEXT:s32 x0) x1)",
    "source_json": {
@@ -17009,7 +17009,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_LSHR:s32 x0 x1)",
    "source_json": {
@@ -17579,7 +17579,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_LSHR:s11 x0 x1)",
    "source_json": {
@@ -18114,7 +18114,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_LSHR:s64 x0 x1)",
    "source_json": {
@@ -18545,7 +18545,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_LSHR:s64 x0 x1)",
    "source_json": {
@@ -19061,7 +19061,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_LSHR:s32 (G_ASHR:s32 x0 x1) x2)",
    "source_json": {
@@ -19347,7 +19347,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_LSHR:s32 (G_SHL:s32 x0 x1) x1)",
    "source_json": {
@@ -19779,7 +19779,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_MUL:s16 (G_TRUNC:s16 x0) (G_TRUNC:s16 x1))",
    "source_json": {
@@ -20087,7 +20087,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s32 x0 x1)",
    "source_json": {
@@ -20375,7 +20375,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s32 (G_AND:s32 x0 x1) x0)",
    "source_json": {
@@ -20850,7 +20850,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s16 (G_TRUNC:s16 x0) (G_XOR:s16 (G_TRUNC:s16 x1) x2))",
    "source_json": {
@@ -21167,7 +21167,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s64 (G_ASHR:s64 x0 x1) (G_ASHR:s64 x2 x1))",
    "source_json": {
@@ -21462,7 +21462,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s32 x0 x1)",
    "source_json": {
@@ -21793,7 +21793,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s32 (G_AND:s32 x0 x1) (G_XOR:s32 x2 x3))",
    "source_json": {
@@ -22274,7 +22274,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s32 (G_AND:s32 x0 x1) (G_XOR:s32 x2 x3))",
    "source_json": {
@@ -22583,7 +22583,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s32 x0 x1)",
    "source_json": {
@@ -22905,7 +22905,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s32 (G_AND:s32 x0 x1) x2)",
    "source_json": {
@@ -23188,7 +23188,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s32 (G_XOR:s32 x0 x1) x0)",
    "source_json": {
@@ -23483,7 +23483,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s32 (G_ADD:s32 x0 x1) x0)",
    "source_json": {
@@ -23770,7 +23770,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s32 (G_AND:s32 (G_AND:s32 x0 x1) x2) x0)",
    "source_json": {
@@ -24094,7 +24094,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s32 (G_SUB:s32 x0 x1) (G_XOR:s32 x1 x2))",
    "source_json": {
@@ -24400,7 +24400,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s32 (G_ADD:s32 x0 x1) x0)",
    "source_json": {
@@ -24732,7 +24732,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s32 (G_AND:s32 x0 x1) (G_XOR:s32 x2 x3))",
    "source_json": {
@@ -25055,7 +25055,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s32 (G_AND:s32 x0 x1) (G_AND:s32 x0 x2))",
    "source_json": {
@@ -25538,7 +25538,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_OR:s16 (G_TRUNC:s16 x0) (G_XOR:s16 (G_TRUNC:s16 x1) x2))",
    "source_json": {
@@ -25923,7 +25923,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SELECT:s32 x0 (G_XOR:s32 x1 x2) (G_XOR:s32 x1 x3))",
    "source_json": {
@@ -26323,7 +26323,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SELECT:s32 (G_ICMP:ne:s1 (G_SELECT:s32 x0 x1 x2) x1) x3 x4)",
    "source_json": {
@@ -26745,7 +26745,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SELECT:s32 (G_SELECT:s1 x0 x1 x2) x3 x4)",
    "source_json": {
@@ -27098,7 +27098,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SELECT:s32 (G_ICMP:sgt:s1 x0 x1) x0 x1)",
    "source_json": {
@@ -27452,7 +27452,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SELECT:s32 (G_ICMP:eq:s1 (G_SELECT:s32 x0 x1 x2) x2) x3 x4)",
    "source_json": {
@@ -28151,7 +28151,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SELECT:s32 (G_ICMP:sgt:s1 x0 x1) x1 x0)",
    "source_json": {
@@ -28346,7 +28346,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SEXT:s32 (G_MUL:s8 (G_TRUNC:s8 x0) (G_TRUNC:s8 x1)))",
    "source_json": {
@@ -28546,7 +28546,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SEXT:s32 (G_TRUNC:s8 (G_TRUNC:s16 x0)))",
    "source_json": {
@@ -28955,7 +28955,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SEXT:s64 x0)",
    "source_json": {
@@ -29136,7 +29136,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SEXT:s32 (G_TRUNC:s1 x0))",
    "source_json": {
@@ -29308,7 +29308,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SEXT:s32 (G_TRUNC:s8 x0))",
    "source_json": {
@@ -29600,7 +29600,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SHL:s8 x0 x1)",
    "source_json": {
@@ -29889,7 +29889,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SHL:s8 x0 x1)",
    "source_json": {
@@ -30301,7 +30301,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SHL:s64 x0 (G_ZEXT:s64 x1))",
    "source_json": {
@@ -30603,7 +30603,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SHL:s32 (G_AND:s32 x0 x1) x2)",
    "source_json": {
@@ -30779,7 +30779,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SITOFP:s32 (G_FPTOSI:s32 x0))",
    "source_json": {
@@ -31173,7 +31173,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SITOFP:s32 (G_SEXT:s32 x0))",
    "source_json": {
@@ -31469,7 +31469,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SMAX:s32 (G_SUB:s32 x0 x1) x1)",
    "source_json": {
@@ -31901,7 +31901,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SUB:s16 (G_TRUNC:s16 x0) (G_TRUNC:s16 x1))",
    "source_json": {
@@ -32194,7 +32194,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SUB:s32 x0 x1)",
    "source_json": {
@@ -32498,7 +32498,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SUB:s32 (G_ADD:s32 x0 x1) (G_ADD:s32 x0 x2))",
    "source_json": {
@@ -32800,7 +32800,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_SUB:s32 (G_OR:s32 x0 x1) (G_AND:s32 x0 x1))",
    "source_json": {
@@ -33758,7 +33758,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_TRUNC:s8 (G_TRUNC:s16 x0))",
    "source_json": {
@@ -34191,7 +34191,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_TRUNC:s16 (G_SHL:s64 x0 x1))",
    "source_json": {
@@ -34599,7 +34599,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_TRUNC:s16 x0)",
    "source_json": {
@@ -35014,7 +35014,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_TRUNC:s8 (G_AND:s32 x0 x1))",
    "source_json": {
@@ -35495,7 +35495,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_TRUNC:s1 (G_TRUNC:s8 (G_TRUNC:s16 x0)))",
    "source_json": {
@@ -35895,7 +35895,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_UITOFP:s32 (G_ZEXT:s32 x0))",
    "source_json": {
@@ -36066,7 +36066,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_UITOFP:s32 (G_FPTOUI:s32 x0))",
    "source_json": {
@@ -36593,7 +36593,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_UNMERGE_VALUES:s32 (G_ZEXT:s64 (G_TRUNC:s63 x0)))",
    "source_json": {
@@ -37022,7 +37022,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_UNMERGE_VALUES:s32 (G_AND:s64 x0 x1))",
    "source_json": {
@@ -37318,7 +37318,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_XOR:s32 (G_ASHR:s32 x0 x1) (G_ASHR:s32 x2 x1))",
    "source_json": {
@@ -37719,7 +37719,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_XOR:s1 x0 x1)",
    "source_json": {
@@ -37923,7 +37923,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_XOR:s8 (G_ZEXT:s8 x0) x1)",
    "source_json": {
@@ -38296,7 +38296,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_XOR:s1 x0 x1)",
    "source_json": {
@@ -38628,7 +38628,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_XOR:s32 (G_AND:s32 x0 x1) (G_AND:s32 x0 x2))",
    "source_json": {
@@ -38918,7 +38918,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_XOR:s32 (G_AND:s32 x0 x1) (G_OR:s32 x0 x1))",
    "source_json": {
@@ -39204,7 +39204,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_XOR:s8 x0 x1)",
    "source_json": {
@@ -39526,7 +39526,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_XOR:s1 (G_XOR:s1 x0 x1) x0)",
    "source_json": {
@@ -39710,7 +39710,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_XOR:s1 x0 x1)",
    "source_json": {
@@ -40005,7 +40005,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_XOR:s32 (G_AND:s32 x0 x1) (G_AND:s32 x0 x2))",
    "source_json": {
@@ -40326,7 +40326,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_XOR:s32 (G_AND:s32 x0 x1) (G_AND:s32 x0 x2))",
    "source_json": {
@@ -40523,7 +40523,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_XOR:s1 x0 x1)",
    "source_json": {
@@ -40842,7 +40842,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_XOR:s1 x0 x1)",
    "source_json": {
@@ -41055,7 +41055,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_XOR:s8 (G_ZEXT:s8 x0) x1)",
    "source_json": {
@@ -41231,7 +41231,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_XOR:s1 x0 x1)",
    "source_json": {
@@ -41517,7 +41517,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_XOR:s32 x0 x1)",
    "source_json": {
@@ -42008,7 +42008,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ZEXT:s32 (G_OR:s16 (G_TRUNC:s16 x0) (G_XOR:s16 (G_TRUNC:s16 x1) x2)))",
    "source_json": {
@@ -42578,7 +42578,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ZEXT:s32 (G_XOR:s1 (G_TRUNC:s1 x0) x1))",
    "source_json": {
@@ -43127,7 +43127,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ZEXT:s32 (G_XOR:s1 (G_TRUNC:s1 x0) x1))",
    "source_json": {
@@ -43600,7 +43600,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ZEXT:s32 (G_TRUNC:s16 x0))",
    "source_json": {
@@ -44159,7 +44159,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ZEXT:s32 (G_XOR:s1 (G_TRUNC:s1 x0) x1))",
    "source_json": {
@@ -44708,7 +44708,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ZEXT:s32 (G_XOR:s1 (G_TRUNC:s1 x0) x1))",
    "source_json": {
@@ -44891,7 +44891,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ZEXT:s32 (G_TRUNC:s1 x0))",
    "source_json": {
@@ -45080,7 +45080,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ZEXT:s32 (G_XOR:s1 x0 x1))",
    "source_json": {
@@ -45566,7 +45566,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ZEXT:s32 (G_AND:s16 (G_TRUNC:s16 x0) (G_XOR:s16 (G_TRUNC:s16 x1) x2)))",
    "source_json": {
@@ -46086,7 +46086,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ZEXT:s32 x0)",
    "source_json": {
@@ -46614,7 +46614,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ZEXT:s32 (G_XOR:s1 (G_TRUNC:s1 x0) x1))",
    "source_json": {
@@ -46995,7 +46995,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ZEXT:s32 (G_TRUNC:s8 (G_TRUNC:s16 x0)))",
    "source_json": {
@@ -47450,7 +47450,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ZEXT:s64 x0)",
    "source_json": {
@@ -48008,7 +48008,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.0"
+    "solver": "z3 5.4.1"
    },
    "source": "(G_ZEXT:s32 (G_XOR:s1 (G_TRUNC:s1 x0) x1))",
    "source_json": {
