@@ -440,6 +440,8 @@ class RealExtractionTest(unittest.TestCase):
 
     def test_all_command(self):
         """`all` gives its subcommands every argument they read."""
+        from unittest import mock
+
         d = self.tmp.name
         args = cli.build_parser().parse_args([
             'all', '--llc', LLC, '--corpus-dir', os.path.join(d, 'corpus'),
@@ -449,7 +451,13 @@ class RealExtractionTest(unittest.TestCase):
             '--td', os.path.join(d, 'out.td'),
             '--inc', os.path.join(d, 'out.inc'),
             '--max-instances', '30', '--grammar', 'all'])
-        self.assertFalse(args.fn(args))
+        # Test the pipeline with fresh knowledge. A development change to a
+        # matcher intentionally invalidates the distributed catalog/profile;
+        # their stale-state rejection is covered by test_incremental.
+        with mock.patch.dict(cli._SUBPARSERS['synth']._defaults, {'known': ''}), \
+                mock.patch.dict(cli._SUBPARSERS['emit']._defaults,
+                                {'all_candidates': True}):
+            self.assertFalse(args.fn(args))
         with open(os.path.join(d, 'rules.json')) as f:
             db = json.load(f)
         self.assertEqual(db['limits']['discovery']['grammar'], 'all')

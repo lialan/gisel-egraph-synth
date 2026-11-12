@@ -559,7 +559,7 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
      root. A width map without that proof is not a width of the new rule.
      The replacements read each input once in all.
    - *Generated code*: the guard also checks that each replaced value has
-     another user, is in the block of the root, and that no input of the
+     another user, is in the permitted scope of the root, and that no input of the
      replacement is defined after the first of them (`isJointRegion`). It
      puts that position in the plan of the rule (`RegionPlan`, the match
      data of the combine rule). The apply function builds the replacement
@@ -568,14 +568,16 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
      registers (`releaseResults`), so that an old register has only the
      definition of the new instruction when a later new instruction reads
      it (the builder reads that definition when it folds constants).
-   - *Limits*: one basic block; the other outputs are below the root (step
+   - *Limits*: one basic block, or a straight-line chain for pure scalar
+     integer operations (see below); the other outputs are below the root (step
      6 has roots that are not in one tree); a value that occurs twice in
      the source and a result of an instruction with several results are
      not replaced; no computed constants.
 
 6. **Regions with several roots** (`sibling.py`, `synth --siblings`). The
    other roots (the siblings, at most two) are not in the tree of the
-   primary root: each is one instruction of the same block that reads a
+   primary root: each is one instruction of the same block or permitted
+   straight-line chain that reads a
    value of the region.
 
    ```
@@ -597,7 +599,8 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
      has the value of each operand of each sibling
      (`region.siblings[].operands`: `var`, `node` or `sibling`).
    - *Groups*: the corpus has one tree per root. `sibling.load_pairs` makes
-     the groups from the records of one basic block by their registers:
+     the groups from the records of one basic block, and from records with
+     a common `straight_line` scope, by their registers:
      each tree with the root instructions of the other records that read
      an input or a value below the root of that tree, one or two of them.
      An instruction of the tree, the definition of an input and a second
@@ -646,12 +649,76 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
      pattern matched or that stays; it reads their registers. The root
      and each sibling that the rule replaces release their registers
      before the replacement is built (`releaseResults`, see step 5).
-   - *Limits*: one basic block; at most two siblings; a sibling is one
-     instruction; a sibling that is replaced has one result; a sibling that
+   - *Limits*: one block or a permitted straight-line chain; at most two
+     siblings; a sibling is one instruction; a sibling that is replaced has one result; a sibling that
      stays does not read one that is replaced; an input that only a sibling
      reads is a constant in the corpus; no `G_FREEZE` term twice; a sibling
      that can trap and that stays is not emitted (the apply step can move
      it); no computed constants.
+
+**Straight-line scope.** The corpus extractor follows definitions across
+unconditional edges with one successor and one predecessor. A chain has at
+most 16 blocks, follows execution order rather than layout, and never crosses
+an entry backedge, a branch, a join or an exceptional/address-taken entry.
+A cycle or a chain exceeding the block limit falls back to block-local scope.
+No blocks, edges, PHIs or terminators are rewritten.
+
+Cross-block nodes and replacements are restricted to pure scalar integer
+operations without immediate UB. Memory, intrinsics, floating point,
+pointers, vectors, `G_FREEZE`, `G_IMPLICIT_DEF`, `G_ANYEXT`, division and
+remainder stay outside this subset. They may supply boundary inputs, but are
+not included as cross-block nodes. Single-block rules keep their existing
+operator support.
+
+A pure tree's corpus record has `straight_line: [bb, ...]` in execution
+order; each expression node also records its defining `bb`. Register and
+multi-result instruction identities remain function-scoped. Records without
+the scope field retain the old block-local sibling grouping. Local groups
+are still searched, and are not counted again as cross-block occurrences.
+
+`--regions` and `--siblings` use these records automatically. The algebraic
+joint proof is unchanged: there is no branch selector or path assumption,
+and every replaced output is checked together, including its poison and
+undef behavior. A wrong secondary output still invalidates the candidate.
+The generated guard independently checks the actual CFG, every matched
+instruction and the replacement's operator subset; corpus metadata is not
+trusted at application time.
+
+Placement uses at most 64 instructions on either side of the primary root,
+including intervening branches. The replacement is built before the earliest
+old output, after all required input definitions. In valid SSA, an input
+outside the chain that is read by a matched non-PHI dominates the chain's
+entry; an input defined inside it must precede the insertion point. This
+placement preserves ordinary external uses and uses on PHI incoming edges.
+A kept sibling may move to that point only after the same checks. Its move
+notifies the combiner/CSE observer, whose instruction identity includes its
+block. The CFG and its dominator tree stay valid.
+
+This scope extension belongs to the offline rule synthesis and generated
+combiner pipeline. The separate online `gisel-egraph-combiner` continues to
+form block-local e-graphs.
+
+The focused test below extracts real cross-block MIR, discovers and proves
+multi-output and sibling rules, builds an isolated compiler containing the
+emitted TableGen/C++, applies it with MachineVerifier enabled, and checks
+that the CFG is unchanged. It does not replace the checked-in rule catalog
+or target profiles:
+
+```sh
+GIRS_LLC="$PWD/build/plugin/bin/llc" \
+GIRS_LLVM_BUILD="$PWD/build/llvm" \
+GIRS_TEST_REGION_BUILD=1 \
+python3 -m unittest discover -s tools/gisel-rule-synth/tests \
+  -p test_straight_line.py -v
+```
+
+The new scope helper is part of the matcher contract hash. An existing
+catalog/cache therefore needs revalidation before reuse in this development
+worktree. For an isolated search, use `synth CORPUS --regions --siblings
+--grammar registry --known '' --cache NEW_CACHE -o NEW_LIBRARY` and emit that
+library with `--all-candidates` into a separate build. The test above follows
+this path. Promoting rules into the shared target profiles still requires
+the normal measurement and reselection workflow.
 
 A replacement can have a *computed constant*: a constant that the source
 does not have. The importer looks for a recipe, an expression over the

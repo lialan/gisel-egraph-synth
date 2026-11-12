@@ -673,7 +673,7 @@ def _plan_inputs(rule):
 def _cpp_find_siblings(rule):
     """The lines of the guard that find the other roots of a rule for a
     region with several roots and that fill Plan.Sibs and Plan.Extra.
-    Each sibling is an instruction of the block of the root that reads a
+    Each sibling is an instruction of the permitted execution scope that reads a
     value that the tree or an earlier sibling has, and that has the
     operator and the operands of the rule. An operand that is a variable
     of the siblings only gets its register here."""
@@ -742,8 +742,10 @@ def _cpp_find_siblings(rule):
                 '      MRI, *Root, %s,' % _ref_reg(anchor, sibs),
                 '      [&](const MachineInstr &MI) {'] + body + [
             '        return false;', '      },',
-            '      /*MaxUsers=*/8, {%s}, Plan.Sibs);' % ', '.join(
-                'T%d' % k for k in range(len(interior))),
+            '      /*MaxUsers=*/8, {%s}, Plan.Sibs%s);' % (
+                ', '.join('T%d' % k for k in range(len(interior))),
+                ', /*AllowCrossBlock=*/true' if _straight_line_rule(rule)
+                else ''),
             '  if (!Sib%d)' % j, '    return false;',
             '  Plan.Sibs.push_back(Sib%d);' % j] + [
             '  [[maybe_unused]] Register S%dR%d = '
@@ -984,6 +986,11 @@ def _rule_exprs(rule):
     for b, t, _ in _siblings(rule):
         out += [b] + ([t] if t is not None else [])
     return out
+
+
+def _straight_line_rule(rule):
+    from . import region
+    return all(region.straight_line_expr(e) for e in _rule_exprs(rule))
 
 
 def needs_ieee_denormal(rule):
@@ -1294,7 +1301,7 @@ def _cpp_apply(rule):
         # The match step found the siblings and the position
         # (planRegion). A sibling that stays and that is after the
         # position is moved before it.
-        head = ['  B.setInstrAndDebugLoc(applyRegionPlan(Plan));'] + [
+        head = ['  B.setInstrAndDebugLoc(applyRegionPlan(Plan, B.getObserver()));'] + [
             '  [[maybe_unused]] Register X%d = Plan.Extra[%d];' % (v, i)
             for i, v in enumerate(_sibling_vars(rule))]
         for j, (b, rb, _) in enumerate(sibs):
@@ -1328,7 +1335,7 @@ def _cpp_apply(rule):
         # output.
         head = ['  MachineInstr *Old%d = MRI.getVRegDef(%s);' % (n, d)
                 for n, (d, _, _) in enumerate(outs)] + [
-            '  B.setInstrAndDebugLoc(applyRegionPlan(Plan));'] + [
+            '  B.setInstrAndDebugLoc(applyRegionPlan(Plan, B.getObserver()));'] + [
             '  releaseResults(MRI, *Old%d);' % n
             for n in range(len(outs))] + ['  releaseResults(MRI, Root);']
         tail = ['  Old%d->eraseFromParent();' % n for n in range(len(outs))]
@@ -1573,6 +1580,14 @@ def _cpp_guard(r):
             'matched: %s\\n");' % r['id']]
     if sibs:
         out += _cpp_find_siblings(r)
+    if r.get('region'):
+        nodes = ['T%d' % i for i in range(k)] + [x for x, _, _ in sres]
+        out += ['  // All matched nodes share one permitted execution scope.',
+                '  if (!isRegionScope(MRI, Dst, {%s}, '
+                '/*AllowCrossBlock=*/%s))' % (
+                    ', '.join(nodes),
+                    'true' if _straight_line_rule(r) else 'false'),
+                '    return false;']
     # The registers that are pointers in the rule: the guard checks that
     # they are pointers, and that the others are scalars.
     reg_kind = {x: k for _, k, x in _type_sources(r)}
@@ -1718,7 +1733,7 @@ def _cpp_guard(r):
         stays = sum(1 << j for j, (_, rb, _) in enumerate(sibs)
                     if rb is None)
         out += ['  // The replacement can be built: the roots are near in '
-                'one block, and',
+                'one straight-line chain, and',
                 '  // the values that it reads are defined before the first '
                 'root that the',
                 '  // rule replaces.',

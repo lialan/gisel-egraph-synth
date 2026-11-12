@@ -13,6 +13,7 @@
 
 #include "GISelEGraphSynth/GISynthPredicates.h"
 #include "GISelMITest.h"
+#include "llvm/CodeGen/GlobalISel/CSEInfo.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 
@@ -326,6 +327,157 @@ TEST_F(AArch64GISelMITest, IsJointRegionFillsThePlan) {
   // The comparison has one user: the rule for the root alone applies.
   EXPECT_FALSE(isJointRegion(*MRI, ZExt->getOperand(0).getReg(), {CmpReg},
                              {Copies[0]}, Plan));
+}
+
+TEST_F(AArch64GISelMITest, StraightLineJointRegion) {
+  setUp("  %3:_(s64) = G_ADD %0, %1\n"
+        "  %4:_(s64) = G_MUL %3, %2\n"
+        "  G_BR %bb.3\n"
+        "  bb.2:\n"
+        "  %5:_(s1) = G_ICMP intpred(ult), %3(s64), %0\n"
+        "  %6:_(s64) = G_ZEXT %5\n"
+        "  $x0 = COPY %6\n"
+        "  RET_ReallyLR implicit $x0\n"
+        "  bb.3:\n"
+        "  G_BR %bb.2\n");
+  if (!TM)
+    GTEST_SKIP();
+  auto *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  auto *Cmp = findOpcode(*MF, TargetOpcode::G_ICMP);
+  // The block layout is deliberately not the execution order.
+  auto Blocks = straightLineBlocks(*Cmp->getParent());
+  ASSERT_EQ(Blocks.size(), 3u);
+  EXPECT_EQ(Blocks.front(), Add->getParent());
+  EXPECT_EQ(Blocks.back(), Cmp->getParent());
+  Register Sum = Add->getOperand(0).getReg();
+  Register Carry = Cmp->getOperand(0).getReg();
+  EXPECT_FALSE(isRegionScope(*MRI, Carry, {Sum}, false));
+  EXPECT_TRUE(isRegionScope(*MRI, Carry, {Sum}, true));
+  RegionPlan Plan;
+  ASSERT_TRUE(isJointRegion(*MRI, Carry, {Sum}, {Copies[0], Copies[1]}, Plan));
+  EXPECT_EQ(Plan.InsertPt, Add);
+  EXPECT_EQ(firstRegionOutput(*Cmp, {Sum}, {}, /*MaxDistance=*/2), nullptr);
+  B.setInstrAndDebugLoc(applyRegionPlan(Plan));
+  releaseResults(*MRI, *Add);
+  releaseResults(*MRI, *Cmp);
+  B.buildUAddo(Sum, Carry, Copies[0], Copies[1]);
+  Add->eraseFromParent();
+  Cmp->eraseFromParent();
+  MachineDominatorTree MDT(*MF);
+  for (Register R : {Sum, Carry})
+    for (MachineOperand &Use : MRI->use_nodbg_operands(R))
+      EXPECT_TRUE(MDT.dominates(MRI->getVRegDef(R), Use.getParent()));
+  EXPECT_EQ(MF->size(), 3u);
+  EXPECT_NE(findOpcode(*MF, TargetOpcode::G_BR, 1), nullptr);
+}
+
+TEST_F(AArch64GISelMITest, StraightLineSiblingAndLateInput) {
+  setUp("  %3:_(s64) = G_SUB %0, %1\n"
+        "  G_BR %bb.2\n"
+        "  bb.2:\n"
+        "  %4:_(s64) = G_ADD %0, %2\n"
+        "  %5:_(s1) = G_ICMP intpred(uge), %0(s64), %1\n"
+        "  %6:_(s64) = G_SELECT %5(s1), %2, %4\n");
+  if (!TM)
+    GTEST_SKIP();
+  auto *Sub = findOpcode(*MF, TargetOpcode::G_SUB);
+  auto *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  auto *Select = findOpcode(*MF, TargetOpcode::G_SELECT);
+  auto IsSub = [](const MachineInstr &MI) {
+    return MI.getOpcode() == TargetOpcode::G_SUB;
+  };
+  EXPECT_EQ(findSiblingRoot(*MRI, *Select, Copies[0], IsSub), nullptr);
+  EXPECT_EQ(findSiblingRoot(*MRI, *Select, Copies[0], IsSub, 8, {}, {}, true),
+            Sub);
+  RegionPlan Plan;
+  Plan.Sibs = {Sub};
+  EXPECT_TRUE(planRegion(*Select, Plan, 0, {Copies[0], Copies[1]}));
+  EXPECT_EQ(Plan.InsertPt, Sub);
+  EXPECT_FALSE(
+      planRegion(*Select, Plan, 0, {Copies[0], Add->getOperand(0).getReg()}));
+}
+
+TEST_F(AArch64GISelMITest, StraightLineMoveKeptSibling) {
+  setUp("  %3:_(s64) = G_SUB %0, %1\n"
+        "  G_BR %bb.2\n"
+        "  bb.2:\n"
+        "  %4:_(s64) = G_ADD %0, %2\n");
+  if (!TM)
+    GTEST_SKIP();
+  auto *Sub = findOpcode(*MF, TargetOpcode::G_SUB);
+  auto *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  RegionPlan Plan;
+  Plan.Sibs = {Add};
+  ASSERT_TRUE(planRegion(*Sub, Plan, 1, {Copies[0], Copies[2]}));
+  ASSERT_EQ(Plan.Move.size(), 1u);
+  MachineBasicBlock *OriginalBlock = Add->getParent();
+  GISelCSEInfo CSE;
+  CSE.setCSEConfig(std::make_unique<CSEConfigFull>());
+  CSE.analyze(*MF);
+  EXPECT_EQ(&applyRegionPlan(Plan, &CSE), Sub);
+  CSE.handleRecordedInsts();
+  if (Error Err = CSE.verify())
+    FAIL() << toString(std::move(Err));
+  EXPECT_EQ(Add->getParent(), Sub->getParent());
+  EXPECT_TRUE(isBefore(*Add, *Sub));
+  EXPECT_TRUE(OriginalBlock->empty());
+  EXPECT_EQ(Sub->getParent()->succ_size(), 1u);
+}
+
+TEST_F(AArch64GISelMITest, StraightLineRejectsBranchAndJoin) {
+  setUp("  %3:_(s64) = G_ADD %0, %1\n"
+        "  %4:_(s1) = G_ICMP intpred(eq), %0(s64), %1\n"
+        "  G_BRCOND %4, %bb.3\n"
+        "  G_BR %bb.2\n"
+        "  bb.2:\n"
+        "  %5:_(s1) = G_ICMP intpred(ult), %3(s64), %0\n"
+        "  G_BR %bb.3\n"
+        "  bb.3:\n"
+        "  %6:_(s64) = G_PHI %0(s64), %bb.1, %3(s64), %bb.2\n");
+  if (!TM)
+    GTEST_SKIP();
+  auto *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  auto *Cmp = findOpcode(*MF, TargetOpcode::G_ICMP, 1);
+  EXPECT_EQ(straightLineBlocks(*Add->getParent()).size(), 1u);
+  EXPECT_EQ(straightLineBlocks(*Cmp->getParent()).size(), 1u);
+  RegionPlan Plan;
+  EXPECT_FALSE(isJointRegion(*MRI, Cmp->getOperand(0).getReg(),
+                             {Add->getOperand(0).getReg()},
+                             {Copies[0], Copies[1]}, Plan));
+}
+
+TEST_F(AArch64GISelMITest, StraightLineRejectsNonPureInterior) {
+  setUp("  %3:_(s64) = G_FREEZE %0\n"
+        "  %4:_(s64) = G_UDIV %0, %1\n"
+        "  G_BR %bb.2\n"
+        "  bb.2:\n"
+        "  %5:_(s64) = G_ADD %3, %4\n");
+  if (!TM)
+    GTEST_SKIP();
+  auto *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  auto *Freeze = findOpcode(*MF, TargetOpcode::G_FREEZE);
+  auto *Div = findOpcode(*MF, TargetOpcode::G_UDIV);
+  EXPECT_FALSE(isRegionScope(*MRI, Add->getOperand(0).getReg(),
+                             {Freeze->getOperand(0).getReg()}, true));
+  EXPECT_FALSE(isRegionScope(*MRI, Add->getOperand(0).getReg(),
+                             {Div->getOperand(0).getReg()}, true));
+}
+
+TEST_F(AArch64GISelMITest, StraightLineRejectsCycleAndLimitsBlocks) {
+  setUp("  G_BR %bb.4\n"
+        "  bb.2:\n"
+        "  G_BR %bb.3\n"
+        "  bb.3:\n"
+        "  G_BR %bb.2\n"
+        "  bb.4:\n"
+        "  %3:_(s64) = G_ADD %0, %1\n");
+  if (!TM)
+    GTEST_SKIP();
+  auto *Cycle = findOpcode(*MF, TargetOpcode::G_BR, 1)->getParent();
+  EXPECT_EQ(straightLineBlocks(*Cycle).size(), 1u);
+  auto *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  EXPECT_EQ(straightLineBlocks(*Add->getParent()).size(), 2u);
+  EXPECT_EQ(straightLineBlocks(*Add->getParent(), /*MaxBlocks=*/1).size(), 1u);
 }
 
 TEST_F(AArch64GISelMITest, ReleaseResults) {

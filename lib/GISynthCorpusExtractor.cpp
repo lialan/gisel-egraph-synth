@@ -294,11 +294,13 @@ class Extractor {
   GISelValueTracking &VT;
   const MachineDominatorTree &MDT;
   const MachineBasicBlock &MBB;
+  SmallVector<const MachineBasicBlock *, 8> Blocks;
 
 public:
   Extractor(const MachineRegisterInfo &MRI, GISelValueTracking &VT,
             const MachineDominatorTree &MDT, const MachineBasicBlock &MBB)
-      : MRI(MRI), VT(VT), MDT(MDT), MBB(MBB) {}
+      : MRI(MRI), VT(VT), MDT(MDT), MBB(MBB),
+        Blocks(gisynth::straightLineBlocks(MBB)) {}
 
   /// True if \p MI is an instruction of a tree in this block.
   bool isNode(const MachineInstr &MI) const {
@@ -329,7 +331,8 @@ public:
       Out.push_back(std::move(T));
       return Out;
     }
-    if (!Def || Def->getParent() != &MBB || !isNode(*Def))
+    if (!Def || !is_contained(Blocks, Def->getParent()) || !isNode(*Def) ||
+        (Def->getParent() != &MBB && !gisynth::isStraightLineRegionInstr(*Def)))
       return Out;
 
     // Cartesian product of the operand variants. A hint is not an
@@ -417,6 +420,18 @@ public:
           gisynth::isConstrainedFPOpcode(N.MI->getOpcode()) &&
           !gisynth::isSameFPEnvironment(*N.MI, *Root))
         return;
+    bool Pure = all_of(T.Nodes, [](const TreeNode &N) {
+      return !N.MI || gisynth::isStraightLineRegionInstr(*N.MI);
+    });
+    bool Crosses = any_of(T.Nodes, [&](const TreeNode &N) {
+      // An extending-load hint describes a boundary input; it does not
+      // import or move the load. Preserve these existing block-local trees
+      // even when that input was loaded in another block.
+      return N.MI && (N.Forwarded || !isa<GAnyLoad>(N.MI)) &&
+             N.MI->getParent() != &MBB;
+    });
+    if (Crosses && !Pure)
+      return;
     // Inputs are numbered in order of first (left-to-right) occurrence, and a
     // register that occurs twice is the same input.
     DenseMap<Register, unsigned> InputIdx;
@@ -435,6 +450,13 @@ public:
     J.object([&] {
       J.attribute("fn", MF.getName());
       J.attribute("bb", MBB.getNumber());
+      // An explicit scope certificate, shared by all pure trees of this
+      // chain. Old corpora without it remain block-local in sibling.py.
+      if (Pure && Blocks.size() > 1)
+        J.attributeArray("straight_line", [&] {
+          for (const MachineBasicBlock *BB : Blocks)
+            J.value(BB->getNumber());
+        });
       J.attribute("root", regName(T.Nodes.back().Reg));
       J.attribute("interior", Interior);
       J.attributeBegin("expr");
@@ -543,6 +565,7 @@ private:
         J.attribute("lanes", Ty.getNumElements());
       J.attribute("type", typeName(Ty));
       J.attribute("reg", regName(N.Reg));
+      J.attribute("bb", N.MI->getParent()->getNumber());
       KnownBits KB = VT.getKnownBits(N.Reg);
       J.attribute("zero", hex(KB.Zero));
       J.attribute("one", hex(KB.One));

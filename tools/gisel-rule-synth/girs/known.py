@@ -39,7 +39,8 @@ def semantics_sha():
                    'match.py'))
     contracts = ('lib/GISynthCorpusExtractor.cpp', 'lib/SynthCombiner.inc',
                  'include/GISelEGraphSynth/GISynthPredicates.h',
-                 'include/GISelEGraphSynth/GISynthValueFacts.inc')
+                 'include/GISelEGraphSynth/GISynthValueFacts.inc',
+                 'include/GISelEGraphSynth/GISynthRegion.h')
     return digest([model, [(p, hashlib.sha256((Path(paths.REPO) / p)
                     .read_bytes()).hexdigest()) for p in contracts]])
 

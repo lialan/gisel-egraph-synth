@@ -774,7 +774,7 @@ def cmd_synth(args):
         rstats = region.extend(sy, joint, backend, dlim, ctx)
         seconds['regions'] = round(time.monotonic() - t, 2)
     # Rules for several roots: the root of a tree and other instructions
-    # of the block that read values of the region.
+    # of the permitted straight-line scope that read values of the region.
     sstats = {}
     if args.siblings and (backend.deadline is None or time.monotonic() < backend.deadline):
         t = time.monotonic()
@@ -1296,7 +1296,7 @@ def build_parser():
     p.add_argument('--siblings', action='store_true',
                    help='also search rules for several roots: the root of '
                         'a tree and one or two other instructions of the '
-                        'block that read values of the region '
+                        'straight-line scope that read values of the region '
                         '(girs/sibling.py)')
     p.add_argument('--max-pairs', type=int, default=0,
                    help='budget: groups of roots that --siblings searches '

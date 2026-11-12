@@ -246,7 +246,7 @@ class EmitTest(unittest.TestCase):
         # One instruction defines the old register of the sum and the
         # root, before the old sum; then the old instructions go.
         self.assertIn('MachineInstr *Old0 = MRI.getVRegDef(T0);', apply)
-        self.assertIn('B.setInstrAndDebugLoc(applyRegionPlan(Plan));', apply)
+        self.assertIn('B.setInstrAndDebugLoc(applyRegionPlan(Plan, B.getObserver()));', apply)
         self.assertNotIn('firstRegionOutput', apply)
         td, _, _ = emit.emit({'rules': [r]}, all_candidates=True)
         self.assertIn('(defs root:$dst, gisynth_region_plan:$plan),', td)

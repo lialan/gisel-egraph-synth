@@ -375,7 +375,8 @@ class EmitTest(unittest.TestCase):
                       '            MI.getOperand(1 + 1).getReg() == X1', g)
         # Not the comparison of the tree of the root, and not a sibling
         # that the plan has.
-        self.assertIn('/*MaxUsers=*/8, {T0}, Plan.Sibs);', g)
+        self.assertIn('/*MaxUsers=*/8, {T0}, Plan.Sibs, '
+                      '/*AllowCrossBlock=*/true);', g)
         self.assertIn('Plan.Sibs.push_back(Sib0);', g)
         # G_UADDO is commutative and has two results before its operands.
         g = emit._cpp_guard(stays)
@@ -426,7 +427,7 @@ class EmitTest(unittest.TestCase):
         both, _ = self.rules()
         a = emit._cpp_apply(both)
         self.assertIn('const RegionPlan &Plan', a)
-        self.assertIn('B.setInstrAndDebugLoc(applyRegionPlan(Plan));', a)
+        self.assertIn('B.setInstrAndDebugLoc(applyRegionPlan(Plan, B.getObserver()));', a)
         self.assertIn('MachineInstr *Sib0 = Plan.Sibs[0];', a)
         self.assertIn('B.buildInstr(TargetOpcode::G_USUBO, {S0R0, '
                       'MRI.getType(T0)}, {X0, X1})', a)

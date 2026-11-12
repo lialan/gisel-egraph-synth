@@ -22,8 +22,14 @@ semantics only). The proof is joint: one query has the values of every
 output, under the precondition of the rule, for each width map of the
 rule. A width map without that proof is not a width of the new rule.
 
+A straight-line chain needs the same joint proof: it introduces no path
+selector, and its cross-block nodes and replacements have no immediate UB.
+The emitter checks every matched node's scope and the placement of all new
+outputs. CFG metadata is a discovery hint, never a proof assumption.
+
 Limits (each is a rejection, not an assumption):
-  - one basic block; the values below the root are matched from the root;
+  - one basic block, or a bounded straight-line chain for pure scalar
+    integer operations; the runtime guard checks the chain and placement;
   - a value below the root that occurs twice in the source is not an
     output (two matched instructions with one model term);
   - the replacements read each input once in all (see joint_reads), so a
@@ -49,6 +55,24 @@ U64 = np.uint64
 
 # Replacements of one output that are proved, cheapest first.
 MAX_TRIES = 4
+
+
+def straight_line_expr(e):
+    """Whether an expression can participate in the first cross-block
+    subset. Block topology and actual LLTs are checked by GISynthRegion.h;
+    this check also covers operators introduced by a replacement. No path
+    assumptions enter the algebraic proof."""
+    for n in ir.nodes(e):
+        if not ops.known(n[0]) or ops.lanes(n[1]):
+            return False
+        info, _, _ = ops.parse(n[0])
+        if info.intrinsic or info.phi or info.freeze or info.unspecified or \
+                info.fp_operand or info.fp_result or info.ptr_operands or \
+                info.ptr_result or info.bitcast or info.constrained or \
+                info.meta.get('may_trap') or info.shape == 'effect' or \
+                info.name in ('G_LOAD', 'G_SEXTLOAD', 'G_ZEXTLOAD', 'G_STORE'):
+            return False
+    return True
 
 
 def instruction_key(n):
