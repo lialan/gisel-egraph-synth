@@ -804,6 +804,13 @@ def cmd_recheck(args):
         else:
             ok = (set(ir.variables(tgt)) <= set(ir.variables(src)) and
                   ir.is_linear_in(tgt, cv))
+        # A value below the root with bits that are not specified: the
+        # proof is for each value of them, or the rule has the guard that
+        # the values below the root have no other user.
+        choice = None if r.get('region') else smt.interior_choice([src])
+        strong = choice == 'value' and not r['needs_one_use']
+        if choice == 'model' and not r['needs_one_use']:
+            ok = False
         status = 'valid' if ok else 'structural'
         checks = []
         for d in r['disjuncts'] + r.get('unselected_disjuncts', []):
@@ -825,7 +832,7 @@ def cmd_recheck(args):
                     region.verify(sched, dnf, backend)[0]
                 continue
             status, _ = synth.verify(synth.rule_schedules(r, wmaps), dnf,
-                                     backend, cv)
+                                     backend, cv, strong)
         if status != 'valid':
             bad += 1
             print('FAIL %s: %s' % (r['id'], status))

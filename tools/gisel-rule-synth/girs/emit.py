@@ -134,11 +134,17 @@ class _Node:
     """A source pattern node with a stable identity across commuted forms:
     interior node k is always matched as $t<k>."""
 
-    def __init__(self, op, w, name, args):
+    def __init__(self, op, w, name, args, results=None):
         self.op, self.w, self.name, self.args = op, w, name, args
+        # The number of results of the instruction, if the operator does
+        # not give it (G_UNMERGE_VALUES): the pattern names each result.
+        self.results = results
 
 
-def _annotate(src):
+def _annotate(src, vw=None):
+    """The pattern nodes of ``src`` and the widths of its interior
+    nodes. ``vw`` (the widths of the variables) gives the number of
+    results of a G_UNMERGE_VALUES."""
     interior = []
 
     def walk(e, root):
@@ -151,7 +157,12 @@ def _annotate(src):
         else:
             name = '$t%d' % len(interior)
             interior.append(e[1])
-        return _Node(e[0], e[1], name, [walk(a, False) for a in e[2:]])
+        results = None
+        if vw is not None and ops.parse(e[0])[0].shape == 'unmerge':
+            # Equal parts of the operand.
+            results = ir.width(e[2], vw) // e[1]
+        return _Node(e[0], e[1], name, [walk(a, False) for a in e[2:]],
+                     results)
     return walk(src, True), interior
 
 
@@ -166,7 +177,7 @@ def _forms(n):
     res = []
     info, attr, _ = ops.parse(n.op)
     for args in out:
-        res.append(_Node(n.op, n.w, n.name, args))
+        res.append(_Node(n.op, n.w, n.name, args, n.results))
         if info.commutative:
             res.append(_Node(n.op, n.w, n.name,
                              [args[1], args[0]] + args[2:]))
@@ -210,7 +221,7 @@ def _lines(n, out, checks=None):
         # The other results of the instruction are not part of the
         # pattern.
         defs = [n.name if k == res else '$%s_r%d' % (tag, k)
-                for k in range(info.results)]
+                for k in range(info.results or n.results)]
     if info.attr == 'pred':
         operands.insert(0, '$%s_p' % tag)
         checks.append('${%s_p}.getPredicate() == %s' % (
@@ -235,7 +246,7 @@ def variants(rule):
     src = ir.from_json(rule['source_json'])
     tgt = ir.from_json(rule['replacement_json'])
     dnf = rule_dnf(rule)
-    root, _ = _annotate(src)
+    root, _ = _annotate(src, rule['vw'])
     out, seen = [], set()
     for form in _forms(root):
         e = _plain(form)
@@ -581,16 +592,21 @@ def _bits_fn(rule):
     return bits
 
 
-_KIND_NAME = {'f': 'floating-point', 'i': 'integer'}
+_KIND_NAME = {'f': 'floating-point', 'i': 'integer', 'p': 'pointer'}
+# The kinds whose constants a rule does not match and does not build: the
+# patterns have G_CONSTANT with an integer type.
+_NO_CONSTANT = {'f': 'a floating-point constant', 'p': 'a pointer constant'}
 
 
 def _type_source(types, w, kind=None, fmt='%s'):
     """The first register of ``types`` (see _type_sources) that has the
-    width ``w`` and the kind ``kind`` ('f', 'i' or None: any). A register
-    of an unknown kind can give the type of an integer, not the type of a
-    floating-point value."""
+    width ``w`` and the kind ``kind`` ('f', 'i', 'p' or None: an integer
+    or a floating-point value). A register of an unknown kind can give the
+    type of an integer, not the type of a floating-point value. Only a
+    pointer gives the type of a pointer, and it gives no other type."""
     for tw, tk, reg in types:
-        if tw == w and (kind is None or tk == kind or
+        if tw == w and (tk == kind or
+                        (kind is None and tk != 'p') or
                         (kind == 'i' and tk is None)):
             return fmt % reg
     if kind is None:
@@ -601,7 +617,8 @@ def _type_source(types, w, kind=None, fmt='%s'):
 def _check_kinds(src, tgt):
     """Raises ValueError if the types of the rule cannot be written: a
     value that is an integer and a floating-point value, or a
-    floating-point constant (the patterns match and build G_CONSTANT)."""
+    floating-point or pointer constant (the patterns match and build
+    G_CONSTANT with an integer type)."""
     root_kind = ir.result_kind(src)
     kinds = ir.var_kinds(tgt, root_kind, ir.var_kinds(src))
     if 'x' in kinds.values():
@@ -618,8 +635,9 @@ def _apply_patterns(tgt, vw, root_w, src=None):
     if ir.is_var(tgt):
         return ['(GIReplaceReg $dst, $x%d)' % tgt[1]]
     if ir.is_lit(tgt):
-        if root_kind == 'f':
-            raise ValueError('a floating-point constant in the replacement')
+        if root_kind in _NO_CONSTANT:
+            raise ValueError('%s in the replacement' %
+                             _NO_CONSTANT[root_kind])
         return ['(G_CONSTANT $dst, (GITypeOf<"$dst"> %s))' %
                 _lit_imm(tgt[2])]
     pats = []
@@ -637,9 +655,9 @@ def _apply_patterns(tgt, vw, root_w, src=None):
             if ir.is_var(a):
                 ops.append('$x%d' % a[1])
             elif ir.is_lit(a):
-                if ak == 'f':
-                    raise ValueError('a floating-point constant in the '
-                                     'replacement')
+                if ak in _NO_CONSTANT:
+                    raise ValueError('%s in the replacement' %
+                                     _NO_CONSTANT[ak])
                 ops.append('(%s %s)' % (type_of(a[1], ak), _lit_imm(a[2])))
             else:
                 t = '$n%d' % n[0]
@@ -691,6 +709,27 @@ def _bitcast_checks(rule):
             walk(a, ak, False)
     walk(tgt, ir.result_kind(src), True)
     return out
+
+
+def _rule_exprs(rule):
+    """Each source and each replacement of the rule: of the root, of the
+    values below it that have a replacement, and of the siblings."""
+    out = [ir.from_json(rule['source_json']),
+           ir.from_json(rule['replacement_json'])]
+    out += [t for _, t, _ in _region_outputs(rule)]
+    for b, t, _ in _siblings(rule):
+        out += [b] + ([t] if t is not None else [])
+    return out
+
+
+def needs_ieee_denormal(rule):
+    """True if an operator of the rule depends on the treatment of
+    subnormal numbers (OpInfo.denormal). The proof has the IEEE treatment,
+    so the guard checks the denormal mode of the function for the formats
+    of the rule. Each type of the rule is the type of a register of the
+    guard: the replacement takes its types from them."""
+    return any(ops.known(n[0]) and ops.parse(n[0])[0].denormal
+               for e in _rule_exprs(rule) for n in ir.nodes(e))
 
 
 def _interior_kinds(src):
@@ -757,8 +796,8 @@ def _cpp_apply(rule):
         return _type_source(types, w, kind, 'MRI.getType(%s)')
 
     def no_fp_constant(kind):
-        if kind == 'f':
-            raise ValueError('a floating-point constant in the replacement')
+        if kind in _NO_CONSTANT:
+            raise ValueError('%s in the replacement' % _NO_CONSTANT[kind])
 
     def new(text):
         name = 'N%d' % n[0]
@@ -828,8 +867,11 @@ def _cpp_apply(rule):
             else:
                 kinds = info.meta['result_kinds']
                 mainw = ir.width(e[2], rule['vw'])
+                # A main result is a floating-point value if the operator
+                # computes one (G_FMODF).
+                mk = 'f' if info.fp_result else 'i'
                 rtys = [want.get((key, n)) or
-                        (ty(mainw, 'i') if k == 'main' else ty(1, 'i'))
+                        (ty(mainw, mk) if k == 'main' else ty(1, 'i'))
                         for n, k in enumerate(kinds)]
             if info.attr == 'pred':
                 text = 'B.build%sCmp(%s, %s, %s)' % (
@@ -887,6 +929,14 @@ def _cpp_apply(rule):
                 head.append('  releaseResults(MRI, *Sib%d);' % j)
                 tail.append('  Sib%d->eraseFromParent();' % j)
         head.append('  releaseResults(MRI, Root);')
+        # The replacements read values of the source: the values below the
+        # root and the siblings that stay. The proof has these
+        # instructions without flags (dropFlags).
+        _, interior = _annotate(src)
+        head += ['  dropFlags(B, *MRI.getVRegDef(T%d));' % k
+                 for k in range(len(interior))]
+        head += ['  dropFlags(B, *Sib%d);' % j
+                 for j, (_, rb, _) in enumerate(sibs) if rb is None]
     elif outs:
         # The old instructions are found before a new instruction defines
         # their registers, and the replacement is built before the first
@@ -914,16 +964,17 @@ def why_not_emittable(rule):
         return 'the root instruction has several results'
     for n in [src] + ir.interior_nodes(src):
         info = ops.parse(n[0])[0]
-        if info.shape not in ops._EMIT_SHAPES:
+        if info.shape not in ops._MATCH_SHAPES:
             return 'no match pattern for the shape %s' % info.shape
     # The guard reads a constant of the source with getIConstantVRegVal.
     src_kinds = ir.var_kinds(src)
-    if any(src_kinds.get(v) == 'f' for v in cv):
-        return 'a floating-point constant in the source'
+    for v in cv:
+        if src_kinds.get(v) in _NO_CONSTANT:
+            return '%s in the source' % _NO_CONSTANT[src_kinds[v]]
     sibs = _siblings(rule)
     for j, (b, rb, refs) in enumerate(sibs):
         info = ops.parse(b[0])[0]
-        if info.shape not in ops._EMIT_SHAPES + ('unmerge',):
+        if info.shape not in ops._MATCH_SHAPES:
             return 'no match of another root with the shape %s' % info.shape
         if rb is None and info.meta.get('may_trap'):
             return 'another root that can trap is not moved'
@@ -1099,9 +1150,19 @@ def _cpp_guard(r):
             'matched: %s\\n");' % r['id']]
     if sibs:
         out += _cpp_find_siblings(r)
+    # The registers that are pointers in the rule: the guard checks that
+    # they are pointers, and that the others are scalars.
+    reg_kind = {x: k for _, k, x in _type_sources(r)}
+    ptrs = sum(1 << i for i, x in enumerate(regs) if reg_kind.get(x) == 'p')
     out += ['  unsigned W[%d];' % len(cols),
-            '  if (!getScalarWidths(MRI, {%s}, W))' % ', '.join(regs),
+            '  if (!getScalarWidths(MRI, {%s}, W%s))' % (
+                ', '.join(regs), ', UINT64_C(0x%x)' % ptrs if ptrs else ''),
             '    return false;']
+    if needs_ieee_denormal(r):
+        out += ['  // The rule is proved for the IEEE treatment of '
+                'subnormal numbers.',
+                '  if (!hasIEEEDenormalMode(MRI, {%s}))' % ', '.join(regs),
+                '    return false;']
     for ti, rows in enumerate(tables):
         out.append('  static constexpr uint16_t V%d[][%d] = {%s};' % (
             ti, len(cols), ', '.join('{%s}' % ', '.join(str(w) for w in row)

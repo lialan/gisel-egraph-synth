@@ -25,6 +25,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <deque>
 #include <set>
 
@@ -1102,6 +1103,167 @@ static std::vector<OpProperties> buildModelOnlyOpProperties() {
                 unsigned W) -> std::optional<APInt> {
     return APInt(W, (getFPValue(O[0]).classify() & Mask) != 0);
   };
+
+  // Floating-point arithmetic in the default environment: rounding to
+  // nearest, ties to even. The operands and the result have one format.
+  auto FPOp = [&](unsigned Opc, const char *Name, unsigned NumOperands,
+                  FoldFn Fold, bool Commutative = false) {
+    OpProperties *P = NumOperands == 1   ? Op(Opc, Name, OpShape::Unary)
+                      : NumOperands == 2 ? Op(Opc, Name, OpShape::Binary)
+                                         : Op(Opc, Name, OpShape::Typed,
+                                              {Main, Main, Main}, {Main});
+    P->IsFP = true;
+    P->Commutative = Commutative;
+    P->FoldN = Fold;
+  };
+  FPOp(
+      G_FADD, "G_FADD", 2,
+      [](ArrayRef<APInt> O, uint64_t, unsigned) -> std::optional<APInt> {
+        APFloat F = getFPValue(O[0]);
+        F.add(getFPValue(O[1]), APFloat::rmNearestTiesToEven);
+        return F.bitcastToAPInt();
+      },
+      /*Commutative=*/true);
+  FPOp(G_FSUB, "G_FSUB", 2,
+       [](ArrayRef<APInt> O, uint64_t, unsigned) -> std::optional<APInt> {
+         APFloat F = getFPValue(O[0]);
+         F.subtract(getFPValue(O[1]), APFloat::rmNearestTiesToEven);
+         return F.bitcastToAPInt();
+       });
+  FPOp(
+      G_FMUL, "G_FMUL", 2,
+      [](ArrayRef<APInt> O, uint64_t, unsigned) -> std::optional<APInt> {
+        APFloat F = getFPValue(O[0]);
+        F.multiply(getFPValue(O[1]), APFloat::rmNearestTiesToEven);
+        return F.bitcastToAPInt();
+      },
+      /*Commutative=*/true);
+  FPOp(G_FDIV, "G_FDIV", 2,
+       [](ArrayRef<APInt> O, uint64_t, unsigned) -> std::optional<APInt> {
+         APFloat F = getFPValue(O[0]);
+         F.divide(getFPValue(O[1]), APFloat::rmNearestTiesToEven);
+         return F.bitcastToAPInt();
+       });
+  // a * b + c with one rounding, and with a rounding of the product.
+  FPOp(G_FMA, "G_FMA", 3,
+       [](ArrayRef<APInt> O, uint64_t, unsigned) -> std::optional<APInt> {
+         APFloat F = getFPValue(O[0]);
+         F.fusedMultiplyAdd(getFPValue(O[1]), getFPValue(O[2]),
+                            APFloat::rmNearestTiesToEven);
+         return F.bitcastToAPInt();
+       });
+  FPOp(G_FMAD, "G_FMAD", 3,
+       [](ArrayRef<APInt> O, uint64_t, unsigned) -> std::optional<APInt> {
+         APFloat F = getFPValue(O[0]);
+         F.multiply(getFPValue(O[1]), APFloat::rmNearestTiesToEven);
+         F.add(getFPValue(O[2]), APFloat::rmNearestTiesToEven);
+         return F.bitcastToAPInt();
+       });
+  // The remainder of a division with a quotient rounded toward zero.
+  FPOp(G_FREM, "G_FREM", 2,
+       [](ArrayRef<APInt> O, uint64_t, unsigned) -> std::optional<APInt> {
+         APFloat F = getFPValue(O[0]);
+         F.mod(getFPValue(O[1]));
+         return F.bitcastToAPInt();
+       });
+  // The value times a power of 2; the exponent is a signed integer of a
+  // type of its own.
+  {
+    OpProperties *P =
+        Op(G_FLDEXP, "G_FLDEXP", OpShape::Typed, {Main, Free}, {Main});
+    P->IsFP = true;
+    P->FoldN = [](ArrayRef<APInt> O, uint64_t,
+                  unsigned) -> std::optional<APInt> {
+      // A larger exponent gives the same result for each format.
+      int Exp = std::clamp<int64_t>(O[1].getSExtValue(), -65536, 65536);
+      return scalbn(getFPValue(O[0]), Exp, APFloat::rmNearestTiesToEven)
+          .bitcastToAPInt();
+    };
+  }
+  // The fractional and the integral part of a value, and the fraction and
+  // the exponent (an integer of a type of its own) of a value: two
+  // results, and the table has a fold for operators with one result.
+  {
+    OpProperties *P =
+        Op(G_FMODF, "G_FMODF", OpShape::Typed, {Main}, {Main, Main});
+    P->IsFP = true;
+    P = Op(G_FFREXP, "G_FFREXP", OpShape::Typed, {Main}, {Main, Free});
+    P->IsFP = true;
+  }
+  // APFloat has no square root: the model has no fold to compare with.
+  FPOp(G_FSQRT, "G_FSQRT", 1, nullptr);
+
+  // Rounding to an integral value of the format. G_FRINT and G_FNEARBYINT
+  // round in the current mode, which is to nearest, ties to even.
+#define ROUND_FOLD(MODE)                                                       \
+  [](ArrayRef<APInt> O, uint64_t, unsigned) -> std::optional<APInt> {          \
+    APFloat F = getFPValue(O[0]);                                              \
+    F.roundToIntegral(APFloat::MODE);                                          \
+    return F.bitcastToAPInt();                                                 \
+  }
+  FPOp(G_FFLOOR, "G_FFLOOR", 1, ROUND_FOLD(rmTowardNegative));
+  FPOp(G_FCEIL, "G_FCEIL", 1, ROUND_FOLD(rmTowardPositive));
+  FPOp(G_INTRINSIC_TRUNC, "G_INTRINSIC_TRUNC", 1, ROUND_FOLD(rmTowardZero));
+  FPOp(G_FRINT, "G_FRINT", 1, ROUND_FOLD(rmNearestTiesToEven));
+  FPOp(G_FNEARBYINT, "G_FNEARBYINT", 1, ROUND_FOLD(rmNearestTiesToEven));
+  FPOp(G_INTRINSIC_ROUNDEVEN, "G_INTRINSIC_ROUNDEVEN", 1,
+       ROUND_FOLD(rmNearestTiesToEven));
+  FPOp(G_INTRINSIC_ROUND, "G_INTRINSIC_ROUND", 1,
+       ROUND_FOLD(rmNearestTiesToAway));
+#undef ROUND_FOLD
+
+  // Rounding to a signed integer. The result is not specified (no fold)
+  // for a NaN, an infinity and a number outside of the range.
+#define ROUND_INT_FOLD(MODE)                                                   \
+  [](ArrayRef<APInt> O, uint64_t, unsigned W) -> std::optional<APInt> {        \
+    APFloat F = getFPValue(O[0]);                                              \
+    if (!F.isFinite())                                                         \
+      return std::nullopt;                                                     \
+    F.roundToIntegral(APFloat::MODE);                                          \
+    APSInt Int(W, /*isUnsigned=*/false);                                       \
+    bool IsExact;                                                              \
+    if (F.convertToInteger(Int, APFloat::rmTowardZero, &IsExact) ==            \
+        APFloat::opInvalidOp)                                                  \
+      return std::nullopt;                                                     \
+    return APInt(Int);                                                         \
+  }
+  auto RoundInt = [&](unsigned Opc, const char *Name, FoldFn Fold) {
+    OpProperties *P = Op(Opc, Name, OpShape::Cast);
+    P->IsFP = true;
+    P->FoldN = Fold;
+  };
+  RoundInt(G_LROUND, "G_LROUND", ROUND_INT_FOLD(rmNearestTiesToAway));
+  RoundInt(G_LLROUND, "G_LLROUND", ROUND_INT_FOLD(rmNearestTiesToAway));
+  RoundInt(G_INTRINSIC_LRINT, "G_INTRINSIC_LRINT",
+           ROUND_INT_FOLD(rmNearestTiesToEven));
+  RoundInt(G_INTRINSIC_LLRINT, "G_INTRINSIC_LLRINT",
+           ROUND_INT_FOLD(rmNearestTiesToEven));
+#undef ROUND_INT_FOLD
+
+  // The minimum and the maximum, with the functions that the constant
+  // folding of GlobalISel has (ConstantFoldFPBinOp).
+#define MINMAX_FOLD(FN)                                                        \
+  [](ArrayRef<APInt> O, uint64_t, unsigned) -> std::optional<APInt> {          \
+    return FN(getFPValue(O[0]), getFPValue(O[1])).bitcastToAPInt();            \
+  }
+  FPOp(G_FMINNUM, "G_FMINNUM", 2, MINMAX_FOLD(minnum), true);
+  FPOp(G_FMAXNUM, "G_FMAXNUM", 2, MINMAX_FOLD(maxnum), true);
+  FPOp(G_FMINNUM_IEEE, "G_FMINNUM_IEEE", 2, MINMAX_FOLD(minnum), true);
+  FPOp(G_FMAXNUM_IEEE, "G_FMAXNUM_IEEE", 2, MINMAX_FOLD(maxnum), true);
+  FPOp(G_FMINIMUM, "G_FMINIMUM", 2, MINMAX_FOLD(minimum), true);
+  FPOp(G_FMAXIMUM, "G_FMAXIMUM", 2, MINMAX_FOLD(maximum), true);
+  FPOp(G_FMINIMUMNUM, "G_FMINIMUMNUM", 2, MINMAX_FOLD(minimumnum), true);
+  FPOp(G_FMAXIMUMNUM, "G_FMAXIMUMNUM", 2, MINMAX_FOLD(maximumnum), true);
+#undef MINMAX_FOLD
+
+  // The canonical encoding of a value: a NaN becomes a quiet NaN.
+  FPOp(G_FCANONICALIZE, "G_FCANONICALIZE", 1,
+       [](ArrayRef<APInt> O, uint64_t, unsigned) -> std::optional<APInt> {
+         APFloat F = getFPValue(O[0]);
+         if (F.isNaN())
+           F = F.makeQuiet();
+         return F.bitcastToAPInt();
+       });
   return T;
 }
 
@@ -1599,30 +1761,40 @@ static void printFPOpSamples(json::OStream &J, const OpProperties &P,
     unsigned OW = IsFree ? W2 : W;
     Vals.push_back(NumOps == 1 ? getFPSampleValues(OW)
                                : getFewFPSampleValues(OW));
+    // An exponent: small integers also.
+    if (IsFree && P.Opcode == TargetOpcode::G_FLDEXP)
+      for (int64_t Exp : {1, -1, 7, -7, 30, -30, 200, -200, 1100, -1100})
+        Vals.back().push_back(APInt(OW, Exp, /*isSigned=*/true));
   }
-  unsigned ResW = W;
+  SmallVector<unsigned, 3> ResWs = {W};
   SmallVector<uint64_t, 16> Attrs = {0};
   if (P.Shape == OpShape::Compare) {
-    ResW = 1;
+    ResWs = {1};
     Attrs.clear();
     for (unsigned Pred = CmpInst::FIRST_FCMP_PREDICATE;
          Pred <= CmpInst::LAST_FCMP_PREDICATE; ++Pred)
       Attrs.push_back(Pred);
   } else if (P.ImmAttr) {
     // G_IS_FPCLASS: each class, and some sets of classes.
-    ResW = 1;
+    ResWs = {1};
     Attrs.clear();
     for (unsigned Bit = 0; Bit != 10; ++Bit)
       Attrs.push_back(uint64_t(1) << Bit);
     Attrs.append({fcNan, fcInf, fcZero, fcFinite, fcNormal, fcSubnormal,
                   fcNegative, fcPositive, fcAllFlags});
+  } else if (P.Shape == OpShape::Cast) {
+    // A conversion to an integer.
+    ResWs = {8, 32, 64};
   }
   SmallVector<unsigned, 3> Idx(NumOps, 0);
   while (true) {
     SmallVector<APInt, 3> Ops;
     for (unsigned I = 0; I != NumOps; ++I)
       Ops.push_back(Vals[I][Idx[I]]);
-    for (uint64_t Attr : Attrs) {
+    for (unsigned AttrIdx = 0, E = Attrs.size() * ResWs.size(); AttrIdx != E;
+         ++AttrIdx) {
+      uint64_t Attr = Attrs[AttrIdx / ResWs.size()];
+      unsigned ResW = ResWs[AttrIdx % ResWs.size()];
       std::optional<APInt> Out = P.FoldN(Ops, Attr, ResW);
       J.object([&] {
         J.attribute("w", ResW);

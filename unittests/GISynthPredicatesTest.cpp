@@ -380,4 +380,64 @@ TEST_F(AArch64GISelMITest, ReleaseResults) {
                          /*AbortOnError=*/false));
 }
 
+TEST_F(AArch64GISelMITest, ScalarWidthsOfPointers) {
+  StringRef MIRString = "  %3:_(p0) = G_INTTOPTR %0(s64)\n"
+                        "  %4:_(p0) = G_PTR_ADD %3, %1(s64)\n"
+                        "  %5:_(p1) = G_INTTOPTR %0(s64)\n"
+                        "  %6:_(s32) = G_TRUNC %1(s64)\n"
+                        "  %7:_(<2 x s32>) = G_BUILD_VECTOR %6(s32), %6\n";
+  setUp(MIRString);
+  if (!TM)
+    GTEST_SKIP();
+  MachineInstr *P0 = findOpcode(*MF, TargetOpcode::G_INTTOPTR);
+  MachineInstr *Add = findOpcode(*MF, TargetOpcode::G_PTR_ADD);
+  MachineInstr *P1 = findOpcode(*MF, TargetOpcode::G_INTTOPTR, 1);
+  MachineInstr *Trunc = findOpcode(*MF, TargetOpcode::G_TRUNC);
+  MachineInstr *Vec = findOpcode(*MF, TargetOpcode::G_BUILD_VECTOR);
+  Register Ptr = P0->getOperand(0).getReg();
+  Register Sum = Add->getOperand(0).getReg();
+  Register Other = P1->getOperand(0).getReg();
+  Register Int = Trunc->getOperand(0).getReg();
+  unsigned W[3] = {0, 0, 0};
+  // The registers that the rule has as pointers are pointers, and the
+  // others are scalars.
+  EXPECT_TRUE(getScalarWidths(*MRI, {Ptr, Int, Sum}, W, 0b101));
+  EXPECT_EQ(W[0], 64u);
+  EXPECT_EQ(W[1], 32u);
+  EXPECT_EQ(W[2], 64u);
+  EXPECT_TRUE(getScalarWidths(*MRI, {Copies[0], Int}, W));
+  EXPECT_FALSE(getScalarWidths(*MRI, {Ptr, Int, Sum}, W));
+  EXPECT_FALSE(getScalarWidths(*MRI, {Ptr, Int, Sum}, W, 0b001));
+  EXPECT_FALSE(getScalarWidths(*MRI, {Ptr, Int, Sum}, W, 0b111));
+  EXPECT_FALSE(getScalarWidths(*MRI, {Vec->getOperand(0).getReg()}, W));
+  // Two pointers of one width have one type: a new pointer takes its type
+  // from one of them.
+  EXPECT_FALSE(getScalarWidths(*MRI, {Ptr, Other}, W, 0b11));
+  EXPECT_TRUE(getScalarWidths(*MRI, {Other}, W, 0b1));
+}
+
+TEST_F(AArch64GISelMITest, DropFlags) {
+  StringRef MIRString = "  %3:_(s64) = nuw nsw G_ADD %0, %1\n"
+                        "  %4:_(s64) = G_SUB %0, %1\n"
+                        "  %5:_(s64) = nnan nsz G_FADD %0, %1\n";
+  setUp(MIRString);
+  if (!TM)
+    GTEST_SKIP();
+  MachineInstr *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  MachineInstr *Sub = findOpcode(*MF, TargetOpcode::G_SUB);
+  MachineInstr *FAdd = findOpcode(*MF, TargetOpcode::G_FADD);
+  ASSERT_TRUE(Add->getFlag(MachineInstr::NoUWrap));
+  ASSERT_TRUE(FAdd->getFlag(MachineInstr::FmNsz));
+  Add->setFlag(MachineInstr::NoMerge);
+  dropFlags(B, *Add);
+  dropFlags(B, *Sub);
+  dropFlags(B, *FAdd);
+  EXPECT_FALSE(Add->getFlag(MachineInstr::NoUWrap));
+  EXPECT_FALSE(Add->getFlag(MachineInstr::NoSWrap));
+  // Not a flag on the value of the instruction.
+  EXPECT_TRUE(Add->getFlag(MachineInstr::NoMerge));
+  EXPECT_EQ(Sub->getFlags(), 0u);
+  EXPECT_EQ(FAdd->getFlags(), 0u);
+}
+
 } // namespace

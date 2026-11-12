@@ -77,8 +77,6 @@ const egraph::OpProperties *getSupportedOp(unsigned Opc) {
   if (!P)
     return nullptr;
   switch (P->Shape) {
-  case egraph::OpShape::PtrAdd:
-    // Pointer values are not scalars.
   case egraph::OpShape::Phi:
     // The value depends on the control flow.
   case egraph::OpShape::Effect:
@@ -89,29 +87,46 @@ const egraph::OpProperties *getSupportedOp(unsigned Opc) {
   }
 }
 
-bool isSupportedScalar(const MachineRegisterInfo &MRI, Register R) {
+/// True if a value of the pointer type \p Ty is its bits for the synthesizer:
+/// the address space is integral, and an offset has the width of the pointer
+/// (G_PTR_ADD is then the addition of the bits).
+bool isSupportedPointer(const DataLayout &DL, LLT Ty) {
+  unsigned AS = Ty.getAddressSpace();
+  return !DL.isNonIntegralAddressSpace(AS) &&
+         DL.getIndexSizeInBits(AS) == Ty.getSizeInBits();
+}
+
+/// A value of a tree: a virtual register with a scalar type of at most 64
+/// bits, or with a pointer type of at most 64 bits (isSupportedPointer).
+bool isSupportedValue(const MachineRegisterInfo &MRI, const DataLayout &DL,
+                      Register R) {
   if (!R.isVirtual())
     return false;
   LLT Ty = MRI.getType(R);
-  return Ty.isScalar() && Ty.getSizeInBits() <= 64;
+  if (!Ty.isValid() || Ty.getSizeInBits() > 64)
+    return false;
+  return Ty.isScalar() || (Ty.isPointer() && isSupportedPointer(DL, Ty));
 }
 
 /// An instruction that can be an interior node of an extracted tree: an
-/// operator of the table whose results and register operands are virtual
-/// scalars. The only other operands are the attribute of the operator: the
-/// predicate of a comparison and a trailing immediate.
+/// operator of the table whose results and register operands are values of
+/// a tree (isSupportedValue). The only other operands are the attribute of the
+/// operator: the predicate of a comparison and a trailing immediate.
 bool isSupportedInstr(const MachineRegisterInfo &MRI, const MachineInstr &MI) {
   const egraph::OpProperties *P = getSupportedOp(MI.getOpcode());
   if (!P || MI.getNumExplicitDefs() == 0)
     return false;
   // The synthesizer has a value with unspecified bits for integers only: a
-  // floating-point G_IMPLICIT_DEF is an input.
-  if (MI.getOpcode() == TargetOpcode::G_IMPLICIT_DEF &&
-      MRI.getType(MI.getOperand(0).getReg()).isFloat())
-    return false;
+  // floating-point or pointer G_IMPLICIT_DEF is an input.
+  if (MI.getOpcode() == TargetOpcode::G_IMPLICIT_DEF) {
+    LLT Ty = MRI.getType(MI.getOperand(0).getReg());
+    if (Ty.isFloat() || Ty.isPointer())
+      return false;
+  }
+  const DataLayout &DL = MI.getMF()->getDataLayout();
   for (const MachineOperand &MO : MI.operands()) {
     if (MO.isReg()) {
-      if (MO.isImplicit() || !isSupportedScalar(MRI, MO.getReg()))
+      if (MO.isImplicit() || !isSupportedValue(MRI, DL, MO.getReg()))
         return false;
       continue;
     }
@@ -259,7 +274,11 @@ public:
             const MachineInstr *Def = MRI.getVRegDef(R);
             J.attribute("def", Def ? std::string(opcodeName(Def))
                                    : std::string("<none>"));
-            // A floating-point constant is its bit pattern.
+            // A floating-point constant is its bit pattern. A pointer
+            // constant is an input like every other: a rule does not match
+            // or build a G_CONSTANT with a pointer type.
+            if (MRI.getType(R).isPointer())
+              return;
             if (auto C = getIConstantVRegVal(R, MRI))
               J.attribute("const", hex(*C));
             else if (Def && Def->getOpcode() == TargetOpcode::G_FCONSTANT)
@@ -350,6 +369,31 @@ raw_ostream &getCorpusStream() {
   return *OS;
 }
 
+/// True if the type index \p TypeIdx of the operator \p Opc is a pointer type.
+bool isPointerTypeIdx(unsigned Opc, unsigned TypeIdx) {
+  switch (Opc) {
+  case TargetOpcode::G_PTR_ADD:
+  case TargetOpcode::G_PTRMASK:
+  case TargetOpcode::G_INTTOPTR:
+    return TypeIdx == 0;
+  case TargetOpcode::G_PTRTOINT:
+    return TypeIdx == 1;
+  default:
+    return false;
+  }
+}
+
+/// The pointer type of the first address space whose pointers have \p Width
+/// bits and are values of a tree, if there is one.
+std::optional<LLT> getPointerType(const DataLayout &DL, unsigned Width) {
+  for (unsigned AS = 0; AS != 16; ++AS) {
+    LLT Ty = LLT::pointer(AS, DL.getPointerSizeInBits(AS));
+    if (Ty.getSizeInBits() == Width && isSupportedPointer(DL, Ty))
+      return Ty;
+  }
+  return std::nullopt;
+}
+
 /// Writes what the legalizer of the target does with each operator of the
 /// table: operator -> widths of its type indices -> action. The synthesizer
 /// reads it to try the operators that the target has before the others. It is
@@ -366,6 +410,7 @@ void writeLegality(const MachineFunction &MF) {
     report_fatal_error("cannot open " + Twine(LegalityOut) + ": " +
                        EC.message());
   static const unsigned Widths[] = {1, 8, 16, 32, 64};
+  const DataLayout &DL = MF.getDataLayout();
   json::OStream J(OS, 1);
   J.object([&] {
     J.attribute("version", 1);
@@ -390,13 +435,27 @@ void writeLegality(const MachineFunction &MF) {
           while (true) {
             SmallVector<LLT, 3> Types;
             std::string Key;
-            for (unsigned I : Idx) {
-              Types.push_back(LLT::scalar(Widths[I]));
-              Key += (Key.empty() ? "" : ",") + utostr(Widths[I]);
+            bool HasTypes = true;
+            for (unsigned TypeIdx = 0; TypeIdx != NumIdx; ++TypeIdx) {
+              unsigned W = Widths[Idx[TypeIdx]];
+              Key += (Key.empty() ? "" : ",") + utostr(W);
+              if (!isPointerTypeIdx(Opc, TypeIdx)) {
+                Types.push_back(LLT::scalar(W));
+                continue;
+              }
+              // The first address space with pointers of this width.
+              std::optional<LLT> PtrTy = getPointerType(DL, W);
+              if (PtrTy)
+                Types.push_back(*PtrTy);
+              else
+                HasTypes = false;
             }
-            std::string Action;
-            raw_string_ostream AS(Action);
-            AS << LI->getAction({Opc, Types}).Action;
+            std::string Action = "Unsupported";
+            if (HasTypes) {
+              Action.clear();
+              raw_string_ostream AS(Action);
+              AS << LI->getAction({Opc, Types}).Action;
+            }
             J.attribute(Key, Action);
             unsigned I = 0;
             for (; I < NumIdx; ++I) {

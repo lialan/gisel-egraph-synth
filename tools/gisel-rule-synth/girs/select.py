@@ -88,6 +88,8 @@ class _Fn:
         self.n = 0
         self.nargs = 0
         self.kind = {}
+        self.width = {}
+        self.converted = {}
 
     # The registers have the types i<w> / f<w> and not s<w>: a function
     # with a G_BITCAST between an integer and a floating-point value.
@@ -96,21 +98,40 @@ class _Fn:
     def emit(self, w, rhs, kind=None):
         r = '%%%d' % self.n
         self.n += 1
-        ty = ('f' if kind == 'f' else 'i') if self.typed else 's'
-        self.lines.append('    %s:_(%s%d) = %s' % (r, ty, w, rhs))
+        if kind == 'p':
+            if w not in self.t.pointer_as:
+                raise ValueError('the target has no pointer of %d bits' % w)
+            ty = 'p%d' % self.t.pointer_as[w]
+        else:
+            ty = '%s%d' % (('f' if kind == 'f' else 'i') if self.typed
+                           else 's', w)
+        self.lines.append('    %s:_(%s) = %s' % (r, ty, rhs))
         self.kind[r] = kind
+        self.width[r] = w
         return r
 
     def as_kind(self, r, w, kind):
-        """The register ``r`` in the type of ``kind``."""
-        if not self.typed or (self.kind.get(r) == 'f') == (kind == 'f'):
+        """The register ``r`` in the type of ``kind``. A value has one
+        register per kind: a pattern matches one register per variable."""
+        have = self.kind.get(r)
+        if (have == 'p') == (kind == 'p') and (
+                not self.typed or (have == 'f') == (kind == 'f')):
             return r
-        return self.emit(w, 'G_BITCAST %s' % r, kind)
+        if (r, kind) not in self.converted:
+            if kind == 'p':
+                op = 'G_INTTOPTR'
+            elif have == 'p':
+                op = 'G_PTRTOINT'
+            else:
+                op = 'G_BITCAST'
+            self.converted[r, kind] = self.emit(w, '%s %s' % (op, r), kind)
+        return self.converted[r, kind]
 
     def emit_results(self, ws, rhs):
         """An instruction with one result of each width of ``ws``."""
         rs = ['%%%d' % (self.n + i) for i in range(len(ws))]
         self.n += len(ws)
+        self.width.update(zip(rs, ws))
         self.lines.append('    %s = %s' % (', '.join(
             '%s:_(s%d)' % (r, w) for r, w in zip(rs, ws)), rhs))
         return rs
@@ -216,8 +237,8 @@ def build_mir(rule, example, name, target):
     # each other value that has a user outside the region.
     outs = [(fn.as_kind(walk(src), src[1], 'i'), src[1])]
     for o in region.get('outputs', ())[1:]:
-        outs.append((node_reg[o['node']],
-                     ir.interior_nodes(src)[o['node'] - 1][1]))
+        w = ir.interior_nodes(src)[o['node'] - 1][1]
+        outs.append((fn.as_kind(node_reg[o['node']], w, 'i'), w))
     sib_reg = []
     for sib in region.get('siblings', ()):
         # A second root: one instruction that reads values of the region.
@@ -225,8 +246,12 @@ def build_mir(rule, example, name, target):
         args = [xs[x['var']] if 'var' in x else
                 node_reg[x['node']] if 'node' in x else
                 sib_reg[x['sibling']] for x in _sibling_operands(rule, sib)]
-        sib_reg.append(instr(b, args))
-        outs.append((sib_reg[-1], b[1]))
+        # Each operand in the kind that the instruction needs.
+        bk = ir.result_kind(b)
+        args = [fn.as_kind(r, fn.width[r], ir.operand_kind(b, i, bk))
+                for i, r in enumerate(args)]
+        sib_reg.append(instr(b, args, bk))
+        outs.append((fn.as_kind(sib_reg[-1], b[1], 'i'), b[1]))
     copies, slot = [], 0
     for r, w in outs:
         if w < 32:

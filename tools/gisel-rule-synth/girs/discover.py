@@ -255,13 +255,15 @@ MAX_CLASSES = 6
 def canonical_types(types):
     """The types of a bank for an instance with the sorted ``types``
     ((width, kind) each), or None if a bank does not support them."""
-    ints = [t for t in types if t[1] == 'i' and t[0] > 1]
-    if len(types) > MAX_CLASSES or len(ints) not in CANON_INT or \
+    # A pointer has the width of its offset (G_PTR_ADD), so the pointers
+    # and the integers of one width get one canonical width.
+    ws = sorted({w for w, k in types if k in ('i', 'p') and w > 1})
+    if len(types) > MAX_CLASSES or len(ws) not in CANON_INT or \
             max(w for w, _ in types) > 64:
         return None
-    cw = iter(CANON_INT[len(ints)])
-    return tuple(t if t[1] != 'i' or t[0] == 1 else (next(cw), 'i')
-                 for t in types)
+    cw = dict(zip(ws, CANON_INT[len(ws)]))
+    return tuple((cw[w], k) if k in ('i', 'p') and w > 1 else (w, k)
+                 for w, k in types)
 
 
 class _Full(Exception):

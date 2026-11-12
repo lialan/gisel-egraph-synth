@@ -111,7 +111,17 @@ class Encoder:
       refinement_violation.) If
       an operator of the source reads the bits of the NaN (G_BITCAST,
       G_FABS, ...; ``mark_source``), the NaN is a variable like the
-      unspecified bits, with the values of the replacement as its set."""
+      unspecified bits, with the values of the replacement as its set.
+
+    "Some value" is correct only for a value of the source that the rule
+    replaces (the root, an output of a region) or removes: an instruction
+    that stays for another user has one value, and this user reads it.
+    With ``strong``, the formula is for *each* value of the bits of the
+    terms below the outputs (``roots``): the unspecified bits, the NaN
+    that an operator reads, and the results that only LLVM permits
+    (OpInfo.tgt_choice). A rule that is not proved in this form applies
+    only if the values below the root have no other user (``needs_one_use``;
+    see ``interior_choice``)."""
 
     # The largest number of value combinations of ``for_all_choices``.
     MAX_INSTANCES = 64
@@ -135,6 +145,11 @@ class Encoder:
         # The terms of the source that make a NaN whose bits an operator
         # of the source reads (mark_source).
         self.nan_observed = set()
+        # See the class comment: the outputs of the source, and the
+        # variables of the bits of the other terms (strong).
+        self.strong = False
+        self.roots = ()
+        self.free = {}
         self.fresh = 0     # variables of the replacement
         self.assume = []   # conditions on the variables of the replacement
         self.tgt_values = []
@@ -180,13 +195,20 @@ class Encoder:
             if ir.is_op(e):
                 info = ops.parse(e[0])[0]
                 r = info.unspecified is not None or info.makes_nan or \
-                    any(self.nondet(a) for a in e[2:])
+                    info.tgt_choice or any(self.nondet(a) for a in e[2:])
             self._nondet[e] = r
         return self._nondet[e]
 
     def _fresh(self, prefix, w):
         self.fresh += 1
         return z3.BitVec('%s%d' % (prefix, self.fresh), w)
+
+    def _free(self, kind, e, w):
+        """The variable of the bits of the source term ``e`` (strong)."""
+        if (kind, e) not in self.free:
+            self.free[kind, e] = z3.BitVec(
+                'sf%d' % len(self.free), w)
+        return self.free[kind, e]
 
     def assumptions(self):
         return z3.And(self.assume) if self.assume else z3.BoolVal(True)
@@ -198,8 +220,8 @@ class Encoder:
         operator that gives one result for every NaN) or 'bits'."""
         if not ir.is_op(e) or not ops.known(e[0]):
             return
-        info = ops.parse(e[0])[0]
-        if info.makes_nan and state == 'bits':
+        info, _, res = ops.parse(e[0])
+        if info.makes_nan_at(res) and state == 'bits':
             self.nan_observed.add(e)
         for i, a in enumerate(e[2:]):
             if info.freeze or info.nan_through or \
@@ -299,12 +321,25 @@ class Encoder:
             info, attr, res = ops.parse(e[0])
             args = [self.enc_full(a, memo, side) for a in e[2:]]
             ws = [ir.width(a, self.vw) for a in e[2:]]
-            v, p, ub = info.smt(e[1], ws, attr, res, [a[0] for a in args])
+            xs = [a[0] for a in args]
+            # A term below the outputs of the source whose bits the proof
+            # takes for each value.
+            each = side == 'src' and self.strong and e not in self.roots
+            if info.tgt_choice and side == 'tgt':
+                # A result that only LLVM permits: each choice.
+                xs = xs + [self._fresh('ch', info.tgt_choice)]
+            elif info.tgt_choice and each:
+                xs = xs + [self._free('ch', e, info.tgt_choice)]
+            v, p, ub = info.smt(e[1], ws, attr, res, xs)
+            xs = xs[:len(args)]
             ubs = [a[2] for a in args] + ([ub] if ub is not None else [])
-            if info.unspecified is not None:
+            if info.unspecified_at(res):
                 m = info.unspecified(e[1], ws)
+                defined = v
                 if side == 'tgt':
                     bits = self._fresh('ut', e[1])
+                elif each:
+                    bits = self._free('bits', e, e[1])
                 else:
                     if ('bits', e) not in self.choices:
                         sign = [z3.SignExt(e[1] - ws[0], args[0][0])] \
@@ -314,17 +349,26 @@ class Encoder:
                     bits = self.choices['bits', e][0]
                 mv = z3.BitVecVal(m, e[1])
                 v = (v & ~mv) | (bits & mv)
-            if info.makes_nan:
+                if info.unspecified_if is not None:
+                    v = z3.If(info.unspecified_if[1](e[1], ws, attr, xs),
+                              v, defined)
+            if info.makes_nan_at(res):
                 # The bits of a NaN that the operation makes.
                 # The NaN values that the operation can give
                 # (fp.nan_member): a function of its operands.
-                fargs = _fp_operands(info, ws, [a[0] for a in args])
+                fargs = _fp_operands(info, ws, xs)
                 if side == 'tgt':
                     nan = self._fresh('nan', e[1])
-                    self.assume.append(fp.z3_nan_member(nan, fargs))
+                    self.assume.append(fp.z3_nan_member(
+                        nan, fargs, info.nan_quiet))
                 else:
                     nan = z3.BitVecVal(fp.qnan(e[1]), e[1])
-                    if e in self.nan_observed:
+                    if e in self.nan_observed and each:
+                        c = self._free('nan', e, e[1])
+                        nan = z3.If(
+                            fp.z3_nan_member(c, fargs, info.nan_quiet),
+                            c, nan)
+                    elif e in self.nan_observed:
                         if ('nan', e) not in self.choices:
                             # The NaN of an operand unchanged, then quiet.
                             first = [fp.z3_nan_from(a, e[1], q)
@@ -333,7 +377,9 @@ class Encoder:
                                 'ns%d' % len(self.choices), e[1]), 'nan',
                                 first)
                         c = self.choices['nan', e][0]
-                        nan = z3.If(fp.z3_nan_member(c, fargs), c, nan)
+                        nan = z3.If(
+                            fp.z3_nan_member(c, fargs, info.nan_quiet),
+                            c, nan)
                 v = z3.If(fp.z3_is_nan(v), nan, v)
             if info.freeze:
                 if (side, e) not in self.frozen:
@@ -367,7 +413,8 @@ def _fp_operands(info, ws, values):
     """The operands of an operation that are floating-point values."""
     if not info.fp_operand:
         return []
-    return [v for v, w in zip(values, ws) if fp.is_format(w)]
+    return [v for i, (v, w) in enumerate(zip(values, ws))
+            if fp.is_format(w) and i not in info.int_operands]
 
 
 def _nan_of(enc, e, tv):
@@ -379,12 +426,12 @@ def _nan_of(enc, e, tv):
     G_FNEG changes the sign, and the sign of the NaN is not specified."""
     if not ir.is_op(e) or not ops.known(e[0]):
         return z3.BoolVal(False)
-    info = ops.parse(e[0])[0]
-    if info.makes_nan:
+    info, _, res = ops.parse(e[0])
+    if info.makes_nan_at(res):
         ws = [ir.width(a, enc.vw) for a in e[2:]]
         fargs = _fp_operands(info, ws, [enc.enc_full(a)[0] for a in e[2:]])
         return z3.And(fp.z3_is_nan(enc.enc_full(e)[0]),
-                      fp.z3_nan_member(tv, fargs))
+                      fp.z3_nan_member(tv, fargs, info.nan_quiet))
     if info.freeze or info.nan_through:
         return _nan_of(enc, e[2], tv)
     if info.shape == 'select':
@@ -399,6 +446,7 @@ def refinement_violation(enc, src, tgt, guard):
     behaviour, or the source is not poison and the target is poison or
     different."""
     assert not ir.repeated_freeze(src), 'one G_FREEZE term twice'
+    enc.roots = (src,)
     enc.mark_source(src)
     sv, sp, su = enc.enc_full(src)
     tv, tp, tu = enc.enc_full(tgt, side='tgt')
@@ -408,6 +456,31 @@ def refinement_violation(enc, src, tgt, guard):
                  z3.Or(tu, z3.And(z3.Not(sp), z3.Or(tp, z3.Not(same)))))
     return z3.And(enc.well_formed(), guard, enc.recipe_guard(tgt),
                   enc.assumptions(), enc.for_all_choices(bad, tv))
+
+
+def interior_choice(srcs):
+    """What a proof takes from the values below the outputs ``srcs`` of the
+    source of a rule (see Encoder). None: no such value has bits that are
+    not specified. 'value': one has (unspecified bits, a NaN whose bits an
+    operator reads, a result that only LLVM permits); the rule needs a
+    proof for each value (``strong``), or the values have no other user.
+    'model': one has a result that the model fixes (the rounding of a
+    fixed-point operation), and no proof for each result exists."""
+    enc = Encoder(())
+    for s in srcs:
+        enc.mark_source(s)
+    out = None
+    for s in srcs:
+        for n in ir.nodes(s):
+            if n in srcs or not ops.known(n[0]):
+                continue
+            info, _, res = ops.parse(n[0])
+            if info.fixed_result:
+                return 'model'
+            if info.unspecified_at(res) or info.tgt_choice or \
+                    n in enc.nan_observed:
+                out = 'value'
+    return out
 
 
 def _is_fp(e):
@@ -429,6 +502,7 @@ def joint_violation(enc, pairs, guard):
     replacements have."""
     root = pairs[0][0]
     assert not ir.repeated_freeze(root), 'one G_FREEZE term twice'
+    enc.roots = tuple(s for s, _ in pairs)
     # The source has undefined behaviour if a value of it has: the root
     # (which has the nodes below it) or a root next to it.
     for s, _ in pairs:

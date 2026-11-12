@@ -259,9 +259,9 @@ class GrammarTest(unittest.TestCase):
                          ('G_SEXT_INREG:8', 32, V(0)))
         # An operator without a model is rejected with the reason.
         why = []
-        rec['expr'] = node('G_CLMUL', 32, [leaf(0), leaf(1)])
+        rec['expr'] = node('G_NO_SUCH_OP', 32, [leaf(0), leaf(1)])
         self.assertIsNone(corpus.parse_record(rec, why=why))
-        self.assertIn('G_CLMUL', why[0])
+        self.assertIn('G_NO_SUCH_OP', why[0])
 
 
 class PreconditionTest(unittest.TestCase):

@@ -168,15 +168,17 @@ def computed_amounts(e, const_vars=(), out=None):
 
 
 def result_kind(e, expected=None):
-    """'f' if the value of ``e`` is a floating-point value, 'i' if it is an
-    integer, None if the operators do not say (a variable, or a select or a
-    freeze of such values). ``expected`` is the kind that the user of ``e``
-    needs."""
+    """'f' if the value of ``e`` is a floating-point value, 'p' if it is a
+    pointer, 'i' if it is an integer, None if the operators do not say (a
+    variable, or a select or a freeze of such values). ``expected`` is the
+    kind that the user of ``e`` needs."""
     if not is_op(e) or not ops.known(e[0]):
         return expected
-    info = ops.parse(e[0])[0]
+    info, _, res = ops.parse(e[0])
     if info.fp_result:
-        return 'f'
+        return 'i' if res in info.int_results else 'f'
+    if info.ptr_result:
+        return 'p'
     if info.freeze:
         return result_kind(e[2], expected)
     if info.bitcast:
@@ -207,7 +209,8 @@ def type_of(e, vw, vk):
         kinds.append(t[1])
     if not ops.known(e[0]):
         return None
-    k = ops.parse(e[0])[0].result_kind(kinds)
+    info, _, res = ops.parse(e[0])
+    k = info.result_kind(kinds, res)
     return None if k is None else (e[1], k)
 
 
@@ -224,8 +227,8 @@ def types_of(e, vw, vk):
 
 
 def var_kinds(e, expected=None, out=None):
-    """variable -> 'f' | 'i' | 'x' for the variables of ``e`` whose kind
-    the operators determine; 'x' if a variable is used as both."""
+    """variable -> 'f' | 'i' | 'p' | 'x' for the variables of ``e`` whose
+    kind the operators determine; 'x' if a variable has two kinds."""
     if out is None:
         out = {}
     if is_var(e):
@@ -248,7 +251,14 @@ def operand_kind(e, k, expected=None):
         return result_kind(e, expected)
     if info.bitcast:
         return _OTHER_KIND.get(result_kind(e, expected))
-    return 'f' if info.fp_operand else 'i'
+    if k in info.ptr_operands:
+        return 'p'
+    if info.shape == 'compare' and not info.fp_operand and \
+            'p' in (result_kind(e[2]), result_kind(e[3])):
+        # G_ICMP of two pointers: an operand says so. Two values whose
+        # kind the operators do not give are compared as integers.
+        return 'p'
+    return 'f' if info.fp_operand and k not in info.int_operands else 'i'
 
 
 def same_value(a, b, e):
@@ -422,7 +432,9 @@ def apply_op(op, w, ws, vals, fill=1):
         if any(v is None for v in vals):
             return None
         v = info.eval(w, ws, attr, res, vals)
-        if not fill and info.unspecified is not None:
+        if not fill and info.unspecified_at(res) and (
+                info.unspecified_if is None or
+                info.unspecified_if[0](w, ws, attr, vals)):
             v &= ~info.unspecified(w, ws)
         return v
     if info.freeze:

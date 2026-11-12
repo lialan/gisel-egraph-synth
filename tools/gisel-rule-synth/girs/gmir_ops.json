@@ -94,6 +94,298 @@
    "has_fold": true
   },
   {
+   "name": "G_FADD",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FSUB",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FMUL",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FDIV",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FMA",
+   "shape": "typed",
+   "operands": 3,
+   "operand_kinds": [
+    "main",
+    "main",
+    "main"
+   ],
+   "result_kinds": [
+    "main"
+   ],
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FMAD",
+   "shape": "typed",
+   "operands": 3,
+   "operand_kinds": [
+    "main",
+    "main",
+    "main"
+   ],
+   "result_kinds": [
+    "main"
+   ],
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FREM",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FLDEXP",
+   "shape": "typed",
+   "operands": 2,
+   "operand_kinds": [
+    "main",
+    "free"
+   ],
+   "result_kinds": [
+    "main"
+   ],
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FMODF",
+   "shape": "typed",
+   "operands": 1,
+   "operand_kinds": [
+    "main"
+   ],
+   "result_kinds": [
+    "main",
+    "main"
+   ],
+   "model_only": true,
+   "fp": true
+  },
+  {
+   "name": "G_FFREXP",
+   "shape": "typed",
+   "operands": 1,
+   "operand_kinds": [
+    "main"
+   ],
+   "result_kinds": [
+    "main",
+    "free"
+   ],
+   "model_only": true,
+   "fp": true
+  },
+  {
+   "name": "G_FSQRT",
+   "shape": "unary",
+   "operands": 1,
+   "model_only": true,
+   "fp": true
+  },
+  {
+   "name": "G_FFLOOR",
+   "shape": "unary",
+   "operands": 1,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FCEIL",
+   "shape": "unary",
+   "operands": 1,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_INTRINSIC_TRUNC",
+   "shape": "unary",
+   "operands": 1,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FRINT",
+   "shape": "unary",
+   "operands": 1,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FNEARBYINT",
+   "shape": "unary",
+   "operands": 1,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_INTRINSIC_ROUNDEVEN",
+   "shape": "unary",
+   "operands": 1,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_INTRINSIC_ROUND",
+   "shape": "unary",
+   "operands": 1,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_LROUND",
+   "shape": "cast",
+   "operands": 1,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_LLROUND",
+   "shape": "cast",
+   "operands": 1,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_INTRINSIC_LRINT",
+   "shape": "cast",
+   "operands": 1,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_INTRINSIC_LLRINT",
+   "shape": "cast",
+   "operands": 1,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FMINNUM",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FMAXNUM",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FMINNUM_IEEE",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FMAXNUM_IEEE",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FMINIMUM",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FMAXIMUM",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FMINIMUMNUM",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FMAXIMUMNUM",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "commutative": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FCANONICALIZE",
+   "shape": "unary",
+   "operands": 1,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
    "name": "G_ADD",
    "shape": "binary",
    "operands": 2,

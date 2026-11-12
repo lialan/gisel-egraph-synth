@@ -17,8 +17,12 @@ PROFILE_DIR = os.path.join(HERE, 'targets')
 class Target:
     def __init__(self, name, triple_flags, combiner, enable_flag,
                  corpus_flag, arg32, arg64, ret, insn_regex,
-                 native_bits=32, egraph_flag=None):
+                 native_bits=32, egraph_flag=None, pointer_as=None):
         self.name = name
+        # width -> an address space of the target whose pointers have this
+        # width and are their bits (integral, offsets of the same width):
+        # the pointer type of a probe function (select.py).
+        self.pointer_as = pointer_as or {64: 0}
         # llc flag that adds the e-graph combiner to the pipeline, or None:
         # then it runs on the MIR after the pre-legalizer combiner.
         self.egraph_flag = egraph_flag
@@ -101,7 +105,8 @@ TARGETS = {
         lambda n: '$vgpr%d' % n,
         lambda n: '$vgpr%d_vgpr%d' % (n, n + 1),
         lambda r: 'SI_RETURN implicit %s' % r,
-        r'^\s+[sv]_[a-z0-9_]+', egraph_flag='-amdgpu-gisel-egraph'),
+        r'^\s+[sv]_[a-z0-9_]+', egraph_flag='-amdgpu-gisel-egraph',
+        pointer_as={64: 0, 32: 3}),
     'AArch64': Target(
         'AArch64', ['-mtriple=aarch64'],
         'aarch64-prelegalizer-combiner', '-aarch64-gisel-synth-combines',

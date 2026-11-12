@@ -432,6 +432,10 @@ class EmitTest(unittest.TestCase):
                       'MRI.getType(T0)}, {X0, X1})', a)
         self.assertIn('Sib0->eraseFromParent();', a)
         self.assertIn('Root.eraseFromParent();', a)
+        # The replacements read the comparison of the tree of the root
+        # (T0), which stays: the proof has it without flags.
+        self.assertIn('dropFlags(B, *MRI.getVRegDef(T0));', a)
+        self.assertNotIn('dropFlags(B, *Sib0)', a)
         # The apply step does not search: the match step did.
         self.assertNotIn('findSiblingRoot', a)
         self.assertNotIn('planRegion', a)
@@ -477,6 +481,10 @@ class EmitTest(unittest.TestCase):
         self.assertNotIn('releaseResults(MRI, *Sib0)', a)
         self.assertIn('releaseResults(MRI, Root);', a)
         self.assertNotIn('G_UADDO, {', a)
+        # The replacement reads the sibling that stays: the proof has it
+        # without flags (an addition with nuw is poison where the proof
+        # has a value).
+        self.assertIn('dropFlags(B, *Sib0);', a)
 
     def test_the_rule_record_has_the_plan(self):
         both, stays = self.rules()

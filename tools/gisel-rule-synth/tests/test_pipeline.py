@@ -356,17 +356,23 @@ class RealExtractionTest(unittest.TestCase):
         self.assertIn(('lit', 64, '1'), [c['tgt'] for c in cands])
 
     def test_shapes_that_are_not_extracted(self):
-        """No tree has a pointer, a vector, a value wider than 64 bits or
-        a G_PHI, as a node or as an input."""
+        """No tree has a vector, a value wider than 64 bits or a G_PHI, as
+        a node or as an input. A pointer value is extracted with its
+        pointer type."""
         ops_seen = set()
         for r in self.records:
             for n in _trees(r['expr']) + r['inputs']:
                 self.assertLessEqual(n['w'], 64)
-                self.assertFalse(n['type'].startswith(('p', '<')), n)
+                self.assertFalse(n['type'].startswith('<'), n)
             ops_seen |= {n['op'] for n in _trees(r['expr'])}
         self.assertEqual(ops_seen & {
-            'G_PHI', 'G_PTR_ADD', 'G_BUILD_VECTOR', 'G_INTTOPTR',
-            'G_PTRTOINT', 'G_BRCOND'}, set())
+            'G_PHI', 'G_BUILD_VECTOR', 'G_BRCOND'}, set())
+        self.assertLessEqual({'G_PTR_ADD', 'G_INTTOPTR', 'G_PTRTOINT'},
+                             ops_seen)
+        for r in self.records:
+            for n in _trees(r['expr']):
+                if n['op'] in ('G_PTR_ADD', 'G_INTTOPTR'):
+                    self.assertEqual(n['type'], 'p0', n)
         # The s128 addition and the vector addition are not roots, and the
         # truncation of the s128 value has no tree: its operand is not a
         # supported scalar.
@@ -381,12 +387,10 @@ class RealExtractionTest(unittest.TestCase):
     def test_reader_refuses_with_a_reason(self):
         reasons = self.stats['unsupported_reasons']
         self.assertIn('type bf16 has no model', reasons)
-        self.assertTrue(any('G_CLMUL' in r for r in reasons), reasons)
         self.assertEqual(self.stats['unsupported'], sum(reasons.values()))
-        for i in self.insts:
-            for n in ir.nodes(i.expr):
-                self.assertNotIn(ops.base(n[0]), ('G_CLMUL', 'G_PTRTOINT',
-                                                  'G_INTTOPTR'))
+        # The operators that had no model before are read now.
+        seen = {ops.base(n[0]) for i in self.insts for n in ir.nodes(i.expr)}
+        self.assertLessEqual({'G_CLMUL', 'G_PTRTOINT', 'G_INTTOPTR'}, seen)
 
     def test_bits_and_hints(self):
         """The operators on the bits of a value, the hints and the values

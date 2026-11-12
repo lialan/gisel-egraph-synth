@@ -166,15 +166,18 @@ def _facts_from_model(vals, n):
                  for z, o, p in zip(kz, ko, xp))
 
 
-def verify(sched, dnf, backend, const_vars=()):
+def verify(sched, dnf, backend, const_vars=(), strong=False):
     """Proves (p1 || p2 || ...) => (tgt refines src) for every schedule;
     ``dnf`` is a list of conjunctions. ``const_vars`` are the variables
-    that are constants (their known bits are exact). Returns ('valid',
-    proofs) | ('invalid', (vw, facts, root width)) | ('unknown', None)."""
+    that are constants (their known bits are exact). ``strong``: for each
+    value of the unspecified bits below the root (smt.Encoder). Returns
+    ('valid', proofs) | ('invalid', (vw, facts, root width)) | ('unknown',
+    None)."""
     assert dnf, 'an empty disjunction is false and proves nothing'
     proofs = []
     for s, t, v, wmap in sched:
         enc = smt.Encoder(v, s[1], const_vars)
+        enc.strong = strong
         f = smt.refinement_violation(enc, s, t, precond.z3_dnf(dnf, enc))
         r = backend.check(f, want_model_of=enc.model_terms())
         if r.status == 'sat':
@@ -403,7 +406,9 @@ class Synthesizer:
         if vk is not None and (ir.is_var(tgt) or ir.is_op(tgt)):
             st = ir.type_of(inst.expr, inst.vw, vk)
             tt = ir.type_of(tgt, inst.vw, vk)
-            if st is not None and tt is not None and tt != st:
+            # (tt is None: an operator of the replacement gets an operand
+            # of a kind that it does not take, a pointer in a G_ADD.)
+            if st is not None and tt != st:
                 self.stats['kind_mismatch'] = \
                     self.stats.get('kind_mismatch', 0) + 1
                 return None
@@ -640,6 +645,10 @@ class Synthesizer:
                 rule['semantic_status']['dnf_proofs'] = []
                 rule['semantic_status']['final_guard_unknown'] = str(e)
                 stats['final_guard_unknown'] += 1
+                continue
+            k = self._settle_interior_choice(rule)
+            if k:
+                stats[k] = stats.get(k, 0) + 1
         stats['dominated_rules'] = 0 if preserve_alternatives else \
             self._mark_dominated()
         return stats
@@ -731,7 +740,31 @@ class Synthesizer:
                 return True
         return False
 
-    def _prove_disjunction(self, rule):
+    def _settle_interior_choice(self, rule):
+        """A rule whose source has a value below the root with bits that
+        are not specified (smt.interior_choice) is correct for a source
+        with another user of such a value only if the proof holds for each
+        value of the bits. If the emitted guard is not proved in this
+        form, the rule gets the guard that the values below the root have
+        no other user. Returns the entry of the statistics."""
+        kind = smt.interior_choice([ir.from_json(rule['source_json'])])
+        if kind is None:
+            rule.pop('interior_choice', None)
+            return None
+        if not rule['needs_one_use'] and kind == 'value':
+            try:
+                rule['semantic_status']['dnf_proofs'] = \
+                    self._prove_disjunction(rule, strong=True)
+                rule['interior_choice'] = 'proved for each value'
+                return 'interior_choice_proved'
+            except (IncompleteGuardProof, AssertionError):
+                pass
+        added = not rule['needs_one_use']
+        rule['needs_one_use'] = True
+        rule['interior_choice'] = 'no other user of the interior values'
+        return 'interior_choice_one_use' if added else None
+
+    def _prove_disjunction(self, rule, strong=False):
         """Proves the emitted guard as a whole: for every width schedule
         some disjunct accepts, the disjunction of the disjuncts that accept
         it implies the refinement."""
@@ -746,7 +779,7 @@ class Synthesizer:
                    if key in {_map_key(m) for m in d['width_maps']}]
             st, proofs = verify(rule_schedules(rule, [maps[key]]), dnf,
                                 self.backend,
-                                tuple(rule.get('const_vars', ())))
+                                tuple(rule.get('const_vars', ())), strong)
             if st == 'unknown':
                 raise IncompleteGuardProof('width map %s' % maps[key])
             if st != 'valid':

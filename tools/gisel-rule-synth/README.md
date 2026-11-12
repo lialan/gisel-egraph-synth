@@ -630,6 +630,66 @@ every disjunct of `P` and for the emitted disjunction as a whole.
   NaN. `G_FCMP` (16 predicates) and `G_IS_FPCLASS` are exact functions of
   the bits: `fpext(fabs x) -> fabs(fpext x)` is proved and the other
   direction is not (its NaN can be negative).
+- Floating-point arithmetic (`G_FADD`, `G_FSUB`, `G_FMUL`, `G_FDIV`,
+  `G_FREM`, `G_FMA`, `G_FMAD`, `G_FSQRT`) is the IEEE operation, rounded to
+  nearest, ties to even: the default floating-point environment. `G_FMA`
+  has one rounding and `G_FMAD` has two. `G_FREM` is the remainder with the
+  quotient rounded toward zero (`fmod`). The exact evaluator is compared
+  with `APFloat` and with the arithmetic of the host. Fast-math flags of
+  the source only permit more results or make poison, so a proof for the
+  source without flags covers them; a replacement has no flags. The solver
+  is slow for a multiplication, a division and a remainder of 64 bits, and
+  for a proof with two remainders: such a rule is not proved.
+- The rounding operators give an integral value of the format (`G_FFLOOR`,
+  `G_FCEIL`, `G_INTRINSIC_TRUNC`, `G_INTRINSIC_ROUND`,
+  `G_INTRINSIC_ROUNDEVEN`; `G_FRINT` and `G_FNEARBYINT` round to nearest,
+  ties to even) or a signed integer (`G_LROUND`, `G_LLROUND`,
+  `G_INTRINSIC_LRINT`, `G_INTRINSIC_LLRINT`). The integer is not specified
+  for a NaN, an infinity and a number outside of the range of the result.
+- The minimum and maximum operators differ in the result for a NaN
+  (`fp.minmax`): `G_FMINIMUM` gives a NaN, `G_FMINIMUMNUM` the other
+  operand, `G_FMINNUM_IEEE` a NaN only for a signaling NaN. -0.0 is less
+  than +0.0. `G_FMINNUM` is as `G_FMINIMUMNUM`, and LLVM permits two more
+  results (a NaN for a signaling NaN, the other zero for two zeros with
+  different signs): a `G_FMINNUM` of the replacement has each of them.
+- `G_FCANONICALIZE` makes a NaN quiet and does not change another value.
+- `G_FMODF` gives the fractional and the integral part, `G_FLDEXP` the
+  value times a power of 2 (one rounding; the exponent is a signed integer
+  of a type of its own), and `G_FFREXP` the fraction and the exponent. The
+  exponent of a NaN and of an infinity is not specified. A rule can match
+  `G_FFREXP` but does not create it.
+- A rule with an operator on the value of a number applies only in a
+  function with the IEEE treatment of subnormal numbers for the formats
+  (`denormal-fp-math`; the guard checks it). An operation on the bits (the
+  sign, the class, a bit cast) does not need the check.
+- A pointer is its bits. `G_PTR_ADD` adds an offset of the width of the
+  pointer, `G_PTRMASK` clears bits, and `G_PTRTOINT` and `G_INTTOPTR`
+  extend with zeros or truncate. The corpus has only pointers of an
+  integral address space whose index has the width of the pointer, and the
+  guard of a rule checks the same for each pointer register. A rule builds
+  a pointer only in the type of a pointer that it matched, and it does not
+  build a pointer constant. `G_ADDRSPACE_CAST` has no model: the conversion
+  is a property of the target (on AMDGPU a null pointer is 0 or -1 per
+  address space).
+- `G_MERGE_VALUES` and `G_UNMERGE_VALUES` of scalars are the concatenation
+  and the parts of the bits. A rule matches and builds a merge. It matches
+  an unmerge below the root and does not build one.
+- The fixed-point operators (`G_SMULFIX` to `G_UDIVFIXSAT`) round down,
+  which is one of the two results that LLVM permits; a rule can match them
+  and does not create them. `G_CLMUL`, `G_CLMULR` and `G_CLMULH` are parts
+  of the product of two polynomials over GF(2). `G_EXTRACT` and `G_INSERT`
+  read and write a field of bits at an immediate position.
+- A value below the root that has bits which are not specified (the high
+  bits of `G_ANYEXT`, a NaN whose bits an operator reads, a result that
+  only LLVM permits, an integer of `G_LROUND` outside of the range) can have
+  another user, and this user reads the one value of the instruction. A
+  proof that takes *some* value for these bits is then not sufficient. The
+  emitted guard of such a rule is proved again for *each* value of the
+  bits (`smt.Encoder.strong`). If this proof fails, the rule gets the guard
+  that the values below the root have no other user (`needs_one_use`;
+  `interior_choice` in the rule record says which case it is). A rule with
+  a fixed-point operator below the root always has this guard. A rule with
+  a region is rejected if a value below its outputs has such bits.
 - `T` uses only `S`'s inputs, and each of them at most once, so undef inputs
   are handled soundly. An input that the rule matches as a constant can
   occur more than once: a constant is not undef.

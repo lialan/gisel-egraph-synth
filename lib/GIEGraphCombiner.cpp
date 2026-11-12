@@ -169,6 +169,13 @@ static const std::vector<RewriteRule> &getRules() {
   return Rules;
 }
 
+/// True if \p MF has the IEEE treatment of subnormal numbers for the
+/// floating-point format of \p Ty.
+static bool hasIEEEDenormalMode(const MachineFunction &MF, LLT Ty) {
+  return MF.getDenormalMode(getFltSemanticForLLT(Ty)) ==
+         DenormalMode::getIEEE();
+}
+
 /// A region instruction: a supported operation (see OpProperties) whose
 /// register operands are all virtual registers of scalar or pointer type,
 /// with the types that the shape of the operator requires.
@@ -222,8 +229,18 @@ static bool isCandidate(const MachineInstr &MI,
     default:
       // The conversions with a floating-point format are checked in full:
       // their rules and folds use the format of the type.
-      if (isFPCast(P->Cast))
+      if (isFPCast(P->Cast)) {
+        // The rules of a conversion between two formats hold for the IEEE
+        // treatment of subnormal numbers: with another mode, the
+        // conversion takes a subnormal operand as zero or can give zero
+        // for a subnormal result.
+        if ((P->Cast == CastKind::FPExtend ||
+             P->Cast == CastKind::FPTruncate) &&
+            !(hasIEEEDenormalMode(*MI.getMF(), Defs[0]) &&
+              hasIEEEDenormalMode(*MI.getMF(), Uses[0])))
+          return false;
         return isValidCast(*P, Defs[0], Uses[0], /*Attr=*/0);
+      }
       return Uses[0].isScalar() && Defs[0].isScalar();
     }
   case OpShape::BitCount:

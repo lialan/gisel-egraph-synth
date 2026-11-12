@@ -88,6 +88,17 @@ class OpInfo:
         # select or a freeze has the kind of its operands.
         self.fp_operand = False
         self.fp_result = False
+        # The operands / the results (their indexes) that are integers
+        # although the operator has floating-point operands / results: the
+        # exponent of G_FLDEXP and of G_FFREXP.
+        self.int_operands = ()
+        self.int_results = ()
+        # The operands (their indexes) that are pointers, and whether the
+        # result is one. A pointer is its bits: the corpus has only
+        # pointers of an integral address space whose offsets have the
+        # width of the pointer, and the guard of a rule checks the same.
+        self.ptr_operands = ()
+        self.ptr_result = False
         self.typecheck = None
         self.eval = None
         self.smt = None
@@ -118,6 +129,34 @@ class OpInfo:
         # an integer (poison) and a comparison. (A NaN result of another
         # operation can have the payload of the operand.)
         self.nan_insensitive = False
+        # A NaN that the operation makes is always quiet (G_FCANONICALIZE,
+        # G_FMINNUM_IEEE): the general set of fp.nan_member without the
+        # signaling NaN of an operand.
+        self.nan_quiet = False
+        # (eval(w, ws, attr, vals), smt(w, ws, attr, xs)): the condition
+        # for which the bits of ``unspecified`` are not specified, or None
+        # if they are never specified (G_LROUND for a value outside of the
+        # range of the result).
+        self.unspecified_if = None
+        # The results (their indexes) that ``unspecified`` is for, or None
+        # for each result (the exponent of G_FFREXP).
+        self.unspecified_results = None
+        # The number of bits of a choice that only an instruction of a
+        # replacement has: results that LLVM permits and that the
+        # documentation of the opcode does not give (G_FMINNUM). The
+        # evaluator and the SMT model take the choice as one more operand
+        # (0 if it is absent); a source has the choice 0.
+        self.tgt_choice = 0
+        # LLVM permits more than one result and the model has one of them
+        # (the rounding of a fixed-point operation): a proof holds for an
+        # instruction that the rule replaces or removes, not for one that
+        # stays for another user (smt.interior_choice).
+        self.fixed_result = False
+        # The result depends on how the operation treats subnormal
+        # numbers: the model is the IEEE one, and a rule with the operator
+        # applies only in a function with the IEEE denormal mode for the
+        # formats (emit.py).
+        self.denormal = False
 
     # -- the contract of a search --
 
@@ -142,23 +181,46 @@ class OpInfo:
             return 'the number of results is not fixed'
         return self.unsupported.get('emit', 'yes')
 
-    def result_kind(self, operand_kinds):
-        """The kind ('i' integer, 'f' floating point) of the result for
-        operands of the given kinds, or None if the operands do not have
-        the kinds that the operator needs."""
+    def makes_nan_at(self, res):
+        """The result ``res`` is a floating-point value that the
+        operation computes (``makes_nan``)."""
+        return self.makes_nan and res not in self.int_results
+
+    def unspecified_at(self, res):
+        """The result ``res`` has bits that are not specified."""
+        return self.unspecified is not None and (
+            self.unspecified_results is None or
+            res in self.unspecified_results)
+
+    def result_kind(self, operand_kinds, res=0):
+        """The kind ('i' integer, 'f' floating point, 'p' pointer) of the
+        result ``res`` for operands of the given kinds, or None if the
+        operands do not have the kinds that the operator needs."""
         ks = list(operand_kinds)
         if self.freeze:
             return ks[0]
-        if self.bitcast:
-            return 'i' if ks[0] == 'f' else 'f'
-        if self.shape in ('merge', 'unmerge'):
-            # The bits of the operands, of any kind.
+        if self.ptr_operands or self.ptr_result:
+            if any(k != ('p' if i in self.ptr_operands else 'i')
+                   for i, k in enumerate(ks)):
+                return None
+            return 'p' if self.ptr_result else 'i'
+        if self.shape == 'compare' and not self.fp_operand and \
+                ks == ['p', 'p']:
+            # G_ICMP compares the bits of two pointers.
             return 'i'
+        if self.bitcast:
+            # Between an integer and a floating-point value, not a pointer.
+            return {'f': 'i', 'i': 'f'}.get(ks[0])
+        if self.shape in ('merge', 'unmerge'):
+            # The bits of the operands: integers or floating-point values.
+            return None if 'p' in ks else 'i'
         if self.shape == 'select':
             return ks[1] if ks[0] == 'i' and ks[1] == ks[2] else None
-        if any(k != ('f' if self.fp_operand else 'i') for k in ks):
+        if any(k != ('f' if self.fp_operand and i not in self.int_operands
+                     else 'i') for i, k in enumerate(ks)):
             return None
-        return 'f' if self.fp_result else 'i'
+        return 'f' if self.fp_result and res not in self.int_results \
+            else 'i'
 
 
 REGISTRY = {}
@@ -234,7 +296,7 @@ def signature_ok(key, rtype, otypes):
     if info.typecheck is None or info.operands != len(otypes) or \
             res >= (info.results or 1):
         return False
-    if info.result_kind([k for _, k in otypes]) != rtype[1]:
+    if info.result_kind([k for _, k in otypes], res) != rtype[1]:
         return False
     return bool(info.typecheck(rtype[0], [w for w, _ in otypes], attr, res))
 
@@ -308,6 +370,9 @@ def _tc_cast(info):
             return fp.is_format(w) and fp.is_format(ws[0]) and ws[0] < w
         if kind == 'fptrunc':
             return fp.is_format(w) and fp.is_format(ws[0]) and ws[0] > w
+        if kind in ('ptrtoint', 'inttoptr'):
+            # A zero extension, a truncation or the same bits.
+            return True
         if kind in _FP_TO_INT:
             return fp.is_format(ws[0])
         if kind in ('sitofp', 'uitofp'):
@@ -352,6 +417,9 @@ _TYPECHECK = {
     'select': lambda info: lambda w, ws, attr, res:
         len(ws) == 3 and ws[0] == 1 and ws[1] == w and ws[2] == w,
     'typed': _tc_typed,
+    # G_PTR_ADD, G_PTRMASK: a pointer and an integer of its width.
+    'ptradd': lambda info: lambda w, ws, attr, res:
+        len(ws) == 2 and ws[0] == w and ws[1] == w,
     'merge': lambda info: lambda w, ws, attr, res:
         len(ws) >= 2 and all(x == ws[0] for x in ws) and w == sum(ws),
     'unmerge': lambda info: lambda w, ws, attr, res:
@@ -360,7 +428,6 @@ _TYPECHECK = {
 }
 
 _NO_EXPR = {
-    'ptradd': 'pointer values are not modeled',
     'phi': 'needs the control flow of the function',
     'effect': 'a terminator has no value',
 }
@@ -716,6 +783,19 @@ EVAL['G_SEXT'] = lambda w, ws, at, r, v: sx(v[0], ws[0]) & mask(w)
 SMT['G_SEXT'] = lambda w, ws, at, r, x: (
     z3.SignExt(w - ws[0], x[0]), None, None)
 
+# Pointers. A pointer is its bits (see OpInfo.ptr_operands). G_PTRTOINT
+# and G_INTTOPTR extend with zeros or truncate; G_PTR_ADD adds an offset
+# of the width of the pointer and G_PTRMASK clears bits. The flags of
+# G_PTR_ADD (nuw, nusw, inbounds) only make poison: the corpus does not
+# have them and a rule does not write them.
+for _name in ('G_PTRTOINT', 'G_INTTOPTR'):
+    EVAL[_name] = lambda w, ws, at, r, v: v[0] & mask(w)
+    SMT[_name] = lambda w, ws, at, r, x: (_resize(x[0], w), None, None)
+EVAL['G_PTR_ADD'] = lambda w, ws, at, r, v: (v[0] + v[1]) & mask(w)
+SMT['G_PTR_ADD'] = lambda w, ws, at, r, x: (x[0] + x[1], None, None)
+EVAL['G_PTRMASK'] = lambda w, ws, at, r, v: v[0] & v[1]
+SMT['G_PTRMASK'] = lambda w, ws, at, r, x: (x[0] & x[1], None, None)
+
 
 def _sat_trunc(name, src_signed, lo, hi):
     def e(w, ws, at, r, v):
@@ -985,6 +1065,257 @@ SMT['G_IS_FPCLASS'] = lambda w, ws, at, r, x: (
     _b2bv(fp.z3_classify(x[0], at)), None, None)
 
 
+# Carry-less multiplication: the product of two polynomials over GF(2).
+# G_CLMUL has the bits [0, w) of the product, G_CLMULR the bits
+# [w - 1, 2w - 1) and G_CLMULH the bits [w, 2w).
+def _clmul_full(a, b):
+    p = 0
+    while b:
+        if b & 1:
+            p ^= a
+        a <<= 1
+        b >>= 1
+    return p
+
+
+def _z3_clmul_full(a, b, w):
+    wide = z3.ZeroExt(w, a)
+    p = _bv(0, 2 * w)
+    for i in range(w):
+        p = p ^ z3.If(z3.Extract(i, i, b) == 1, wide << i, _bv(0, 2 * w))
+    return p
+
+
+for _name, _lo in (('G_CLMUL', lambda w: 0), ('G_CLMULR', lambda w: w - 1),
+                   ('G_CLMULH', lambda w: w)):
+    EVAL[_name] = (lambda lo: lambda w, ws, at, r, v:
+                   (_clmul_full(v[0], v[1]) >> lo(w)) & mask(w))(_lo)
+    SMT[_name] = (lambda lo: lambda w, ws, at, r, x: (
+        z3.Extract(lo(w) + w - 1, lo(w), _z3_clmul_full(x[0], x[1], w)),
+        None, None))(_lo)
+
+# A part of a scalar: the bits [at, at + w) of the operand; and a scalar
+# with the bits from ``at`` replaced by the second operand.
+EVAL['G_EXTRACT'] = lambda w, ws, at, r, v: (v[0] >> at) & mask(w)
+SMT['G_EXTRACT'] = lambda w, ws, at, r, x: (
+    z3.Extract(at + w - 1, at, x[0]), None, None)
+EVAL['G_INSERT'] = lambda w, ws, at, r, v: \
+    (v[0] & ~(mask(ws[1]) << at)) | (v[1] << at)
+SMT['G_INSERT'] = lambda w, ws, at, r, x: (z3.Concat(
+    [t for t in ([z3.Extract(w - 1, at + ws[1], x[0])]
+                 if at + ws[1] < w else []) + [x[1]] +
+     ([z3.Extract(at - 1, 0, x[0])] if at else [])])
+    if at or ws[1] < w else x[1], None, None)
+
+
+# Fixed-point multiplication and division with the scale ``at``: the exact
+# result divided by 2**at. LLVM does not specify the direction of the
+# rounding; the model rounds down, which is one of the two results, so a
+# proof of a source with these operators holds. A rule does not create
+# them: a new instruction has both results, and its overflow is undefined
+# behaviour in LLVM IR. A result outside of the range is poison here (the
+# operator table of the e-graph), or the nearest limit of the range (the
+# saturating operators). A division by zero is undefined behaviour.
+def _fix(name, signed, div, sat):
+    def limits(w):
+        return (-(1 << (w - 1)), (1 << (w - 1)) - 1) if signed \
+            else (0, mask(w))
+
+    def e(w, ws, at, r, v):
+        a, b = (sx(x, w) for x in v) if signed else v
+        if div:
+            if b == 0:
+                return UB
+            q = (a << at) // b      # floor
+        else:
+            q = (a * b) >> at       # floor
+        lo, hi = limits(w)
+        if not lo <= q <= hi:
+            if not sat:
+                return None
+            q = lo if q < lo else hi
+        return q & mask(w)
+
+    def s(w, ws, at, r, x):
+        ext = z3.SignExt if signed else z3.ZeroExt
+        # 2w + 1 bits hold each intermediate value with its sign.
+        n = 2 * w + 1
+        a, b = ext(n - w, x[0]), ext(n - w, x[1])
+        ub = None
+        if div:
+            ub = x[1] == 0
+            num = a << at
+            if signed:
+                # Floor division from the division that truncates.
+                q = num / b
+                rem = z3.SRem(num, b)
+                q = z3.If(z3.And(rem != 0, (rem < 0) != (b < 0)), q - 1, q)
+            else:
+                q = z3.UDiv(num, b)
+        else:
+            q = (a * b) >> at if signed else z3.LShR(a * b, at)
+        lo, hi = limits(w)
+        lo_t, hi_t = z3.BitVecVal(lo, n), z3.BitVecVal(hi, n)
+        below, above = q < lo_t, q > hi_t
+        val = z3.Extract(w - 1, 0, q)
+        if sat:
+            val = z3.If(below, _bv(lo & mask(w), w),
+                        z3.If(above, _bv(hi, w), val))
+            return val, None, ub
+        return val, z3.Or(below, above), ub
+    EVAL[name], SMT[name] = e, s
+
+
+_FIX = {}
+for _signed in (True, False):
+    for _div in (False, True):
+        for _sat in (False, True):
+            _name = 'G_%s%sFIX%s' % ('S' if _signed else 'U',
+                                     'DIV' if _div else 'MUL',
+                                     'SAT' if _sat else '')
+            _fix(_name, _signed, _div, _sat)
+            _FIX[_name] = _signed
+
+# The typing of the operators that need more than the rule of their shape.
+_NAME_TYPECHECK = {
+    'G_EXTRACT': lambda w, ws, attr, res:
+        len(ws) == 1 and ws[0] > w and 0 <= attr and attr + w <= ws[0],
+    'G_INSERT': lambda w, ws, attr, res:
+        len(ws) == 2 and ws[0] == w and ws[1] < w and 0 <= attr and
+        attr + ws[1] <= w,
+}
+for _name, _signed in _FIX.items():
+    # LangRef: the scale is smaller than the width (signed) or not larger.
+    _NAME_TYPECHECK[_name] = (lambda sg: lambda w, ws, attr, res:
+                              len(ws) == 2 and ws[0] == ws[1] == w and
+                              0 <= attr <= w - int(sg))(_signed)
+
+# Floating-point arithmetic, rounded to nearest (ties to even): the
+# default floating-point environment. A NaN result is OpInfo.makes_nan.
+for _name, _fn in (('G_FADD', 'add'), ('G_FSUB', 'sub'), ('G_FMUL', 'mul'),
+                   ('G_FDIV', 'div')):
+    EVAL[_name] = (lambda f: lambda w, ws, at, r, v: f(v[0], v[1], w))(
+        getattr(fp, _fn))
+    SMT[_name] = (lambda op: lambda w, ws, at, r, x: (
+        fp.z3_arith(op, x[0], x[1]), None, None))(_fn)
+EVAL['G_FSQRT'] = lambda w, ws, at, r, v: fp.sqrt(v[0], w)
+SMT['G_FSQRT'] = lambda w, ws, at, r, x: (
+    fp.z3_arith('sqrt', x[0]), None, None)
+# One rounding (fused) / a rounding after the multiplication (G_FMAD).
+EVAL['G_FMA'] = lambda w, ws, at, r, v: fp.fma(v[0], v[1], v[2], w)
+SMT['G_FMA'] = lambda w, ws, at, r, x: (
+    fp.z3_arith('fma', x[0], x[1], x[2]), None, None)
+EVAL['G_FMAD'] = lambda w, ws, at, r, v: \
+    fp.add(fp.mul(v[0], v[1], w), v[2], w)
+SMT['G_FMAD'] = lambda w, ws, at, r, x: (
+    fp.z3_arith('add', fp.z3_arith('mul', x[0], x[1]), x[2]), None, None)
+
+# The remainder of a division with a quotient that is rounded toward zero.
+EVAL['G_FREM'] = lambda w, ws, at, r, v: fp.rem(v[0], v[1], w)
+SMT['G_FREM'] = lambda w, ws, at, r, x: (fp.z3_rem(x[0], x[1]), None, None)
+# The fractional part (result 0) and the integral part (result 1).
+EVAL['G_FMODF'] = lambda w, ws, at, r, v: fp.modf(v[0], w, r)
+SMT['G_FMODF'] = lambda w, ws, at, r, x: (fp.z3_modf(x[0], r), None, None)
+# The value times a power of 2; the exponent is a signed integer.
+EVAL['G_FLDEXP'] = lambda w, ws, at, r, v: fp.ldexp(v[0], v[1], ws[1], w)
+SMT['G_FLDEXP'] = lambda w, ws, at, r, x: (
+    fp.z3_ldexp(x[0], x[1]), None, None)
+
+
+# The fraction (result 0) and the exponent (result 1, an integer) of a
+# value. The exponent of a NaN and of an infinity is not specified.
+def _frexp_eval(w, ws, at, r, v):
+    out = fp.frexp(v[0], ws[0], r)
+    if r:
+        return mask(w) if out is None else out & mask(w)
+    return out
+
+
+def _frexp_smt(w, ws, at, r, x):
+    val, out = fp.z3_frexp(x[0], r, w)
+    if r:
+        val = z3.If(out, _bv(mask(w), w), val)
+    return val, None, None
+
+
+EVAL['G_FFREXP'], SMT['G_FFREXP'] = _frexp_eval, _frexp_smt
+
+# Rounding to an integral value of the format. G_FRINT and G_FNEARBYINT
+# round in the current mode: to nearest, ties to even.
+_FP_ROUND = {'G_FFLOOR': 'floor', 'G_FCEIL': 'ceil',
+             'G_INTRINSIC_TRUNC': 'trunc', 'G_FRINT': 'even',
+             'G_FNEARBYINT': 'even', 'G_INTRINSIC_ROUNDEVEN': 'even',
+             'G_INTRINSIC_ROUND': 'away'}
+for _name, _mode in _FP_ROUND.items():
+    EVAL[_name] = (lambda m: lambda w, ws, at, r, v:
+                   fp.round_integral(v[0], w, m))(_mode)
+    SMT[_name] = (lambda m: lambda w, ws, at, r, x: (
+        fp.z3_round_integral(x[0], m), None, None))(_mode)
+
+# Rounding to a signed integer. The result is not specified (each bit;
+# OpInfo.unspecified_if) for a NaN, an infinity and a number outside of
+# the range of the result.
+_FP_ROUND_INT = {'G_LROUND': 'away', 'G_LLROUND': 'away',
+                 'G_INTRINSIC_LRINT': 'even', 'G_INTRINSIC_LLRINT': 'even'}
+_UNSPECIFIED_IF = {}
+for _name, _mode in _FP_ROUND_INT.items():
+    def _eval(w, ws, at, r, v, m=_mode):
+        n = fp.round_to_int(v[0], ws[0], w, m)
+        return mask(w) if n is None else n
+
+    def _smt(w, ws, at, r, x, m=_mode):
+        val, out = fp.z3_round_to_int(x[0], w, m)
+        return z3.If(out, _bv(mask(w), w), val), None, None
+    EVAL[_name], SMT[_name] = _eval, _smt
+    _UNSPECIFIED_IF[_name] = (
+        (lambda m: lambda w, ws, at, v:
+         fp.round_to_int(v[0], ws[0], w, m) is None)(_mode),
+        (lambda m: lambda w, ws, at, x:
+         fp.z3_round_to_int(x[0], w, m)[1])(_mode))
+
+_UNSPECIFIED_IF['G_FFREXP'] = (
+    lambda w, ws, at, v: fp.frexp(v[0], ws[0], 1) is None,
+    lambda w, ws, at, x: fp.z3_frexp(x[0], 1, w)[1])
+
+# Minimum and maximum (fp.minmax). The operand after the two values is
+# the choice of a replacement (OpInfo.tgt_choice).
+_FP_MINMAX = {
+    'G_FMINNUM': ('num', False), 'G_FMAXNUM': ('num', True),
+    'G_FMINNUM_IEEE': ('ieee', False), 'G_FMAXNUM_IEEE': ('ieee', True),
+    'G_FMINIMUM': ('imum', False), 'G_FMAXIMUM': ('imum', True),
+    'G_FMINIMUMNUM': ('imumnum', False), 'G_FMAXIMUMNUM': ('imumnum', True)}
+for _name, (_kind, _max) in _FP_MINMAX.items():
+    EVAL[_name] = (lambda k, m: lambda w, ws, at, r, v: fp.minmax(
+        k, m, v[0], v[1], w, v[2] if len(v) > 2 else 0))(_kind, _max)
+    SMT[_name] = (lambda k, m: lambda w, ws, at, r, x: (fp.z3_minmax(
+        k, m, x[0], x[1], x[2] if len(x) > 2 else None), None, None))(
+            _kind, _max)
+
+# The canonical encoding of the value. Every bit pattern of an IEEE binary
+# format is canonical; a NaN becomes a quiet NaN.
+EVAL['G_FCANONICALIZE'] = lambda w, ws, at, r, v: \
+    fp.qnan(w) if fp.is_nan(v[0], w) else v[0]
+SMT['G_FCANONICALIZE'] = lambda w, ws, at, r, x: (
+    z3.If(fp.z3_is_nan(x[0]), _bv(fp.qnan(w), w), x[0]), None, None)
+
+_FP_UNARY = ('G_FSQRT', 'G_FCANONICALIZE') + tuple(_FP_ROUND)
+_FP_BINARY = ('G_FADD', 'G_FSUB', 'G_FMUL', 'G_FDIV', 'G_FREM') + \
+    tuple(_FP_MINMAX)
+_FP_TERNARY = ('G_FMA', 'G_FMAD')
+# The operators with a result that is a NaN for some operands.
+_MAKES_NAN = _FP_UNARY + _FP_BINARY + _FP_TERNARY + (
+    'G_FMODF', 'G_FLDEXP', 'G_FFREXP')
+# (the operands, the results) that are integers.
+_FP_INTEGERS = {'G_FLDEXP': ((1,), ()), 'G_FFREXP': ((), (1,))}
+# The operators whose result depends on the treatment of subnormal
+# numbers (OpInfo.denormal): each operation on the value of a number. Not
+# an operation on the bits (the sign, the class) and not a conversion to
+# an integer that truncates (a subnormal number and zero give 0), or from
+# an integer.
+_DENORMAL = _MAKES_NAN + tuple(_FP_ROUND_INT) + (
+    'G_FCMP', 'G_FPEXT', 'G_FPTRUNC')
+
+
 def _fp_formats(*ws):
     return all(fp.is_format(w) for w in ws)
 
@@ -1014,7 +1345,27 @@ _MODEL_TYPECHECK = {
     'G_IS_FPCLASS': lambda w, ws, attr, res:
         len(ws) == 1 and w == 1 and fp.is_format(ws[0]) and
         0 < attr <= fp.FC_ALL,
+    'G_FMODF': lambda w, ws, attr, res:
+        len(ws) == 1 and ws[0] == w and fp.is_format(w) and res < 2,
+    'G_FLDEXP': lambda w, ws, attr, res:
+        len(ws) == 2 and ws[0] == w and fp.is_format(w) and ws[1] > 1,
+    # Each exponent of a format has a place in 16 bits.
+    'G_FFREXP': lambda w, ws, attr, res:
+        len(ws) == 1 and fp.is_format(ws[0]) and
+        (w >= 16 if res else ws[0] == w) and res < 2,
 }
+for _name in _FP_UNARY:
+    _MODEL_TYPECHECK[_name] = lambda w, ws, attr, res: \
+        len(ws) == 1 and ws[0] == w and fp.is_format(w)
+for _name in _FP_BINARY:
+    _MODEL_TYPECHECK[_name] = lambda w, ws, attr, res: \
+        len(ws) == 2 and ws[0] == ws[1] == w and fp.is_format(w)
+for _name in _FP_TERNARY:
+    _MODEL_TYPECHECK[_name] = lambda w, ws, attr, res: \
+        len(ws) == 3 and ws[0] == ws[1] == ws[2] == w and fp.is_format(w)
+for _name in _FP_ROUND_INT:
+    _MODEL_TYPECHECK[_name] = lambda w, ws, attr, res: \
+        len(ws) == 1 and fp.is_format(ws[0]) and w > 1
 # The class sets that a search tries as the immediate of G_IS_FPCLASS:
 # NaN, infinity, zero, finite, and the negative / positive values.
 _IMM_DOMAIN = {
@@ -1026,13 +1377,11 @@ _IMM_DOMAIN = {
         fp.FC_PINF | fp.FC_PNORM | fp.FC_PSUB | fp.FC_PZERO),
 }
 
-_NO_SEMANTICS = {
-    'G_CLMUL': 'no model yet', 'G_CLMULR': 'no model yet',
-    'G_CLMULH': 'no model yet',
-    'G_EXTRACT': 'no model yet', 'G_INSERT': 'no model yet',
-    'G_PTRTOINT': 'pointer values are not modeled',
-    'G_INTTOPTR': 'pointer values are not modeled',
-}
+_NO_SEMANTICS = {}
+
+# name -> (the operands that are pointers, the result is a pointer).
+_POINTERS = {'G_PTRTOINT': ((0,), False), 'G_INTTOPTR': ((), True),
+             'G_PTR_ADD': ((0,), True), 'G_PTRMASK': ((0,), True)}
 
 # The base grammar of the enumerative search: the operators it builds
 # replacement terms from for every corpus instance.
@@ -1058,7 +1407,11 @@ ENUMERATED_EXTRA = ENUMERATED_BINARY + ENUMERATED_UNARY + \
 
 # Shapes the emitter can write as a match pattern and as a replacement.
 _EMIT_SHAPES = ('binary', 'unary', 'cast', 'bitcount', 'compare', 'select',
-                'typed')
+                'typed', 'ptradd', 'merge')
+# Shapes the emitter can write as a match pattern below the root. A rule
+# does not build G_UNMERGE_VALUES, and it is not the root of a pattern: it
+# has several results.
+_MATCH_SHAPES = _EMIT_SHAPES + ('unmerge',)
 
 _COSTS = {'G_MUL': 2, 'G_UMULH': 2, 'G_SMULH': 2, 'G_UDIV': 4, 'G_SDIV': 4,
           'G_UREM': 4, 'G_SREM': 4, 'G_UDIVREM': 4, 'G_SDIVREM': 4,
@@ -1104,9 +1457,16 @@ def _load_generic():
                 kind in _FP_TO_INT
             info.fp_result = kind in ('fpext', 'fptrunc', 'sitofp',
                                       'uitofp')
-            info.makes_nan = kind in ('fpext', 'fptrunc')
+            info.makes_nan = kind in ('fpext', 'fptrunc') or \
+                name in _MAKES_NAN
             info.nan_insensitive = kind in _FP_TO_INT or \
-                (bool(m.get('fp')) and shape == 'compare')
+                (bool(m.get('fp')) and shape == 'compare') or \
+                name in _FP_ROUND_INT
+            info.denormal = name in _DENORMAL
+            info.nan_quiet = name == 'G_FCANONICALIZE' or \
+                _FP_MINMAX.get(name, ('',))[0] == 'ieee'
+            if _FP_MINMAX.get(name, ('',))[0] == 'num':
+                info.tgt_choice = 2
             if m.get('fp'):
                 # The operands are floating-point values, and so is the
                 # result unless it is one bit (a comparison, a test).
@@ -1116,16 +1476,25 @@ def _load_generic():
                     info.preds = fp.FP_PREDS
                     info.swapped_pred = fp.FP_SWAPPED_PRED
             info.bitcast = name == 'G_BITCAST'
+            info.ptr_operands, info.ptr_result = _POINTERS.get(
+                name, ((), False))
+            info.fixed_result = name in _FIX
             info.nan_through = name == 'G_FNEG'
+            info.int_operands, info.int_results = _FP_INTEGERS.get(
+                name, ((), ()))
             info.unspecified = _UNSPECIFIED.get(name)
+            if name in _UNSPECIFIED_IF:
+                info.unspecified = lambda w, ws: mask(w)
+                info.unspecified_if = _UNSPECIFIED_IF[name]
+                if name == 'G_FFREXP':
+                    info.unspecified_results = (1,)
             if m.get('model_only'):
                 if name in _MODEL_TYPECHECK:
                     info.typecheck = _MODEL_TYPECHECK[name]
                 else:
                     info.unsupported['typecheck'] = 'no model yet'
-            elif shape == 'cast' and m['cast'] in ('ptrtoint', 'inttoptr',
-                                                   'extract'):
-                info.unsupported['typecheck'] = _NO_SEMANTICS[name]
+            elif name in _NAME_TYPECHECK:
+                info.typecheck = _NAME_TYPECHECK[name]
             else:
                 info.typecheck = _TYPECHECK[shape](info)
             if name in EVAL:
@@ -1147,7 +1516,11 @@ def _load_generic():
             info.unsupported.setdefault(
                 'emit', 'no rule without an SMT model')
         else:
-            if shape not in _EMIT_SHAPES:
+            if shape == 'unmerge':
+                info.unsupported['emit'] = \
+                    'a rule can match G_UNMERGE_VALUES but does not ' \
+                    'create it'
+            elif shape not in _EMIT_SHAPES:
                 info.unsupported['emit'] = \
                     'the emitter has no pattern for the shape %s' % shape
             elif m.get('may_trap'):
@@ -1162,6 +1535,14 @@ def _load_generic():
             elif name in _HINTS:
                 info.unsupported['emit'] = \
                     'a rule can match a hint but does not create it'
+            elif name == 'G_FFREXP':
+                info.unsupported['emit'] = \
+                    'a rule can match G_FFREXP but does not create it: ' \
+                    'the type of an exponent without a user is not known'
+            elif name in _FIX:
+                info.unsupported['emit'] = \
+                    'a rule can match a fixed-point operation but does ' \
+                    'not create it: its rounding is not specified'
         register(info)
 
 

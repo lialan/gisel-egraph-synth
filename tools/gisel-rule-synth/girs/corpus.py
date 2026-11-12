@@ -22,12 +22,13 @@ class Instance:
                  sub_facts=None, kinds=None):
         self.expr = expr            # ir expression; leaves are ('var', i)
         self.vw = tuple(vw)         # variable widths
-        # Per variable 'f' (a floating-point value) or 'i' (an integer):
-        # what the operators of the expression need, else what the type of
-        # the register says (``kinds``), else an integer.
+        # Per variable 'f' (a floating-point value), 'p' (a pointer) or
+        # 'i' (an integer): what the operators of the expression need,
+        # else what the type of the register says (``kinds``), else an
+        # integer.
         need = ir.var_kinds(expr)
         self.vk = tuple(
-            need[i] if need.get(i) in ('i', 'f') else
+            need[i] if need.get(i) in ('i', 'f', 'p') else
             ((kinds[i] if kinds else None) or 'i')
             for i in range(len(self.vw)))
         # Per variable (known_zero, known_one) or (known_zero, known_one,
@@ -151,7 +152,7 @@ def parse_record(rec, source='', why=None):
     vw, facts, consts, kinds = [], [], [], []
     for inp in inputs:
         w = inp['w']
-        kinds.append('f' if inp.get('type', '').startswith('f') else None)
+        kinds.append(_type_kind(inp.get('type', '')))
         z, o = int(inp['zero'], 16), int(inp['one'], 16)
         if z & o:
             raise ValueError('inconsistent known bits in corpus: %r' % inp)
@@ -182,6 +183,16 @@ def parse_record(rec, source='', why=None):
     inst.node_regs = tuple(node_regs)
     inst.input_types = tuple(inp.get('type', '') for inp in inputs)
     return inst
+
+
+def _type_kind(name):
+    """'f' / 'p' for the type name of a floating-point value / a pointer
+    (f32, p0), else None."""
+    if name.startswith('f'):
+        return 'f'
+    if name.startswith('p') and name[1:].isdigit():
+        return 'p'
+    return None
 
 
 def _find(node, reg):

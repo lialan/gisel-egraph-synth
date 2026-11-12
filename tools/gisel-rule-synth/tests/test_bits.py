@@ -20,7 +20,7 @@ sys.path.insert(0, ROOT)
 
 import z3  # noqa: E402
 
-from girs import (corpus, discover, fp, ir, ops, precond,  # noqa: E402
+from girs import (corpus, discover, emit, fp, ir, ops, precond,  # noqa: E402
                   select, smt, synth, targets)
 
 LLC = os.environ.get('GIRS_LLC') or os.path.join(
@@ -526,6 +526,100 @@ class SearchTest(unittest.TestCase):
     def test_abs_of_negation(self):
         src = op('G_FABS', 32, op('G_FNEG', 32, V(0)))
         self.assertIn(op('G_FABS', 32, V(0)), self._find(src, (32,)))
+
+
+class InteriorChoiceTest(unittest.TestCase):
+    """A value below the root with bits that are not specified can have
+    another user, which reads the one value of the instruction. The proof
+    then holds for each value of the bits, or the rule applies only if
+    the values below the root have no other user."""
+
+    def strong(self, src, tgt, vw):
+        enc = smt.Encoder(vw, src[1])
+        enc.strong = True
+        f = smt.refinement_violation(enc, src, tgt, z3.BoolVal(True))
+        return smt.Z3Backend().check(f).status == 'unsat'
+
+    def rule(self, src, tgt, vw, kinds=None):
+        s = synth.Synthesizer(smt.Z3Backend())
+        n = len(vw)
+        inst = corpus.Instance(src, vw, [(0, 0)] * n, [None] * n, [], [],
+                               [('f', 'fn', '%0')], kinds=kinds)
+        self.assertIsNotNone(s.add(inst, tgt))
+        stats = s.finalize([inst])
+        (rule,) = s.rules.values()
+        return rule, stats
+
+    def test_kinds(self):
+        x, y = V(0), V(1)
+        ic = smt.interior_choice
+        ext = op('G_ANYEXT', 16, x)
+        self.assertEqual(ic([op('G_AND', 16, ext, L(16, 0xff00))]), 'value')
+        # The root is replaced: its bits are not a value below it.
+        self.assertIsNone(ic([ext]))
+        self.assertIsNone(ic([op('G_AND', 16, op('G_ZEXT', 16, x), y)]))
+        # An output of a region is replaced also.
+        self.assertIsNone(ic([op('G_AND', 16, ext, y), ext]))
+        add = op('G_FADD', 32, x, y)
+        # A comparison does not read the bits of a NaN; G_FABS does.
+        self.assertIsNone(ic([op('G_FCMP:uno', 1, add, x)]))
+        self.assertEqual(ic([op('G_FABS', 32, add)]), 'value')
+        self.assertEqual(ic([op('G_FNEG', 32, op(
+            'G_FMINNUM', 32, x, y))]), 'value')
+        self.assertEqual(ic([op('G_INTRINSIC_LRINT', 32, x)]), None)
+        self.assertEqual(ic([op('G_ADD', 32, op(
+            'G_INTRINSIC_LRINT', 32, x), y)]), 'value')
+        self.assertEqual(ic([op('G_ADD', 32, op(
+            'G_SMULFIX:3', 32, x, y), y)]), 'model')
+
+    def test_strong_proof(self):
+        x, y = V(0), V(1)
+        ext = op('G_ANYEXT', 16, x)
+        # Correct for each value of the high bits.
+        self.assertTrue(self.strong(op('G_TRUNC', 8, ext), x, (8,)))
+        self.assertTrue(self.strong(
+            op('G_AND', 16, ext, L(16, 0xff)), op('G_ZEXT', 16, x), (8,)))
+        # Correct only for the high bits 0.
+        src = op('G_AND', 16, ext, L(16, 0xff00))
+        self.assertTrue(refines(src, L(16, 0), (8,)))
+        self.assertFalse(self.strong(src, L(16, 0), (8,)))
+        # The root can have each value in both forms.
+        self.assertTrue(self.strong(ext, op('G_ZEXT', 16, x), (8,)))
+        # The sign of the NaN of the conversion is not specified: the
+        # source can have the sign of y, and it can have the other sign.
+        src = op('G_FCOPYSIGN', 16, x, op('G_FPTRUNC', 16, y))
+        tgt = op('G_FCOPYSIGN', 16, x, y)
+        self.assertTrue(refines(src, tgt, (16, 32)))
+        self.assertFalse(self.strong(src, tgt, (16, 32)))
+        # LLVM permits +0.0 and -0.0 for the minimum of the two zeros.
+        zero = op('G_IS_FPCLASS:%d' % fp.FC_NZERO, 1, op(
+            'G_FMINNUM', 32, x, L(32, 0)))
+        tgt = op('G_IS_FPCLASS:%d' % fp.FC_NZERO, 1, x)
+        self.assertTrue(refines(zero, tgt, (32,)))
+        self.assertFalse(self.strong(zero, tgt, (32,)))
+
+    def test_rule(self):
+        x, y = V(0), V(1)
+        ext = op('G_ANYEXT', 16, x)
+        rule, stats = self.rule(op('G_AND', 16, ext, L(16, 0xff00)),
+                                L(16, 0), (8,))
+        self.assertTrue(rule['needs_one_use'])
+        self.assertEqual(rule['interior_choice'],
+                         'no other user of the interior values')
+        self.assertEqual(stats['interior_choice_one_use'], 1)
+        self.assertIsNone(emit.one_use_variant(rule))
+        rule, stats = self.rule(op('G_TRUNC', 8, ext), x, (8,))
+        self.assertFalse(rule['needs_one_use'])
+        self.assertEqual(rule['interior_choice'], 'proved for each value')
+        self.assertEqual(stats['interior_choice_proved'], 1)
+        rule, stats = self.rule(
+            op('G_FCOPYSIGN', 16, x, op('G_FPTRUNC', 16, y)),
+            op('G_FCOPYSIGN', 16, x, y), (16, 32), kinds=('f', 'f'))
+        self.assertTrue(rule['needs_one_use'])
+        # No value below the root: no entry.
+        rule, stats = self.rule(op('G_AND', 16, op('G_ZEXT', 16, x), L(
+            16, 0xff00)), L(16, 0), (8,))
+        self.assertNotIn('interior_choice', rule)
 
 
 @unittest.skipUnless(HAVE_LLC, 'no llc (set GIRS_LLC)')

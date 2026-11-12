@@ -317,8 +317,11 @@ def structural(rule):
     have = set(ir.variables(pairs[0][0])) | \
         set(rule['region'].get('sibling_vars', ()))
     tgts = [t for _, t in pairs]
+    # A value below the outputs can stay for another user: no proof takes
+    # a value for its unspecified bits (smt.interior_choice).
     return all(set(ir.variables(t)) <= have for t in tgts) and \
-        all(c <= 1 for c in joint_reads(tgts).values())
+        all(c <= 1 for c in joint_reads(tgts).values()) and \
+        smt.interior_choice([s for s, _ in pairs]) is None
 
 
 def _pattern_node(inst, tgt0, rule, node, tgt):

@@ -16,16 +16,20 @@
 #ifndef LLVM_CODEGEN_GLOBALISEL_GISYNTHPREDICATES_H
 #define LLVM_CODEGEN_GLOBALISEL_GISYNTHPREDICATES_H
 
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/FloatingPointMode.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
+#include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Register.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/KnownBits.h"
 #include "llvm/Support/raw_ostream.h"
@@ -36,19 +40,76 @@
 namespace llvm {
 namespace gisynth {
 
-/// Writes the scalar bit width of each register to \p W. Fails for vectors,
-/// pointers and invalid types: the rules are only proved for scalars. Also
+/// Writes the bit width of each register to \p W. Fails for vectors and
+/// invalid types: the rules are only proved for scalars and pointers. Also
 /// fails for a floating-point type that does not have the IEEE format of its
 /// width (bfloat): the conversions are proved for the IEEE formats.
+///
+/// The bit I of \p Pointers says that the register I is a pointer in the
+/// rule; every other register must be a scalar. A pointer is its bits in a
+/// proof, so its address space must be integral and its offsets must have the
+/// width of the pointer (G_PTR_ADD is then the addition of the bits). The
+/// pointers of one width must have one type: a new pointer of a replacement
+/// takes its type from one of them.
 inline bool getScalarWidths(const MachineRegisterInfo &MRI,
-                            std::initializer_list<Register> Regs, unsigned *W) {
+                            std::initializer_list<Register> Regs, unsigned *W,
+                            uint64_t Pointers = 0) {
+  SmallVector<LLT, 4> PtrTys;
+  unsigned Idx = 0;
   for (Register R : Regs) {
     LLT Ty = MRI.getType(R);
-    if (!Ty.isValid() || !Ty.isScalar())
+    if (!Ty.isValid())
       return false;
-    if (Ty.isFloat() && !Ty.isFloatIEEE())
-      return false;
+    if ((Pointers >> Idx++) & 1) {
+      const MachineInstr *Def = MRI.getVRegDef(R);
+      if (!Ty.isPointer() || !Def)
+        return false;
+      const DataLayout &DL = Def->getMF()->getDataLayout();
+      unsigned AS = Ty.getAddressSpace();
+      if (DL.isNonIntegralAddressSpace(AS) ||
+          DL.getIndexSizeInBits(AS) != Ty.getSizeInBits())
+        return false;
+      for (LLT Seen : PtrTys)
+        if (Seen.getSizeInBits() == Ty.getSizeInBits() && Seen != Ty)
+          return false;
+      PtrTys.push_back(Ty);
+    } else {
+      if (!Ty.isScalar())
+        return false;
+      if (Ty.isFloat() && !Ty.isFloatIEEE())
+        return false;
+    }
     *W++ = Ty.getSizeInBits();
+  }
+  return true;
+}
+
+/// True if the function has the IEEE treatment of subnormal numbers
+/// (DenormalMode) for the floating-point format of the width of each register
+/// of \p Regs. A rule with a floating-point operation on the value of a number
+/// is proved for this treatment: with another mode, an operation takes a
+/// subnormal operand as zero or can give zero for a subnormal result. A
+/// register can be an integer; the check is then stricter than necessary.
+inline bool hasIEEEDenormalMode(const MachineRegisterInfo &MRI,
+                                std::initializer_list<Register> Regs) {
+  for (Register R : Regs) {
+    const fltSemantics *Sem;
+    switch (MRI.getType(R).getSizeInBits()) {
+    case 16:
+      Sem = &APFloat::IEEEhalf();
+      break;
+    case 32:
+      Sem = &APFloat::IEEEsingle();
+      break;
+    case 64:
+      Sem = &APFloat::IEEEdouble();
+      break;
+    default:
+      continue;
+    }
+    const MachineInstr *Def = MRI.getVRegDef(R);
+    if (!Def || Def->getMF()->getDenormalMode(*Sem) != DenormalMode::getIEEE())
+      return false;
   }
   return true;
 }
@@ -291,6 +352,31 @@ inline MachineInstr &applyRegionPlan(const RegionPlan &Plan) {
   for (MachineInstr *MI : Plan.Move)
     MBB.splice(Plan.InsertPt->getIterator(), &MBB, MI->getIterator());
   return *Plan.InsertPt;
+}
+
+/// Removes the flags of \p MI that the proof of a rule does not have: the
+/// flags that make poison (nsw, exact, nnan, inbounds) and the fast-math flags
+/// that permit other results. A rule is proved for a source without flags.
+/// That covers a source with flags if the replacement only reads the inputs
+/// of the source. A replacement that reads the value of an instruction of the
+/// source needs that instruction, and the instructions of the source that it
+/// reads, without flags.
+inline void dropFlags(MachineIRBuilder &B, MachineInstr &MI) {
+  constexpr uint32_t Flags =
+      MachineInstr::NoUWrap | MachineInstr::NoSWrap | MachineInstr::NoUSWrap |
+      MachineInstr::IsExact | MachineInstr::Disjoint | MachineInstr::NonNeg |
+      MachineInstr::SameSign | MachineInstr::InBounds | MachineInstr::FmNoNans |
+      MachineInstr::FmNoInfs | MachineInstr::FmNsz | MachineInstr::FmArcp |
+      MachineInstr::FmContract | MachineInstr::FmAfn | MachineInstr::FmReassoc;
+  if (!(MI.getFlags() & Flags))
+    return;
+  // The flags are a part of the identity of an instruction for CSE.
+  GISelChangeObserver *Observer = B.getObserver();
+  if (Observer)
+    Observer->changingInstr(MI);
+  MI.clearFlags(Flags);
+  if (Observer)
+    Observer->changedInstr(MI);
 }
 
 /// Gives each result of \p MI a new register. The apply step of a rule for
