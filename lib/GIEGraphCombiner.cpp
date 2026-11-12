@@ -21,6 +21,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
@@ -73,6 +74,14 @@ STATISTIC(NumDominanceRejected,
           "Number of profitable candidates rejected for dominance");
 STATISTIC(CostSaved, "Estimated cost saved by rewritten regions");
 STATISTIC(ShadowCostSaved, "Estimated cost saved by profitable candidates");
+STATISTIC(NumFactRewrites, "Number of rewrites justified by known bits");
+STATISTIC(NumContextFactRewrites,
+          "Number of rewrites that needed known bits of region inputs");
+STATISTIC(NumLinearRewrites, "Number of rewrites of the linear view");
+STATISTIC(NumSliceRewrites, "Number of rewrites of the bit-slice view");
+STATISTIC(NumTupleRewrites, "Number of rewrites of the tuple rules");
+STATISTIC(NumViewBudgetStops, "Number of views abandoned at a budget");
+STATISTIC(NumViewUnsafe, "Number of view rewrites rejected as unsound");
 
 namespace {
 enum class EGraphMode { Shadow, Rewrite };
@@ -124,6 +133,60 @@ static cl::opt<unsigned>
 static cl::opt<unsigned> MulCost("gisel-egraph-mul-cost", cl::Hidden,
                                  cl::init(2),
                                  cl::desc("Extraction cost of a 32-bit G_MUL"));
+namespace {
+/// The features added on top of the table rules and the node-count cost
+/// model; -gisel-egraph-features selects them (all by default; "none" is
+/// the engine without them, for comparisons).
+struct EGraphFeatures {
+  /// Known bits of the inputs and of the classes, and the rules with a
+  /// precondition on them (SaturationLimits::EnableFacts).
+  bool Facts = true;
+  /// The linear, bit-slice and tuple views (SaturationLimits).
+  bool Linear = true;
+  bool Slice = true;
+  bool Tuples = true;
+  /// Costs of multi-node target patterns, register banks and sharing in
+  /// extraction (TargetCostModel).
+  bool Patterns = true;
+  bool Banks = true;
+  bool DagExtraction = true;
+};
+} // namespace
+
+static cl::list<std::string> FeatureList(
+    "gisel-egraph-features", cl::Hidden, cl::CommaSeparated,
+    cl::desc("Features of the e-graph combiner beyond the table rules: "
+             "facts, linear, slice, tuples, patterns, banks, dag, or all "
+             "(default) or none; a name with the prefix no- removes it"));
+
+static EGraphFeatures getFeatures() {
+  EGraphFeatures F;
+  for (const std::string &Name : FeatureList) {
+    StringRef N = Name;
+    bool On = !N.consume_front("no-");
+    if (N == "all" || N == "none") {
+      bool V = On && N == "all";
+      F.Facts = F.Linear = F.Slice = F.Tuples = V;
+      F.Patterns = F.Banks = F.DagExtraction = V;
+      continue;
+    }
+    bool *Flag = StringSwitch<bool *>(N)
+                     .Case("facts", &F.Facts)
+                     .Case("linear", &F.Linear)
+                     .Case("slice", &F.Slice)
+                     .Case("tuples", &F.Tuples)
+                     .Case("patterns", &F.Patterns)
+                     .Case("banks", &F.Banks)
+                     .Case("dag", &F.DagExtraction)
+                     .Default(nullptr);
+    if (!Flag)
+      report_fatal_error("-gisel-egraph-features: unknown feature '" + N +
+                         "'");
+    *Flag = On;
+  }
+  return F;
+}
+
 static cl::opt<bool>
     Report("gisel-egraph-report", cl::Hidden, cl::init(false),
            cl::desc("Print a per-region report of the e-graph combiner"));
@@ -162,7 +225,10 @@ static cl::opt<bool> ExportAll(
 /// The version of the record format of -gisel-egraph-export.
 // Version 2: fixed vectors (an index of a lane is "imm", a shuffle mask is
 // "mask"; the known bits of a vector are those of each lane).
-static constexpr unsigned ExportVersion = 2;
+// Version 3: "features", "views" (statistics of the analysis views) and
+// "context_facts" (the rules whose precondition needed known bits of the
+// inputs, which a rule made from the record must test).
+static constexpr unsigned ExportVersion = 3;
 
 static const char *TimerGroupName = "gisel-egraph";
 static const char *TimerGroupDesc = "GlobalISel e-graph combiner";
@@ -630,6 +696,7 @@ private:
   MachineRegisterInfo &MRI;
   bool CanRewrite;
   bool IsLegalized;
+  EGraphFeatures Features = getFeatures();
   TargetCostModel CM;
   std::optional<MachineDominatorTree> MDT;
   std::optional<GISelValueTracking> VT;
@@ -833,7 +900,15 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
         OrigDefs.push_back({Id, Def, 0});
       CM.addOriginal(G, ENode::makeConstant(Ty, *C));
     } else {
-      Id = G.addInput(getInputInfo(Reg, MRI));
+      InputInfo Info = getInputInfo(Reg, MRI);
+      // Context facts: the known bits of the value outside of the region
+      // (of each lane of a fixed vector).
+      if (Features.Facts && !Ty.isPointer() &&
+          (Ty.isScalar() ||
+           (Ty.isFixedVector() && Ty.getElementType().isScalar())) &&
+          !Ty.getScalarType().isFloat())
+        Info.Known = getValueTracking().getKnownBits(Reg);
+      Id = G.addInput(Info);
       if (!Carried)
         InputIndex[Reg] = InputRegs.size();
       InputRegs.push_back(Reg);
@@ -973,6 +1048,10 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
   Limits.MaxMatchesPerIteration = MaxMatches;
   Limits.MaxACLeaves = MaxACLeaves;
   Limits.MaxACViews = MaxACViews;
+  Limits.EnableFacts = Features.Facts;
+  Limits.EnableLinear = Features.Linear;
+  Limits.EnableSlice = Features.Slice;
+  Limits.EnableTuples = Features.Tuples;
   SaturationStats S;
   {
     NamedRegionTimer T("saturate", "Saturate e-graph", TimerGroupName,
@@ -992,6 +1071,21 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
     ++NumSaturated;
   else
     ++NumBudgetLimited;
+  for (const auto &[Name, V] : S.Views) {
+    unsigned Applied = V.Merges + V.Refinements;
+    if (Name == "facts" || Name == "known-constants") {
+      NumFactRewrites += Applied;
+      NumContextFactRewrites += V.ContextFacts;
+    } else if (Name == "linear") {
+      NumLinearRewrites += Applied;
+    } else if (Name == "slice") {
+      NumSliceRewrites += Applied;
+    } else if (Name == "tuples") {
+      NumTupleRewrites += Applied;
+    }
+    NumViewBudgetStops += V.Budget;
+    NumViewUnsafe += V.Unsafe;
+  }
 
   // 3. Extraction.
   NamedRegionTimer ExtractTimer("extract", "Extract and rewrite",
@@ -1110,9 +1204,19 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       OS << "  rules:";
       ArrayRef<RewriteRule> Rules = getRules();
       for (unsigned RI = 0, RE = Rules.size(); RI != RE; ++RI)
-        if (S.RuleApplications[RI])
+        if (S.RuleApplications[RI]) {
           OS << " " << Rules[RI].getName() << "=" << S.RuleApplications[RI];
+          if (S.ContextFactApplications[RI])
+            OS << "(context:" << S.ContextFactApplications[RI] << ")";
+        }
       OS << "\n";
+      if (!S.Views.empty()) {
+        OS << "  views:";
+        for (const auto &[Name, V] : S.Views)
+          OS << " " << Name << "=" << V.Merges << "/" << V.Refinements << "/"
+             << V.Unsafe << "/" << V.Budget;
+        OS << " (merges/refinements/unsafe/budget)\n";
+      }
     }
   }
 
@@ -1159,6 +1263,32 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       J.attribute("refinement", UsesRefinement);
       J.attribute("blocker", Blocker);
       J.attribute("saturated", S.Saturated);
+      J.attributeArray("features", [&] {
+        for (auto [Name, On] :
+             {std::pair<const char *, bool>{"facts", Features.Facts},
+              {"linear", Features.Linear},
+              {"slice", Features.Slice},
+              {"tuples", Features.Tuples},
+              {"patterns", Features.Patterns},
+              {"banks", Features.Banks},
+              {"dag", Features.DagExtraction}})
+          if (On)
+            J.value(Name);
+      });
+      J.attributeObject("views", [&] {
+        for (const auto &NV : S.Views)
+          J.attributeObject(NV.first, [&] {
+            const ViewStats &V = NV.second;
+            J.attribute("views", V.Views);
+            J.attribute("candidates", V.Candidates);
+            J.attribute("merges", V.Merges);
+            J.attribute("refinements", V.Refinements);
+            J.attribute("unsafe", V.Unsafe);
+            J.attribute("budget", V.Budget);
+            J.attribute("unsupported", V.Unsupported);
+            J.attribute("context_facts", V.ContextFacts);
+          });
+      });
       J.attributeObject("cost", [&] {
         J.attribute("original", OldCost);
         J.attribute("optimized", NewCost);
@@ -1275,6 +1405,18 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
         // The lane rules of fixed vectors (applyLaneRules).
         for (const auto &[Name, N] : S.LaneRuleApplications)
           J.attribute(Name, N);
+      });
+      // The rules whose precondition needed the known bits of the inputs
+      // (the "zero"/"one" of "inputs"): a rule made from this record must
+      // test them.
+      J.attributeObject("context_facts", [&] {
+        ArrayRef<RewriteRule> Rules = getRules();
+        for (unsigned RI = 0, RE = Rules.size(); RI != RE; ++RI)
+          if (S.ContextFactApplications[RI])
+            J.attribute(Rules[RI].getName(), S.ContextFactApplications[RI]);
+        if (auto It = S.Views.find("known-constants");
+            It != S.Views.end() && It->second.ContextFacts)
+          J.attribute("known-constant", It->second.ContextFacts);
       });
     });
     *Out << "\n";

@@ -119,6 +119,38 @@ struct InputInfo {
   LLT Ty;
   bool NotUndef = false;
   bool NotPoison = false;
+  /// Known bits of the input (of each lane of a fixed vector) that hold
+  /// outside of the region, e.g. from GISelValueTracking. They are *context
+  /// facts*: a property of the SSA value, so they hold at every use of it,
+  /// but not a consequence of the expression that a rule matches. A rule
+  /// derived from a rewrite that needs them must test them (a guard). An
+  /// empty KnownBits (width 0) means nothing is known.
+  KnownBits Known;
+};
+
+/// Where a fact used by a rewrite comes from.
+enum class FactSource : uint8_t {
+  /// The structure of the classes alone (constants and operators), with
+  /// nothing known about the inputs: the fact follows from the left-hand
+  /// side that the rewrite matched.
+  Structure,
+  /// Also the context facts of the inputs (InputInfo::Known): a rule made
+  /// from the rewrite needs a guard.
+  Context,
+};
+
+/// The constant of one lane of a class (EGraph::getLaneConstant).
+struct LaneConstant {
+  enum KindTy : uint8_t {
+    /// The lane is the exact constant Value.
+    Constant,
+    /// The lane has no value: it may be undef or poison (a shuffle lane with
+    /// the mask entry -1).
+    NoValue,
+    /// Nothing is known.
+    Unknown,
+  } Kind = Unknown;
+  APInt Value;
 };
 
 /// An equivalence class of e-nodes plus analysis data. All nodes in a class
@@ -142,6 +174,13 @@ struct EClass {
   bool NotUndef = false;
   /// Analysis: the value is never poison.
   bool NotPoison = false;
+  /// Analysis: known bits of the value (of each lane of a fixed integer
+  /// vector), from all nodes of the class (see EGraph::getKnownBits). Known
+  /// uses the context facts of the inputs, KnownLocal does not. Width 0 for
+  /// a class without an integer type (pointers, floating point, effects).
+  /// The facts of a class hold for each value it can have that is not
+  /// poison; they say nothing about the classes it refines to.
+  KnownBits Known, KnownLocal;
 };
 
 /// A term of an associative and commutative (AC) operator, represented by
@@ -215,6 +254,34 @@ public:
   /// vector whose lanes are all the same exact constant. Does not follow
   /// refinement edges or treat undef/poison lanes as constant lanes.
   std::optional<APInt> getScalarOrSplatConstant(EClassId Id) const;
+
+  //===--- Typed constants and facts --------------------------------------===//
+  //
+  // One set of queries for a constant of any supported type: a scalar, a
+  // splat or the lanes of a fixed integer vector. A vector is never one wide
+  // integer: a constant of a lane has the width of the element. None of
+  // these follows refinement edges, and a lane that may be undef or poison
+  // is never a constant.
+
+  /// The scalar constant or the element of a constant splat (an alias of
+  /// getScalarOrSplatConstant).
+  std::optional<APInt> getSplatConstant(EClassId Id) const {
+    return getScalarOrSplatConstant(Id);
+  }
+  /// The constant of lane \p Lane (lane 0 of a scalar is the scalar).
+  LaneConstant getLaneConstant(EClassId Id, unsigned Lane) const;
+  /// True if the scalar, or every lane, is the exact constant 0 (all ones).
+  bool isAllZero(EClassId Id) const;
+  bool isAllOnes(EClassId Id) const;
+  /// The known bits of the class (of each lane of a fixed vector), with or
+  /// without the context facts of the inputs (EClass::Known, KnownLocal).
+  /// Width 0 if the class has no integer type.
+  const KnownBits &getKnownBits(EClassId Id,
+                                FactSource Src = FactSource::Context) const {
+    const EClass &C = getClass(Id);
+    return Src == FactSource::Context ? C.Known : C.KnownLocal;
+  }
+
   const InputInfo &getInputInfo(unsigned Idx) const { return Inputs[Idx]; }
   unsigned getNumInputs() const { return Inputs.size(); }
   void setKnownBits(EClassId Id, KnownBits K) {
@@ -289,9 +356,11 @@ private:
     size_t operator()(const ENode &N) const { return hash_value(N); }
   };
   void recomputeAnalyses();
+  void recomputeKnownBits(ArrayRef<EClassId> Ids);
   void pruneConstantClasses();
   bool computeNodeNotUndef(const ENode &N) const;
   bool computeNodeNotPoison(const ENode &N) const;
+  KnownBits computeNodeKnownBits(const ENode &N, FactSource Src) const;
 
   std::vector<EClass> Classes;
   mutable std::vector<EClassId> Parent;
@@ -429,6 +498,23 @@ public:
   unsigned getLHSOccurrences(unsigned Var) const { return OccL[Var]; }
   unsigned getRHSOccurrences(unsigned Var) const { return OccR[Var]; }
   const ApplyFn &getApplyFn() const { return Fn; }
+
+  /// Optional precondition on facts of the binding (EGraph::getKnownBits).
+  /// Returns the source of the facts that it needed: FactSource::Structure
+  /// if the facts without the context of the inputs suffice (the condition
+  /// follows from the matched left-hand side), FactSource::Context if it
+  /// also needs the context facts (a rule made from the rewrite needs a
+  /// guard), or std::nullopt to reject the match. Checked before ApplyFn.
+  /// Facts hold for each value of a class that is not poison, so a
+  /// rewrite justified by them is classified like any other (isExactFor).
+  using FactFn = std::function<std::optional<FactSource>(const EGraph &,
+                                                         const RuleMatch &)>;
+  RewriteRule &setFactFn(FactFn F) {
+    Facts = std::move(F);
+    return *this;
+  }
+  const FactFn &getFactFn() const { return Facts; }
+
   /// True if the rule asserts that its sides are poison under exactly the
   /// same conditions. Only such a rule creates a node of an operator with
   /// OpProperties::MayBePoison.
@@ -464,6 +550,7 @@ private:
   uint32_t MentionL = 0, StrictL = 0, MentionR = 0, StrictR = 0;
   bool PoisonExact = false;
   ApplyFn Fn;
+  FactFn Facts;
 };
 
 //===----------------------------------------------------------------------===//
@@ -937,8 +1024,54 @@ void matchRule(const EGraph &G, const RewriteRule &Rule,
 enum class ApplyResult { NoChange, Merged, Refined, Rejected, Unsafe };
 
 /// Apply one match: merges if exact, adds a refinement edge if only a
-/// refinement, and does nothing if neither can be justified.
-ApplyResult applyMatch(EGraph &G, const RewriteRule &Rule, const RuleMatch &M);
+/// refinement, and does nothing if neither can be justified. If the rule
+/// has a fact precondition (RewriteRule::FactFn) and \p UsedFacts is not
+/// null, it is set to the source of the facts that the match needed.
+ApplyResult applyMatch(EGraph &G, const RewriteRule &Rule, const RuleMatch &M,
+                       std::optional<FactSource> *UsedFacts = nullptr);
+
+//===----------------------------------------------------------------------===//
+// The definedness policy of rewrites that are not table rules
+//===----------------------------------------------------------------------===//
+
+/// What a rewrite justifies: a merge (both directions), a refinement edge
+/// (LHS ~> RHS), or nothing.
+enum class RewriteKind : uint8_t { Exact, Refinement, Unsafe };
+
+/// A leaf of a rewrite and how many times each side reads it.
+struct LeafReads {
+  EClassId Class = 0;
+  unsigned LHS = 0, RHS = 0;
+};
+
+/// The policy of the table rules (RewriteRule::isExactFor and
+/// isRefinementFor), for rewrites that a view computes instead of a pattern:
+/// the analysis views (AC multiplicities, linear forms, bit slices) and the
+/// tuple rules. \p Leaves lists every leaf class that either side reads.
+///
+/// Preconditions, which the caller must establish: when each read of each
+/// leaf is the same value that is neither undef nor poison, both sides have
+/// the same value; and each side is poison iff a leaf that it reads is
+/// poison, without undefined behaviour of its own (operators without
+/// poison-generating flags, without division, without select arms).
+///
+/// Each read of an undef leaf can see a different value, so:
+///  * Refinement: every leaf is read at most once by the right-hand side,
+///    or is not undef; a right-hand side then chooses one point of the
+///    "all reads equal" diagonal of the left-hand side's values. A leaf
+///    that only the right-hand side reads must be neither undef nor poison.
+///  * Exact: additionally, a leaf read a different number of times, or more
+///    than once, is not undef, and a leaf that the right-hand side drops is
+///    not poison (the left-hand side is poison when it is).
+/// E.g. `x ^ x -> 0` and `x + x -> x << 1` are refinements unless x is not
+/// undef; `x - x -> 0` is exact only if x is neither undef nor poison.
+RewriteKind classifyLeafReads(const EGraph &G, ArrayRef<LeafReads> Leaves);
+
+/// Relate \p From to \p To as \p K allows: merge (Exact), add the
+/// refinement edge From ~> To (Refinement), or nothing (Unsafe, the result
+/// is ApplyResult::Unsafe).
+ApplyResult relateClasses(EGraph &G, EClassId From, EClassId To,
+                          RewriteKind K);
 
 struct SaturationLimits {
   unsigned MaxIterations = 10;
@@ -956,6 +1089,63 @@ struct SaturationLimits {
   /// number of views per class and operator.
   unsigned MaxACLeaves = 8;
   unsigned MaxACViews = 8;
+
+  /// The analysis views and rule families added on top of the table rules.
+  /// All are on by default; turning them off gives the engine without them
+  /// (for comparisons, -gisel-egraph-features).
+  ///   Facts:  rules with a precondition on known bits (RewriteRule::FactFn).
+  ///   Linear: linear forms modulo 2^W (applyLinearViews).
+  ///   Slice:  bit slices, extensions and concatenations (applySliceViews).
+  ///   Tuples: results of operators with several results (applyTupleRules).
+  bool EnableFacts = true;
+  bool EnableLinear = true;
+  bool EnableSlice = true;
+  bool EnableTuples = true;
+  /// Budgets of one view of one class: the number of terms (leaves) of the
+  /// view, the number of nodes that computing it may visit, and the number
+  /// of implementations it may add. A view over budget is abandoned (the
+  /// class keeps its node-by-node form) and counted in ViewStats::Budget.
+  unsigned MaxViewTerms = 8;
+  unsigned MaxViewVisits = 64;
+  unsigned MaxViewCandidates = 3;
+};
+
+/// Statistics of one analysis view or rule family (SaturationStats::Views).
+struct ViewStats {
+  /// Classes for which a view was computed.
+  unsigned Views = 0;
+  /// Implementations added (new nodes or classes) by the view.
+  unsigned Candidates = 0;
+  unsigned Merges = 0;
+  unsigned Refinements = 0;
+  /// Rewrites that classifyLeafReads (or a fact precondition) rejected.
+  unsigned Unsafe = 0;
+  /// Views abandoned at a budget (MaxViewTerms, MaxViewVisits,
+  /// MaxViewCandidates or the node limit).
+  unsigned Budget = 0;
+  /// Views outside the supported subset (a type, a flag, a width).
+  unsigned Unsupported = 0;
+  /// Applications that needed context facts (FactSource::Context).
+  unsigned ContextFacts = 0;
+  void add(const ViewStats &O) {
+    Views += O.Views;
+    Candidates += O.Candidates;
+    Merges += O.Merges;
+    Refinements += O.Refinements;
+    Unsafe += O.Unsafe;
+    Budget += O.Budget;
+    Unsupported += O.Unsupported;
+    ContextFacts += O.ContextFacts;
+  }
+  /// Count the result of relateClasses.
+  void count(ApplyResult R) {
+    if (R == ApplyResult::Merged)
+      ++Merges;
+    else if (R == ApplyResult::Refined)
+      ++Refinements;
+    else if (R == ApplyResult::Unsafe)
+      ++Unsafe;
+  }
 };
 
 /// Memoized AC views of a clean graph (valid until the graph changes).
@@ -1000,6 +1190,13 @@ struct SaturationStats {
   /// rule name.
   unsigned LaneMerges = 0;
   std::map<std::string, unsigned> LaneRuleApplications;
+  /// Per table rule (in rule order): the applications that needed context
+  /// facts (RewriteRule::FactFn returned FactSource::Context).
+  SmallVector<unsigned, 32> ContextFactApplications;
+  /// Per analysis view or rule family: "facts" (the rules with a fact
+  /// precondition), "known-constants" (classes whose bits are all known),
+  /// "linear", "slice", "tuples" (see SaturationLimits).
+  std::map<std::string, ViewStats> Views;
 };
 
 /// True if the e-graph has nodes of the vector operator \p Opc
@@ -1020,6 +1217,40 @@ bool isLaneWiseOperator(const OpProperties &P);
 /// number of merges.
 unsigned applyLaneRules(EGraph &G, unsigned MaxNodes,
                         std::map<std::string, unsigned> &Applications);
+
+//===----------------------------------------------------------------------===//
+// Analysis views and rule families beyond the table rules
+//===----------------------------------------------------------------------===//
+//
+// Each one requires a clean graph, works in a read phase (collect what to
+// add on the unchanged graph) and a write phase (add nodes, then relate
+// classes through classifyLeafReads/relateClasses), stops adding once the
+// graph has SaturationLimits::MaxNodes nodes, and returns the number of
+// changes (new nodes, merges and refinement edges); saturate() rebuilds the
+// graph if it is not zero. A view is an analysis of a class, never a node:
+// what it finds is added as ordinary binary gMIR nodes, so extraction and
+// emission see nothing new.
+
+/// Linear forms modulo 2^W (lib/GIEGraphLinear.cpp): a class of integers
+/// as `c + sum(k_i * t_i)` through G_ADD, G_SUB, negation, G_MUL and G_SHL
+/// by constants; adds implementations of the form and relates the class to
+/// them.
+unsigned applyLinearViews(EGraph &G, const SaturationLimits &Limits,
+                          ViewStats &Stats);
+
+/// Bit slices (lib/GIEGraphSlice.cpp): a class as an extension of the bits
+/// [Lo, Lo + Width) of a value, through shifts by constants, masks of low
+/// bits, truncations, extensions and bit-field extracts; adds the direct
+/// forms of the slice and relates the class to them.
+unsigned applySliceViews(EGraph &G, const SaturationLimits &Limits,
+                         ViewStats &Stats);
+
+/// Tuples (lib/GIEGraphTuples.cpp): for an operator with several results,
+/// the nodes of the results that the graph lacks, so that extraction can
+/// compute every result with one instruction, and the relations between a
+/// result and single-result operators that the table rules cannot write.
+unsigned applyTupleRules(EGraph &G, const SaturationLimits &Limits,
+                         ViewStats &Stats);
 
 /// Bounded equality saturation. Deterministic for a given graph and rule set.
 SaturationStats saturate(EGraph &G, ArrayRef<RewriteRule> Rules,

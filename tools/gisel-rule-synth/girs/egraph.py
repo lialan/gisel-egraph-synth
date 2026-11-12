@@ -41,8 +41,8 @@ from . import vector
 
 # Version 2: fixed vectors ("imm": the constant index of a lane, "mask": the
 # mask of a shuffle, the known bits of a vector are those of a lane).
-FORMAT_VERSIONS = (1, 2)
-FORMAT_VERSION = 2
+FORMAT_VERSIONS = (1, 2, 3)
+FORMAT_VERSION = 3
 
 
 def parse_type(t):

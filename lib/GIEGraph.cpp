@@ -2378,6 +2378,363 @@ std::optional<APInt> EGraph::getScalarOrSplatConstant(EClassId Id) const {
   return std::nullopt;
 }
 
+LaneConstant EGraph::getLaneConstant(EClassId Id, unsigned Lane) const {
+  const EClass &C = getClass(Id);
+  LaneConstant R;
+  if (!C.Ty.isValid())
+    return R;
+  if (!C.Ty.isVector()) {
+    if (Lane == 0 && C.Const) {
+      R.Kind = LaneConstant::Constant;
+      R.Value = *C.Const;
+    }
+    return R;
+  }
+  if (!isFixedIntegerVector(C.Ty) || Lane >= C.Ty.getNumElements())
+    return R;
+  LLT EltTy = C.Ty.getElementType();
+  auto ConstantOf = [&](EClassId Elt) {
+    std::optional<APInt> V = getType(Elt) == EltTy ? getConstant(Elt)
+                                                   : std::nullopt;
+    if (V) {
+      R.Kind = LaneConstant::Constant;
+      R.Value = *V;
+    }
+    return V.has_value();
+  };
+  // Nodes of one class have the same value in each lane, so the first node
+  // that tells the constant of the lane decides. A lane without a value
+  // (a shuffle mask entry -1) is only reported if no node has a constant.
+  bool NoValue = false;
+  for (const ENode &N : C.Nodes) {
+    if (!N.isOperation())
+      continue;
+    switch (N.Opcode) {
+    case TargetOpcode::G_BUILD_VECTOR:
+      if (N.Ops.size() == C.Ty.getNumElements() && ConstantOf(N.Ops[Lane]))
+        return R;
+      break;
+    case TargetOpcode::G_INSERT_VECTOR_ELT:
+      if (N.Attr == Lane && ConstantOf(N.Ops[1]))
+        return R;
+      break;
+    case TargetOpcode::G_SHUFFLE_VECTOR: {
+      ArrayRef<int> Mask = getMask(N.Attr);
+      if (Lane < Mask.size() && Mask[Lane] < 0)
+        NoValue = true;
+      break;
+    }
+    default:
+      break;
+    }
+  }
+  if (std::optional<APInt> S = getScalarOrSplatConstant(Id)) {
+    R.Kind = LaneConstant::Constant;
+    R.Value = *S;
+    return R;
+  }
+  if (NoValue)
+    R.Kind = LaneConstant::NoValue;
+  return R;
+}
+
+bool EGraph::isAllZero(EClassId Id) const {
+  std::optional<APInt> C = getScalarOrSplatConstant(Id);
+  return C && C->isZero();
+}
+
+bool EGraph::isAllOnes(EClassId Id) const {
+  std::optional<APInt> C = getScalarOrSplatConstant(Id);
+  return C && C->isAllOnes();
+}
+
+/// The width of the known bits of a value of type \p Ty: the width of an
+/// integer scalar or of a lane of a fixed integer vector; 0 for pointers,
+/// floating-point types and invalid types.
+static unsigned getKnownBitsWidth(LLT Ty) {
+  if (!Ty.isValid() || Ty.isScalableVector())
+    return 0;
+  LLT E = Ty.getScalarType();
+  if (E.isPointer() || E.isFloat())
+    return 0;
+  return E.getSizeInBits();
+}
+
+KnownBits EGraph::computeNodeKnownBits(const ENode &N, FactSource Src) const {
+  using namespace TargetOpcode;
+  unsigned W = getKnownBitsWidth(N.Ty);
+  if (!W)
+    return KnownBits();
+  KnownBits Unknown(W);
+  switch (N.Kind) {
+  case ENodeKind::Input: {
+    if (Src == FactSource::Structure)
+      return Unknown;
+    const KnownBits &K = Inputs[N.InputIdx].Known;
+    return K.getBitWidth() == W && !K.hasConflict() ? K : Unknown;
+  }
+  case ENodeKind::Constant:
+    return N.Imm.getBitWidth() == W ? KnownBits::makeConstant(N.Imm)
+                                    : Unknown;
+  case ENodeKind::Operation:
+    break;
+  }
+  // The facts of an operand class, if it has \p Width bits (per lane).
+  auto Op = [&](unsigned I, unsigned Width) -> std::optional<KnownBits> {
+    if (I >= N.Ops.size())
+      return std::nullopt;
+    const EClass &C = getClass(N.Ops[I]);
+    const KnownBits &K = Src == FactSource::Context ? C.Known : C.KnownLocal;
+    if (K.getBitWidth() != Width)
+      return std::nullopt;
+    return K;
+  };
+  // A constant shift amount inside the width (a larger amount is poison).
+  auto Amount = [&](unsigned I) -> std::optional<unsigned> {
+    std::optional<APInt> C = getScalarOrSplatConstant(N.Ops[I]);
+    if (!C || C->uge(W))
+      return std::nullopt;
+    return unsigned(C->getZExtValue());
+  };
+  // Every lane of a vector operation is the scalar operation on the lanes
+  // (isLaneWiseOperator), so the transfer of the scalar operator applies
+  // to the facts of each lane. Flags and poison variants only add poison,
+  // and facts only speak of values that are not poison.
+  const OpProperties *P = getOpProperties(N.Opcode);
+  if (!P || !P->hasResult())
+    return Unknown;
+  if (N.Ty.isVector() && P->Shape != OpShape::Vector && !isLaneWiseOperator(*P))
+    return Unknown;
+  auto Bin = [&](auto F) -> KnownBits {
+    std::optional<KnownBits> A = Op(0, W), B = Op(1, W);
+    return A && B ? F(*A, *B) : Unknown;
+  };
+  switch (N.Opcode) {
+  case G_ADD:
+    return Bin([](const KnownBits &A, const KnownBits &B) {
+      return KnownBits::add(A, B);
+    });
+  case G_SUB:
+    return Bin([](const KnownBits &A, const KnownBits &B) {
+      return KnownBits::sub(A, B);
+    });
+  case G_MUL:
+    return Bin([](const KnownBits &A, const KnownBits &B) {
+      return KnownBits::mul(A, B);
+    });
+  case G_AND:
+    return Bin([](const KnownBits &A, const KnownBits &B) { return A & B; });
+  case G_OR:
+    return Bin([](const KnownBits &A, const KnownBits &B) { return A | B; });
+  case G_XOR:
+    return Bin([](const KnownBits &A, const KnownBits &B) { return A ^ B; });
+  case G_UMIN:
+    return Bin(KnownBits::umin);
+  case G_UMAX:
+    return Bin(KnownBits::umax);
+  case G_SMIN:
+    return Bin(KnownBits::smin);
+  case G_SMAX:
+    return Bin(KnownBits::smax);
+  case G_SHL:
+  case G_LSHR:
+  case G_ASHR: {
+    std::optional<KnownBits> A = Op(0, W);
+    std::optional<unsigned> S = Amount(1);
+    if (!A || !S)
+      return Unknown;
+    KnownBits R = *A;
+    if (N.Opcode == G_SHL) {
+      R.Zero <<= *S;
+      R.One <<= *S;
+      R.Zero.setLowBits(*S);
+    } else if (N.Opcode == G_LSHR) {
+      R.Zero.lshrInPlace(*S);
+      R.One.lshrInPlace(*S);
+      R.Zero.setHighBits(*S);
+    } else {
+      R.Zero.ashrInPlace(*S);
+      R.One.ashrInPlace(*S);
+    }
+    return R;
+  }
+  case G_ZEXT:
+  case G_SEXT:
+  case G_ANYEXT:
+  case G_TRUNC: {
+    unsigned SW = getKnownBitsWidth(getType(N.Ops[0]));
+    std::optional<KnownBits> A = SW ? Op(0, SW) : std::nullopt;
+    if (!A)
+      return Unknown;
+    if (N.Opcode == G_TRUNC)
+      return SW >= W ? A->trunc(W) : Unknown;
+    if (SW > W)
+      return Unknown;
+    return N.Opcode == G_ZEXT   ? A->zext(W)
+           : N.Opcode == G_SEXT ? A->sext(W)
+                                : A->anyext(W);
+  }
+  case G_SEXT_INREG: {
+    std::optional<KnownBits> A = Op(0, W);
+    if (!A || N.Attr == 0 || N.Attr > W)
+      return Unknown;
+    return A->sextInReg(N.Attr);
+  }
+  case G_UBFX:
+  case G_SBFX: {
+    std::optional<KnownBits> A = Op(0, W);
+    std::optional<APInt> Lsb = getScalarOrSplatConstant(N.Ops[1]);
+    std::optional<APInt> Len = getScalarOrSplatConstant(N.Ops[2]);
+    if (!A || !Lsb || !Len || Len->isZero() || Lsb->uge(W) || Len->ugt(W) ||
+        Lsb->getZExtValue() + Len->getZExtValue() > W)
+      return Unknown;
+    KnownBits F = A->extractBits(Len->getZExtValue(), Lsb->getZExtValue());
+    return N.Opcode == G_UBFX ? F.zext(W) : F.sext(W);
+  }
+  case G_SELECT: {
+    std::optional<KnownBits> A = Op(1, W), B = Op(2, W);
+    return A && B ? A->intersectWith(*B) : Unknown;
+  }
+  case G_ABS: {
+    std::optional<KnownBits> A = Op(0, W);
+    return A ? A->abs() : Unknown;
+  }
+  case G_BSWAP:
+  case G_BITREVERSE: {
+    std::optional<KnownBits> A = Op(0, W);
+    if (!A || (N.Opcode == G_BSWAP && W % 16))
+      return Unknown;
+    return N.Opcode == G_BSWAP ? A->byteSwap() : A->reverseBits();
+  }
+  case G_CTPOP:
+  case G_CTLZ:
+  case G_CTTZ: {
+    // The count is at most the width of the operand.
+    unsigned SW = getKnownBitsWidth(getType(N.Ops[0]));
+    unsigned Bits = SW ? Log2_32(SW) + 1 : W;
+    if (Bits < W)
+      Unknown.Zero.setBitsFrom(Bits);
+    return Unknown;
+  }
+  case G_ICMP: {
+    if (W != 1)
+      return Unknown;
+    unsigned OW = getKnownBitsWidth(getType(N.Ops[0]));
+    std::optional<KnownBits> A = OW ? Op(0, OW) : std::nullopt;
+    std::optional<KnownBits> B = OW ? Op(1, OW) : std::nullopt;
+    if (!A || !B)
+      return Unknown;
+    std::optional<bool> R;
+    switch (static_cast<CmpInst::Predicate>(N.Attr)) {
+    case CmpInst::ICMP_EQ: R = KnownBits::eq(*A, *B); break;
+    case CmpInst::ICMP_NE: R = KnownBits::ne(*A, *B); break;
+    case CmpInst::ICMP_ULT: R = KnownBits::ult(*A, *B); break;
+    case CmpInst::ICMP_ULE: R = KnownBits::ule(*A, *B); break;
+    case CmpInst::ICMP_UGT: R = KnownBits::ugt(*A, *B); break;
+    case CmpInst::ICMP_UGE: R = KnownBits::uge(*A, *B); break;
+    case CmpInst::ICMP_SLT: R = KnownBits::slt(*A, *B); break;
+    case CmpInst::ICMP_SLE: R = KnownBits::sle(*A, *B); break;
+    case CmpInst::ICMP_SGT: R = KnownBits::sgt(*A, *B); break;
+    case CmpInst::ICMP_SGE: R = KnownBits::sge(*A, *B); break;
+    default: break;
+    }
+    return R ? KnownBits::makeConstant(APInt(1, *R)) : Unknown;
+  }
+  case G_FREEZE: {
+    // freeze(poison) is an arbitrary value, so the facts of the operand only
+    // carry over if it is a single defined value.
+    const EClass &C = getClass(N.Ops[0]);
+    std::optional<KnownBits> A = Op(0, W);
+    return A && C.NotPoison && C.NotUndef ? *A : Unknown;
+  }
+  case G_PHI: {
+    std::optional<KnownBits> R;
+    for (unsigned I = 0, E = N.Ops.size(); I != E; ++I) {
+      std::optional<KnownBits> A = Op(I, W);
+      if (!A)
+        return Unknown;
+      R = R ? R->intersectWith(*A) : *A;
+    }
+    return R ? *R : Unknown;
+  }
+  case G_BUILD_VECTOR:
+  case G_CONCAT_VECTORS:
+  case G_SHUFFLE_VECTOR:
+  case G_INSERT_VECTOR_ELT:
+  case G_EXTRACT_VECTOR_ELT: {
+    // Facts of each lane: the facts that every lane of the operands has. A
+    // shuffle lane without a value has no facts.
+    if (N.Opcode == G_SHUFFLE_VECTOR && is_contained(getMask(N.Attr), -1))
+      return Unknown;
+    std::optional<KnownBits> R;
+    for (unsigned I = 0, E = N.Ops.size(); I != E; ++I) {
+      std::optional<KnownBits> A = Op(I, W);
+      if (!A)
+        return Unknown;
+      R = R ? R->intersectWith(*A) : *A;
+    }
+    return R ? *R : Unknown;
+  }
+  default:
+    break;
+  }
+  // The first result of an operator with several results that a
+  // single-result operator also computes (G_UADDO:0 is G_ADD).
+  if (P->hasProjections() && N.Attr < P->ProjectionOps.size() &&
+      P->ProjectionOps[N.Attr] == G_ADD && N.Ops.size() >= 2)
+    return Bin([](const KnownBits &A, const KnownBits &B) {
+      return KnownBits::add(A, B);
+    });
+  return Unknown;
+}
+
+void EGraph::recomputeKnownBits(ArrayRef<EClassId> Ids) {
+  // Facts only grow: each step joins (unionWith) a fact that follows from
+  // facts already established, starting from "nothing known". The lattice
+  // is finite, so this terminates. A class whose facts conflict has no
+  // value that is not poison; it gets no facts, so that no rewrite relies
+  // on them.
+  for (EClassId Id : Ids) {
+    EClass &C = Classes[Id];
+    unsigned W = getKnownBitsWidth(C.Ty);
+    C.Known = C.KnownLocal = W ? KnownBits(W) : KnownBits();
+  }
+  for (FactSource Src : {FactSource::Structure, FactSource::Context}) {
+    bool Changed = true;
+    for (unsigned Round = 0; Changed && Round < 64; ++Round) {
+      Changed = false;
+      for (EClassId Id : Ids) {
+        EClass &C = Classes[Id];
+        KnownBits &K = Src == FactSource::Context ? C.Known : C.KnownLocal;
+        if (!K.getBitWidth() || K.isConstant())
+          continue;
+        KnownBits New = K;
+        for (const ENode &N : C.Nodes) {
+          KnownBits F = computeNodeKnownBits(N, Src);
+          if (F.getBitWidth() == New.getBitWidth())
+            New = New.unionWith(F);
+        }
+        if (New.hasConflict())
+          New = KnownBits(New.getBitWidth());
+        if (New.Zero != K.Zero || New.One != K.One) {
+          K = New;
+          Changed = true;
+        }
+      }
+    }
+  }
+  // The context only adds facts to those of the structure.
+  for (EClassId Id : Ids) {
+    EClass &C = Classes[Id];
+    if (C.Known.getBitWidth() &&
+        C.Known.getBitWidth() == C.KnownLocal.getBitWidth()) {
+      KnownBits U = C.Known.unionWith(C.KnownLocal);
+      if (!U.hasConflict())
+        C.Known = U;
+    }
+  }
+}
+
 EClassId EGraph::addOp(unsigned Opcode, LLT Ty, ArrayRef<EClassId> Ops,
                        uint32_t Flags, uint64_t Attr) {
   return add(ENode::makeOp(Opcode, Ty, Ops, Flags, Attr));
@@ -2823,6 +3180,7 @@ void EGraph::recomputeAnalyses() {
       }
     }
   }
+  recomputeKnownBits(Ids);
 }
 
 void EGraph::rebuild() {
@@ -4169,8 +4527,66 @@ private:
 };
 } // namespace
 
+RewriteKind llvm::egraph::classifyLeafReads(const EGraph &G,
+                                            ArrayRef<LeafReads> Leaves) {
+  // The same classification as RewriteRule::isExactFor/isRefinementFor,
+  // with the reads of each leaf counted by the view instead of by the
+  // pattern. Several entries of one class are added up.
+  std::map<EClassId, std::pair<unsigned, unsigned>> Reads;
+  for (const LeafReads &L : Leaves) {
+    auto &R = Reads[G.find(L.Class)];
+    R.first += L.LHS;
+    R.second += L.RHS;
+  }
+  bool Exact = true;
+  for (const auto &[C, R] : Reads) {
+    auto [L, Rr] = R;
+    const EClass &Cls = G.getClass(C);
+    if (L == 0 && Rr != 0) {
+      // Only the right-hand side reads it: it may add poison or undef.
+      if (!Cls.NotUndef || !Cls.NotPoison)
+        return RewriteKind::Unsafe;
+      continue;
+    }
+    if (Rr > 1 && !Cls.NotUndef)
+      return RewriteKind::Unsafe;
+    if (Rr == 0) {
+      if (L > 0 && (!Cls.NotPoison || (L > 1 && !Cls.NotUndef)))
+        Exact = false;
+    } else if (!(L == 1 && Rr == 1) && !Cls.NotUndef) {
+      Exact = false;
+    }
+  }
+  return Exact ? RewriteKind::Exact : RewriteKind::Refinement;
+}
+
+ApplyResult llvm::egraph::relateClasses(EGraph &G, EClassId From, EClassId To,
+                                        RewriteKind K) {
+  assert(G.getType(From) == G.getType(To) && "relating different types");
+  switch (K) {
+  case RewriteKind::Exact:
+    return G.merge(From, To) ? ApplyResult::Merged : ApplyResult::NoChange;
+  case RewriteKind::Refinement:
+    if (G.find(From) == G.find(To))
+      return ApplyResult::NoChange;
+    return G.addRefinement(From, To) ? ApplyResult::Refined
+                                     : ApplyResult::NoChange;
+  case RewriteKind::Unsafe:
+    return ApplyResult::Unsafe;
+  }
+  llvm_unreachable("bad rewrite kind");
+}
+
 ApplyResult llvm::egraph::applyMatch(EGraph &G, const RewriteRule &Rule,
-                                     const RuleMatch &M) {
+                                     const RuleMatch &M,
+                                     std::optional<FactSource> *UsedFacts) {
+  if (const RewriteRule::FactFn &F = Rule.getFactFn()) {
+    std::optional<FactSource> Src = F(G, M);
+    if (!Src)
+      return ApplyResult::Rejected;
+    if (UsedFacts)
+      *UsedFacts = Src;
+  }
   SmallVector<APInt, 2> Computed;
   if (Rule.getApplyFn() && !Rule.getApplyFn()(G, M, Computed))
     return ApplyResult::Rejected;
@@ -4196,10 +4612,53 @@ ApplyResult llvm::egraph::applyMatch(EGraph &G, const RewriteRule &Rule,
                                        : ApplyResult::NoChange;
 }
 
+/// A class whose known bits are all known is that constant whenever it is
+/// not poison (facts hold for each value that is not poison): merge it with
+/// the constant if it is never poison, refine it to the constant otherwise.
+static unsigned applyFactConstants(EGraph &G, const SaturationLimits &Limits,
+                                   ViewStats &Stats) {
+  struct Todo {
+    EClassId Class;
+    APInt Value;
+    bool NotPoison, Context;
+  };
+  SmallVector<Todo, 8> Work;
+  for (EClassId Id : G.getClassIds()) {
+    const EClass &C = G.getClass(Id);
+    const KnownBits &K = C.Known;
+    if (C.Const || !K.getBitWidth() || !K.isConstant() ||
+        G.getSplatConstant(Id))
+      continue;
+    Work.push_back({Id, K.getConstant(), C.NotPoison,
+                    !C.KnownLocal.isConstant()});
+  }
+  unsigned Changes = 0;
+  for (const Todo &T : Work) {
+    if (G.getNumNodes() >= Limits.MaxNodes) {
+      ++Stats.Budget;
+      break;
+    }
+    ++Stats.Views;
+    EClassId K = G.addConstantSplat(G.getType(T.Class), T.Value);
+    ++Stats.Candidates;
+    ApplyResult R = relateClasses(
+        G, T.Class, K,
+        T.NotPoison ? RewriteKind::Exact : RewriteKind::Refinement);
+    Stats.count(R);
+    if (R == ApplyResult::Merged || R == ApplyResult::Refined) {
+      ++Changes;
+      if (T.Context)
+        ++Stats.ContextFacts;
+    }
+  }
+  return Changes;
+}
+
 SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
                                        const SaturationLimits &Limits) {
   SaturationStats Stats;
   Stats.RuleApplications.assign(Rules.size(), 0);
+  Stats.ContextFactApplications.assign(Rules.size(), 0);
   G.rebuild();
   // Associativity and commutativity are not rules but a canonical form.
   auto CanonicalizeAC = [&] {
@@ -4238,6 +4697,8 @@ SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
         AnyBanned = true;
         continue;
       }
+      if (Rules[RI].getFactFn() && !Limits.EnableFacts)
+        continue;
       if (!all_of(Rules[RI].getLHSOpcodes(),
                   [&](unsigned Opc) { return Present.contains(Opc); }))
         continue;
@@ -4273,7 +4734,22 @@ SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
         Stats.HitNodeLimit = true;
         break;
       }
-      switch (applyMatch(G, Rules[RI], M)) {
+      std::optional<FactSource> Used;
+      ApplyResult AR = applyMatch(G, Rules[RI], M, &Used);
+      if (Rules[RI].getFactFn()) {
+        ViewStats &FS = Stats.Views["facts"];
+        if (AR == ApplyResult::Rejected)
+          ++FS.Unsafe;
+        else
+          ++FS.Views;
+        FS.count(AR);
+        if (Used == FactSource::Context &&
+            (AR == ApplyResult::Merged || AR == ApplyResult::Refined)) {
+          ++FS.ContextFacts;
+          ++Stats.ContextFactApplications[RI];
+        }
+      }
+      switch (AR) {
       case ApplyResult::Merged:
         ++Stats.Merges;
         ++Stats.RuleApplications[RI];
@@ -4304,6 +4780,23 @@ SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
         G.rebuild();
       }
     }
+    // The analysis views and the tuple rules. Each one sees the graph that
+    // the previous one left (rebuilt).
+    auto RunView = [&](bool Enabled, const char *Name,
+                       unsigned (*Fn)(EGraph &, const SaturationLimits &,
+                                      ViewStats &)) {
+      if (!Enabled || G.getNumNodes() >= Limits.MaxNodes)
+        return;
+      if (Fn(G, Limits, Stats.Views[Name])) {
+        Changed = true;
+        G.rebuild();
+        CanonicalizeAC();
+      }
+    };
+    RunView(Limits.EnableFacts, "known-constants", applyFactConstants);
+    RunView(Limits.EnableLinear, "linear", applyLinearViews);
+    RunView(Limits.EnableSlice, "slice", applySliceViews);
+    RunView(Limits.EnableTuples, "tuples", applyTupleRules);
     if (G.getNumClasses() + G.getNumNodes() != ClassesBefore)
       Changed = true;
     if (Stats.HitNodeLimit)

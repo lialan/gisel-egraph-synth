@@ -17,6 +17,7 @@ endif()
 
 add_executable(GISelEGraphSynthTests
   GIEGraphTest.cpp
+  GIEGraphViewsTest.cpp
   GISynthPredicatesTest.cpp
   Main.cpp
   ${LLVM_UNITTEST_DIR}/GISelMITest.cpp
