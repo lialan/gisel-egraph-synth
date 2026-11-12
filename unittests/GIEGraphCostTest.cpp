@@ -382,4 +382,145 @@ TEST_F(GIEGraphCostTest, ImprovementKeepsTheBankStates) {
   EXPECT_EQ(Ev.BankViolations, 0u);
 }
 
+//===----------------------------------------------------------------------===//
+// Tuples
+//===----------------------------------------------------------------------===//
+
+TEST_F(GIEGraphCostTest, CarryOfAnAddIsAComparison) {
+  // carry(a + b) == (a + b) <u a == (a + b) <u b == a >u (a + b).
+  EClassId A = in(/*Defined=*/true), B = in(/*Defined=*/true);
+  EClassId S = add(A, B);
+  EClassId CmpA = icmp(CmpInst::ICMP_ULT, S, A);
+  EClassId CmpB = icmp(CmpInst::ICMP_ULT, S, B);
+  EClassId Swapped = icmp(CmpInst::ICMP_UGT, A, S);
+  runAll();
+  std::optional<EClassId> Carry =
+      G.lookup(ENode::makeOp(G_UADDO, S1, {A, B}, 0, 1));
+  ASSERT_TRUE(Carry.has_value());
+  EXPECT_TRUE(G.equivalent(CmpA, *Carry));
+  EXPECT_TRUE(G.equivalent(CmpB, *Carry));
+  EXPECT_TRUE(G.equivalent(Swapped, *Carry));
+  // The sibling sum is the add.
+  std::optional<EClassId> Sum =
+      G.lookup(ENode::makeOp(G_UADDO, S32, {A, B}, 0, 0));
+  ASSERT_TRUE(Sum.has_value());
+  EXPECT_TRUE(G.equivalent(*Sum, S));
+}
+
+TEST_F(GIEGraphCostTest, CarryIsOnlyARefinementIfTheOperandMayBeUndef) {
+  // The comparison reads a twice: with an undef a it can be anything, and
+  // the carry is one of its values. Not the other way around.
+  EClassId A = in(/*Defined=*/false), B = in(/*Defined=*/true);
+  EClassId S = add(A, B);
+  EClassId Cmp = icmp(CmpInst::ICMP_ULT, S, A);
+  SaturationStats St = runAll();
+  std::optional<EClassId> Carry =
+      G.lookup(ENode::makeOp(G_UADDO, S1, {A, B}, 0, 1));
+  ASSERT_TRUE(Carry.has_value());
+  EXPECT_FALSE(G.equivalent(Cmp, *Carry));
+  EXPECT_TRUE(G.refinesTo(Cmp, *Carry));
+  EXPECT_FALSE(G.refinesTo(*Carry, Cmp));
+  EXPECT_GE(St.Views["tuples"].Refinements, 1u);
+  // b may be undef as well: it is read once on each side.
+  EGraph H;
+  EClassId A2 = H.addInput(inputInfo(S32, true)),
+           B2 = H.addInput(inputInfo(S32, false));
+  EClassId S2 = H.addOp(G_ADD, S32, {A2, B2});
+  EClassId Cmp2 = H.addOp(G_ICMP, S1, {S2, A2}, 0, CmpInst::ICMP_ULT);
+  std::vector<RewriteRule> All = getDefaultIntegerRules();
+  saturate(H, All, SaturationLimits());
+  std::optional<EClassId> Carry2 =
+      H.lookup(ENode::makeOp(G_UADDO, S1, {A2, B2}, 0, 1));
+  ASSERT_TRUE(Carry2.has_value());
+  EXPECT_TRUE(H.equivalent(Cmp2, *Carry2));
+}
+
+TEST_F(GIEGraphCostTest, FlaggedAddIsNotAComparisonOfTheCarry) {
+  // add nuw is poison when it wraps: the comparison is then poison and the
+  // carry 1. Only a refinement (cmp ~> carry), never a merge.
+  EClassId A = in(true), B = in(true);
+  EClassId S = G.addOp(G_ADD, S32, {A, B}, MachineInstr::NoUWrap);
+  EClassId Cmp = icmp(CmpInst::ICMP_ULT, S, A);
+  runAll();
+  std::optional<EClassId> Carry =
+      G.lookup(ENode::makeOp(G_UADDO, S1, {A, B}, 0, 1));
+  if (Carry)
+    EXPECT_FALSE(G.equivalent(Cmp, *Carry));
+}
+
+TEST_F(GIEGraphCostTest, SiblingResultsAreAdded) {
+  // The other result of an instruction with the same operands.
+  EClassId A = in(true), B = in(true);
+  G.addOp(G_UADDO, S32, {A, B}, 0, 0);
+  EClassId Q = G.addOp(G_UDIVREM, S32, {A, B}, 0, 0);
+  EClassId Rem = op(G_UREM, A, B);
+  runAll();
+  EXPECT_TRUE(G.lookup(ENode::makeOp(G_UADDO, S1, {A, B}, 0, 1)));
+  std::optional<EClassId> R =
+      G.lookup(ENode::makeOp(G_UDIVREM, S32, {A, B}, 0, 1));
+  ASSERT_TRUE(R.has_value());
+  // udivrem:1 is the remainder (the rule udivrem-1-to-urem). A division may
+  // trap, so that is a refinement only: the remainder of the program is not
+  // replaced by the instruction of the quotient.
+  EXPECT_TRUE(G.refinesTo(*R, Rem));
+  EXPECT_FALSE(G.equivalent(*R, Rem));
+  EXPECT_FALSE(G.equivalent(Q, Rem));
+}
+
+TEST_F(GIEGraphCostTest, TuplesCanBeTurnedOff) {
+  EClassId A = in(true), B = in(true);
+  EClassId S = add(A, B);
+  icmp(CmpInst::ICMP_ULT, S, A);
+  SaturationLimits L;
+  L.EnableTuples = false;
+  runAll(L);
+  EXPECT_FALSE(G.lookup(ENode::makeOp(G_UADDO, S1, {A, B}, 0, 1)));
+}
+
+TEST_F(GIEGraphCostTest, JointExtractionUsesOneInstructionForBothResults) {
+  EClassId A = in(), B = in();
+  EClassId S = add(A, B);
+  EClassId Cmp = icmp(CmpInst::ICMP_ULT, S, A);
+  EClassId Ext = G.addOp(G_ZEXT, S32, {Cmp});
+  runAll();
+  DefaultCostModel CM;
+  // Both results used (the carry through an external user, the zext):
+  // one G_UADDO.
+  {
+    Extractor E(G, CM);
+    DagEvaluation Ev = extract(E, CM, {S, Ext});
+    EXPECT_EQ(Ev.Cost.Instrs, 2u); // uaddo + zext
+    const ENode *SumN = E.getChosenNode(S);
+    const ENode *CarryN = E.getChosenNode(Cmp);
+    ASSERT_TRUE(SumN && CarryN);
+    EXPECT_EQ(SumN->Opcode, unsigned(G_UADDO));
+    EXPECT_EQ(SumN->Attr, 0u);
+    EXPECT_EQ(CarryN->Opcode, unsigned(G_UADDO));
+    EXPECT_EQ(CarryN->Attr, 1u);
+    EXPECT_EQ(E.getMultiResultKey(*SumN), E.getMultiResultKey(*CarryN));
+    EXPECT_EQ(E.getDagCost({S, Ext}), 2u);
+  }
+  // Without the sharing-aware improvement: the add and the carry are two
+  // instructions (the tree costs tie).
+  {
+    Extractor E(G, CM);
+    DagEvaluation Ev = extract(E, CM, {S, Ext}, /*Improve=*/false);
+    EXPECT_EQ(Ev.Cost.Instrs, 3u);
+  }
+  // Only the sum used: a plain G_ADD.
+  {
+    Extractor E(G, CM);
+    DagEvaluation Ev = extract(E, CM, {S});
+    EXPECT_EQ(Ev.Cost.Instrs, 1u);
+    EXPECT_EQ(E.getChosenNode(S)->Opcode, unsigned(G_ADD));
+  }
+  // Only the carry used: one G_UADDO (its sum unused), not add + compare.
+  {
+    Extractor E(G, CM);
+    DagEvaluation Ev = extract(E, CM, {Cmp});
+    EXPECT_EQ(Ev.Cost.Instrs, 1u);
+    EXPECT_EQ(E.getChosenNode(Cmp)->Opcode, unsigned(G_UADDO));
+  }
+}
+
 } // namespace

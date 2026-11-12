@@ -1258,9 +1258,16 @@ unsigned applySliceViews(EGraph &G, const SaturationLimits &Limits,
 /// Tuples (lib/GIEGraphTuples.cpp): for an operator with several results,
 /// the nodes of the results that the graph lacks, so that extraction can
 /// compute every result with one instruction, and the relations between a
-/// result and single-result operators that the table rules cannot write.
+/// result and single-result operators that the table rules cannot write
+/// (getTupleRules).
 unsigned applyTupleRules(EGraph &G, const SaturationLimits &Limits,
                          ViewStats &Stats);
+
+/// The rules that applyTupleRules applies (only there, behind
+/// SaturationLimits::EnableTuples): the carry of G_UADDO as a comparison of
+/// the sum with an operand. They are table rules so that they are printed
+/// and proved like the others.
+std::vector<RewriteRule> getTupleRules();
 
 /// Bounded equality saturation. Deterministic for a given graph and rule set.
 SaturationStats saturate(EGraph &G, ArrayRef<RewriteRule> Rules,

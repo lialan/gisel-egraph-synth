@@ -837,3 +837,54 @@ the original region under the same model. With
 `-gisel-egraph-features=no-dag` the choices are the tree-cost ones, as
 before.
 
+## Tuples (operators with several results)
+
+An instruction with several results is one e-node per result; extraction
+counts the nodes of one instruction once (`Extractor::getMultiResultKey`) and
+the emission builds it once, with one register per used result.
+`applyTupleRules` (`lib/GIEGraphTuples.cpp`) adds:
+
+* the siblings: for each node of result `i` of an operator with several
+  results, the nodes of the other results with the same operands (bounded by
+  `MaxNodes`). Each sibling is a new class; a table rule relates it to a
+  single-result operator (`uaddo-0-to-add` merges `G_UADDO:0 a, b` with
+  `G_ADD a, b`). A sibling computes nothing new: it is another result of an
+  instruction with the same operands (for a division, with the same trapping
+  behaviour; a division result is only refined to the single-result
+  operator);
+* the carry of an addition as a comparison, the table rule
+  `uaddo-carry-from-icmp`, `(G_ICMP:ult (G_ADD ?a ?b) ?a) => (G_UADDO:1 ?a ?b)`
+  (the matcher also finds `(a + b) <u b` and the swapped `a >u (a + b)`). On
+  defined values the carry is set exactly when the wrapped sum is less than
+  an operand, and both sides are poison exactly when `a` or `b` is (an
+  unflagged add and compare; a flagged node is only matched as a
+  refinement). The left-hand side reads `a` twice and the right-hand side
+  once, so the policy of the table rules (the same as `classifyLeafReads`)
+  merges the classes if `a` is not undef, and otherwise only adds the
+  refinement edge comparison ~> carry: each read of an undef `a` can see
+  another value, so the comparison can be true or false for any `b`, and the
+  carry is one of its values; the other direction is never taken. The rule
+  is printed by `-gisel-egraph-print-rules` and proved by `verify_rules.py`
+  like the other rules, but it is applied by `applyTupleRules`, behind
+  `-gisel-egraph-features=tuples`.
+
+With both the sum and the carry used, the tree costs of `G_ADD` and
+`G_UADDO:0` tie, and the sharing-aware extraction takes `G_UADDO:0`, so the
+DAG has one `G_UADDO` (2 nodes become 1 instruction); with only the sum used
+it stays a `G_ADD`; with only the carry used it is one `G_UADDO` whose sum is
+unused. `G_UADDO` must be allowed at the position (`TargetCostModel`; it is
+legal for `s32` on AMDGPU before and after the legalizer). External users of
+either result are redirected to the result of the one instruction
+(`test/AMDGPU/egraph-combiner-uaddo.mir`, with the machine verifier after the
+pass).
+
+The stock pipeline already forms `llvm.uadd.with.overflow` from `add` and
+`icmp ult` in IR: CodeGenPrepare's `combineToUAddWithOverflow` does it
+whenever `shouldFormOverflowOp` holds, which for AMDGPU is the default (the
+operation is legal for `i32`). So an `.ll` input reaches the e-graph with a
+`G_UADDO` already, and `llc -global-isel` selects one `v_add_co_u32`
+(gfx900: 2 instructions for the sum and the carry as a value, with the
+e-graph combiner too). The tuple rules matter for MIR in which the add and
+the comparison are separate (with `-disable-cgp` the stock pipeline gives 4
+instructions for the same function and the e-graph combiner 2;
+`test/AMDGPU/egraph-combiner-uaddo.ll`).

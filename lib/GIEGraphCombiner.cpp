@@ -2162,6 +2162,11 @@ bool GIEGraphCombiner::runOnMachineFunction(MachineFunction &MF) {
         R.print(errs());
         errs() << "\n";
       }
+      // Applied by the tuple view (applyTupleRules), not by the saturation.
+      for (const RewriteRule &R : getTupleRules()) {
+        R.print(errs());
+        errs() << "\n";
+      }
       errs() << "# Enforced by canonicalization, not applied as rules:\n";
       for (const RewriteRule &R :
            getImplicitPropertyRules(getAllOpProperties())) {
