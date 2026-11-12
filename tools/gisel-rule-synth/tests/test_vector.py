@@ -22,7 +22,7 @@ sys.path.insert(0, ROOT)
 from girs import paths as _paths  # noqa: E402
 
 from girs import (corpus, emit, ir, ops, select, smt, synth,  # noqa: E402
-                  targets, vector)
+                  targets, vector, vector_search)
 
 LLC = os.environ.get('GIRS_LLC') or _paths.llc()
 OPT = _paths.llvm_tool('opt')
@@ -57,7 +57,8 @@ def rule_of(src, vw, tgt=None):
     give (or of ``tgt``)."""
     sy = synth.Synthesizer(smt.Z3Backend())
     if tgt is None:
-        (tgt,) = vector.candidates(src, vw)
+        # The cheapest candidate of the search.
+        tgt = vector_search.candidates(src, vw)[0][0]
     rid = sy.add(instance(src, vw), tgt)
     sy.finalize([])
     return sy.rules[rid] if rid else None
@@ -376,7 +377,8 @@ class Proofs(unittest.TestCase):
 
 class Search(unittest.TestCase):
     def cands(self, src, vw):
-        return [ir.to_sexpr(t) for t in vector.candidates(src, vw)]
+        return [ir.to_sexpr(t) for t, _ in
+                vector_search.candidates(src, vw)]
 
     def test_replacements(self):
         b = ('G_BUILD_VECTOR', V4, X(0), X(1), X(2), X(3))
@@ -429,8 +431,12 @@ class Rules(unittest.TestCase):
         self.assertIn('gisynth::isConstantIndex(${dst_i}.getReg(), MRI, 2)',
                       pats[-1])
         guard = emit._cpp_guard(r)
-        self.assertIn('uint32_t V0[][6] = {{32, 32, 32, 32, %d, 32}}' % V4,
-                      guard)
+        # The rule is proved for each width of the lanes, with the number
+        # of lanes of the training instance.
+        for w in (8, 16, 32, 64):
+            self.assertIn('{%d, %d, %d, %d, %d, %d}' % (
+                w, w, w, w, VEC(4, w), w), guard)
+        self.assertNotIn(str(VEC(2, 32)), guard)
         self.assertNotIn('Lift', guard)
 
     def test_a_wrong_replacement_is_no_rule(self):

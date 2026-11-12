@@ -9,7 +9,6 @@ GISelValueTracking at the actual match site.
 """
 
 import json
-import re
 
 from . import fp
 from . import ir
@@ -54,8 +53,11 @@ class Instance:
         # order of ``interior_uses``), and the type name of each variable.
         self.node_regs = None
         self.input_types = None
-        # The source was read from vectors, lane by lane (vector.lift).
+        # The source was read from vectors, lane by lane (vector.lift),
+        # and the variables that were one scalar for all lanes
+        # (vector.shared_scalars).
         self.lifted = False
+        self.lift_scalars = ()
 
     def facts_of(self, e):
         """Known bits (zero, one) of a variable or of an operation node of
@@ -171,6 +173,23 @@ def _convert(node, inputs, interior_uses, flags, shared, root=False,
     return e
 
 
+def lift_source(expr, vw, sub_facts):
+    """(scalar expression, scalar widths, known bits of its nodes, shared
+    scalars) of a source with vectors that computes each lane of its
+    vectors from the same lane of its operands, or None. Such a source is
+    the source of a rule for scalars: the rule holds for each lane. A
+    scalar that is the condition of a G_SELECT of vectors is one value for
+    all lanes (vector.shared_scalars). The corpus and the import of the
+    e-graph export read a source with vectors so."""
+    shared = vector.shared_scalars(expr, vw)
+    low = vector.lift(expr, vw, shared)
+    if low is None:
+        return None
+    scalars = ir.edge_vars(expr) | ir.env_vars(expr) | shared
+    sub = {vector.lift(e, vw, scalars)[0]: f for e, f in sub_facts.items()}
+    return low[0], low[1], sub, tuple(sorted(shared))
+
+
 def parse_record(rec, source='', why=None):
     """Returns an Instance, or None if the record cannot be used. ``why``
     (a list) receives the reason."""
@@ -249,16 +268,12 @@ def parse_record(rec, source='', why=None):
         why.append('two equal instructions with a value of their own')
         return None
     lifted = False
+    lift_scalars = ()
     if vector.has_vector(vw, expr):
-        # A source that computes each lane of its vectors from the same
-        # lane of its operands is the source of a rule for scalars: the
-        # rule holds for each lane.
-        low = vector.lift(expr, vw)
+        low = lift_source(expr, vw, sub_facts)
         if low is not None:
-            scalars = ir.edge_vars(expr) | ir.env_vars(expr)
-            sub_facts = {vector.lift(e, vw, scalars)[0]: f
-                         for e, f in sub_facts.items()}
-            (expr, vw), lifted = low, True
+            expr, vw, sub_facts, lift_scalars = low
+            lifted = True
         elif ir.constrained_nodes(expr):
             # The lanes of a vector have one environment, and the model
             # of an operator on a whole vector has none.
@@ -268,18 +283,15 @@ def parse_record(rec, source='', why=None):
     inst = Instance(expr, vw, facts, consts, uses, sorted(flags),
                     [(source, rec['fn'], rec['root'])], sub_facts, kinds)
     inst.lifted = lifted
+    inst.lift_scalars = lift_scalars
     inst.regs = tuple(inp['reg'] for inp in inputs)
     inst.node_regs = tuple(node_regs)
     inst.input_types = tuple(inp.get('type', '') for inp in inputs)
     return inst
 
 
-_VECTOR_TYPE = re.compile(r'<(\d+) x (.*)>$')
-
-
 def _elem_type(name):
-    m = _VECTOR_TYPE.match(name)
-    return m.group(2) if m else name
+    return ops.split_llt(name)[1]
 
 
 def _type_kind(name):
@@ -372,6 +384,8 @@ def load(paths):
                     old = by_key[k]
                     old.prov.extend(inst.prov)
                     old.lifted = old.lifted or inst.lifted
+                    old.lift_scalars = tuple(sorted(
+                        set(old.lift_scalars) | set(inst.lift_scalars)))
                     # The most users of each value below the root in any
                     # occurrence: a value with a user outside the tree is
                     # an output of the region (region.py).

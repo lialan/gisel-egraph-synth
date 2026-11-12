@@ -226,6 +226,7 @@ static std::vector<OpProperties> buildOpProperties() {
       break;
     case OpShape::Typed:
     case OpShape::Effect:
+    case OpShape::Vector:
       P.NumOperands = 0;
       break;
     }
@@ -1007,6 +1008,8 @@ static std::vector<OpProperties> buildModelOnlyOpProperties() {
       P.NumOperands = 1;
       break;
     case OpShape::Typed:
+    // The number of operands of a vector operator is set by its entry.
+    case OpShape::Vector:
       P.OperandKinds = Operands;
       P.ResultKinds = Results;
       P.NumOperands = Operands.size();
@@ -1260,7 +1263,7 @@ static std::vector<OpProperties> buildModelOnlyOpProperties() {
   // model: each lane of a vector is a value with a poison flag of its own.
   auto Vec = [&](unsigned Opc, const char *Name, int NumOperands,
                  bool Imm = false) {
-    OpProperties *P = Op(Opc, Name, OpShape::Typed, {}, {Main});
+    OpProperties *P = Op(Opc, Name, OpShape::Vector, {}, {Main});
     P->IsVector = true;
     P->NumOperands = NumOperands;
     P->ImmAttr = Imm;
@@ -1422,7 +1425,44 @@ const OpProperties *llvm::egraph::getOpProperties(unsigned Opcode) {
     }
     return I;
   }();
-  return Opcode < Index.size() ? Index[Opcode] : nullptr;
+  if (Opcode < Index.size() && Index[Opcode])
+    return Index[Opcode];
+  // The vector operators that the e-graph has (OpShape::Vector).
+  if (isEGraphVectorOp(Opcode))
+    return getModelOnlyOpProperties(Opcode);
+  return nullptr;
+}
+
+bool llvm::egraph::isEGraphVectorOp(unsigned Opc) {
+  switch (Opc) {
+  case TargetOpcode::G_BUILD_VECTOR:
+  case TargetOpcode::G_EXTRACT_VECTOR_ELT:
+  case TargetOpcode::G_INSERT_VECTOR_ELT:
+  case TargetOpcode::G_SHUFFLE_VECTOR:
+  case TargetOpcode::G_CONCAT_VECTORS:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool llvm::egraph::isLaneWiseOperator(const OpProperties &P) {
+  if (P.IsVector || P.MayTrap || P.IsFP || P.IsConstrained || P.Leaf ||
+      P.hasProjections() || P.StopsPoison)
+    return false;
+  switch (P.Shape) {
+  case OpShape::Binary:
+  case OpShape::Unary:
+  case OpShape::BitCount:
+  case OpShape::Compare:
+  case OpShape::Select:
+    return true;
+  case OpShape::Cast:
+    return P.Cast == CastKind::ZeroExtend || P.Cast == CastKind::SignExtend ||
+           P.Cast == CastKind::Truncate;
+  default:
+    return false;
+  }
 }
 
 const OpProperties *llvm::egraph::getOpPropertiesForInstr(unsigned MIOpcode,
@@ -1608,6 +1648,8 @@ static StringRef getShapeName(OpShape S) {
     return "unmerge";
   case OpShape::Effect:
     return "effect";
+  case OpShape::Vector:
+    return "vector";
   }
   llvm_unreachable("unknown operator shape");
 }
@@ -2246,6 +2288,10 @@ uint64_t llvm::egraph::getTypeKey(LLT Ty) {
   // same for equal types.
   if (Ty.isValid() && Ty.isScalar())
     return Ty.getSizeInBits().getFixedValue();
+  // The same for a fixed vector of such scalars.
+  if (Ty.isValid() && Ty.isFixedVector() && Ty.getElementType().isScalar())
+    return hash_combine(2, Ty.getNumElements(),
+                        getTypeKey(Ty.getElementType()));
   return hash_combine(1, Ty.getUniqueRAWLLTData());
 }
 
@@ -2624,6 +2670,10 @@ bool EGraph::computeNodeNotUndef(const ENode &N) const {
     const OpProperties *P = getOpProperties(N.Opcode);
     if (!P || !P->hasResult())
       return false;
+    // A lane of a shuffle with the mask entry -1 has no value.
+    if (N.Opcode == TargetOpcode::G_SHUFFLE_VECTOR &&
+        is_contained(getMask(N.Attr), -1))
+      return false;
     if (P->StopsPoison)
       return true;
     return all_of(N.Ops, [&](EClassId Op) { return getClass(Op).NotUndef; });
@@ -2645,6 +2695,14 @@ bool EGraph::computeNodeNotPoison(const ENode &N) const {
       return true;
     if (N.Flags != 0 || !P || !P->hasResult() || P->MayBePoison)
       return false;
+    if (P->Shape == OpShape::Vector) {
+      // Each lane is a lane of an operand, or has no value (-1).
+      if (N.Opcode == TargetOpcode::G_SHUFFLE_VECTOR &&
+          is_contained(getMask(N.Attr), -1))
+        return false;
+      return all_of(N.Ops,
+                    [&](EClassId Op) { return getClass(Op).NotPoison; });
+    }
     if (!propagatesPoisonExactly(*this, *P, N.Ty, N.Ops))
       return false;
     // Undefined behaviour is treated like poison: a value that may trap is
@@ -2792,7 +2850,7 @@ void EGraph::print(raw_ostream &OS) const {
         break;
       case ENodeKind::Operation:
         OS << getOpcodeName(N.Opcode);
-        printAttr(OS, N.Opcode, N.Attr);
+        printAttr(OS, N);
         if (N.Flags)
           OS << " flags=" << N.Flags;
         for (EClassId Op : N.Ops)
@@ -2804,6 +2862,30 @@ void EGraph::print(raw_ostream &OS) const {
     for (EClassId R : C.RefinesTo)
       OS << "  ~> e" << find(R) << "\n";
   }
+}
+
+uint64_t EGraph::internMask(ArrayRef<int> Mask) {
+  auto [It, Inserted] = MaskIds.try_emplace(
+      std::vector<int>(Mask.begin(), Mask.end()), Masks.size());
+  if (Inserted)
+    Masks.emplace_back(Mask.begin(), Mask.end());
+  return It->second;
+}
+
+void EGraph::printAttr(raw_ostream &OS, const ENode &N) const {
+  if (N.isOperation() && N.Opcode == TargetOpcode::G_SHUFFLE_VECTOR) {
+    OS << ":";
+    ListSeparator LS(".");
+    for (int M : getMask(N.Attr)) {
+      OS << LS;
+      if (M < 0)
+        OS << "u";
+      else
+        OS << M;
+    }
+    return;
+  }
+  ::printAttr(OS, N.Opcode, N.Attr);
 }
 
 //===----------------------------------------------------------------------===//
@@ -3724,6 +3806,8 @@ private:
     case OpShape::Unmerge:
     case OpShape::Phi:
     case OpShape::Effect:
+    // A pattern has no vector operator (OpShape::Vector).
+    case OpShape::Vector:
       break;
     }
     return LLT();
@@ -3887,6 +3971,8 @@ private:
       break;
     }
     case OpShape::Phi:
+    // A pattern has no vector operator (OpShape::Vector).
+    case OpShape::Vector:
       return std::nullopt;
     case OpShape::Effect:
       if (Expected.isValid())
@@ -4068,6 +4154,15 @@ SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
     G.rebuild();
     CanonicalizeAC();
     CollapsePhis();
+    // The lane rules of fixed vectors (applyLaneRules).
+    if (G.getNumNodes() < Limits.MaxNodes) {
+      if (unsigned N = applyLaneRules(G, Limits.MaxNodes,
+                                      Stats.LaneRuleApplications)) {
+        Stats.LaneMerges += N;
+        Changed = true;
+        G.rebuild();
+      }
+    }
     if (G.getNumClasses() + G.getNumNodes() != ClassesBefore)
       Changed = true;
     if (Stats.HitNodeLimit)
@@ -4271,7 +4366,7 @@ void Extractor::printExpr(
     return;
   case ENodeKind::Operation:
     OS << "(" << getOpcodeName(N->Opcode);
-    printAttr(OS, N->Opcode, N->Attr);
+    G.printAttr(OS, *N);
     if (N->Flags & PoisonVariantFlag)
       OS << "<poison-variant>";
     if (N->Flags & ~PoisonVariantFlag)

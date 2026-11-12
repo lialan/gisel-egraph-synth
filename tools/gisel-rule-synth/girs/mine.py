@@ -85,7 +85,11 @@ DEFAULTS = {
                'cost_slack': None, 'max_rhs_cost': 0,
                'semantic_variants': 1,
                'explore_share': 0.2, 'regions': False,
-               'siblings': False, 'max_pairs': 0},
+               'siblings': False, 'max_pairs': 0,
+               # Search only the sources that the corpus read from vectors
+               # (lifted lane by lane, or with vector operators), and only
+               # the e-graph candidates with vectors.
+               'only_vectors': False},
     'hybrid': {'egraph_stages': 'pre-legalizer', 'egraph_max_cost': 8,
                'compose_depth': 3, 'compose_steps': 3,
                'compose_axioms': False},
@@ -658,7 +662,7 @@ class Run:
                                  'cost_slack', 'max_rhs_cost',
                                  'semantic_variants',
                                  'explore_share', 'regions', 'siblings',
-                                 'max_pairs')})
+                                 'max_pairs', 'only_vectors')})
         if c['mode'] == 'hybrid':
             h = c['hybrid']
             over.update(egraph=[self.p('egraph')],

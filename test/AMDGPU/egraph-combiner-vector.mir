@@ -1,0 +1,125 @@
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-mode=rewrite -o - %s | FileCheck %s
+# RUN: rm -f %t.jsonl
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-export=%t.jsonl -o /dev/null %s
+# RUN: FileCheck %s --check-prefix=EXPORT --input-file=%t.jsonl
+
+# Regions with fixed vectors: the lanes of a G_BUILD_VECTOR, of a
+# G_SHUFFLE_VECTOR and of a lane-wise operation (OpShape::Vector and the lane
+# rules of GIEGraphLanes.cpp).
+
+# A build of the lanes of a vector in their order is the vector.
+# CHECK-LABEL: name: build_of_extracts
+# CHECK: %0:_(<2 x s16>) = COPY $vgpr0
+# CHECK-NOT: G_BUILD_VECTOR
+# CHECK: $vgpr0 = COPY %0(<2 x s16>)
+
+# The index of an extraction through a shuffle is remapped: lane 0 of the
+# shuffle is lane 3 of the concatenation, lane 1 of the second operand.
+# CHECK-LABEL: name: extract_through_shuffle
+# CHECK-NOT: G_SHUFFLE_VECTOR
+# CHECK: [[IDX:%[0-9]+]]:_(i32) = G_CONSTANT i32 1
+# CHECK: [[E:%[0-9]+]]:_(s32) = G_EXTRACT_VECTOR_ELT %1(<2 x s32>), [[IDX]](i32)
+# CHECK: $vgpr0 = COPY [[E]](s32)
+
+# A lane-wise operation of constant vectors folds lane by lane, in the width
+# of a lane: 2 + 0xffff is 1 in 16 bits (not a carry into the other lane).
+# CHECK-LABEL: name: constant_lanes
+# CHECK-DAG: [[ONE:%[0-9]+]]:_(s16) = G_CONSTANT i16 1
+# CHECK-DAG: [[FOUR:%[0-9]+]]:_(s16) = G_CONSTANT i16 4
+# CHECK: [[V:%[0-9]+]]:_(<2 x s16>) = G_BUILD_VECTOR [[FOUR]](s16), [[ONE]](s16)
+# CHECK-NOT: G_ADD
+# CHECK: $vgpr0 = COPY [[V]](<2 x s16>)
+
+# Two shuffles of the same operands with other masks are two values.
+# CHECK-LABEL: name: two_masks
+# CHECK: G_SHUFFLE_VECTOR %0(<2 x s16>), %1, shufflemask(1, 0)
+# CHECK: G_SHUFFLE_VECTOR %0(<2 x s16>), %1, shufflemask(0, 3)
+# CHECK: G_XOR
+
+# Not simplified yet: (x ^ y) ^ y needs y ^ y == 0, and a table rule writes
+# its literal only for a scalar type (a vector class has no constant).
+# CHECK-LABEL: name: xor_twice
+# CHECK: G_XOR
+# CHECK: G_XOR
+
+# The export has the index of a lane ("imm"), the mask of a shuffle ("mask")
+# and the names of the lane rules.
+# EXPORT: {"version":2,"fn":"build_of_extracts"
+# EXPORT-SAME: "type":"<2 x s16>"
+# EXPORT-SAME: {"id":1,"op":"G_EXTRACT_VECTOR_ELT","imm":0,
+# EXPORT-SAME: "roots":[{"reg":"%5","original":3,"optimized":0}]
+# EXPORT-SAME: "vector-build-of-extracts":1
+# EXPORT: {"version":2,"fn":"extract_through_shuffle"
+# EXPORT-SAME: {"id":2,"op":"G_SHUFFLE_VECTOR","mask":[3,0],
+# EXPORT-SAME: "optimized":[{"id":1,"in":1},{"id":3,"op":"G_EXTRACT_VECTOR_ELT","imm":1,"type":"s32","args":[1]}
+# EXPORT-SAME: "vector-extract-of-shuffle":1
+# EXPORT: {"version":2,"fn":"constant_lanes"
+# EXPORT-SAME: "vector-lanewise-of-build":1
+# EXPORT-NOT: "fn":"two_masks"
+
+---
+name: build_of_extracts
+body: |
+  bb.0:
+    liveins: $vgpr0
+    %0:_(<2 x s16>) = COPY $vgpr0
+    %1:_(s32) = G_CONSTANT i32 0
+    %2:_(s32) = G_CONSTANT i32 1
+    %3:_(s16) = G_EXTRACT_VECTOR_ELT %0(<2 x s16>), %1(s32)
+    %4:_(s16) = G_EXTRACT_VECTOR_ELT %0(<2 x s16>), %2(s32)
+    %5:_(<2 x s16>) = G_BUILD_VECTOR %3(s16), %4(s16)
+    $vgpr0 = COPY %5(<2 x s16>)
+    SI_RETURN implicit $vgpr0
+...
+---
+name: extract_through_shuffle
+body: |
+  bb.0:
+    liveins: $vgpr0_vgpr1, $vgpr2_vgpr3
+    %0:_(<2 x s32>) = COPY $vgpr0_vgpr1
+    %1:_(<2 x s32>) = COPY $vgpr2_vgpr3
+    %2:_(<2 x s32>) = G_SHUFFLE_VECTOR %0(<2 x s32>), %1, shufflemask(3, 0)
+    %3:_(s32) = G_CONSTANT i32 0
+    %4:_(s32) = G_EXTRACT_VECTOR_ELT %2(<2 x s32>), %3(s32)
+    $vgpr0 = COPY %4(s32)
+    SI_RETURN implicit $vgpr0
+...
+---
+name: constant_lanes
+body: |
+  bb.0:
+    %0:_(s16) = G_CONSTANT i16 1
+    %1:_(s16) = G_CONSTANT i16 2
+    %2:_(s16) = G_CONSTANT i16 3
+    %3:_(s16) = G_CONSTANT i16 -1
+    %4:_(<2 x s16>) = G_BUILD_VECTOR %0(s16), %1(s16)
+    %5:_(<2 x s16>) = G_BUILD_VECTOR %2(s16), %3(s16)
+    %6:_(<2 x s16>) = G_ADD %4, %5
+    $vgpr0 = COPY %6(<2 x s16>)
+    SI_RETURN implicit $vgpr0
+...
+---
+name: two_masks
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1
+    %0:_(<2 x s16>) = COPY $vgpr0
+    %1:_(<2 x s16>) = COPY $vgpr1
+    %2:_(<2 x s16>) = G_SHUFFLE_VECTOR %0(<2 x s16>), %1, shufflemask(1, 0)
+    %3:_(<2 x s16>) = G_SHUFFLE_VECTOR %0(<2 x s16>), %1, shufflemask(0, 3)
+    %4:_(<2 x s16>) = G_XOR %2, %3
+    $vgpr0 = COPY %4(<2 x s16>)
+    SI_RETURN implicit $vgpr0
+...
+---
+name: xor_twice
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1
+    %0:_(<2 x s16>) = COPY $vgpr0
+    %1:_(<2 x s16>) = COPY $vgpr1
+    %2:_(<2 x s16>) = G_XOR %0, %1
+    %3:_(<2 x s16>) = G_XOR %2, %1
+    $vgpr0 = COPY %3(<2 x s16>)
+    SI_RETURN implicit $vgpr0
+...

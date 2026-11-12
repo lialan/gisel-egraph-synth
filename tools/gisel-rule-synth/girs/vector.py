@@ -30,9 +30,10 @@ A proof of a rule with vectors is the joint proof of its lanes
 (smt.joint_violation): each lane of the replacement refines the same lane of
 the source. The known bits of a vector register are facts of each lane.
 
-The search for a replacement (``candidates``) writes the lanes of the source
-again as a vector expression: the vector that has these lanes, a lane-wise
-operation, a ``G_SHUFFLE_VECTOR`` or a ``G_BUILD_VECTOR``.
+The search for replacements is in vector_search.py: it proposes candidates
+and decides nothing about them. This module decides: the lanes, the
+definedness and the proofs (known.semantics_sha), and the conditions that a
+replacement must meet to be sound for undefined inputs (``linear``).
 """
 
 import z3
@@ -258,10 +259,40 @@ def evaluate(e, vw, env, fill=1):
 
 # ----------------------------------------------------------- proofs ---
 
-def violation(src, tgt, vw, const_vars=()):
+class LaneFacts:
+    """The facts of the variables of a rule, for the preconditions
+    (precond.z3_atom): the encoder of a scalar variable per lane read as
+    one variable per register. The known bits of a vector register are
+    the known bits of each lane (GISelValueTracking gives the bits that
+    all lanes have; ``violation`` makes the lanes equal), so the known
+    bits of the first lane stand for the register. A vector register is
+    defined (the atom 'def', isGuaranteedNotToBeUndefOrPoison) if each
+    lane is. The width of an atom is the width of a lane."""
+
+    def __init__(self, enc, L, rw=None):
+        self.vw = tuple(elem(t) for t in L.vw)
+        self.rw = None if rw is None else elem(rw)
+        self.kz = [enc.kz[ks[0]] for ks in L.var_lanes]
+        self.ko = [enc.ko[ks[0]] for ks in L.var_lanes]
+        self.xp = [z3.Or([enc.xp[k] for k in ks]) for ks in L.var_lanes]
+
+
+def precond_widths(vw, rw=None):
+    """The widths of the variables and of the root for the preconditions
+    of a rule: the width of a lane of a vector (the known bits of a vector
+    register are those of a lane)."""
+    return tuple(elem(w) for w in vw), (None if rw is None else elem(rw))
+
+
+def violation(src, tgt, vw, const_vars=(), dnf=None, facts=None):
     """(formula, encoder, lanes): the formula is satisfiable iff some lane
     of ``tgt`` does not refine the same lane of ``src`` for some input
-    that satisfies the facts (smt.joint_violation).
+    that satisfies the facts and the precondition ``dnf`` (a list of
+    conjunctions over the variables of the rule, LaneFacts), or if the
+    replacement has undefined behaviour in a lane that the source does
+    not have (smt.joint_violation: the source has undefined behaviour if
+    one lane has). ``facts``: the concrete facts of the variables of an
+    instance (the known bits of each lane, and defined if each lane is).
 
     Two lanes of the source with the same expression are one value in the
     proof, also if the expression has bits that are not specified (two
@@ -270,6 +301,7 @@ def violation(src, tgt, vw, const_vars=()):
     for the instructions. It is not a proof "for each value of these
     bits": a rule with such a value below the root applies only if that
     value has no other user (interior_choice)."""
+    from . import precond
     L = Lanes(vw)
     S, T = L.of(src), L.of(tgt)
     assert len(S) == len(T), 'the replacement has another type'
@@ -279,29 +311,65 @@ def violation(src, tgt, vw, const_vars=()):
     for ks in L.var_lanes:
         for k in ks[1:]:
             same += [enc.kz[k] == enc.kz[ks[0]], enc.ko[k] == enc.ko[ks[0]]]
+    if dnf is not None and any(p for p in dnf):
+        same.append(precond.z3_dnf(dnf, LaneFacts(enc, L, ir.width(src, vw))))
+    if facts is not None:
+        lf = LaneFacts(enc, L)
+        for i, f in enumerate(facts):
+            w = lf.vw[i]
+            same += [lf.kz[i] == z3.BitVecVal(f[0], w),
+                     lf.ko[i] == z3.BitVecVal(f[1], w)]
+            if len(f) > 2 and f[2]:
+                same.append(z3.Not(lf.xp[i]))
     guard = z3.And(same) if same else z3.BoolVal(True)
     return smt.joint_violation(enc, list(zip(S, T)), guard), enc, L
 
 
+def _facts_of_model(vals, L):
+    """The facts of the variables of a rule in a counterexample: the
+    known bits of the first lane, and defined if no lane is poison
+    (synth._facts_from_model for scalars)."""
+    _, kz, ko, xp = smt.split_model(vals, len(L.svw))
+    out = []
+    for ks in L.var_lanes:
+        z, o = kz[ks[0]], ko[ks[0]]
+        out.append((z, o) if any(xp[k] for k in ks) else (z, o, True))
+    return tuple(out)
+
+
 def verify(sched, dnf, backend, const_vars=(), strong=False):
-    """synth.verify for schedules with vectors. A rule with vectors has no
-    precondition (a condition on the known bits is 'unknown'), and it has
-    no proof for each value of the bits that are not specified
-    (violation)."""
-    if strong or any(p for p in dnf):
+    """synth.verify for schedules with vectors: proves (p1 || p2 || ...)
+    => (each lane of the replacement refines the same lane of the source)
+    for every schedule. The atoms of a precondition read the known bits
+    of a lane of each register (LaneFacts). A counterexample is (the
+    widths of the lanes, the facts of the variables, the width of a lane
+    of the root), the form of the counterexamples of scalars.
+
+    A rule with vectors has no proof for each value of the bits that are
+    not specified (``strong`` gives 'unknown'): such a rule gets the guard
+    that the values below the root have no other user."""
+    assert dnf, 'an empty disjunction is false and proves nothing'
+    if strong:
         return 'unknown', None
     proofs = []
-    for s, t, v, wmap in sched:
-        f, enc, _ = violation(s, t, v, const_vars)
-        r = backend.check(f)
+    for k, (s, t, v, wmap) in enumerate(sched):
+        f, enc, L = violation(s, t, v, const_vars, dnf)
+        r = backend.check(f, want_model_of=enc.model_terms())
         if r.status == 'sat':
-            return 'invalid', (v, tuple((0, 0) for _ in v), s[1])
+            pw, prw = precond_widths(v, s[1])
+            return 'invalid', (pw, _facts_of_model(r.model, L), prw)
         if r.status != 'unsat':
+            if k:
+                # A schedule after the first that is not decided is not
+                # proved: the guard does not accept its widths.
+                continue
             return 'unknown', None
         proofs.append({'vw': list(v), 'root_w': s[1],
                        'width_map': sorted([a, b] for a, b in wmap.items()),
                        'result': 'unsat', 'lanes': True,
                        'seconds': round(r.seconds, 4), 'smt2': r.smt2})
+        if getattr(r, 'timeout_ms', None):
+            proofs[-1]['timeout_ms'] = r.timeout_ms
     return 'valid', proofs
 
 
@@ -350,7 +418,24 @@ def little_endian_only(vw, *exprs):
     return False
 
 
-# ----------------------------------------------------------- search ---
+# ------------------------------------------------- linear replacements ---
+
+def undefined_lane(tgt, vw):
+    """True if a lane of a node of the replacement ``tgt`` has no defined
+    value in the model (a G_SHUFFLE_VECTOR lane with the mask entry -1, a
+    variable index that can be outside of the vector): LLVM says poison
+    there, and the model has a value, which is only sound in a source."""
+    if ir.is_var(tgt) or not ir.is_op(tgt):
+        return False
+    L = Lanes(vw)
+    for n in ir.nodes(tgt):
+        for s in L.of(n):
+            if any(ir.is_op(x) and x[0] == 'G_IMPLICIT_DEF'
+                   for x in ir.nodes(s)):
+                return True
+    return False
+
+
 
 def _reads(n, k, vw):
     """The lanes of the variable operand ``k`` of the node ``n`` that the
@@ -390,93 +475,6 @@ def linear(tgt, vw, const_vars=()):
     return not ir.is_op(tgt) or walk(tgt)
 
 
-def _creatable(e):
-    return all(ops.capability(ops.parse(n[0])[0], 'emit') == 'yes'
-               for n in ir.nodes(e))
-
-
-def _scalar_expr(L, s):
-    """The scalar expression ``s`` of lanes as an expression over the
-    variables of the rule: a lane of a vector variable is a
-    G_EXTRACT_VECTOR_ELT with a constant index."""
-    if ir.is_var(s):
-        v, lane = L.origin[s[1]]
-        if lane is None:
-            return ('var', v)
-        return ('G_EXTRACT_VECTOR_ELT:%d' % lane, L.svw[s[1]], ('var', v))
-    if not ir.is_op(s):
-        return s
-    return s[:2] + tuple(_scalar_expr(L, a) for a in s[2:])
-
-
-def revectorize(L, S, t):
-    """A vector expression of the type code ``t`` whose lanes are the
-    scalar expressions ``S``, or None. It has the smallest cost of: the
-    variable with these lanes, a constant with one value in each lane, an
-    operator of the lanes on the vectors of their operands, a
-    G_SHUFFLE_VECTOR of at most two variables, and a G_BUILD_VECTOR."""
-    n = lanes(t)
-    if not n:
-        return _scalar_expr(L, S[0])
-    options = []
-    lane_vars = [L.origin[s[1]] if ir.is_var(s) else None for s in S]
-    if all(o is not None and o[1] is not None for o in lane_vars):
-        vs = []
-        for v, _ in lane_vars:
-            if v not in vs:
-                vs.append(v)
-        if len(vs) == 1 and L.vw[vs[0]] == t and \
-                [j for _, j in lane_vars] == list(range(n)):
-            return ('var', vs[0])
-        if len(vs) <= 2 and len({L.vw[v] for v in vs}) == 1 and \
-                elem(L.vw[vs[0]]) == elem(t):
-            na = lanes(L.vw[vs[0]])
-            m = [j + na * vs.index(v) for v, j in lane_vars]
-            options.append((ops.make_key('G_SHUFFLE_VECTOR',
-                                         ops.mask_attr(m)), t,
-                            ('var', vs[0]), ('var', vs[-1])))
-    if all(not ir.is_var(s) and not ir.is_op(s) for s in S) and \
-            len(set(S)) == 1:
-        return (S[0][0], t, S[0][2])
-    if all(ir.is_op(s) and s[:2] == S[0][:2] and len(s) == len(S[0])
-           for s in S):
-        info = ops.parse(S[0][0])[0]
-        if not info.vector and info.lanewise:
-            subs = []
-            for k in range(2, len(S[0])):
-                col = [s[k] for s in S]
-                if info.shape == 'select' and k == 2 and len(set(col)) == 1:
-                    # One condition for each lane.
-                    subs.append(_scalar_expr(L, col[0]))
-                    continue
-                sub = revectorize(L, col, vec(n, L.scalar_width(col[0])))
-                if sub is None:
-                    break
-                subs.append(sub)
-            else:
-                options.append((S[0][0], t) + tuple(subs))
-    options.append(('G_BUILD_VECTOR', t) +
-                   tuple(_scalar_expr(L, s) for s in S))
-    options = [o for o in options if _creatable(o) and
-               ir.well_typed(o, L.vw)]
-    return min(options, key=ir.dag_cost) if options else None
-
-
-def candidates(src, vw, const_vars=()):
-    """The replacements of the vector expression ``src`` that the lanes of
-    ``src`` give: at most one, with a smaller cost than ``src``."""
-    L = Lanes(vw)
-    root = src[1] if not ir.is_var(src) else vw[src[1]]
-    tgt = revectorize(L, L.of(src), root)
-    if tgt is None or tgt == src or ir.dag_cost(tgt) >= ir.dag_cost(src) \
-            or not _creatable(tgt):
-        return []
-    if not set(ir.variables(tgt)) <= set(ir.variables(src)) or \
-            not linear(tgt, vw, const_vars):
-        return []
-    return [tgt]
-
-
 # --------------------------------------------------- lane-wise rules ---
 
 def lanewise_only(*exprs):
@@ -492,12 +490,47 @@ def lanewise_only(*exprs):
     return True
 
 
+def shared_scalars(code_expr, vw):
+    """The variables of scalars that every operator that reads them reads
+    in the role SHARED_SCALAR (ops.operand_roles): the condition of a
+    G_SELECT of vectors. Each lane of such a G_SELECT reads the same value
+    of the condition, so the rule for scalars that is proved for each
+    value of the condition holds for each lane with that value; the
+    register of the condition is read once, as in the source (one value
+    for all lanes, also if it is undef)."""
+    roles = {}
+    for n in ir.nodes(code_expr):
+        ws = [ir.width(a, vw) for a in n[2:]]
+        rs = ops.operand_roles(n[0], n[1], ws) or [None] * len(ws)
+        for a, r in zip(n[2:], rs):
+            if ir.is_var(a):
+                roles.setdefault(a[1], set()).add(r)
+    edge = ir.edge_vars(code_expr) | ir.env_vars(code_expr)
+    return frozenset(v for v, rs in roles.items()
+                     if v not in edge and not lanes(vw[v]) and
+                     rs == {ops.SHARED_SCALAR})
+
+
+def select_condition_only(e, v):
+    """True if the variable ``v`` is read only as the condition of a
+    G_SELECT in the expression ``e`` (a replacement that reads a shared
+    scalar so can have vectors with that scalar)."""
+    for n in ir.nodes(e):
+        for k, a in enumerate(n[2:]):
+            if a == ('var', v) and not (ops.parse(n[0])[0].shape ==
+                                        'select' and k == 0):
+                return False
+    return True
+
+
 def lift(code_expr, vw, scalars=None):
     """The scalar expression and the scalar widths of an expression whose
     values are all vectors with one number of lanes and whose operators are
     all lane-wise (lanewise_only), or None. `scalars` are the variables
-    that are scalars for all lanes; without it they are those of
-    `code_expr` (a part of an expression does not show all of them)."""
+    that are scalars for all lanes (the edge of a G_PHI, the environment,
+    and the shared_scalars of the whole source); without it they are
+    those of `code_expr` (a part of an expression does not show all of
+    them)."""
     # The edge of a G_PHI is a scalar: one edge for all lanes. So is the
     # floating-point environment of the constrained operations.
     edge = ir.edge_vars(code_expr) | ir.env_vars(code_expr)

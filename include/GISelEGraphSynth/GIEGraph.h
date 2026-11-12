@@ -256,6 +256,15 @@ public:
 
   void print(raw_ostream &OS) const;
 
+  /// The id of the shuffle mask \p Mask (the ENode::Attr of a
+  /// G_SHUFFLE_VECTOR): equal masks have one id, so the mask is part of the
+  /// identity of the node and of its hash.
+  uint64_t internMask(ArrayRef<int> Mask);
+  ArrayRef<int> getMask(uint64_t Id) const { return Masks[Id]; }
+  /// Print the attribute of the operation \p N as patterns write it (a
+  /// shuffle mask as its lanes).
+  void printAttr(raw_ostream &OS, const ENode &N) const;
+
 private:
   struct ENodeHash {
     size_t operator()(const ENode &N) const { return hash_value(N); }
@@ -274,6 +283,9 @@ private:
   /// memo, so re-deriving them is a no-op instead of a new class, and they
   /// still take part in congruence closure.
   std::vector<std::pair<ENode, EClassId>> Pruned;
+  /// The shuffle masks of the graph (internMask).
+  std::vector<SmallVector<int, 8>> Masks;
+  std::map<std::vector<int>, uint64_t> MaskIds;
   unsigned NumNodes = 0;
   unsigned NumClasses = 0;
   bool Dirty = false;
@@ -484,6 +496,16 @@ enum class OpShape : uint8_t {
   /// if the terminator can be inverted and bit 0 if this node is the
   /// inverted form.
   Effect,
+  /// An operator that builds or divides a fixed vector, or moves its lanes
+  /// (OpProperties::IsVector). The e-graph has the operators of
+  /// isEGraphVectorOp: G_BUILD_VECTOR (the lanes are the operands),
+  /// G_EXTRACT_VECTOR_ELT and G_INSERT_VECTOR_ELT with a constant index
+  /// inside the vector (ENode::Attr is the index; the index is not an
+  /// operand), G_SHUFFLE_VECTOR (ENode::Attr is the id of the mask in
+  /// EGraph::internMask) and G_CONCAT_VECTORS. Each lane is poison iff the
+  /// lane that it reads is; a shuffle lane with the mask entry -1 has no
+  /// value.
+  Vector,
 };
 
 enum class CastKind : uint8_t {
@@ -604,7 +626,9 @@ struct OpProperties {
   /// The operator builds, divides or reduces a fixed vector (G_BUILD_VECTOR,
   /// G_SHUFFLE_VECTOR, G_VECREDUCE_ADD): its result is not computed lane by
   /// lane. Only the operators of getModelOnlyOpProperties have this
-  /// property. NumOperands is -1 if the number of operands is not fixed.
+  /// property (their shape is OpShape::Vector); getOpProperties also gives
+  /// the ones that the e-graph has (isEGraphVectorOp). NumOperands is -1 if
+  /// the number of operands is not fixed.
   bool IsVector = false;
   /// OpShape::Typed: the kinds of the operands and of the results.
   SmallVector<TypeKind, 3> OperandKinds;
@@ -950,7 +974,30 @@ struct SaturationStats {
   unsigned Bans = 0;
   /// Number of matches applied per rule name (in rule order).
   SmallVector<unsigned, 32> RuleApplications;
+  /// Merges made by the lane rules of fixed vectors (applyLaneRules), per
+  /// rule name.
+  unsigned LaneMerges = 0;
+  std::map<std::string, unsigned> LaneRuleApplications;
 };
+
+/// True if the e-graph has nodes of the vector operator \p Opc
+/// (OpShape::Vector).
+bool isEGraphVectorOp(unsigned Opc);
+
+/// True if \p P computes each lane of a fixed vector from the same lane of
+/// its operands without undefined behaviour, so that lane i of the result is
+/// the scalar operator on lane i of the operands (a G_SELECT with a scalar
+/// condition reads it for each lane).
+bool isLaneWiseOperator(const OpProperties &P);
+
+/// The lane rules of fixed vectors: equalities of the lanes that the table
+/// rules cannot write (an index or a mask is computed from another one).
+/// Each rule merges two classes with the same value in each lane, including
+/// poison; none of them relates a lane without a value. Requires a clean
+/// graph; adds at most until the graph has \p MaxNodes nodes. Returns the
+/// number of merges.
+unsigned applyLaneRules(EGraph &G, unsigned MaxNodes,
+                        std::map<std::string, unsigned> &Applications);
 
 /// Bounded equality saturation. Deterministic for a given graph and rule set.
 SaturationStats saturate(EGraph &G, ArrayRef<RewriteRule> Rules,

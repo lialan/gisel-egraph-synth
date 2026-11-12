@@ -69,6 +69,7 @@ import z3
 
 from . import fp
 from . import ir
+from . import ops
 
 # The atoms ('is_<literal>', i).
 _FP_LIT = {'is_' + k: k for k in fp.LITERALS}
@@ -144,6 +145,15 @@ def _w(j, vw, rw):
     return rw if j == 'r' else vw[j]
 
 
+def lane_widths(vw, rw=None):
+    """The widths of the atoms of variables of the type codes ``vw`` and
+    of a root of the type code ``rw``: the width of a lane of a vector
+    (the known bits of a vector register are those of each lane,
+    vector.LaneFacts). A scalar width is its own lane width."""
+    return (tuple(ops.elem(w) for w in vw),
+            None if rw is None else ops.elem(rw))
+
+
 def _vstr(j):
     return 'root' if j == 'r' else 'x%d' % j
 
@@ -177,6 +187,7 @@ def enumerate_atoms(vw, rw=None, env=(), fvars=()):
     _FP_BIT_ATOMS and the atoms on a floating-point constant. No other
     variable has the atoms on a floating-point constant."""
     env, fvars = set(env), set(fvars)
+    vw, rw = lane_widths(vw, rw)
     out = [a for a in _enumerate_atoms(vw, rw)
            if not _mentions(a) & env and
            (a[0] in _FP_BIT_ATOMS or not _mentions(a) & fvars)]
@@ -260,6 +271,7 @@ def _cro(v, w):
 
 
 def eval_atom(a, facts, vw, rw=None):
+    vw, rw = lane_widths(vw, rw)
     k = a[0]
     if k == 'def':
         return len(facts[a[1]]) > 2 and bool(facts[a[1]][2])
@@ -596,7 +608,7 @@ def implies_dnf(p, dnf, vw, backend, rw=None):
     """True iff, for every consistent fact assignment, the conjunction p
     implies the disjunction ``dnf`` (a list of conjunctions)."""
     from .smt import Encoder
-    enc = Encoder(vw, rw)
+    enc = Encoder(*lane_widths(vw, rw))
     f = z3.And(enc.fact_consistency(), z3_pred(p, enc),
                z3.Not(z3_dnf(dnf, enc)))
     return backend.check(f).status == 'unsat'
@@ -606,7 +618,7 @@ def implies(p, q, vw, backend, rw=None):
     """True iff, for every consistent fact assignment, p => q (facts only,
     no values involved). Decided by SMT; unknown counts as False."""
     from .smt import Encoder
-    enc = Encoder(vw, rw)
+    enc = Encoder(*lane_widths(vw, rw))
     f = z3.And(enc.fact_consistency(), z3_pred(p, enc),
                z3.Not(z3_pred(q, enc)))
     return backend.check(f).status == 'unsat'

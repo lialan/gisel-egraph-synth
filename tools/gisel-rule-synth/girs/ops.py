@@ -42,6 +42,7 @@ an operator is a candidate only for a target with the namespace
 import functools
 import json
 import os
+import re
 
 import z3
 
@@ -88,6 +89,37 @@ def elem(t):
 def bits(t):
     """The number of bits of a value of the type code ``t``."""
     return max(lanes(t), 1) * elem(t)
+
+
+_LLT_TEXT = re.compile(r'^<(\d+) x ([a-z]+\d+)>$')
+_LLT_SCALAR = re.compile(r'^([sif])(\d+)$')
+
+
+def split_llt(name):
+    """(number of lanes, the LLT text of a lane) of the LLT text ``name``
+    (0 lanes for a scalar): '<4 x s32>' -> (4, 's32'), 's32' -> (0, 's32').
+    The one parser of the type names of the corpus and of the e-graph
+    export."""
+    m = _LLT_TEXT.match(name or '')
+    return (int(m.group(1)), m.group(2)) if m else (0, name or '')
+
+
+def parse_llt(name):
+    """(type code, kind) of the LLT text ``name``, kind 'i' or 'f': a
+    scalar ``sN`` or ``iN`` (an integer; the targets that distinguish the
+    kinds write ``iN``), ``fN`` (a floating-point value with the IEEE
+    format of its width), or a fixed vector of 2 to MAX_LANES of them.
+    None for another type (a pointer, bf16, a scalable vector, a vector
+    with more lanes): the model has no value of it."""
+    n, elt = split_llt(name)
+    m = _LLT_SCALAR.match(elt)
+    if not m or (n and not 2 <= n <= MAX_LANES):
+        return None
+    w = int(m.group(2))
+    kind = 'f' if m.group(1) == 'f' else 'i'
+    if kind == 'f' and not fp.is_format(w):
+        return None
+    return vec(n, w), kind
 
 
 def type_text(t):
@@ -478,6 +510,57 @@ def typecheck(key, w, ws):
                 not (info.constrained and k == len(ws) - 1):
             return False
     return bool(info.typecheck(elem(w), [elem(x) for x in ws], attr, res))
+
+
+# The role of an operand of an operator with vectors: how the lanes of the
+# result read it (vector.lift, vector_search, the e-graph bridge).
+# ELEMENTWISE: lane j of the result reads lane j of the operand.
+# SHARED_SCALAR: one scalar for all lanes (the condition of a G_SELECT of
+# vectors, the edge of a G_PHI, the environment of the constrained
+# operations). SCALAR_ELEMENT: a scalar that is one lane of the result
+# (G_BUILD_VECTOR, the value of G_INSERT_VECTOR_ELT). INDEX: the number
+# of a lane. LANE_MAPPING: the lanes of the operand move to other
+# positions or are combined (shuffles, concatenation, parts of vectors,
+# reductions, a G_BITCAST or G_UNMERGE_VALUES that regroups bits).
+ELEMENTWISE = 'elementwise'
+SHARED_SCALAR = 'shared_scalar'
+SCALAR_ELEMENT = 'scalar_element'
+INDEX = 'index'
+LANE_MAPPING = 'lane_mapping'
+
+
+def operand_roles(key, w, ws):
+    """The role of each operand of a node of the type code ``w`` with
+    operands of the type codes ``ws``, or None for an operator on scalars
+    that has no lanes (G_MERGE_VALUES, an intrinsic, an operator that
+    LLVM does not permit with vectors). A node of scalars has the roles
+    of the same node with vectors."""
+    info, attr, res = parse(key)
+    n = len(ws)
+    if info.vector:
+        name = info.name
+        if name in ('G_BUILD_VECTOR', 'G_BUILD_VECTOR_TRUNC'):
+            return [SCALAR_ELEMENT] * n
+        if name == 'G_EXTRACT_VECTOR_ELT':
+            return [LANE_MAPPING] + [INDEX] * (n - 1)
+        if name == 'G_INSERT_VECTOR_ELT':
+            return [LANE_MAPPING, SCALAR_ELEMENT] + [INDEX] * (n - 2)
+        if name in ('G_VECREDUCE_SEQ_FADD', 'G_VECREDUCE_SEQ_FMUL'):
+            return [SCALAR_ELEMENT, LANE_MAPPING]
+        return [LANE_MAPPING] * n
+    if info.bitcast and attr == REGROUP or info.shape == 'unmerge':
+        return [LANE_MAPPING] * n
+    if not info.lanewise or info.intrinsic:
+        return None
+    roles = []
+    for k, x in enumerate(ws):
+        if (info.shape == 'select' and k == 0 and not lanes(x)) or \
+                (info.phi and k == 0) or \
+                (info.constrained and k == n - 1):
+            roles.append(SHARED_SCALAR)
+        else:
+            roles.append(ELEMENTWISE)
+    return roles
 
 
 def make_key(name, attr=None, res=0):
@@ -1776,16 +1859,18 @@ _VECTOR_OPS = {
     'G_BUILD_VECTOR': (_vtc_build(False), (('v',), 'v'), None, None),
     'G_BUILD_VECTOR_TRUNC': (_vtc_build(True), (('i',), 'i'), None,
                              _MATCH_ONLY),
-    'G_CONCAT_VECTORS': (_vtc_concat, (('v',), 'v'), None, _MATCH_ONLY),
+    'G_CONCAT_VECTORS': (_vtc_concat, (('v',), 'v'), None, None),
     'G_EXTRACT_VECTOR_ELT': (_vtc_extract_elt, (('v', 'i'), 'v'), 'imm?',
                              None),
+    # A rule creates it with a constant index only (creatable).
     'G_INSERT_VECTOR_ELT': (_vtc_insert_elt, (('v', 'v', 'i'), 'v'),
-                            'imm?', _MATCH_ONLY),
+                            'imm?', None),
     'G_SHUFFLE_VECTOR': (_vtc_shuffle, (('v', 'v'), 'v'), 'mask', None),
-    'G_EXTRACT_SUBVECTOR': (_vtc_extract_sub, (('v',), 'v'), 'imm',
-                            _MATCH_ONLY),
-    'G_INSERT_SUBVECTOR': (_vtc_insert_sub, (('v', 'v'), 'v'), 'imm',
-                           _MATCH_ONLY),
+    # The legalizer of a target can have no rule for these (AMDGPU): a
+    # search with the legality table of the target does not create them
+    # there (targets.Capability), and the selection measures the rest.
+    'G_EXTRACT_SUBVECTOR': (_vtc_extract_sub, (('v',), 'v'), 'imm', None),
+    'G_INSERT_SUBVECTOR': (_vtc_insert_sub, (('v', 'v'), 'v'), 'imm', None),
     'G_VECTOR_COMPRESS': (_vtc_compress, (('v', 'i', 'v'), 'v'), None,
                           _MATCH_ONLY),
 }
@@ -2180,6 +2265,18 @@ def capability(info, stage):
             return 'enumerative+egraph'
         return 'enumerative-source+egraph'
     return 'yes'
+
+
+def creatable(key):
+    """True if a rule can create a node with the operator key ``key``: the
+    registry says that the emitter builds the operator, and an operator
+    with the index of a lane has a constant index (the model of a variable
+    index outside of the vector is a value, which is more defined than
+    the poison of LLVM: only a source can have it)."""
+    info, attr, _ = parse(key)
+    if capability(info, 'emit') != 'yes':
+        return False
+    return not (info.vector and info.attr == 'imm?' and attr is None)
 
 
 def capability_matrix(namespace='generic'):

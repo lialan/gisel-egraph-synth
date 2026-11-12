@@ -428,6 +428,24 @@ TEST_F(AArch64GISelMITest, ScalarWidthsOfPointers) {
   EXPECT_TRUE(getScalarWidths(*MRI, {Int, V}, W, 0, /*Lift=*/true));
   EXPECT_EQ(W[0], 32u);
   EXPECT_EQ(W[1], (2u << 16) | 32u);
+  // A register that can be one scalar for all lanes (the condition of a
+  // G_SELECT of vectors) does not count for the number of lanes; the other
+  // registers still need one number of lanes.
+  unsigned W3[3] = {0, 0, 0};
+  EXPECT_TRUE(getScalarWidths(*MRI, {Int, V, V}, W3, 0, /*Lift=*/true,
+                              /*SharedScalars=*/0b001));
+  EXPECT_EQ(W3[0], 32u);
+  EXPECT_EQ(W3[1], 32u);
+  EXPECT_EQ(W3[2], 32u);
+  // A vector there is also accepted, with the same number of lanes.
+  EXPECT_TRUE(getScalarWidths(*MRI, {V, V, V}, W3, 0, /*Lift=*/true,
+                              /*SharedScalars=*/0b001));
+  EXPECT_EQ(W3[0], 32u);
+  // Only the marked register can be a scalar.
+  EXPECT_TRUE(getScalarWidths(*MRI, {V, Int, V}, W3, 0, /*Lift=*/true,
+                              /*SharedScalars=*/0b001));
+  EXPECT_EQ(W3[1], 32u);
+  EXPECT_EQ(W3[0], (2u << 16) | 32u);
   // A vector of scalars is not a vector of pointers.
   EXPECT_FALSE(getScalarWidths(*MRI, {V}, W, 0b1));
   // Two pointers of one width have one type: a new pointer takes its type

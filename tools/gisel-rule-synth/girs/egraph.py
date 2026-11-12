@@ -32,42 +32,61 @@ by reason (``Importer.stats``), never dropped silently.
 
 import json
 import os
-import re
 
 from . import corpus
 from . import discover
-from . import fp
 from . import ir
 from . import ops
+from . import vector
 
-FORMAT_VERSION = 1
-
-_SCALAR = re.compile(r'^([sif])(\d+)$')
+# Version 2: fixed vectors ("imm": the constant index of a lane, "mask": the
+# mask of a shuffle, the known bits of a vector are those of a lane).
+FORMAT_VERSIONS = (1, 2)
+FORMAT_VERSION = 2
 
 
 def parse_type(t):
-    """Bit width of a scalar type name, or None for any other type: ``s32``
-    or, where the target distinguishes integer and floating-point scalars,
-    ``i32`` and ``f32``. A floating-point value is its bit pattern; its
-    type must have a format that the conversions are modeled for."""
-    m = _SCALAR.match(t or '')
-    if not m:
-        return None
-    w = int(m.group(2))
-    return w if m.group(1) != 'f' or fp.is_format(w) else None
+    """The type code (ops.vec) of a type name of the export, or None for a
+    type without a model: the parser of the corpus (ops.parse_llt), so a
+    scalar, a floating-point value with an IEEE format, or a fixed vector
+    of them. A floating-point value is its bit pattern."""
+    r = ops.parse_llt(t)
+    return None if r is None else r[0]
 
 
 class Limits:
-    def __init__(self, max_cost=8, max_vars=6, max_width=64, max_proofs=64):
+    """The budgets of the import. A type has separate limits: the bits of
+    a lane (``max_width``), the number of lanes and the bits of the whole
+    value; a candidate has a limit of operations, of inputs and of SMT
+    checks per record."""
+
+    def __init__(self, max_cost=8, max_vars=6, max_width=64, max_proofs=64,
+                 max_lanes=ops.MAX_LANES, max_bits=512):
         self.max_cost = max_cost      # operations of a candidate source
         self.max_vars = max_vars
-        self.max_width = max_width
+        self.max_width = max_width    # bits of a scalar or of a lane
+        self.max_lanes = max_lanes
+        self.max_bits = max_bits      # bits of a value
         self.max_proofs = max_proofs  # SMT checks per record
+
+    def type_error(self, t):
+        if ops.elem(t) > self.max_width:
+            return 'wider than %d bits' % self.max_width
+        if ops.lanes(t) > self.max_lanes:
+            return 'more than %d lanes' % self.max_lanes
+        if ops.bits(t) > self.max_bits:
+            return 'more than %d bits in all lanes' % self.max_bits
+        return None
 
 
 def _node_key(n):
-    return ops.make_key(n['op'], n.get('pred', n.get('imm')),
-                        n.get('res', 0))
+    """The operator key of a node: as corpus.node_key, the predicate, the
+    immediate (the constant index of a lane), the mask of a shuffle and
+    the result."""
+    attr = n.get('pred', n.get('imm'))
+    if 'mask' in n:
+        attr = ops.mask_attr(n['mask'])
+    return ops.make_key(n['op'], attr, n.get('res', 0))
 
 
 class _Region:
@@ -139,6 +158,8 @@ class _Region:
         defined = bool(n.get('not_undef') and n.get('not_poison'))
         if w is None or 'zero' not in n:
             return (0, 0, True) if defined else (0, 0)
+        # The known bits of a vector are those of each lane.
+        w = ops.elem(w)
         kb = (int(n['zero'], 16), int(n['one'], 16))
         return kb + (True,) if defined else kb
 
@@ -190,9 +211,10 @@ def _modeled(e, limits):
     if ir.is_var(e):
         return None
     if not isinstance(e[1], int):
-        return 'type %s is not a scalar' % e[1]
-    if e[1] > limits.max_width:
-        return 'wider than %d bits' % limits.max_width
+        return 'type %s has no model' % e[1]
+    r = limits.type_error(e[1])
+    if r:
+        return r
     if not ir.is_op(e):
         return None
     if not ops.known(e[0]):
@@ -420,9 +442,10 @@ class Importer:
     # -- one record --
 
     def add_record(self, rec, source=''):
-        if rec.get('version') != FORMAT_VERSION:
-            raise ValueError('%s: export format version %r, expected %d' %
-                             (source, rec.get('version'), FORMAT_VERSION))
+        if rec.get('version') not in FORMAT_VERSIONS:
+            raise ValueError('%s: export format version %r, expected one of '
+                             '%s' % (source, rec.get('version'),
+                                     FORMAT_VERSIONS))
         self.stats['records'] += 1
         reg = _Region(rec)
         self._budget = self.limits.max_proofs
@@ -566,6 +589,21 @@ class Importer:
             [const_of.get(o) for o in order], uses, flags,
             [(source, rec['fn'], root_reg)], sub_facts)
         inst.const_vars = tuple(sorted(m[v] for v in cvars))
+        if vector.has_vector(inst.vw, inst.expr, tgt) and not cvars:
+            # A pair that computes each lane from the same lanes is a pair
+            # of scalars for each lane (corpus.lift_source), with a guard
+            # that also accepts the vectors.
+            low = corpus.lift_source(inst.expr, inst.vw, inst.sub_facts)
+            tlow = vector.lift(tgt, inst.vw, low[3]) if low else None
+            if low and tlow:
+                lifted = corpus.Instance(
+                    low[0], low[1], inst.facts, inst.consts,
+                    inst.interior_uses, inst.flags, inst.prov, low[2])
+                lifted.lifted, lifted.lift_scalars = True, low[3]
+                inst, tgt = lifted, tlow[0]
+                self.stats['lifted'] = self.stats.get('lifted', 0) + 1
+            else:
+                self.stats['vector'] = self.stats.get('vector', 0) + 1
         self.stats['candidates'] += 1
         c = Candidate(inst, tgt, rules, bool(rec.get('refinement')), group)
         old = self.by_key.get(c.key())

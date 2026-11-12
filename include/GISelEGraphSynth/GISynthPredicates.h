@@ -30,6 +30,8 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Register.h"
+#include "llvm/CodeGen/TargetLowering.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Intrinsics.h"
 // The intrinsics of the generated rules of a target.
@@ -67,13 +69,20 @@ constexpr unsigned MaxVectorLanes = 16;
 /// for scalars holds for each lane of vectors: if every register is a fixed
 /// vector and all have the same number of lanes, \p W gets the element
 /// widths.
+///
+/// The bit I of \p SharedScalars says that the register I can also be one
+/// scalar for all lanes (the condition of a G_SELECT of vectors, which each
+/// lane reads with one value): it is not counted for the number of lanes,
+/// and the other registers must still have one number of lanes.
 inline bool getScalarWidths(const MachineRegisterInfo &MRI,
                             std::initializer_list<Register> Regs, unsigned *W,
-                            uint64_t Pointers = 0, bool Lift = false) {
+                            uint64_t Pointers = 0, bool Lift = false,
+                            uint64_t SharedScalars = 0) {
   SmallVector<LLT, 4> PtrTys;
   unsigned Idx = 0;
   unsigned *Begin = W;
   unsigned CommonLanes = 0;
+  bool HaveLanes = false;
   bool SameLanes = true;
   for (Register R : Regs) {
     LLT Ty = MRI.getType(R);
@@ -86,9 +95,12 @@ inline bool getScalarWidths(const MachineRegisterInfo &MRI,
       Lanes = Ty.getNumElements();
       Ty = Ty.getElementType();
     }
-    if (Idx == 0)
-      CommonLanes = Lanes;
-    SameLanes &= Lanes == CommonLanes;
+    if (!(((SharedScalars >> Idx) & 1) && Lanes == 0)) {
+      if (!HaveLanes)
+        CommonLanes = Lanes;
+      HaveLanes = true;
+      SameLanes &= Lanes == CommonLanes;
+    }
     if ((Pointers >> Idx++) & 1) {
       const MachineInstr *Def = MRI.getVRegDef(R);
       if (!Ty.isPointer() || !Def)
@@ -114,6 +126,20 @@ inline bool getScalarWidths(const MachineRegisterInfo &MRI,
     for (unsigned *I = Begin; I != W; ++I)
       *I &= 0xffff;
   return true;
+}
+
+/// Builds \p Res = G_INSERT_VECTOR_ELT \p Vec, \p Elt, \p Idx with a constant
+/// index of the index type of the target, as
+/// MachineIRBuilder::buildExtractVectorElementConstant does for an
+/// extraction. A rule creates the instruction only with an index inside the
+/// vector (the proof has no value for another index).
+inline MachineInstrBuilder
+buildInsertVectorElementConstant(MachineIRBuilder &B, const DstOp &Res,
+                                 const SrcOp &Vec, const SrcOp &Elt,
+                                 unsigned Idx) {
+  const TargetLowering *TLI = B.getMF().getSubtarget().getTargetLowering();
+  LLT IdxTy = TLI->getVectorIdxLLT(B.getDataLayout());
+  return B.buildInsertVectorElement(Res, Vec, Elt, B.buildConstant(IdxTy, Idx));
 }
 
 /// The value of the constant \p R: a G_CONSTANT, or a G_BUILD_VECTOR whose

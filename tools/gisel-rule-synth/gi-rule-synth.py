@@ -430,8 +430,11 @@ class _DiscoveryCache:
         with open(self._file(inst)) as f:
             rec = json.load(f)
         self.hits += 1
-        return ([{'tgt': ir.from_json(t), 'const_vars': tuple(cv)}
-                 for t, cv in zip(rec['candidates'], rec['const_vars'])],
+        fams = rec.get('families') or [None] * len(rec['candidates'])
+        return ([dict({'tgt': ir.from_json(t), 'const_vars': tuple(cv)},
+                      **({'family': f} if f else {}))
+                 for t, cv, f in zip(rec['candidates'], rec['const_vars'],
+                                     fams)],
                 rec['stats'], rec['log'])
 
     def put(self, inst, cands, st, log):
@@ -442,6 +445,7 @@ class _DiscoveryCache:
         known.write({'candidates': [ir.to_json(c['tgt']) for c in cands],
                        'const_vars': [list(c.get('const_vars', ()))
                                       for c in cands],
+                       'families': [c.get('family') for c in cands],
                        'stats': st, 'log': log}, self._file(inst))
         self.stored += 1
 
@@ -484,7 +488,7 @@ def _schedule(insts, share):
 
 def cmd_synth(args):
     from girs import compose, corpus, discover, egraph, ir, region, \
-        sibling, smt, synth, vector, known, history
+        sibling, smt, synth, vector, vector_search, known, history
 
     if args.mode == 'semantics-only' and (args.egraph or args.compose_corpus
                                           or args.compose_axioms):
@@ -505,6 +509,12 @@ def cmd_synth(args):
     known_index = known.Index(knowledge)
     files = _corpus_files(args.corpus)
     insts, cstats = corpus.load(files)
+    if getattr(args, 'only_vectors', False):
+        # The scope of the search, not a list of answers: every source that
+        # the corpus read from vectors.
+        insts = [i for i in insts if i.lifted or
+                 vector.has_vector(i.vw, i.expr)]
+        cstats['searched_vector_scope'] = len(insts)
     # Most valuable first: occurrences times the instructions at stake.
     insts.sort(key=lambda i: (-len(i.prov) * ir.cost(i.expr),
                               ir.to_sexpr(i.expr), i.vw, i.facts))
@@ -545,6 +555,9 @@ def cmd_synth(args):
     # Instance -> the replacements of its root that became rules: a rule
     # for two roots must be cheaper than they are.
     found = {}
+    # The budgets of the search of a source with vectors follow those of
+    # the search for scalars.
+    vlim = vector_search.Limits.of(dlim)
     cache = _DiscoveryCache(os.path.join(args.cache, 'instances')
                             if args.cache and not args.refresh_search else None,
                             dlim, args.timeout_ms,
@@ -559,20 +572,24 @@ def cmd_synth(args):
             dstats['not_searched_time_budget'] += 1
             continue
         dstats['instances'] += 1
-        if vector.has_vector(inst.vw, inst.expr):
-            # The lanes of the source give the replacement.
+        # A source with vectors (that is not read as the source of a rule
+        # for scalars, corpus.parse_record) is searched by its lanes
+        # (vector_search.py), with the same cache, budgets, statistics
+        # and proofs as a source with scalars.
+        is_vec = vector.has_vector(inst.vw, inst.expr)
+        if is_vec:
             dstats['vector_instances'] = dstats.get('vector_instances',
                                                     0) + 1
-            for tgt in vector.candidates(inst.expr, inst.vw):
-                dstats['candidates'] += 1
-                sy.add(inst, tgt)
-            continue
         hit = cache.get(inst)
         if hit:
             cands, st, log = hit
         else:
             log = {}
-            cands, st = discover.discover(inst, backend, dlim, ctx, log)
+            if is_vec:
+                cands, st = vector_search.search(inst, backend, vlim, dlim,
+                                                 ctx, log)
+            else:
+                cands, st = discover.discover(inst, backend, dlim, ctx, log)
             cache.put(inst, cands, st, log)
         stop = st.pop('stop')
         stops[stop] = stops.get(stop, 0) + 1
@@ -594,12 +611,15 @@ def cmd_synth(args):
                 cinst.const_vars = tuple(c['const_vars'])
                 dstats['computed_constants'] = dstats.get(
                     'computed_constants', 0) + 1
-            rids.append(sy.add(cinst, c['tgt']))
+            prov = {'discovery': 'vector-search-%s+smt' % c['family']} \
+                if c.get('family') else None
+            rids.append(sy.add(cinst, c['tgt'], provenance=prov))
             if rids[-1]:
                 found.setdefault(inst.key(), []).append(c['tgt'])
-            if args.regions and rids[-1] and region.interior_outputs(inst):
+            if args.regions and rids[-1] and not is_vec and \
+                    region.interior_outputs(inst):
                 joint.append((inst, c['tgt'], rids[-1]))
-        if args.regions:
+        if args.regions and not is_vec:
             # A result of an instruction with several results that also
             # computes a value below the root: a candidate that the term
             # bank hides behind a term with the same samples.
@@ -648,6 +668,9 @@ def cmd_synth(args):
         before = set(sy.rules)
         hit = set()
         cands = imp.candidates()
+        if getattr(args, 'only_vectors', False):
+            cands = [c for c in cands if c.inst.lifted or vector.has_vector(
+                c.inst.vw, c.inst.expr, c.tgt)]
         generalized = 0
         done = set()
         for c in cands:
@@ -1266,6 +1289,10 @@ def build_parser():
     p.add_argument('--max-pairs', type=int, default=0,
                    help='budget: groups of roots that --siblings searches '
                         '(0: all)')
+    p.add_argument('--only-vectors', action='store_true',
+                   help='search only the sources that the corpus read from '
+                   'fixed vectors (lifted lane by lane or with vector '
+                   'operators) and the e-graph candidates with vectors')
     p.add_argument('--explore-share', type=float, default=0.2,
                    help='the part of the search order that goes to the '
                         'root operators with the fewest instances so far '

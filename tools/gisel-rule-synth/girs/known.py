@@ -44,7 +44,11 @@ def semantics_sha():
 
 
 def search_sha():
-    return _files(('discover.py', 'kernels.py', 'compose.py', 'egraph.py'))
+    # The search proposes candidates and proves nothing: a change of a
+    # search strategy (vector_search.py) invalidates the instance
+    # checkpoints, not the catalog or a completed proof obligation.
+    return _files(('discover.py', 'kernels.py', 'compose.py', 'egraph.py',
+                   'vector_search.py'))
 
 
 def stamp(db):
@@ -83,7 +87,8 @@ def write(obj, path):
 def revision(rule):
     """Content used by the matcher/apply, not coverage or solver timing."""
     fields = ('source_json', 'replacement_json', 'vw', 'const_vars',
-              'needs_one_use', 'lift', 'region', 'variant_of', 'target_cost_candidate')
+              'needs_one_use', 'lift', 'lift_scalars', 'region',
+              'variant_of', 'target_cost_candidate')
     payload = {k: rule[k] for k in fields if k in rule}
     payload['disjuncts'] = [
         {k: d[k] for k in ('pred_json', 'width_maps')}
@@ -218,6 +223,13 @@ class Index:
             if getattr(inst, 'lifted', False):
                 from . import emit
                 if not emit.lifts(r):
+                    continue
+                # A scalar for all lanes (the condition of a G_SELECT of
+                # vectors) is a domain of its own: a rule whose guard
+                # needs a vector there does not cover it.
+                shared = {i for i, old in enumerate(perm)
+                          if old in getattr(inst, 'lift_scalars', ())}
+                if not shared <= set(emit.shared_scalars(r)):
                     continue
             if r['needs_one_use'] and (not inst.interior_uses or
                                       any(n != 1 for n in inst.interior_uses)):

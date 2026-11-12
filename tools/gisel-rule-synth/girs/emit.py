@@ -453,6 +453,22 @@ def lifts(rule):
                              ir.from_json(rule['replacement_json']))
 
 
+def shared_scalars(rule):
+    """The variables of a rule that accepts vectors (lifts) that can be one
+    scalar for all lanes: the rule was found with such a scalar
+    (``lift_scalars``), and its source and its replacement read the
+    variable only as the condition of a G_SELECT (a G_SELECT of vectors
+    can have a scalar condition; another operator cannot take a scalar
+    with vectors)."""
+    if not lifts(rule):
+        return []
+    src = ir.from_json(rule['source_json'])
+    tgt = ir.from_json(rule['replacement_json'])
+    return [v for v in rule.get('lift_scalars', ())
+            if vector.select_condition_only(src, v) and
+            vector.select_condition_only(tgt, v)]
+
+
 def _const_fn(rule):
     """The C++ function that reads the value of a constant of the rule:
     for a rule that accepts vectors, also the value of each lane of a
@@ -1146,11 +1162,20 @@ def _cpp_apply(rule):
                 text = 'B.buildShuffleVector(%s, %s, ArrayRef<int>({%s}))' % (
                     rtys[0], ', '.join(args),
                     ', '.join(str(x) for x in ops.mask_of(attr)))
-            elif info.attr == 'imm?' and attr is not None:
+            elif info.attr == 'imm?' and attr is not None and \
+                    info.name == 'G_EXTRACT_VECTOR_ELT':
                 # The builder makes the constant of the index.
-                assert info.name == 'G_EXTRACT_VECTOR_ELT'
                 text = 'B.buildExtractVectorElementConstant(%s, %s, %d)' % (
                     rtys[0], args[0], attr)
+            elif info.attr == 'imm?' and attr is not None:
+                assert info.name == 'G_INSERT_VECTOR_ELT'
+                # The index constant has the type of the indices of the
+                # target (TargetLowering::getVectorIdxLLT).
+                text = 'buildInsertVectorElementConstant(B, %s, %s, %s, %d)' \
+                    % (rtys[0], args[0], args[1], attr)
+            elif info.name == 'G_CONCAT_VECTORS':
+                text = 'B.buildConcatVectors(%s, {%s})' % (
+                    rtys[0], ', '.join(args))
             elif info.intrinsic:
                 text = 'B.buildIntrinsic(Intrinsic::%s, ' \
                     'ArrayRef<DstOp>({%s}))%s' % (
@@ -1481,11 +1506,16 @@ def _cpp_guard(r):
     reg_kind = {x: k for _, k, x in _type_sources(r)}
     ptrs = sum(1 << i for i, x in enumerate(regs) if reg_kind.get(x) == 'p')
     lift = lifts(r)
+    # The registers that can be one scalar for all lanes of the vectors of
+    # the other registers (shared_scalars).
+    shared = sum(1 << real.index(v) for v in shared_scalars(r))
     out += ['  unsigned W[%d];' % len(cols),
             '  if (!getScalarWidths(MRI, {%s}, W%s))' % (
                 ', '.join(regs),
-                ', UINT64_C(0x%x)%s' % (ptrs, ', /*Lift=*/true' if lift
-                                        else '') if ptrs or lift else ''),
+                ', UINT64_C(0x%x)%s%s' % (
+                    ptrs, ', /*Lift=*/true' if lift else '',
+                    ', /*SharedScalars=*/UINT64_C(0x%x)' % shared
+                    if shared else '') if ptrs or lift else ''),
             '    return false;']
     if vector.little_endian_only(vw, *_rule_exprs(r)):
         out += ['  // A G_BITCAST of the rule changes the number of lanes: '
@@ -1552,11 +1582,16 @@ def _cpp_guard(r):
         return 'VT->getKnownBits(X%d)' % v
     cpp = [[precond.cpp_atom(a) for a in p] for p in dnf]
     text = ' '.join(c for p in cpp for c in p)
+    # An atom has the width of a lane (precond.lane_widths): the low 16
+    # bits of the type code of a vector register (getScalarWidths).
+    lane = ' & 0xffff' if vector.has_vector(vw, src) else ''
     for pos, i in enumerate(real):
         if ('W%d' % i) in text.replace('WRoot', ''):
-            out.append('  [[maybe_unused]] unsigned W%d = W[%d];' % (i, pos))
+            out.append('  [[maybe_unused]] unsigned W%d = W[%d]%s;' % (
+                i, pos, lane))
     if 'WRoot' in text:
-        out.append('  [[maybe_unused]] unsigned WRoot = W[%d];' % (n + k))
+        out.append('  [[maybe_unused]] unsigned WRoot = W[%d]%s;' % (
+            n + k, lane))
     # Disjuncts without atoms need no value tracking; try them first.
     order = sorted(range(len(dnf)), key=lambda i: (bool(dnf[i]), i))
     have = set()

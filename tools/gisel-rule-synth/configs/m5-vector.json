@@ -1,0 +1,18 @@
+{
+ "name": "m5-vector",
+ "mode": "hybrid",
+ "target": "AMDGPU",
+ "manifests": {
+  "discovery": "../manifests/amdgpu-vector-discovery.txt",
+  "validation": "../manifests/amdgpu-vector-validation.txt",
+  "heldout": "../manifests/amdgpu-vector-heldout-codegen.txt"
+ },
+ "search": {
+  "grammar": "auto",
+  "only_vectors": true,
+  "time_budget_s": 5400
+ },
+ "hybrid": {
+  "egraph_stages": "pre-legalizer"
+ }
+}

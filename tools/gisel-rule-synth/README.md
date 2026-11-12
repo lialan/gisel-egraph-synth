@@ -414,7 +414,16 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
    e-graph combiner can find a rule with the precondition `def(x)`. The two
    results of one instruction have the same `mi`. `llc
    -gisel-synth-legality=FILE` writes what the legalizer does with each
-   operator at each combination of scalar widths (`targets.Capability`).
+   operator at each combination of scalar widths, and (version 2) at the
+   full `LLT` of each type index with fixed vectors (lanes from
+   `-gisel-synth-legality-lanes`, default 2,3,4,8; lane widths from
+   `-gisel-synth-legality-elems`, default 1,8,16,32,64), with the CPU and
+   the feature string of the subtarget and the MI operand of each type
+   index (`targets.Capability`). The table has the action of the
+   legalizer, not a cost: `Legal` or `Custom` is not one cheap machine
+   instruction. Before the legalizer a replacement may create an
+   instruction that the legalizer changes (`FewerElements`, `Lower`, ...);
+   after it only a `Legal` one (`Capability.can_create`).
 1. **Discovery** (`discover.py`). Enumerative search for a cheaper
    expression that agrees with the source on samples, then an SMT proof under
    the instance's concrete known bits. The source can have every operator
@@ -462,6 +471,30 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
    SMT models become samples for the rest of the run. The proved candidates
    of an instance are kept in `--cache` by the instance, the limits and the
    model hash; an UNKNOWN answer is not kept.
+
+   *Sources with vectors* (`vector_search.py`). A source that the corpus
+   cannot read lane by lane (it has a vector operator, or lanes of more
+   than one number) is searched by its lanes, with the same cache, budgets,
+   statistics and search log. The candidates of an instance are bounded
+   (`--max-candidates`, the cost bound of `--cost-slack` and
+   `--max-rhs-cost`) and come in three families, recorded in the
+   provenance of a rule (`vector-search-<family>+smt`):
+
+   | Family | Candidates |
+   |---|---|
+   | `lanes` | the lanes of the source as a vector expression: the variable with these lanes, a `G_SHUFFLE_VECTOR` of at most two variables, `G_CONCAT_VECTORS`, `G_EXTRACT_SUBVECTOR`, a `G_INSERT_VECTOR_ELT` into a variable, an operation of the lanes on vector operands, a `G_BUILD_VECTOR`. This removes builds of extracted lanes, composes shuffles and moves an extraction through a shuffle (the index is remapped). |
+   | `template` | the lanes are one scalar expression of *columns* (the same position in each lane; equal columns are one variable, so a shared value stays one value). The search for scalars looks for a cheaper template under the facts that each lane has, and the result is written as a vector expression again. A column that is one scalar of the rule (a shared scalar) is only read as the condition of a `G_SELECT`. |
+   | `permute` | each column is one permutation of the lanes of a whole variable, the same for all: the operation of the whole vectors, then one shuffle. |
+
+   A mask comes from the source, from the composition of its masks or from
+   the lanes of a column, never from an enumeration of all masks. With the
+   legality table of the target, a candidate does not create a vector
+   operation that the legalizer has no rule for. Each candidate is only a
+   proposal: `Synthesizer.add` proves it (the joint proof of the lanes)
+   and generalizes it with CEGIS and width schedules. `--only-vectors`
+   (`search.only_vectors` of `mine`) restricts a search to the sources
+   that the corpus read from vectors and to the e-graph candidates with
+   vectors; it is the scope of a search, not a list of answers.
 2. **Generalization** (`synth.py`, `precond.py`). One rule per (source,
    replacement), widths abstracted. CEGIS over a known-bits grammar finds
    *every* minimal sufficient conjunction, not just the first; strictly
@@ -486,7 +519,7 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
 4. **E-graph candidates** (`egraph.py`). `llc -gisel-egraph-export=FILE`
    makes the e-graph combiner write, for each region with a cheaper form,
    the original expression DAG, the DAG that the extractor selected, the
-   inputs with their known bits and the roots (format version 1, one JSON
+   inputs with their known bits and the roots (format version 2, one JSON
    object per line; the function is not changed). The importer reads each
    record in three steps. (a) The maximal subterms that the two DAGs have in
    common become variables. (b) The pair is divided at the operators that
@@ -712,7 +745,8 @@ takes its place.
 | `girs/match.py` | rule matching on corpus trees, coverage |
 | `girs/smt.py` | z3 backend and gMIR bitvector/poison encoding |
 | `girs/fp.py` | IEEE formats of the conversion operators: exact evaluator and z3 encoding |
-| `girs/vector.py` | Fixed vectors: the scalar expression of each lane, the joint proof of the lanes, the search for a vector replacement, lane-wise rules |
+| `girs/vector.py` | Fixed vectors: the scalar expression of each lane, definedness, the joint proof of the lanes with a precondition, the conditions of a sound replacement, lane-wise rules and shared scalars |
+| `girs/vector_search.py` | The search for a replacement of a source with vectors: lane forms, scalar templates, permutations; budgets and the legality of the target (a search strategy: known.search_sha) |
 | `girs/targets.py` | per-target compiler flags and names |
 | `girs/measure.py` | running llc, instruction and rule counters |
 | `girs/select.py` | per-target coverage, novelty, redundancy, ranking, selection |
@@ -854,14 +888,37 @@ every disjunct of `P` and for the emitted disjunction as a whole.
   (`G_VECREDUCE_*`) is the chain of its scalar operator over the lanes in
   their order; the high bits of a result that is wider than a lane are not
   specified. The proof of a rule with vectors is the joint proof of its
-  lanes.
+  lanes: each lane of the replacement refines the same lane of the source,
+  and the replacement has undefined behaviour only where some lane of the
+  source has. A replacement never has an operation that can trap, so a
+  replacement that computes fewer or other lanes than the source adds no
+  undefined behaviour; a constrained operation is not in a source with an
+  operator on whole vectors (its exceptions in the lanes that the result
+  does not read would not be in the model).
+  - A rule that keeps vectors has the preconditions and the width
+    schedules of a rule for scalars. The known bits of a vector register
+    are the bits that each lane has (GISelValueTracking), so an atom reads
+    a lane: `all(KO(x1))` says that each lane of `x1` has all bits one (a
+    splat of -1), and `def(x)` that no lane is undef or poison
+    (`vector.LaneFacts`). CEGIS finds them from the counterexamples of the
+    joint proof, whose facts are the facts of a lane. A schedule keeps the
+    number of lanes and varies the width of the lanes (`<2 x s16>` ->
+    `<2 x s32>`, never `<4 x s16>` or `s64`); a vector of more than 512
+    bits is not a schedule. The guard reads the width of a lane for an
+    atom.
   - A lane with the mask entry -1, and the result for a variable index
     outside of the vector, have no specified value. LLVM says poison or
     undefined; the model takes some value, which is the more defined one,
-    and a rule does not build such an instruction. A rule builds
-    `G_BUILD_VECTOR`, `G_SHUFFLE_VECTOR` and `G_EXTRACT_VECTOR_ELT` with
-    a constant index; it matches the other vector operators and does not
-    build them.
+    and a rule does not build such an instruction
+    (`vector.undefined_lane`). A rule builds `G_BUILD_VECTOR`,
+    `G_SHUFFLE_VECTOR`, `G_CONCAT_VECTORS`, `G_EXTRACT_SUBVECTOR`,
+    `G_INSERT_SUBVECTOR`, and `G_EXTRACT_VECTOR_ELT` and
+    `G_INSERT_VECTOR_ELT` with a constant index (`ops.creatable`); it
+    matches the other vector operators and does not build them. The
+    legalizer of a target can have no rule for a vector operator at some
+    types (AMDGPU has none for `G_EXTRACT_SUBVECTOR`): with the legality
+    table of the target, the search does not propose such a replacement,
+    and the selection measures the others.
   - A floating-point reduction without `SEQ` "can reduce the elements in
     any order". The model has the order of the lanes, which is one
     permitted result, so the proof holds only for an instruction that the
@@ -874,12 +931,26 @@ every disjunct of `P` and for the emitted disjunction as a whole.
     checks it).
   - A rule for scalars whose source is in the corpus with vectors, and
     whose operators all compute lane by lane, also accepts vectors
-    (`lift`): the proof for scalars is a proof for each lane. LLVM has no
+    (`lift`): the proof for scalars is a proof for each lane. The role of
+    each operand (`ops.operand_roles`: elementwise, shared scalar, scalar
+    element, index, lane mapping) decides it. The condition of a
+    `G_SELECT` of vectors can be one scalar (a shared scalar): each lane
+    reads the same value of it, which the proof for each value of the
+    condition covers, and the register is read once as in the source. Such
+    a rule records `lift_scalars`; its guard accepts a scalar in these
+    registers if the source and the replacement read them only as a
+    condition (`emit.shared_scalars`, `getScalarWidths(...,
+    SharedScalars)`), and the other registers have one number of lanes.
+    This applicability is part of the revision of a rule (a new `_v`
+    revision of a known rule without it). LLVM has no
     `G_SBFX`, `G_UBFX`, `G_EXTRACT`, `G_INSERT` and no operator with a
     carry input (`G_UADDE`, ...) on vectors, so a rule with one of them
     stays a rule for scalars.
   - Scalable vectors have no model (`G_SPLAT_VECTOR`, `G_STEP_VECTOR`,
-    `G_VSCALE`).
+    `G_VSCALE`). `G_SPLAT_VECTOR` can have a fixed vector result in this
+    LLVM (the machine verifier permits it, with a source that can be wider
+    than a lane); it has no model here yet, so such an instruction is an
+    input of a tree.
 - A `G_PHI` is the selection of one of its incoming values by the edge
   that the control flow took into its block. The edge is one more input of
   the source: the proof holds for each edge, a replacement and a

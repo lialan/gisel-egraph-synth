@@ -882,6 +882,12 @@ def prove_concrete(inst, tgt, backend, const_vars=None):
     instance). Returns a smt.Result."""
     if const_vars is None:
         const_vars = getattr(inst, 'const_vars', ())
+    from . import vector
+    if vector.has_vector(inst.vw, inst.expr, tgt):
+        # The joint proof of the lanes under the facts of each lane.
+        f, _, _ = vector.violation(inst.expr, tgt, inst.vw, const_vars,
+                                   facts=inst.facts)
+        return backend.check(f)
     enc = smt.Encoder(inst.vw, None, const_vars)
     eqs = []
     for i, f in enumerate(inst.facts):
