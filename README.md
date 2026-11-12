@@ -139,7 +139,8 @@ The model covers these cases:
 | Undefined values | Poison per input, `G_FREEZE`, `G_IMPLICIT_DEF`, bits that `G_ANYEXT` leaves unspecified |
 | Floating point | Bit-exact IEEE 754: conversions, min/max (each NaN and signed-zero rule), rounding, arithmetic, NaN payloads |
 | Strict float | The ten `G_STRICT_*` operators in each rounding mode, with the exception flags |
-| Other kinds | Pointers as integers, fixed vectors (lane by lane), `G_PHI`, a load after a store to the same address, some AMDGPU intrinsics |
+| Fixed vectors | Each lane with its own poison flag; operators that move lanes (build, extract, insert, shuffle, concatenation, parts); preconditions on the known bits of each lane; a `G_SELECT` with one scalar condition. See [FixedVectors.md](docs/FixedVectors.md) |
+| Other kinds | Pointers as integers, `G_PHI`, a load after a store to the same address, some AMDGPU intrinsics |
 
 `gi-rule-synth.py check-ops` compares model evaluators with SMT encodings
 and, where a reference is available, LLVM's constant folding or known bits.
@@ -207,7 +208,12 @@ GIEGraph uses configurable operation weights and `LegalizerInfo` checks.
 New instructions have stricter legality requirements after legalization.
 GIRuleSynthesizer can read a target legality table and prioritize
 supported operators in its `auto` grammar; it still uses bounded search,
-and the legality table is not a hardware cost model.
+and the legality table is not a hardware cost model. The table has the
+full `LLT` of each type index, also for fixed vectors, and the subtarget
+(CPU and features). A pre-legalizer rule can create an instruction that
+the legalizer still changes; a post-legalizer rewrite of GIEGraph must
+create legal ones. `Legal` or `Custom` is an action of the legalizer, not
+the cost of one machine instruction.
 
 AMDGPU and AArch64 have separate rule profiles. Selection uses corpus
 coverage, probes against the existing combines, and measurements of final
@@ -237,7 +243,7 @@ commands, proof model, search budgets and corpus-driven discovery workflow.
 | `unittests` | Unit tests of the engine and of the rule guards |
 | `tools/gisel-rule-synth` | The rule synthesizer (Python), its rule catalog, proofs and target profiles |
 | `tools/gisel-egraph` | SMT verifier of the e-graph rules, evaluation scripts |
-| `docs` | Design of the e-graph combiner |
+| `docs` | Design of the e-graph combiner, fixed vectors |
 
 ## Build
 

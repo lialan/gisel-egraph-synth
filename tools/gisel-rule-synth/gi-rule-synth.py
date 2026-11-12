@@ -710,6 +710,14 @@ def cmd_synth(args):
         cinsts, ccstats = corpus.load(cfiles)
         deep = [i for i in cinsts if i.key() not in seen and
                 ir.cost(i.expr) >= clim.min_cost]
+        # Composition applies rules as rewrite steps on the scalar values of
+        # a source (compose.propose): a source with vector operators has no
+        # scalar evaluation. A source read lane by lane (lifted) has one.
+        vec = [i for i in deep if vector.has_vector(i.vw, i.expr)]
+        pstats['vector_sources_skipped'] = len(vec)
+        deep = [i for i in deep if not vector.has_vector(i.vw, i.expr)]
+        if getattr(args, 'only_vectors', False):
+            deep = [i for i in deep if i.lifted]
         # Smallest sources first: a macro rule found on a small source is
         # a single step on every larger source that contains it.
         deep.sort(key=lambda i: (ir.cost(i.expr), -len(i.prov),

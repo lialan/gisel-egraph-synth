@@ -461,6 +461,54 @@ class EGraphBridge(unittest.TestCase):
         self.assertGreater(len(r['disjuncts'][0]['width_maps']), 1)
 
 
+class SynthCommand(unittest.TestCase):
+    """The synth command with sources with vectors in every stage."""
+
+    # (x0 + x1) - build(x2, x2, x2, x2): a vector operator, not lifted.
+    REC = {
+        'fn': 'f', 'root': '%5',
+        'inputs': [
+            {'reg': '%0', 'w': 32, 'lanes': 4, 'type': '<4 x s32>',
+             'zero': '0x0', 'one': '0x0'},
+            {'reg': '%1', 'w': 32, 'lanes': 4, 'type': '<4 x s32>',
+             'zero': '0x0', 'one': '0x0'},
+            {'reg': '%2', 'w': 32, 'type': 's32', 'zero': '0x0',
+             'one': '0x0'}],
+        'expr': {'op': 'G_SUB', 'w': 32, 'lanes': 4, 'type': '<4 x s32>',
+                 'reg': '%5', 'zero': '0x0', 'one': '0x0', 'args': [
+                     {'op': 'G_ADD', 'w': 32, 'lanes': 4, 'type': '<4 x s32>',
+                      'reg': '%3', 'zero': '0x0', 'one': '0x0', 'uses': 1,
+                      'args': [{'in': 0}, {'in': 1}]},
+                     {'op': 'G_BUILD_VECTOR', 'w': 32, 'lanes': 4,
+                      'type': '<4 x s32>', 'reg': '%4', 'zero': '0x0',
+                      'one': '0x0', 'uses': 1, 'args': [{'in': 2}] * 4}]}}
+
+    def test_composition_skips_vector_operators(self):
+        import importlib.util
+        import json
+        import tempfile
+        spec = importlib.util.spec_from_file_location(
+            'girs_cli', os.path.join(os.path.dirname(HERE), 'gi-rule-synth.py'))
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        with tempfile.TemporaryDirectory() as d:
+            c = os.path.join(d, 'corpus')
+            os.makedirs(c)
+            with open(os.path.join(c, 'v.jsonl'), 'w') as f:
+                f.write(json.dumps(self.REC) + '\n')
+            out = os.path.join(d, 'rules.json')
+            cli.cmd_synth(cli.default_args(
+                'synth', corpus=[c], o=out, proofs=os.path.join(d, 'p'),
+                stats=os.path.join(d, 's.json'), known='', cache='',
+                mode='hybrid', compose_corpus=[c], only_vectors=True,
+                time_budget_s=120))
+            with open(os.path.join(d, 's.json')) as f:
+                st = json.load(f)
+            comp = st.get('composition') or st.get('compose') or {}
+            self.assertEqual(st['discovery']['vector_instances'], 1)
+            self.assertIn('vector_sources_skipped', json.dumps(st))
+
+
 class RuleConstruction(unittest.TestCase):
     def rule(self, src, tgt, vw):
         sy = synth.Synthesizer(smt.Z3Backend())
