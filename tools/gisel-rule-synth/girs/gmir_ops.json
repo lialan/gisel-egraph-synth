@@ -566,6 +566,200 @@
    "model_only": true
   },
   {
+   "name": "G_CONSTANT",
+   "shape": "typed",
+   "operands": 0,
+   "operand_kinds": [],
+   "result_kinds": [
+    "main"
+   ],
+   "model_only": true,
+   "leaf": "constant"
+  },
+  {
+   "name": "G_FCONSTANT",
+   "shape": "typed",
+   "operands": 0,
+   "operand_kinds": [],
+   "result_kinds": [
+    "main"
+   ],
+   "model_only": true,
+   "leaf": "constant"
+  },
+  {
+   "name": "G_GLOBAL_VALUE",
+   "shape": "typed",
+   "operands": 0,
+   "operand_kinds": [],
+   "result_kinds": [
+    "main"
+   ],
+   "model_only": true,
+   "leaf": "address"
+  },
+  {
+   "name": "G_PTRAUTH_GLOBAL_VALUE",
+   "shape": "typed",
+   "operands": 0,
+   "operand_kinds": [],
+   "result_kinds": [
+    "main"
+   ],
+   "model_only": true,
+   "leaf": "address"
+  },
+  {
+   "name": "G_FRAME_INDEX",
+   "shape": "typed",
+   "operands": 0,
+   "operand_kinds": [],
+   "result_kinds": [
+    "main"
+   ],
+   "model_only": true,
+   "leaf": "address"
+  },
+  {
+   "name": "G_CONSTANT_POOL",
+   "shape": "typed",
+   "operands": 0,
+   "operand_kinds": [],
+   "result_kinds": [
+    "main"
+   ],
+   "model_only": true,
+   "leaf": "address"
+  },
+  {
+   "name": "G_BLOCK_ADDR",
+   "shape": "typed",
+   "operands": 0,
+   "operand_kinds": [],
+   "result_kinds": [
+    "main"
+   ],
+   "model_only": true,
+   "leaf": "address"
+  },
+  {
+   "name": "G_JUMP_TABLE",
+   "shape": "typed",
+   "operands": 0,
+   "operand_kinds": [],
+   "result_kinds": [
+    "main"
+   ],
+   "model_only": true,
+   "leaf": "address"
+  },
+  {
+   "name": "G_STRICT_FADD",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "commutative": true,
+   "constrained": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_STRICT_FSUB",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "constrained": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_STRICT_FMUL",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "commutative": true,
+   "constrained": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_STRICT_FDIV",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "constrained": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_STRICT_FREM",
+   "shape": "binary",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "constrained": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_STRICT_FMA",
+   "shape": "typed",
+   "operands": 3,
+   "operand_kinds": [
+    "main",
+    "main",
+    "main"
+   ],
+   "result_kinds": [
+    "main"
+   ],
+   "model_only": true,
+   "fp": true,
+   "constrained": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_STRICT_FSQRT",
+   "shape": "unary",
+   "operands": 1,
+   "model_only": true,
+   "fp": true,
+   "constrained": true
+  },
+  {
+   "name": "G_STRICT_FLDEXP",
+   "shape": "typed",
+   "operands": 2,
+   "operand_kinds": [
+    "main",
+    "free"
+   ],
+   "result_kinds": [
+    "main"
+   ],
+   "model_only": true,
+   "fp": true,
+   "constrained": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_STRICT_FCMP",
+   "shape": "compare",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "constrained": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_STRICT_FCMPS",
+   "shape": "compare",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "constrained": true,
+   "has_fold": true
+  },
+  {
    "name": "G_FCANONICALIZE",
    "shape": "unary",
    "operands": 1,

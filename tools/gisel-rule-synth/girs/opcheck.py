@@ -57,6 +57,8 @@ def instances(info, widths=(1, 8, 16, 32)):
     if info.fp_operand or info.fp_result or info.intrinsic:
         widths = tuple(widths) + (64,)
     n = info.operands if info.operands is not None else 2
+    # The last operand of a constrained operation is the environment.
+    n -= info.constrained
     attrs = [None]
     if info.attr == 'pred':
         attrs = list(info.preds)
@@ -65,7 +67,8 @@ def instances(info, widths=(1, 8, 16, 32)):
         for a in widths:
             for b in widths:
                 for c in widths:
-                    cands.add(tuple([a, b, c][:n]))
+                    cands.add(tuple([a, b, c][:n]) +
+                              (fp.ENV_BITS,) * info.constrained)
         for ws in sorted(cands):
             if info.attr == 'imm':
                 attrs = sorted({1, w // 2, w - 1} | set(info.imm_domain))
@@ -115,6 +118,19 @@ def _same(info, w, a, b, res=0):
         and fp.same_bits(a, b, w)
 
 
+def smt_flags(info, w, ws, attr, res, vals, tiny_before, fma_invalid):
+    """The exceptions of the SMT encoding of a constrained operation on
+    constants, for one choice of the implementation (fp.z3_flag_view)."""
+    xs = [z3.BitVecVal(v, xw) for v, xw in zip(vals, ws)]
+    s = z3.Solver()
+    out = z3.BitVec('flags', fp.Z3_FLAG_BITS)
+    s.add(out == info.fe_smt(w, ws, attr, res, xs),
+          fp.z3_tiny_before() == tiny_before,
+          fp.z3_fma_invalid() == fma_invalid)
+    assert s.check() == z3.sat
+    return s.model().eval(out, model_completion=True).as_long()
+
+
 def check_models(samples=40, seed=0, names=None):
     """Returns (number of comparisons, list of mismatches)."""
     rng = random.Random(seed)
@@ -133,6 +149,10 @@ def check_models(samples=40, seed=0, names=None):
                 envs.append([rng.choice(s) if rng.random() < 0.6
                              else rng.getrandbits(x)
                              for s, x in zip(sp, ws)])
+            if info.constrained:
+                # Each rounding mode.
+                envs = [vals[:-1] + [rm] for k, vals in enumerate(envs)
+                        for rm in ((k % 5,) if k % 4 else range(8))]
             # Each choice of a replacement.
             envs = [vals + [c] for vals in envs
                     for c in range(1, 1 << info.tgt_choice)] + envs
@@ -145,6 +165,19 @@ def check_models(samples=40, seed=0, names=None):
                         not 0 <= a <= ops.mask(w)):
                     bad.append((ops.make_key(name, attr, res), w, ws,
                                 vals, a, b))
+                if not info.constrained:
+                    continue
+                # The exceptions, for each choice of an implementation.
+                fa = info.fe_eval(w, ws, attr, res, vals)
+                for tb in (True, False):
+                    for fi in (True, False):
+                        n += 1
+                        want = fp.z3_flag_view(fa, tb, fi)
+                        got = smt_flags(info, w, ws, attr, res, vals, tb, fi)
+                        if want != got:
+                            bad.append((ops.make_key(name, attr, res) +
+                                        ' (exceptions)', w, ws, vals,
+                                        want, got))
     return n, bad
 
 
@@ -168,10 +201,44 @@ def check_llvm(table):
             attr = s.get('pred', s.get('imm'))
             res = s.get('res', 0)
             w = s['w']
+            if info.constrained:
+                # The rounding mode of the sample is the environment.
+                ws.append(fp.ENV_BITS)
+                vals.append(s['rm'])
             if not info.typecheck(w, ws, attr, res):
                 continue
             n += 1
             want = None if s['out'] is None else int(s['out'], 16)
+            if info.constrained and 'status' in s:
+                # APFloat finds tininess after the rounding, and its fma
+                # of (0, infinity, quiet NaN) is invalid
+                # (IEEEFloat::fusedMultiplyAdd). The bits of
+                # APFloat::opStatus are the flags of fp._z3_flags.
+                n += 1
+                fa = fp.z3_flag_view(info.fe_eval(w, ws, attr, res, vals),
+                                     False, True)
+                value = info.eval(w, ws, attr, res, vals)
+                # Two places where APFloat does not have the rule of
+                # IEEE 754 (7.4, 7.5), which the model has:
+                # * "overflow" is raised if the result with an unbounded
+                #   exponent is larger than each finite number, also if a
+                #   directed rounding then gives the largest finite
+                #   number. IEEEFloat::handleOverflow reports only
+                #   "inexact" for that case.
+                # * Tininess after the rounding is that of the result
+                #   rounded with an unbounded exponent. IEEEFloat::
+                #   normalize looks at the result that it gives: no
+                #   "underflow" if that is the smallest normal number.
+                if fa & 4 and value in (fp.max_finite(w, 0),
+                                        fp.max_finite(w, 1)):
+                    fa &= ~4
+                if fa & 8 and value in (fp.min_normal(w, 0),
+                                        fp.min_normal(w, 1)):
+                    fa &= ~8
+                if fa != s['status']:
+                    bad.append((ops.make_key(m['name'], attr, res) +
+                                ' (exceptions)', w, ws, vals, fa,
+                                s['status']))
             # The compiler gives one of the results that LLVM permits.
             for c in range(1 << info.tgt_choice):
                 a = info.eval(w, ws, attr, res, vals + [c] * bool(c))

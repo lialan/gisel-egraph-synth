@@ -494,10 +494,12 @@ class RealExtractionTest(unittest.TestCase):
         self.assertEqual(inst.vk, ('p', 'i', 'p'))
 
     def test_pointer_constant_is_an_input(self):
+        # A constant of a pointer type has its bits, like an integer.
         r = self._root('%12', 1)
         self.assertEqual(r['inputs'][1]['type'], 'p0')
         self.assertEqual(r['inputs'][1]['def'], 'G_CONSTANT')
-        self.assertNotIn('const', r['inputs'][1])
+        self.assertEqual(r['inputs'][1]['const'], '0x0')
+        self.assertEqual(r['inputs'][1]['zero'], '0xFFFFFFFFFFFFFFFF')
 
     def test_legality_table(self):
         self.assertIsNotNone(self.legality)

@@ -25,7 +25,20 @@ Atoms:
     ('ugew', i, j)     umin(i) >=u bitwidth(j)         shifted out of j
     ('one', i)         x_i is the constant 1           the known bits say it
     ('def', i)         x_i is neither undef nor poison
-                       isGuaranteedNotToBeUndefOrPoison
+                       gisynth::isDefinedValue
+    ('is_f1', i)       x_i is the floating-point constant 1.0 (one atom for
+                       each literal of fp.LITERALS: the bit pattern of the
+                       format with the width of x_i)
+    ('finv', i)        x_i is a floating-point constant with an exact
+                       inverse (a power of 2 whose reciprocal is a normal
+                       number): a division by it is a multiplication
+    ('nofpe', i)       the program does not read the floating-point
+                       exceptions; x_i is the environment of the
+                       constrained operations (the bit fp.ENV_IGNORE)
+
+The atoms on a floating-point constant are for a variable with the width of
+a format. The guard reads the known bits of the register, which are the
+bit pattern of a G_FCONSTANT.
 
 The constants 0 and -1 are ('all', Z(i)) and ('all', O(i)); 'one' is the
 third literal of the search grammar.
@@ -54,7 +67,13 @@ import itertools
 
 import z3
 
+from . import fp
 from . import ir
+
+# The atoms ('is_<literal>', i).
+_FP_LIT = {'is_' + k: k for k in fp.LITERALS}
+# The atoms with one variable and no other operand.
+_VAR1 = ('def', 'one', 'finv', 'nofpe') + tuple(_FP_LIT)
 
 
 # ---------------------------------------------------------------- terms ---
@@ -73,6 +92,12 @@ def atom_str(a):
         return 'defined(x%d)' % a[1]
     if k == 'one':
         return 'x%d == 1' % a[1]
+    if k in _FP_LIT:
+        return 'x%d == %s' % (a[1], fp.literal_str(_FP_LIT[k]))
+    if k == 'finv':
+        return 'exact_inverse(x%d)' % a[1]
+    if k == 'nofpe':
+        return 'nofpexcept'
     if k == 'all':
         return 'all(%s)' % term_str(a[1])
     if k == 'all2':
@@ -123,9 +148,48 @@ def _vstr(j):
     return 'root' if j == 'r' else 'x%d' % j
 
 
-def enumerate_atoms(vw, rw=None):
+# The atoms of the bit facts that also have a meaning for the bit pattern
+# of a floating-point value: its sign bit, and all bits (a zero).
+_FP_BIT_ATOMS = ('all', 'msb', 'def')
+
+
+def _mentions(a):
+    """Each variable that the atom ``a`` names: also a variable whose
+    width only the atom reads."""
+    out = set()
+    for x in a[1:]:
+        if isinstance(x, tuple):
+            out.add(x[1])
+        elif isinstance(x, int):
+            out.add(x)
+    return out
+
+
+def enumerate_atoms(vw, rw=None, env=(), fvars=()):
     """All grammar atoms for variables of widths ``vw`` and root width
-    ``rw``, in a deterministic order."""
+    ``rw``, in a deterministic order.
+
+    ``env`` are the variables that are a floating-point environment: their
+    only atom is 'nofpe'. ``fvars`` are the variables that the source
+    reads as floating-point values. An atom that reads a variable as an
+    unsigned number (an order, a count of bits, a shift amount) says
+    nothing about such a value: these variables have the atoms of
+    _FP_BIT_ATOMS and the atoms on a floating-point constant. No other
+    variable has the atoms on a floating-point constant."""
+    env, fvars = set(env), set(fvars)
+    out = [a for a in _enumerate_atoms(vw, rw)
+           if not _mentions(a) & env and
+           (a[0] in _FP_BIT_ATOMS or not _mentions(a) & fvars)]
+    for i in range(len(vw)):
+        if i in env:
+            out.append(('nofpe', i))
+        elif i in fvars and fp.is_format(vw[i]):
+            out += [(k, i) for k in _FP_LIT]
+            out.append(('finv', i))
+    return out
+
+
+def _enumerate_atoms(vw, rw=None):
     n = len(vw)
     ts = _terms(n)
     out = []
@@ -202,6 +266,15 @@ def eval_atom(a, facts, vw, rw=None):
     if k == 'one':
         f = facts[a[1]]
         return f[1] == 1 and f[0] == ir.mask(vw[a[1]]) - 1
+    if k in _FP_LIT or k == 'finv':
+        f, w = facts[a[1]], vw[a[1]]
+        if not fp.is_format(w) or f[0] != ir.mask(w) & ~f[1]:
+            return False
+        if k == 'finv':
+            return fp.has_exact_inverse(f[1], w)
+        return f[1] == fp.literal_bits(_FP_LIT[k], w)
+    if k == 'nofpe':
+        return bool(facts[a[1]][1] & fp.ENV_IGNORE)
     if k == 'all':
         return _cterm(a[1], facts) == ir.mask(vw[a[1][1]])
     if k == 'all2':
@@ -275,6 +348,17 @@ def z3_atom(a, enc):
         w = enc.kz[a[1]].size()
         return z3.And(enc.ko[a[1]] == z3.BitVecVal(1, w),
                       enc.kz[a[1]] == z3.BitVecVal(ir.mask(w) - 1, w))
+    if k in _FP_LIT or k == 'finv':
+        ko, kz = enc.ko[a[1]], enc.kz[a[1]]
+        w = ko.size()
+        if not fp.is_format(w):
+            return z3.BoolVal(False)
+        if k == 'finv':
+            return z3.And(kz == ~ko, fp.z3_has_exact_inverse(ko))
+        return z3.And(kz == ~ko, ko == z3.BitVecVal(
+            fp.literal_bits(_FP_LIT[k], w), w))
+    if k == 'nofpe':
+        return fp.z3_env_ignores(enc.ko[a[1]])
     if k == 'all':
         t = _zterm(a[1], enc)
         return t == z3.BitVecVal(ir.mask(t.size()), t.size())
@@ -359,10 +443,21 @@ def _cpp_term(t):
 def cpp_atom(a):
     k = a[0]
     if k == 'def':
-        return 'isGuaranteedNotToBeUndefOrPoison(X%d, MRI)' % a[1]
+        return 'isDefinedValue(X%d, MRI)' % a[1]
     if k == 'one':
         return '(K%d.isConstant() && K%d.getConstant().isOne())' % (a[1],
                                                                     a[1])
+    if k in _FP_LIT:
+        return '(K%d.isConstant() && K%d.getConstant() == ' \
+            'getFPLiteralBits(FPLiteral::%s, K%d.getBitWidth()))' % (
+                a[1], a[1], fp.LITERAL_CPP[_FP_LIT[k]], a[1])
+    if k == 'finv':
+        return '(K%d.isConstant() && hasExactInverse(K%d.getConstant()))' \
+            % (a[1], a[1])
+    if k == 'nofpe':
+        # The guard of a rule with constrained operations defines it
+        # (emit.py): each such instruction of the source has the flag.
+        return 'NoFPExcept'
     if k == 'all':
         return '%s.isAllOnes()' % _cpp_term(a[1])
     if k == 'all2':
@@ -408,9 +503,9 @@ _TERM_VAR = ('lowones', 'hiones', 'lead', 'trail', 'leadc', 'trailc')
 def atom_vars(a):
     """Variables whose known bits the atom reads."""
     k = a[0]
-    if k == 'def':
+    if k in ('def', 'nofpe'):
         return []
-    if k == 'one':
+    if k in _VAR1:
         return [a[1]]
     if k in ('all', 'msb'):
         return [a[1][1]]
@@ -427,7 +522,7 @@ def atom_vars(a):
 
 def atom_all_vars(a):
     """Each variable that the atom is a condition on."""
-    return [a[1]] if a[0] == 'def' else atom_vars(a)
+    return [a[1]] if a[0] in ('def', 'nofpe') else atom_vars(a)
 
 
 def pred_vars(p):
@@ -442,7 +537,7 @@ def pred_cost(p, have=()):
 
 def atom_to_json(a):
     k = a[0]
-    if k in ('def', 'one'):
+    if k in _VAR1:
         return [k, a[1]]
     if k in _TERM_VAR:
         return [k, list(a[1]), a[2]]
@@ -455,7 +550,7 @@ def atom_to_json(a):
 
 def atom_from_json(j):
     k = j[0]
-    if k in ('def', 'one'):
+    if k in _VAR1:
         return (k, j[1])
     if k in _TERM_VAR:
         return (k, tuple(j[1]), j[2])
@@ -468,7 +563,7 @@ def atom_from_json(j):
 
 def rename_atom(a, m):
     k = a[0]
-    if k in ('def', 'one'):
+    if k in _VAR1:
         return (k, m[a[1]])
     if k in _TERM_VAR:
         return (k, (a[1][0], m[a[1][1]]), a[2] if a[2] == 'r' else m[a[2]])

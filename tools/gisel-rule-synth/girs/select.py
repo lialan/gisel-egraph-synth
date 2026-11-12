@@ -28,8 +28,10 @@ All llc runs need a compiler that was built with every candidate emitted
 import concurrent.futures
 import os
 import re
+import struct
 
 from . import emit
+from . import fp
 from . import ir
 from . import ops
 from . import match
@@ -151,6 +153,35 @@ class _Fn:
                           ', '.join([c] * ops.lanes(w)))
         return c
 
+    def fconst(self, w, bits):
+        """A floating-point constant with the bit pattern ``bits`` in the
+        format of the type code ``w``: a G_FCONSTANT, or None if the IR
+        has no exact text for the value (a NaN). A vector has the value
+        in each lane."""
+        ew = ops.elem(w)
+        if not fp.is_format(ew) or fp.is_nan(bits, ew):
+            return None
+        if ew == 16:
+            text = 'half 0xH%04X' % bits
+        else:
+            # The text of a float is the bit pattern of the same value as
+            # a double: the conversion of a number is exact.
+            d = bits if ew == 64 else struct.unpack('<Q', struct.pack(
+                '<d', struct.unpack('<f', struct.pack('<I', bits))[0]))[0]
+            text = '%s 0x%016X' % ('double' if ew == 64 else 'float', d)
+        c = self.emit(ew, 'G_FCONSTANT ' + text, 'f')
+        if ops.lanes(w):
+            c = self.emit(w, 'G_BUILD_VECTOR ' +
+                          ', '.join([c] * ops.lanes(w)), 'f')
+        return c
+
+    def const_as(self, w, value, kind):
+        """The constant ``value`` in the type of ``kind``: a
+        floating-point value is a G_FCONSTANT where one has the value."""
+        r = self.fconst(w, value) if kind == 'f' else None
+        return r if r is not None else self.as_kind(
+            self.const(w, value), w, kind)
+
     def arg(self, w):
         """(register, physical registers) of a new argument."""
         if ops.lanes(w):
@@ -193,10 +224,22 @@ def build_mir(rule, example, name, target):
     fn = _Fn(target)
     fn.typed = any(ops.parse(n[0])[0].bitcast for n in ir.nodes(src))
     xs, live = [], []
-    for w, (z, o), is_defined in zip(vw, facts, defined):
+    # The environment of the constrained operations is not a register:
+    # its fact is the flag nofpexcept of the instructions.
+    env = ir.env_vars(src)
+    nofpe = any(facts[i][1] & fp.ENV_IGNORE for i in env)
+    src_kinds = ir.var_kinds(src)
+    for i, (w, (z, o), is_defined) in enumerate(zip(vw, facts, defined)):
+        if i in env:
+            xs.append(None)
+            continue
         mk = ir.mask(ops.elem(w))
         if (z | o) == mk:
-            xs.append(fn.const(w, o))
+            # A constant in the type that the source needs: a G_FCONSTANT
+            # for a floating-point value.
+            xs.append(fn.fconst(w, o) if src_kinds.get(i) == 'f' else None)
+            if xs[-1] is None:
+                xs[-1] = fn.const(w, o)
             continue
         r, phys = fn.arg(w)
         live += phys
@@ -220,16 +263,19 @@ def build_mir(rule, example, name, target):
         if ir.is_var(e):
             return fn.as_kind(xs[e[1]], vw[e[1]], expected)
         if not ir.is_op(e):
-            return fn.as_kind(fn.const(e[1], ir.leaf_value(e)), e[1],
-                              expected)
+            return fn.const_as(e[1], ir.leaf_value(e), expected or (
+                'f' if ir.is_lit(e) and ir.lit_kind(e[2]) == 'f' else None))
         k = len(node_reg)
         node_reg.append(None)
         if e in phi_reg:
             node_reg[k] = phi_reg[e]
             return node_reg[k]
         kind = ir.result_kind(e, expected)
+        # The environment of a constrained operation is no operand.
+        con = ops.parse(e[0])[0].constrained
         node_reg[k] = instr(e, [walk(a, ir.operand_kind(e, i, kind))
-                                for i, a in enumerate(e[2:])], kind)
+                                for i, a in enumerate(e[2:])
+                                if not (con and i == len(e) - 3)], kind)
         return node_reg[k]
 
     def instr(e, args, kind=None):
@@ -251,9 +297,13 @@ def build_mir(rule, example, name, target):
                 info.name, ptr, mem), kind)
         # The attribute of the operator is an operand of the instruction.
         if info.attr == 'pred':
-            text = '%s %spred(%s), %s' % (
+            text = '%s%s %spred(%s), %s' % (
+                'nofpexcept ' if info.constrained and nofpe else '',
                 info.name, 'float' if info.fp_operand else 'int', attr,
                 ', '.join(args))
+        elif info.constrained:
+            text = '%s%s %s' % ('nofpexcept ' if nofpe else '', info.name,
+                                ', '.join(args))
         elif info.attr == 'imm':
             text = '%s %s, %d' % (info.name, ', '.join(args), attr)
         elif info.attr == 'imm?' and attr is not None:
@@ -424,21 +474,33 @@ def _sibling_operands(rule, sib):
     return [sibling._ref_json(x) for x in sibling.operand_refs(a, sibs)[j]]
 
 
-def count(mir_out):
-    """Generic instructions other than constants, per function. The
-    instructions that set up the inputs are the same in every run."""
+def size(mir_out):
+    """(number, cost) of the generic instructions other than constants, per
+    function. The instructions that set up the inputs are the same in
+    every run. The cost of an instruction is the cost of its operator in
+    the registry, and 1 for each other instruction. Two sizes compare by
+    the number first: with an equal number, a function with a
+    multiplication is smaller than the function with a division in its
+    place."""
     res, name = {}, None
     for line in mir_out.splitlines():
         if line.startswith('name:'):
             name = line.split()[1]
-            res[name] = 0
+            res[name] = (0, 0)
         # An instruction with several results is one instruction.
         m = re.match(r'\s+%\d+:_\(\S+\)(?:, %\d+:_\(\S+\))* = (G_\w+)',
                      line)
         if m and name and m.group(1) not in ('G_CONSTANT',
                                              'G_IMPLICIT_DEF'):
-            res[name] += 1
+            op = m.group(1)
+            cost = max(1, ops.cost(op)) if op in ops.REGISTRY else 1
+            res[name] = (res[name][0] + 1, res[name][1] + cost)
     return res
+
+
+def count(mir_out):
+    """The number of size(), per function."""
+    return {n: s[0] for n, s in size(mir_out).items()}
 
 
 def examples(rule):
@@ -465,12 +527,12 @@ def novelty(llc, target, rules):
             out[r['id']] = {'class': 'error', 'error': str(e)}
             continue
         mir = '\n'.join(t for _, t in fns) + '\n'
-        src = count(mir)
+        src = size(mir)
         try:
-            base = count(measure.run_combiner(llc, target, mir))
+            base = size(measure.run_combiner(llc, target, mir))
             others = [n for n in all_recs if n not in names[r['id']]]
-            alone = count(measure.run_combiner(llc, target, mir, True,
-                                               others))
+            alone = size(measure.run_combiner(llc, target, mir, True,
+                                              others))
         except measure.CombinerLoop as e:
             out[r['id']] = {'class': 'loop', 'error': str(e)}
             continue
@@ -482,8 +544,12 @@ def novelty(llc, target, rules):
             s, b, a = src[n], base[n], alone[n]
             c = ('worse' if a > b else 'new' if a < b else
                  'covered' if b < s else 'not_fired')
-            per.append({'fn': n, 'class': c, 'source': s, 'existing': b,
-                        'alone': a})
+            per.append({'fn': n, 'class': c, 'source': s[0],
+                        'existing': b[0], 'alone': a[0]})
+            if len({s[0], b[0], a[0]}) == 1:
+                # The costs decide.
+                per[-1]['cost'] = {'source': s[1], 'existing': b[1],
+                                   'alone': a[1]}
         cs = {p['class'] for p in per}
         cls = ('new' if 'new' in cs else 'worse' if 'worse' in cs else
                'covered' if 'covered' in cs else 'not_fired')
@@ -511,10 +577,10 @@ def redundancy(llc, target, rules, nov, order):
         pair = r.get('variant_of') or rid + emit.ONE_USE_SUFFIX
         off += names.get(pair, [])
         try:
-            with_r = count(measure.run_combiner(llc, target, mir, True,
-                                                off))
-            without = count(measure.run_combiner(llc, target, mir, True,
-                                                 off + names[rid]))
+            with_r = size(measure.run_combiner(llc, target, mir, True,
+                                               off))
+            without = size(measure.run_combiner(llc, target, mir, True,
+                                                off + names[rid]))
         except RuntimeError:
             # Not known: the rule is not redundant. The check of the final
             # set finds a set of rules that loops on a file.

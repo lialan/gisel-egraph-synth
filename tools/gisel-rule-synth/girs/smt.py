@@ -8,6 +8,7 @@ and also serialized as SMT-LIB2 for the proof records, so a proof can be
 re-checked with any SMT-LIB2 solver.
 """
 
+import contextlib
 import time
 
 import z3
@@ -17,12 +18,20 @@ from . import ir
 from . import ops
 
 
+# The usual time limit of a check.
+DEFAULT_TIMEOUT_MS = 10000
+
+
 class Result:
-    def __init__(self, status, model=None, smt2=None, seconds=0.0):
+    def __init__(self, status, model=None, smt2=None, seconds=0.0,
+                 timeout_ms=None):
         self.status = status   # 'unsat' | 'sat' | 'unknown'
         self.model = model     # counterexample assignment if 'sat'
         self.smt2 = smt2
         self.seconds = seconds
+        # The time limit of the check, if it is not the usual one.
+        self.timeout_ms = timeout_ms if timeout_ms and \
+            timeout_ms > DEFAULT_TIMEOUT_MS else None
 
 
 def abstract_products(formula):
@@ -82,10 +91,34 @@ _ABSTRACT_NOTE = (
 class Z3Backend:
     name = 'z3'
 
-    def __init__(self, timeout_ms=10000):
+    def __init__(self, timeout_ms=DEFAULT_TIMEOUT_MS):
         self.timeout_ms = timeout_ms
         self.calls = 0
         self.seconds = 0.0
+        # The time (time.monotonic) after which each check is 'unknown',
+        # or None (limit).
+        self.deadline = None
+
+    @contextlib.contextmanager
+    def limit(self, timeout_ms, budget_s):
+        """The checks in this context have the time limit ``timeout_ms``,
+        and ``budget_s`` seconds for all of them: a check after that time
+        is 'unknown'. For a proof that needs more than the usual limit
+        (a floating-point multiplication or division with 64 bits)."""
+        old = self.timeout_ms, self.deadline
+        self.timeout_ms = timeout_ms
+        self.deadline = time.monotonic() + budget_s
+        try:
+            yield
+        finally:
+            self.timeout_ms, self.deadline = old
+
+    def _time_left_ms(self):
+        """The time limit of the next check, or 0 after the deadline."""
+        if self.deadline is None:
+            return self.timeout_ms
+        left = int((self.deadline - time.monotonic()) * 1000)
+        return max(0, min(self.timeout_ms, left))
 
     @property
     def version(self):
@@ -100,6 +133,8 @@ class Z3Backend:
         shows in the SMT-LIB text and in the models the solver picks; in a
         fresh context both depend on the formula alone, so a run is
         reproducible."""
+        if self._time_left_ms() == 0:
+            return Result('unknown')
         ctx = z3.Context()
         # The conversions between integers and floating-point values need
         # the floating-point theory.
@@ -114,7 +149,7 @@ class Z3Backend:
         weak = None if theory else abstract_products(formula)
         if weak is not None:
             s = z3.SolverFor('QF_UFBV', ctx=ctx)
-            s.set('timeout', self.timeout_ms)
+            s.set('timeout', max(1, self._time_left_ms()))
             s.add(weak)
             if s.check() == z3.unsat:
                 dt = time.monotonic() - t0
@@ -122,14 +157,15 @@ class Z3Backend:
                 return Result('unsat', smt2=_ABSTRACT_NOTE + s.to_smt2(),
                               seconds=dt)
         s = z3.SolverFor('QF_BVFP' if theory else 'QF_BV', ctx=ctx)
-        s.set('timeout', self.timeout_ms)
+        s.set('timeout', max(1, self._time_left_ms()))
         s.add(formula)
         r = s.check()
         dt = time.monotonic() - t0
         self.seconds += dt
         smt2 = s.to_smt2()
         if r == z3.unsat:
-            return Result('unsat', smt2=smt2, seconds=dt)
+            return Result('unsat', smt2=smt2, seconds=dt,
+                          timeout_ms=self.timeout_ms)
         if r == z3.sat:
             m = s.model()
             vals = None
@@ -190,7 +226,15 @@ class Encoder:
     that an operator reads, and the results that only LLVM permits
     (OpInfo.tgt_choice). A rule that is not proved in this form applies
     only if the values below the root have no other user (``needs_one_use``;
-    see ``interior_choice``)."""
+    see ``interior_choice``).
+
+    A constrained operation (OpInfo.constrained) has the floating-point
+    environment as its last operand: a variable of the source, so a proof
+    holds for each rounding mode. ``fe`` has the exceptions of the
+    constrained operations of each side (``flags_differ``). Two things
+    that IEEE 754 leaves to an implementation are free variables of a
+    formula (fp.z3_tiny_before, fp.z3_fma_invalid): a proof holds for
+    each choice, and the source and the replacement have the same one."""
 
     # The largest number of value combinations of ``for_all_choices``.
     MAX_INSTANCES = 64
@@ -223,16 +267,23 @@ class Encoder:
         self.assume = []   # conditions on the variables of the replacement
         self.tgt_values = []
         self._nondet = {}
+        # side -> [(exception flags, an operand is poison, environment)]
+        # of the constrained operations.
+        self.fe = {'src': [], 'tgt': []}
 
     def recipe_guard(self, tgt):
         """The condition on the computed constants of the replacement
         ``tgt`` that the generated guard checks before the rule applies:
-        each computed constant is defined, and a computed shift amount is
-        smaller than the width of its shift."""
+        each computed constant is defined, a computed floating-point
+        constant is not a NaN, and a computed shift amount is smaller
+        than the width of its shift."""
         cs = []
         for c in ir.computed_constants(tgt, self.const_vars):
-            _, p, ub = self.enc_full(c)
+            v, p, ub = self.enc_full(c)
             cs.append(z3.Not(z3.Or(p, ub)))
+            for n in ir.nodes(c):
+                if ops.parse(n[0])[0].makes_nan:
+                    cs.append(z3.Not(fp.z3_is_nan(self.enc_full(n)[0])))
         for w, c in ir.computed_amounts(tgt, self.const_vars):
             cs.append(z3.Not(ops._oob(self.enc_full(c)[0], w)))
         return z3.And(cs) if cs else z3.BoolVal(True)
@@ -403,6 +454,10 @@ class Encoder:
                 xs = xs + [self._free('ch', e, info.tgt_choice)]
             v, p, ub = info.smt(e[1], ws, attr, res, xs)
             xs = xs[:len(args)]
+            if info.constrained:
+                self.fe[side].append((
+                    info.fe_smt(e[1], ws, attr, res, xs),
+                    z3.Or([a[1] for a in args]), xs[-1]))
             ubs = [a[2] for a in args] + ([ub] if ub is not None else [])
             if info.unspecified_at(res):
                 m = info.unspecified(e[1], ws)
@@ -517,6 +572,37 @@ def _nan_of(enc, e, tv):
     return z3.BoolVal(False)
 
 
+def flags_differ(enc):
+    """The condition that the replacement does not raise the exceptions
+    of the source, or None if neither has a constrained operation. Each
+    instruction of a pattern executes, so the exceptions of a side are
+    those of all its constrained operations. They are equal sets, unless
+
+    * the program does not read the exceptions (fp.ENV_IGNORE), or
+    * an operand of a constrained operation of the source is poison (its
+      exceptions are then not specified; a poison operand in the
+      replacement only is a difference).
+
+    Equal sets, not a subset: with the exception behaviour "strict" a
+    program observes an exception that is absent, and a trap of the
+    replacement is a trap of the source."""
+    src, tgt = enc.fe['src'], enc.fe['tgt']
+    if not src and not tgt:
+        return None
+    assert src, 'a constrained operation in the replacement only'
+
+    def union(items):
+        out = fp.z3_no_flags()
+        for flags, _, _ in items:
+            out = out | flags
+        return out
+    env = src[0][2]
+    src_poison = z3.Or([p for _, p, _ in src])
+    tgt_poison = z3.Or([p for _, p, _ in tgt]) if tgt else z3.BoolVal(False)
+    return z3.And(z3.Not(fp.z3_env_ignores(env)), z3.Not(src_poison),
+                  z3.Or(tgt_poison, union(src) != union(tgt)))
+
+
 def refinement_violation(enc, src, tgt, guard):
     """Formula satisfiable iff some input satisfying the facts and the guard
     gives the source defined behaviour, while the target has undefined
@@ -524,14 +610,19 @@ def refinement_violation(enc, src, tgt, guard):
     different."""
     assert not ir.repeated_freeze(src), 'one G_FREEZE term twice'
     assert ir.phi_error(src) is None, ir.phi_error(src)
+    assert ir.env_error(src, tgt, enc.const_vars) is None, \
+        ir.env_error(src, tgt, enc.const_vars)
     enc.roots = (src,)
     enc.mark_source(src)
     sv, sp, su = enc.enc_full(src)
     tv, tp, tu = enc.enc_full(tgt, side='tgt')
     same = z3.Or(sv == tv, _nan_of(enc, src, tv)) \
         if _is_fp(src) else sv == tv
-    bad = z3.And(z3.Not(su),
-                 z3.Or(tu, z3.And(z3.Not(sp), z3.Or(tp, z3.Not(same)))))
+    wrong = z3.Or(tu, z3.And(z3.Not(sp), z3.Or(tp, z3.Not(same))))
+    fe = flags_differ(enc)
+    if fe is not None:
+        wrong = z3.Or(wrong, fe)
+    bad = z3.And(z3.Not(su), wrong)
     return z3.And(enc.well_formed(), guard, enc.recipe_guard(tgt),
                   enc.assumptions(), enc.for_all_choices(bad, tv))
 
@@ -594,6 +685,9 @@ def joint_violation(enc, pairs, guard):
         same = z3.Or(sv == tv, _nan_of(enc, src, tv)) \
             if _is_fp(src) else sv == tv
         bad.append(z3.Or(tu, z3.And(z3.Not(sp), z3.Or(tp, z3.Not(same)))))
+    fe = flags_differ(enc)
+    if fe is not None:
+        bad.append(fe)
     return z3.And(enc.well_formed(), guard,
                   z3.And([enc.recipe_guard(t) for _, t in pairs]),
                   enc.assumptions(),

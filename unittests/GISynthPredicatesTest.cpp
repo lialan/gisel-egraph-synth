@@ -14,6 +14,7 @@
 #include "llvm/CodeGen/GlobalISel/GISynthPredicates.h"
 #include "GISelMITest.h"
 #include "llvm/CodeGen/MachineDominators.h"
+#include "llvm/CodeGen/MachineFrameInfo.h"
 
 using namespace llvm::gisynth;
 
@@ -653,6 +654,224 @@ TEST_F(AArch64GISelMITest, MayWriteMemory) {
   EXPECT_TRUE(Writes(TargetOpcode::G_MEMSET));
   // What a G_FENCE does is not a property of its operands.
   EXPECT_TRUE(Writes(TargetOpcode::G_FENCE));
+}
+
+TEST_F(AArch64GISelMITest, ConstantBits) {
+  setUp("  %3:_(s32) = G_CONSTANT i32 7\n"
+        "  %4:_(s32) = G_FCONSTANT float 2.000000e+00\n"
+        "  %5:_(s64) = G_FCONSTANT double -5.000000e-01\n"
+        "  %6:_(p0) = G_CONSTANT i64 0\n"
+        "  %7:_(<2 x s32>) = G_BUILD_VECTOR %4(s32), %4(s32)\n"
+        "  %8:_(<2 x s32>) = G_BUILD_VECTOR %3(s32), %4(s32)\n"
+        "  %9:_(<2 x s32>) = G_BUILD_VECTOR %3(s32), %3(s32)\n"
+        "  %10:_(s64) = G_FREEZE %0\n");
+  if (!TM)
+    GTEST_SKIP();
+  auto Dst = [&](unsigned Opc, unsigned Skip = 0) {
+    return findOpcode(*MF, Opc, Skip)->getOperand(0).getReg();
+  };
+  Register Int = Dst(TargetOpcode::G_CONSTANT);
+  Register Float = Dst(TargetOpcode::G_FCONSTANT);
+  Register Double = Dst(TargetOpcode::G_FCONSTANT, 1);
+  Register Null = Dst(TargetOpcode::G_CONSTANT, 1);
+  Register FSplat = Dst(TargetOpcode::G_BUILD_VECTOR);
+  Register Mixed = Dst(TargetOpcode::G_BUILD_VECTOR, 1);
+  Register ISplat = Dst(TargetOpcode::G_BUILD_VECTOR, 2);
+  Register Frame = B.buildFrameIndex(LLT::pointer(0, 64),
+                                     MF->getFrameInfo().CreateStackObject(
+                                         8, Align(8), /*isSpillSlot=*/false))
+                       .getReg(0);
+
+  EXPECT_EQ(*getConstantBits(Int, *MRI), APInt(32, 7));
+  // A G_FCONSTANT has its bit pattern.
+  EXPECT_EQ(*getConstantBits(Float, *MRI), APInt(32, 0x40000000));
+  EXPECT_EQ(*getConstantBits(Double, *MRI),
+            APInt(64, UINT64_C(0xBFE0000000000000)));
+  EXPECT_EQ(*getConstantBits(Null, *MRI), APInt(64, 0));
+  // A vector only with AllowSplat, and only with one constant in all
+  // lanes.
+  EXPECT_FALSE(getConstantBits(FSplat, *MRI));
+  EXPECT_EQ(*getConstantBits(FSplat, *MRI, /*AllowSplat=*/true),
+            APInt(32, 0x40000000));
+  EXPECT_EQ(*getConstantBits(ISplat, *MRI, /*AllowSplat=*/true), APInt(32, 7));
+  EXPECT_FALSE(getConstantBits(Mixed, *MRI, /*AllowSplat=*/true));
+  // The bits of an address and of an argument are not known.
+  EXPECT_FALSE(getConstantBits(Frame, *MRI));
+  EXPECT_FALSE(getConstantBits(Copies[0], *MRI));
+
+  // An address is a constant of the function: neither undef nor poison.
+  EXPECT_TRUE(isAddressConstant(Frame, *MRI));
+  EXPECT_FALSE(isAddressConstant(Null, *MRI));
+  EXPECT_TRUE(isDefinedValue(Frame, *MRI));
+  EXPECT_TRUE(isDefinedValue(Float, *MRI));
+  EXPECT_TRUE(isDefinedValue(Dst(TargetOpcode::G_FREEZE), *MRI));
+  EXPECT_FALSE(isDefinedValue(Copies[0], *MRI));
+
+  // The known bits of a G_FCONSTANT are its bits.
+  GISelValueTracking VT(*MF);
+  KnownBits K = getKnownBitsOrConstant(VT, *MRI, Float);
+  EXPECT_TRUE(K.isConstant());
+  EXPECT_EQ(K.getConstant(), APInt(32, 0x40000000));
+  EXPECT_FALSE(getKnownBitsOrConstant(VT, *MRI, Copies[0]).isConstant());
+}
+
+TEST(GISynthPredicates, FloatLiterals) {
+  EXPECT_EQ(getFPLiteralBits(FPLiteral::Zero, 32), APInt(32, 0));
+  EXPECT_EQ(getFPLiteralBits(FPLiteral::NegZero, 32), APInt(32, 0x80000000));
+  EXPECT_EQ(getFPLiteralBits(FPLiteral::One, 32), APInt(32, 0x3F800000));
+  EXPECT_EQ(getFPLiteralBits(FPLiteral::NegOne, 16), APInt(16, 0xBC00));
+  EXPECT_EQ(getFPLiteralBits(FPLiteral::Two, 64),
+            APInt(64, UINT64_C(0x4000000000000000)));
+  EXPECT_EQ(getFPLiteralBits(FPLiteral::Half, 64),
+            APInt(64, UINT64_C(0x3FE0000000000000)));
+}
+
+TEST(GISynthPredicates, ExactInverse) {
+  auto Bits = [](float F) { return APFloat(F).bitcastToAPInt(); };
+  EXPECT_TRUE(hasExactInverse(Bits(2.0f)));
+  EXPECT_TRUE(hasExactInverse(Bits(-0.125f)));
+  EXPECT_TRUE(hasExactInverse(Bits(1.0f)));
+  EXPECT_FALSE(hasExactInverse(Bits(3.0f)));
+  EXPECT_FALSE(hasExactInverse(Bits(0.0f)));
+  EXPECT_FALSE(
+      hasExactInverse(APFloat::getInf(APFloat::IEEEsingle()).bitcastToAPInt()));
+  EXPECT_FALSE(
+      hasExactInverse(APFloat::getNaN(APFloat::IEEEsingle()).bitcastToAPInt()));
+  // 2^-126 is the smallest normal number: its reciprocal 2^126 is a
+  // number. The reciprocal of 2^127 is 2^-127, a subnormal number.
+  EXPECT_TRUE(hasExactInverse(APInt(32, 0x00800000)));
+  EXPECT_FALSE(hasExactInverse(APInt(32, 0x7F000000)));
+  // A subnormal number.
+  EXPECT_FALSE(hasExactInverse(APInt(32, 0x00400000)));
+  // No format of the model.
+  EXPECT_FALSE(hasExactInverse(APInt(8, 1)));
+}
+
+TEST(GISynthPredicates, ComputedFloatConstants) {
+  auto Bits = [](float F) { return APFloat(F).bitcastToAPInt(); };
+  EXPECT_EQ(fpNegBits(Bits(1.5f)), Bits(-1.5f));
+  EXPECT_EQ(fpNegBits(Bits(-0.0f)), Bits(0.0f));
+  // The negation of a NaN changes only its sign.
+  EXPECT_EQ(fpNegBits(APInt(32, 0x7FA00001)), APInt(32, 0xFFA00001));
+  EXPECT_EQ(fpDivBits(Bits(1.0f), Bits(4.0f)), Bits(0.25f));
+  // Rounded to nearest: 1 / 3.
+  EXPECT_EQ(fpDivBits(Bits(1.0f), Bits(3.0f)), APInt(32, 0x3EAAAAAB));
+  EXPECT_FALSE(isNaNBits(fpDivBits(Bits(1.0f), Bits(0.0f))));
+  EXPECT_TRUE(isNaNBits(fpDivBits(Bits(0.0f), Bits(0.0f))));
+  EXPECT_TRUE(isNaNBits(APInt(16, 0x7E00)));
+  EXPECT_FALSE(isNaNBits(APInt(16, 0x7C00)));
+}
+
+TEST_F(AArch64GISelMITest, BuildConstantBits) {
+  setUp();
+  if (!TM)
+    GTEST_SKIP();
+  LLT S32 = LLT::scalar(32);
+  LLT P0 = LLT::pointer(0, 64);
+  auto F = buildConstantBits(B, S32, APInt(32, 0x40000000), /*IsFP=*/true);
+  EXPECT_EQ(F->getOpcode(), TargetOpcode::G_FCONSTANT);
+  EXPECT_EQ(*getConstantBits(F.getReg(0), *MRI), APInt(32, 0x40000000));
+  auto I = buildConstantBits(B, S32, APInt(32, 5), /*IsFP=*/false);
+  EXPECT_EQ(I->getOpcode(), TargetOpcode::G_CONSTANT);
+  auto P = buildConstantBits(B, P0, APInt(64, 16), /*IsFP=*/false);
+  EXPECT_EQ(P->getOpcode(), TargetOpcode::G_CONSTANT);
+  EXPECT_TRUE(MRI->getType(P.getReg(0)).isPointer());
+  // Each lane of a vector has the constant.
+  auto V = buildConstantBits(B, LLT::fixed_vector(2, S32),
+                             APInt(32, 0x3F800000), /*IsFP=*/true);
+  EXPECT_EQ(V->getOpcode(), TargetOpcode::G_BUILD_VECTOR);
+  EXPECT_EQ(*getConstantBits(V.getReg(0), *MRI, /*AllowSplat=*/true),
+            APInt(32, 0x3F800000));
+}
+
+TEST_F(AArch64GISelMITest, SameFPEnvironment) {
+  setUp("  %3:_(s64) = G_STRICT_FADD %0, %1\n"
+        "  %4:_(s64) = G_ADD %0, %1\n"
+        "  %5:_(s64) = nofpexcept G_STRICT_FMUL %3, %2\n"
+        "  %6:_(s32) = G_GET_ROUNDING\n"
+        "  %7:_(s64) = G_STRICT_FSUB %5, %2\n"
+        "  %8:_(p0) = G_INTTOPTR %0(s64)\n"
+        "  G_STORE %7(s64), %8(p0) :: (store (s64))\n"
+        "  %9:_(s64) = G_STRICT_FDIV %7, %2\n");
+  if (!TM)
+    GTEST_SKIP();
+  MachineInstr *Add = findOpcode(*MF, TargetOpcode::G_STRICT_FADD);
+  MachineInstr *Mul = findOpcode(*MF, TargetOpcode::G_STRICT_FMUL);
+  MachineInstr *Sub = findOpcode(*MF, TargetOpcode::G_STRICT_FSUB);
+  MachineInstr *Div = findOpcode(*MF, TargetOpcode::G_STRICT_FDIV);
+  EXPECT_TRUE(isConstrainedFPOpcode(TargetOpcode::G_STRICT_FCMPS));
+  EXPECT_FALSE(isConstrainedFPOpcode(TargetOpcode::G_FADD));
+
+  // A G_ADD and a constrained operation do not read the environment.
+  EXPECT_TRUE(isSameFPEnvironment(*Add, *Mul));
+  EXPECT_TRUE(isSameFPEnvironment(*MRI, Add->getOperand(0).getReg(),
+                                  Mul->getOperand(0).getReg()));
+  // The first instruction is before the second one.
+  EXPECT_FALSE(isSameFPEnvironment(*Mul, *Add));
+  EXPECT_FALSE(isSameFPEnvironment(*Add, *Add));
+  // An instruction that reads the environment is between the two.
+  EXPECT_FALSE(isSameFPEnvironment(*Mul, *Sub));
+  EXPECT_FALSE(isSameFPEnvironment(*Add, *Sub));
+  // A write to memory is between the two.
+  EXPECT_FALSE(isSameFPEnvironment(*Sub, *Div));
+
+  EXPECT_TRUE(
+      mayAccessFPEnvironment(*findOpcode(*MF, TargetOpcode::G_GET_ROUNDING)));
+  EXPECT_TRUE(mayAccessFPEnvironment(*findOpcode(*MF, TargetOpcode::G_STORE)));
+  EXPECT_FALSE(mayAccessFPEnvironment(*findOpcode(*MF, TargetOpcode::G_ADD)));
+  EXPECT_FALSE(mayAccessFPEnvironment(*Add));
+  // A copy of a physical register: a call can be next to it.
+  EXPECT_TRUE(mayAccessFPEnvironment(*findOpcode(*MF, TargetOpcode::COPY)));
+
+  EXPECT_FALSE(ignoresFPExceptions(*MRI, Add->getOperand(0).getReg()));
+  EXPECT_TRUE(ignoresFPExceptions(*MRI, Mul->getOperand(0).getReg()));
+}
+
+TEST_F(AArch64GISelMITest, SameFPEnvironmentOtherBlock) {
+  setUp("  %3:_(s64) = G_STRICT_FADD %0, %1\n"
+        "  G_BR %bb.2\n"
+        "\n"
+        "  bb.2:\n"
+        "  %4:_(s64) = G_STRICT_FMUL %3, %2\n");
+  if (!TM)
+    GTEST_SKIP();
+  EXPECT_FALSE(
+      isSameFPEnvironment(*findOpcode(*MF, TargetOpcode::G_STRICT_FADD),
+                          *findOpcode(*MF, TargetOpcode::G_STRICT_FMUL)));
+}
+
+TEST_F(AArch64GISelMITest, EraseDeadSourceOp) {
+  setUp("  %3:_(s64) = G_STRICT_FADD %0, %1\n"
+        "  %4:_(s64) = G_FNEG %3\n"
+        "  %5:_(s64) = G_STRICT_FMUL %0, %1\n"
+        "  %6:_(s64) = G_STRICT_FSUB %5, %2\n"
+        "  %7:_(p0) = G_INTTOPTR %0(s64)\n"
+        "  G_STORE %6(s64), %7(p0) :: (store (s64))\n");
+  if (!TM)
+    GTEST_SKIP();
+  auto Dst = [&](unsigned Opc) {
+    return findOpcode(*MF, Opc)->getOperand(0).getReg();
+  };
+  Register Add = Dst(TargetOpcode::G_STRICT_FADD);
+  Register Neg = Dst(TargetOpcode::G_FNEG);
+  Register Mul = Dst(TargetOpcode::G_STRICT_FMUL);
+  Register Sub = Dst(TargetOpcode::G_STRICT_FSUB);
+  // A value with a user stays.
+  eraseDeadSourceOp(*MRI, Add);
+  eraseDeadSourceOp(*MRI, Mul);
+  eraseDeadSourceOp(*MRI, Sub);
+  EXPECT_TRUE(MRI->getVRegDef(Add) && MRI->getVRegDef(Mul) &&
+              MRI->getVRegDef(Sub));
+  // From the root down: the G_FNEG has no user, then the constrained
+  // operation below it has none. The compiler does not remove the second
+  // one (it raises exceptions).
+  EXPECT_FALSE(isTriviallyDead(*MRI->getVRegDef(Add), *MRI));
+  eraseDeadSourceOp(*MRI, Neg);
+  EXPECT_FALSE(MRI->getVRegDef(Neg));
+  EXPECT_FALSE(isTriviallyDead(*MRI->getVRegDef(Add), *MRI));
+  eraseDeadSourceOp(*MRI, Add);
+  EXPECT_FALSE(MRI->getVRegDef(Add));
+  EXPECT_TRUE(MRI->getVRegDef(Mul));
 }
 
 } // namespace

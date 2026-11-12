@@ -17,6 +17,7 @@ a strict operator: the caller makes the result poison where an operand is.
 
 import numpy as np
 
+from . import fp
 from . import ir
 from . import ops
 
@@ -360,6 +361,323 @@ for _name in ('G_UADDO', 'G_SADDO', 'G_USUBO', 'G_SSUBO', 'G_UMULO',
 NONSTRICT['G_SELECT'] = _k_select
 
 
+# ------------------------------------------------ floating point ---
+# The operations of IEEE 754 that numpy has for binary16, binary32 and
+# binary64, rounded to nearest (ties to even). numpy computes binary16 in
+# binary32 and rounds a second time; for +, -, *, / and the square root
+# this gives the correctly rounded result (24 >= 2 * 11 + 2 bits). A NaN
+# result is fp.qnan, as in the evaluators of fp. A kernel returns None for
+# a format that numpy does not have: the caller then uses ``generic``.
+
+_FP_DTYPES = {16: (np.uint16, np.float16), 32: (np.uint32, np.float32),
+              64: (np.uint64, np.float64)}
+
+
+def _fp_in(v, w):
+    ut, ft = _FP_DTYPES[w]
+    return np.ascontiguousarray(v.astype(ut)).view(ft)
+
+
+def _fp_out(x, w):
+    """The bit patterns of the values x; each NaN is fp.qnan."""
+    ut, ft = _FP_DTYPES[w]
+    bits = np.ascontiguousarray(x.astype(ft, copy=False)).view(ut)
+    return np.where(np.isnan(x), U64(fp.qnan(w)), bits.astype(U64))
+
+
+def _fp_is_nan(v, w):
+    eb, p = fp.FORMATS[w]
+    return (v & U64(ir.mask(w - 1))) > U64(fp.inf(w))
+
+
+def _fp_key(v, w, zeros_differ):
+    """An int64 with the order of the values (not for a NaN). With
+    ``zeros_differ``, -0.0 is less than +0.0."""
+    mag = (v & U64(ir.mask(w - 1))).astype(np.int64)
+    neg = (v >> U64(w - 1)) & U64(1) != U64(0)
+    return np.where(neg, -mag - (1 if zeros_differ else 0), mag)
+
+
+def _k_fp_arith(fn):
+    def k(attr, res, w, ws, cols):
+        if w not in _FP_DTYPES:
+            return None
+        with np.errstate(all='ignore'):
+            r = fn(*[_fp_in(c, w) for c in cols])
+        return _fp_out(r, w), None
+    return k
+
+
+def _round_away(x):
+    """To the nearest integral value, ties away from zero. The difference
+    x - trunc(x) is exact."""
+    t = np.trunc(x)
+    return np.where(np.abs(x - t) >= 0.5, t + np.copysign(1.0, x), t)
+
+
+def _k_fp_round(mode):
+    fn = {'floor': np.floor, 'ceil': np.ceil, 'trunc': np.trunc,
+          'even': np.rint, 'away': _round_away}[mode]
+
+    def k(attr, res, w, ws, cols):
+        if w not in _FP_DTYPES:
+            return None
+        x = _fp_in(cols[0], w)
+        with np.errstate(all='ignore'):
+            # The sign of the operand stays: ceil(-0.5) is -0.0.
+            r = np.copysign(fn(x), x)
+        return _fp_out(r.astype(x.dtype), w), None
+    return k
+
+
+def _k_fp_modf(attr, res, w, ws, cols):
+    if w not in _FP_DTYPES:
+        return None
+    x = _fp_in(cols[0], w)
+    with np.errstate(all='ignore'):
+        ip = np.trunc(x)
+        if res:
+            return _fp_out(ip, w), None
+        # The fractional part of an infinity is zero.
+        frac = np.where(np.isinf(x), 0.0, x - ip).astype(x.dtype)
+        frac = np.where(np.isnan(x), x, np.copysign(frac, x))
+    return _fp_out(frac.astype(x.dtype), w), None
+
+
+def _k_fp_minmax(kind, is_max):
+    def k(attr, res, w, ws, cols):
+        # A third operand is the choice of a replacement (fp.minmax).
+        if w not in fp.FORMATS or len(cols) != 2:
+            return None
+        a, b = cols
+        na, nb = _fp_is_nan(a, w), _fp_is_nan(b, w)
+        ka, kb = _fp_key(a, w, True), _fp_key(b, w, True)
+        out = np.where((ka > kb) if is_max else (ka < kb), a, b)
+        # One NaN: the other operand, or a NaN.
+        other = np.where(na, b, a)
+        eb, p = fp.FORMATS[w]
+        quiet = (np.where(na, a, b) >> U64(p - 2)) & U64(1) != U64(0)
+        if kind == 'imum':
+            to_nan = na | nb
+        elif kind == 'ieee':
+            to_nan = (na & nb) | ((na | nb) & ~quiet)
+        else:
+            to_nan = na & nb
+        out = np.where(na | nb, other, out)
+        return np.where(to_nan, U64(fp.qnan(w)), out), None
+    return k
+
+
+def _k_fcmp(attr, res, w, ws, cols):
+    if ws[0] not in fp.FORMATS:
+        return None
+    a, b = cols
+    less, equal, greater, unordered = fp._FCMP[attr]
+    un = _fp_is_nan(a, ws[0]) | _fp_is_nan(b, ws[0])
+    ka, kb = _fp_key(a, ws[0], False), _fp_key(b, ws[0], False)
+    r = np.where(ka < kb, bool(less),
+                 np.where(ka == kb, bool(equal), bool(greater)))
+    return np.where(un, bool(unordered), r).astype(U64), None
+
+
+def _k_fneg(attr, res, w, ws, cols):
+    return cols[0] ^ U64(1 << (w - 1)), None
+
+
+def _k_fabs(attr, res, w, ws, cols):
+    return cols[0] & U64(ir.mask(w - 1)), None
+
+
+def _k_fcopysign(attr, res, w, ws, cols):
+    if ws[1] != w:
+        return None
+    return (cols[0] & U64(ir.mask(w - 1))) | \
+        (cols[1] & U64(1 << (w - 1))), None
+
+
+def _k_fcanonicalize(attr, res, w, ws, cols):
+    if w not in fp.FORMATS:
+        return None
+    return np.where(_fp_is_nan(cols[0], w), U64(fp.qnan(w)), cols[0]), None
+
+
+def _k_fmad(attr, res, w, ws, cols):
+    """A rounding after the multiplication and one after the addition."""
+    if w not in _FP_DTYPES:
+        return None
+    a, b, c = (_fp_in(x, w) for x in cols)
+    with np.errstate(all='ignore'):
+        r = (a * b).astype(a.dtype) + c
+    return _fp_out(r, w), None
+
+
+def _k_fma(attr, res, w, ws, cols):
+    """a * b + c with one rounding, for binary16 and binary32. The
+    product is exact in binary64 (at most 48 bits). The sum in binary64
+    is rounded to odd: if it is not exact, its last bit is made 1 in the
+    direction of the error (the error of a sum is a number of the
+    format). A value rounded to odd with at least 2 bits more than the
+    result rounds to the result of one rounding (Boldo, Melquiond)."""
+    if w not in (16, 32):
+        return None
+    with np.errstate(all='ignore'):
+        a, b, c = (_fp_in(x, w).astype(np.float64) for x in cols)
+        p = a * b
+        s = p + c
+        # The error of the sum (Knuth).
+        t = s - p
+        e = (p - (s - t)) + (c - t)
+        e = np.where(np.isfinite(s), e, 0.0)
+        even = (np.ascontiguousarray(s).view(np.uint64) & U64(1)) == U64(0)
+        toward = np.where(e > 0, np.inf, -np.inf)
+        s = np.where((e != 0) & even, np.nextafter(s, toward), s)
+        r = s.astype(_FP_DTYPES[w][1])
+    return _fp_out(r, w), None
+
+
+# Constrained operations (G_STRICT_*), and the operations that numpy does
+# not round as the format needs. For binary16 and binary32, binary64 has
+# a value that is on the same side of each number of the format, and of
+# each middle of two such numbers, as the exact result:
+#   * a product is exact (at most 48 bits);
+#   * a quotient and a square root rounded to 53 bits (their distance
+#     from such a point is larger than the rounding error, the reason
+#     that two roundings of these operations are one rounding);
+#   * a sum is rounded to odd (``_sum_odd``).
+# ``_to_format`` then rounds once, in the mode of each sample.
+
+def _sum_odd(p, c):
+    """p + c in binary64, rounded to odd: if the sum is not exact, its
+    last bit is 1. The error of a sum is a number of the format (Knuth).
+    A value rounded to odd with at least 2 bits more than a format rounds
+    to that format as the exact value does (Boldo, Melquiond)."""
+    s = p + c
+    t = s - p
+    e = (p - (s - t)) + (c - t)
+    e = np.where(np.isfinite(s), e, 0.0)
+    even = (np.ascontiguousarray(s).view(np.uint64) & U64(1)) == U64(0)
+    toward = np.where(e > 0, np.inf, -np.inf)
+    return np.where((e != 0) & even, np.nextafter(s, toward), s)
+
+
+def _to_format(s, w, rm):
+    """The binary64 values ``s`` rounded once to the format of w bits in
+    the rounding modes ``rm`` (fp.RM_*; an array or one mode)."""
+    ft = _FP_DTYPES[w][1]
+    r = s.astype(ft)                 # to nearest, ties to even
+    rd = r.astype(np.float64)
+    below, above = rd < s, rd > s
+    up = np.nextafter(r, ft(np.inf))
+    down = np.nextafter(r, ft(-np.inf))
+    out = np.where((rm == fp.RM_ZERO) & (np.abs(rd) > np.abs(s)),
+                   np.where(rd > 0, down, up), r)
+    out = np.where((rm == fp.RM_UP) & below, up, out)
+    out = np.where((rm == fp.RM_DOWN) & above, down, out)
+    # Ties away from zero: only the middle of two numbers differs.
+    other = np.where(below, up, down)
+    od = other.astype(np.float64)
+    tie = (rd != s) & (np.abs(s - rd) == np.abs(od - s))
+    return np.where((rm == fp.RM_AWAY) & tie & (np.abs(od) > np.abs(rd)),
+                    other, out)
+
+
+def _rm_of(env):
+    rm = (env & U64(7)).astype(np.int64)
+    return np.where(rm < 5, rm, fp.RM_EVEN)
+
+
+def _signed_int(v, w):
+    return _signed(v, w) if w < 64 else v.astype(np.int64)
+
+
+def _fp_rounded(op, w, ws, cols, rm):
+    """The values of the operation ``op`` of fp.strict on the operand
+    columns, or None if this module cannot compute them."""
+    if w not in (16, 32):
+        return None
+    with np.errstate(all='ignore'):
+        x = [_fp_in(c, w).astype(np.float64) for c in
+             (cols[:1] if op == 'ldexp' else cols)]
+        zero_sign = None
+        if op in ('add', 'sub'):
+            b = -x[1] if op == 'sub' else x[1]
+            s = _sum_odd(x[0], b)
+            zero_sign = (s == 0) & (np.signbit(x[0]) != np.signbit(b))
+        elif op == 'mul':
+            s = x[0] * x[1]
+        elif op == 'div':
+            s = x[0] / x[1]
+        elif op == 'sqrt':
+            s = np.sqrt(x[0])
+        elif op == 'rem':
+            s = np.fmod(x[0], x[1])
+        elif op == 'fma':
+            p = x[0] * x[1]
+            s = _sum_odd(p, x[2])
+            zero_sign = (s == 0) & (np.signbit(p) != np.signbit(x[2]))
+        elif op == 'ldexp':
+            lim = fp._exp_limit(w)
+            n = np.clip(_signed_int(cols[1], ws[1]), -lim, lim)
+            s = np.ldexp(x[0], n)
+        else:
+            return None
+        r = _to_format(s, w, rm)
+        if zero_sign is not None:
+            # An exact zero sum of two values with different signs is
+            # negative only in the mode toward negative.
+            ft = _FP_DTYPES[w][1]
+            r = np.where(zero_sign,
+                         np.where(rm == fp.RM_DOWN, ft(-0.0), ft(0.0)), r)
+        return _fp_out(r.astype(_FP_DTYPES[w][1]), w)
+
+
+def _k_strict(op):
+    def k(attr, res, w, ws, cols):
+        r = _fp_rounded(op, w, ws[:-1], cols[:-1], _rm_of(cols[-1]))
+        return None if r is None else (r, None)
+    return k
+
+
+def _k_strict_cmp(attr, res, w, ws, cols):
+    return _k_fcmp(attr, res, w, ws[:2], cols[:2])
+
+
+def _k_fldexp(attr, res, w, ws, cols):
+    r = _fp_rounded('ldexp', w, ws, cols, fp.RM_EVEN)
+    return None if r is None else (r, None)
+
+
+def _k_frem(attr, res, w, ws, cols):
+    if w not in _FP_DTYPES:
+        return None
+    with np.errstate(all='ignore'):
+        # The remainder is exact.
+        r = np.fmod(_fp_in(cols[0], w).astype(np.float64),
+                    _fp_in(cols[1], w).astype(np.float64))
+    return _fp_out(r.astype(_FP_DTYPES[w][1]), w), None
+
+
+FP_KERNELS = {
+    'G_FMA': _k_fma, 'G_FMAD': _k_fmad, 'G_FLDEXP': _k_fldexp,
+    'G_FREM': _k_frem,
+    'G_FADD': _k_fp_arith(np.add), 'G_FSUB': _k_fp_arith(np.subtract),
+    'G_FMUL': _k_fp_arith(np.multiply), 'G_FDIV': _k_fp_arith(np.divide),
+    'G_FSQRT': _k_fp_arith(np.sqrt),
+    'G_FMODF': _k_fp_modf, 'G_FCMP': _k_fcmp, 'G_FNEG': _k_fneg,
+    'G_FABS': _k_fabs, 'G_FCOPYSIGN': _k_fcopysign,
+    'G_FCANONICALIZE': _k_fcanonicalize,
+}
+for _name, _mode in ops._FP_ROUND.items():
+    FP_KERNELS[_name] = _k_fp_round(_mode)
+for _name, (_kind, _max) in ops._FP_MINMAX.items():
+    FP_KERNELS[_name] = _k_fp_minmax(_kind, _max)
+for _name, _op in ops._STRICT.items():
+    FP_KERNELS[_name] = _k_strict(_op)
+for _name in ops._STRICT_CMP:
+    FP_KERNELS[_name] = _k_strict_cmp
+KERNELS.update(FP_KERNELS)
+
+
 def generic(key, w, ws, cols, oks):
     """The evaluator of the registry on every term and sample: the path
     of an operator without a kernel. Returns (values, ok)."""
@@ -401,7 +719,14 @@ def apply(key, w, ws, cols, oks, counters=None):
             counters['generic_terms'] = counters.get('generic_terms', 0) + \
                 len(cols[0])
         return generic(key, w, ws, cols, oks)
-    vals, bad = fn(attr, res, w, ws, cols)
+    out = fn(attr, res, w, ws, cols)
+    if out is None:
+        # No kernel for these types.
+        if counters is not None:
+            counters['generic_terms'] = counters.get('generic_terms', 0) + \
+                len(cols[0])
+        return generic(key, w, ws, cols, oks)
+    vals, bad = out
     ok = oks[0]
     for o in oks[1:]:
         ok = ok & o

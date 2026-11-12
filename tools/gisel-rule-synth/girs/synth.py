@@ -38,6 +38,7 @@ only of the variables and the root.
 import hashlib
 import itertools
 import os
+import time
 
 from . import ir
 from . import ops
@@ -53,7 +54,15 @@ SEMANTIC_MODEL = 'gmir-v3'
 
 class SynthLimits:
     def __init__(self, max_atoms=2, max_solver_calls=400, max_schedules=8,
-                 max_valid=8, max_disjuncts=4):
+                 max_valid=8, max_disjuncts=4, slow_timeout_ms=120000,
+                 slow_budget_s=300, slow_total_s=3600):
+        # A candidate that the solver does not decide in the usual time
+        # limit gets one more attempt with the limit `slow_timeout_ms`
+        # and `slow_budget_s` seconds for all its checks, while the run
+        # has time left of `slow_total_s` seconds (Synthesizer._slow).
+        self.slow_timeout_ms = slow_timeout_ms
+        self.slow_budget_s = slow_budget_s
+        self.slow_total_s = slow_total_s
         self.max_atoms = max_atoms
         self.max_solver_calls = max_solver_calls  # per precondition search
         self.max_schedules = max_schedules
@@ -176,13 +185,19 @@ def verify(sched, dnf, backend, const_vars=(), strong=False):
     that are constants (their known bits are exact). ``strong``: for each
     value of the unspecified bits below the root (smt.Encoder). Returns
     ('valid', proofs) | ('invalid', (vw, facts, root width)) | ('unknown',
-    None)."""
+    None).
+
+    The first schedule has the widths of the instance that gave the rule.
+    A schedule after it that the solver does not decide is not proved and
+    has no proof in the result: the guard of the rule does not accept its
+    widths (a proof of a floating-point operation with 64 bits can need
+    more than the time limit)."""
     assert dnf, 'an empty disjunction is false and proves nothing'
     if any(vector.has_vector(v, s, t) for s, t, v, _ in sched):
         # Each lane of the replacement refines the same lane of the source.
         return vector.verify(sched, dnf, backend, const_vars, strong)
     proofs = []
-    for s, t, v, wmap in sched:
+    for k, (s, t, v, wmap) in enumerate(sched):
         enc = smt.Encoder(v, s[1], const_vars)
         enc.strong = strong
         f = smt.refinement_violation(enc, s, t, precond.z3_dnf(dnf, enc))
@@ -190,11 +205,17 @@ def verify(sched, dnf, backend, const_vars=(), strong=False):
         if r.status == 'sat':
             return 'invalid', (v, _facts_from_model(r.model, len(v)), s[1])
         if r.status != 'unsat':
+            if k:
+                continue
             return 'unknown', None
         proofs.append({'vw': list(v), 'root_w': s[1],
                        'width_map': sorted([a, b] for a, b in wmap.items()),
                        'result': 'unsat',
                        'seconds': round(r.seconds, 4), 'smt2': r.smt2})
+        if getattr(r, 'timeout_ms', None):
+            # The proof needs more than the usual time limit: `recheck`
+            # gives it this limit.
+            proofs[-1]['timeout_ms'] = r.timeout_ms
     return 'valid', proofs
 
 
@@ -214,7 +235,13 @@ def synthesize_precondition(src, tgt, vw, facts, sched, backend, limits,
     # No register has the edge of a G_PHI: a guard cannot check a
     # condition on it.
     edge = ir.edge_vars(src)
-    atoms = [a for a in precond.enumerate_atoms(fvw, frw)
+    # The environment of the constrained operations is not a register
+    # either: its one atom says that the instructions have nofpexcept.
+    # A variable that the source reads as a floating-point value has
+    # the atoms of such a value.
+    fvars = [i for i, k in ir.var_kinds(src).items() if k == 'f']
+    atoms = [a for a in precond.enumerate_atoms(fvw, frw,
+                                                ir.env_vars(src), fvars)
              if precond.eval_atom(a, facts, fvw, frw) and
              not (edge & set(precond.atom_all_vars(a)))]
     if pool is None:
@@ -363,6 +390,28 @@ class Synthesizer:
         self.stats = {'discoveries': 0, 'generalized': 0, 'reused': 0,
                       'rejected': 0, 'disjuncts_added': 0,
                       'schedules_added': 0, 'uncovered': 0}
+        self._slow_left = self.limits.slow_total_s
+        self._slow_tried = set()
+
+    def _slow(self, key, fn):
+        """The result of ``fn()`` with the long time limit of the solver
+        (SynthLimits.slow_timeout_ms), or None: the backend has no such
+        limit, ``key`` had its attempt, or the run has no time left. The
+        solver did not decide ``key`` in the usual limit; 'unknown' is
+        never a proof, so the long limit only adds rules."""
+        limit = getattr(self.backend, 'limit', None)
+        if limit is None or key in self._slow_tried or \
+                self._slow_left <= 0 or \
+                self.limits.slow_timeout_ms <= self.backend.timeout_ms:
+            return None
+        self._slow_tried.add(key)
+        self.stats['slow_attempts'] = self.stats.get('slow_attempts', 0) + 1
+        t0 = time.monotonic()
+        with limit(self.limits.slow_timeout_ms,
+                   min(self.limits.slow_budget_s, self._slow_left)):
+            out = fn()
+        self._slow_left -= time.monotonic() - t0
+        return out
 
     # -- support bookkeeping --
 
@@ -428,6 +477,15 @@ class Synthesizer:
         if ir.intrinsic_error([inst.expr], [tgt], inst.vw) is not None:
             self.stats['intrinsic_rejected'] = \
                 self.stats.get('intrinsic_rejected', 0) + 1
+            return None
+        # The constrained operations have one environment, and no other
+        # operation of the rule rounds or raises an exception. The
+        # constants of the instance are computed when a rule applies.
+        if ir.env_error(inst.expr, tgt, tuple(
+                i for i, c in enumerate(inst.consts)
+                if c is not None)) is not None:
+            self.stats['env_rejected'] = \
+                self.stats.get('env_rejected', 0) + 1
             return None
         if vector.has_vector(inst.vw, inst.expr, tgt):
             return self._add_vector(inst, tgt, provenance)
@@ -553,9 +611,13 @@ class Synthesizer:
                     continue
                 if fkey not in {_map_key(m) for m in d['width_maps']}:
                     # Same rule at widths not proved yet: prove them.
-                    st, proofs = verify(
-                        rule_schedules(rule, [sorted(first.items())]),
-                        [d['_pred']], self.backend, cv)
+                    sch = rule_schedules(rule, [sorted(first.items())])
+                    st, proofs = verify(sch, [d['_pred']], self.backend, cv)
+                    if st == 'unknown':
+                        st, proofs = self._slow(
+                            (rule['id'], fkey, d['_pred']),
+                            lambda: verify(sch, [d['_pred']], self.backend,
+                                           cv)) or (st, None)
                     if st != 'valid':
                         continue
                     self._add_disjunct(rule, d['_pred'], proofs)
@@ -579,6 +641,13 @@ class Synthesizer:
                                                  cv)
             st = {k: st.get(k, 0) + st2.get(k, 0) for k in set(st) | set(st2)
                   if isinstance(st.get(k, st2.get(k)), int)}
+        if not valid and st['unknown']:
+            # The solver did not decide a candidate precondition.
+            valid, st = self._slow(
+                (key, _map_key(first.items())),
+                lambda: synthesize_precondition(
+                    psrc, ptgt, pvw, facts, sched, self.backend,
+                    self.limits, pool, vw, rw, cv)) or (valid, st)
         if not valid:
             if rule is not None:
                 self.stats['uncovered'] += 1
@@ -875,9 +944,18 @@ class Synthesizer:
         for key in sorted(maps):
             dnf = [d['_pred'] for d in ds
                    if key in {_map_key(m) for m in d['width_maps']}]
-            st, proofs = verify(rule_schedules(rule, [maps[key]]), dnf,
-                                self.backend,
-                                tuple(rule.get('const_vars', ())), strong)
+            sch = rule_schedules(rule, [maps[key]])
+            cv = tuple(rule.get('const_vars', ()))
+            st, proofs = verify(sch, dnf, self.backend, cv, strong)
+            slow = max([p.get('timeout_ms', 0) for d in ds
+                        for p in d['proofs']
+                        if _map_key(p['width_map']) == key] + [0])
+            if st == 'unknown' and slow > self.backend.timeout_ms and \
+                    hasattr(self.backend, 'limit'):
+                # A disjunct has its proof for these widths with the long
+                # time limit; the guard as a whole gets the same limit.
+                with self.backend.limit(slow, slow / 1000.0):
+                    st, proofs = verify(sch, dnf, self.backend, cv, strong)
             if st == 'unknown':
                 raise IncompleteGuardProof('width map %s' % maps[key])
             if st != 'valid':

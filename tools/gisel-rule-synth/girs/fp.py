@@ -581,10 +581,22 @@ def z3_arith(op, *xs):
     """The bit pattern of the arithmetic operation ``op`` ('add', 'sub',
     'mul', 'div', 'fma', 'sqrt') on the bit patterns ``xs``, rounded to
     nearest, ties to even."""
+    if op == 'sub':
+        op, xs = 'add', _z3_negated_second(xs)
     fs = [z3_value(x) for x in xs]
-    fn = {'add': z3.fpAdd, 'sub': z3.fpSub, 'mul': z3.fpMul,
+    fn = {'add': z3.fpAdd, 'mul': z3.fpMul,
           'div': z3.fpDiv, 'fma': z3.fpFMA, 'sqrt': z3.fpSqrt}[op]
     return z3_bits(fn(z3.RNE(), *fs))
+
+
+def _z3_negated_second(xs):
+    """The operands of the sum that is the difference of ``xs``: x - y is
+    x + (-y), with the same value, the same sign of a zero and the same
+    exceptions in each rounding mode (``strict`` has this definition). The
+    negation is a change of the sign bit, so the solver sees that
+    x - (-y) and x + y are one term."""
+    w = xs[1].size()
+    return [xs[0], xs[1] ^ z3.BitVecVal(sign_bit(w), w)]
 
 
 def z3_rem(x, y):
@@ -823,3 +835,508 @@ def uses_theory(formula):
             return True
         todo.extend(t.children())
     return False
+
+
+# ------------------------------------------------- the environment ---
+# A constrained operation (G_STRICT_*) rounds in the mode of the
+# floating-point environment and raises exceptions. The environment of a
+# model is a value of ENV_BITS bits:
+#  * The low 3 bits are the rounding mode, with the numbers of
+#    llvm::RoundingMode; each other number is the mode to nearest, ties to
+#    even.
+#  * The bit ENV_IGNORE says that the program does not read the exceptions
+#    (each constrained instruction has the flag nofpexcept).
+
+RM_ZERO, RM_EVEN, RM_UP, RM_DOWN, RM_AWAY = range(5)
+RM_NAMES = ('zero', 'even', 'up', 'down', 'away')
+ENV_BITS = 4
+ENV_IGNORE = 8
+
+
+def rm_of(env):
+    """The rounding mode of the value ``env`` of an environment."""
+    return env & 7 if env & 7 < 5 else RM_EVEN
+
+
+# The exceptions that an operation raises: a set of these bits. IEEE 754
+# lets an implementation choose two things, and a rule must be correct for
+# each choice (``flag_views``):
+#  * Tininess is found before or after the rounding. The underflow flag
+#    is FE_UNDERFLOW_B for the first choice and FE_UNDERFLOW_A for the
+#    second one.
+#  * fma(0, infinity, quiet NaN) raises "invalid" or not (FE_INVALID_FMA).
+FE_INVALID, FE_DIVBYZERO, FE_OVERFLOW, FE_UNDERFLOW_B, FE_UNDERFLOW_A, \
+    FE_INEXACT, FE_INVALID_FMA = (1 << i for i in range(7))
+FE_BITS = 7
+FE_NAMES = ('invalid', 'divbyzero', 'overflow', 'underflow(before)',
+            'underflow(after)', 'inexact', 'invalid(fma)')
+
+
+def flag_views(flags):
+    """The flags that a program can read, for each choice of an
+    implementation: (invalid, divbyzero, overflow, underflow, inexact) for
+    (tininess before / after the rounding) x (fma raises / does not)."""
+    out = []
+    for uf in (FE_UNDERFLOW_B, FE_UNDERFLOW_A):
+        for fma_invalid in (FE_INVALID_FMA, 0):
+            out.append((bool(flags & (FE_INVALID | fma_invalid)),
+                        bool(flags & FE_DIVBYZERO),
+                        bool(flags & FE_OVERFLOW), bool(flags & uf),
+                        bool(flags & FE_INEXACT)))
+    return tuple(out)
+
+
+def flags_text(flags):
+    return '|'.join(n for i, n in enumerate(FE_NAMES) if flags >> i & 1) \
+        or 'none'
+
+
+def is_snan(bits, w):
+    return is_nan(bits, w) and not is_quiet(bits, w)
+
+
+def max_finite(w, sign=0):
+    return inf(w, sign) - 1
+
+
+def min_normal(w, sign=0):
+    """The bit pattern of the smallest normal number."""
+    return (sign << (w - 1)) | (1 << (FORMATS[w][1] - 1))
+
+
+def _round_up(rm, sign, odd, rem):
+    """True if the magnitude n + rem (0 <= rem < 1) of a value with the
+    sign ``sign`` rounds to n + 1 in the mode ``rm``."""
+    if rem == 0:
+        return False
+    if rm == RM_EVEN:
+        return rem > Fraction(1, 2) or (rem == Fraction(1, 2) and odd)
+    if rm == RM_AWAY:
+        return rem >= Fraction(1, 2)
+    if rm == RM_UP:
+        return not sign
+    if rm == RM_DOWN:
+        return bool(sign)
+    return False
+
+
+def round_mag(sign, mag, w, rm):
+    """(bit pattern, flags) of the number with the sign ``sign`` and the
+    magnitude ``mag`` (a Fraction > 0), rounded in the mode ``rm``."""
+    eb, p = FORMATS[w]
+    bias = _bias(w)
+    top = sign << (w - 1)
+    emin = 1 - bias
+    e = mag.numerator.bit_length() - mag.denominator.bit_length()
+    if Fraction(2) ** e > mag:
+        e -= 1
+
+    def rounded(e):
+        """(significand in units of the last place, exponent) of the
+        value rounded to p bits at the exponent ``e`` of its first bit."""
+        q = mag / Fraction(2) ** (e - (p - 1))
+        n = q.numerator // q.denominator
+        if _round_up(rm, sign, n & 1, q - n):
+            n += 1
+        if n == 1 << p:
+            return n >> 1, e + 1
+        return n, e
+
+    # The rounding with an exponent that has no limits: IEEE 754 defines
+    # the overflow and the tininess after the rounding with it.
+    nu, eu = rounded(e)
+    tiny_before = mag < Fraction(2) ** emin
+    tiny_after = eu < emin
+    if eu > bias:
+        # To infinity, or to the largest number if the mode rounds this
+        # value toward zero.
+        to_inf = rm in (RM_EVEN, RM_AWAY) or \
+            (rm == RM_UP and not sign) or (rm == RM_DOWN and sign)
+        return (inf(w, sign) if to_inf else max_finite(w, sign)), \
+            FE_OVERFLOW | FE_INEXACT
+    n, ed = rounded(max(e, emin))
+    flags = 0
+    if Fraction(n) * Fraction(2) ** (ed - (p - 1)) != mag:
+        flags = FE_INEXACT | (FE_UNDERFLOW_B if tiny_before else 0) | \
+            (FE_UNDERFLOW_A if tiny_after else 0)
+    if n < 1 << (p - 1):
+        return top | n, flags       # subnormal, or zero
+    return top | ((ed + bias) << (p - 1)) | (n - (1 << (p - 1))), flags
+
+
+def _zero(sign, w):
+    return sign << (w - 1)
+
+
+def _zero_sum_sign(sa, sb, rm):
+    """The sign of an exact zero sum of two values with the signs sa and
+    sb: their sign if it is the same, else negative only in the mode
+    toward negative."""
+    return sa if sa == sb else int(rm == RM_DOWN)
+
+
+def strict(op, env, vals, w, nw=None):
+    """(bit pattern, flags) of the constrained operation ``op`` ('add',
+    'sub', 'mul', 'div', 'fma', 'sqrt', 'rem', 'ldexp') on the bit
+    patterns ``vals`` in the environment ``env``. The second operand of
+    'ldexp' is a signed integer of ``nw`` bits. A NaN result is ``qnan``:
+    a constrained operation is the IEEE operation, and its NaN is quiet
+    (OpInfo.nan_quiet)."""
+    rm = rm_of(env)
+    fvals = vals[:1] if op == 'ldexp' else vals
+    d = [decode(v, w) for v in fvals]
+    if any(k == 'nan' for k, _, _ in d):
+        return qnan(w), (FE_INVALID if any(is_snan(v, w) for v in fvals)
+                         else 0)
+    invalid = (qnan(w), FE_INVALID)
+
+    def num(sign, mag):
+        return round_mag(sign, mag, w, rm) if mag else (_zero(sign, w), 0)
+
+    if op == 'sub':
+        op, vals = 'add', (vals[0], vals[1] ^ sign_bit(w))
+        d = [decode(v, w) for v in vals]
+    if op == 'add':
+        (ka, sa, va), (kb, sb, vb) = d
+        if ka == 'inf' or kb == 'inf':
+            if ka == kb and sa != sb:
+                return invalid
+            return (vals[0] if ka == 'inf' else vals[1]), 0
+        s = va + vb
+        if s == 0:
+            return _zero(_zero_sum_sign(sa, sb, rm), w), 0
+        return num(int(s < 0), abs(s))
+    if op == 'mul':
+        (ka, sa, va), (kb, sb, vb) = d
+        if ka == 'inf' or kb == 'inf':
+            if va == 0 or vb == 0:
+                return invalid
+            return inf(w, sa ^ sb), 0
+        return num(sa ^ sb, abs(va * vb))
+    if op == 'div':
+        (ka, sa, va), (kb, sb, vb) = d
+        if ka == 'inf':
+            return invalid if kb == 'inf' else (inf(w, sa ^ sb), 0)
+        if kb == 'inf':
+            return _zero(sa ^ sb, w), 0
+        if vb == 0:
+            return invalid if va == 0 else (inf(w, sa ^ sb), FE_DIVBYZERO)
+        return num(sa ^ sb, abs(va / vb))
+    if op == 'fma':
+        (ka, sa, va), (kb, sb, vb), (kc, sc, vc) = d
+        sp = sa ^ sb
+        if ka == 'inf' or kb == 'inf':
+            if va == 0 or vb == 0:
+                return invalid
+            if kc == 'inf' and sc != sp:
+                return invalid
+            return inf(w, sp), 0
+        if kc == 'inf':
+            return vals[2], 0
+        prod = va * vb
+        s = prod + vc
+        if s == 0:
+            if prod == 0:
+                return _zero(_zero_sum_sign(sp, sc, rm), w), 0
+            return _zero(int(rm == RM_DOWN), w), 0
+        return num(int(s < 0), abs(s))
+    if op == 'sqrt':
+        kind, sign, val = d[0]
+        if val == 0:
+            return vals[0], 0
+        if sign:
+            return invalid
+        if kind == 'inf':
+            return vals[0], 0
+        p = FORMATS[w][1]
+        t = max(0, val.denominator.bit_length() + p + 4)
+        n = val * 4 ** t
+        q = math.isqrt(n.numerator)
+        # A remainder: the value is between two numbers of the precision
+        # of the search, and is not a tie.
+        return num(0, Fraction(2 * q + (q * q != n.numerator), 2 ** (t + 1)))
+    if op == 'rem':
+        (ka, sa, va), (kb, sb, vb) = d
+        if ka == 'inf':
+            return invalid
+        if kb == 'inf':
+            return vals[0], 0
+        if vb == 0:
+            return invalid
+        return num(sa, abs(va - vb * int(va / vb)))
+    if op == 'ldexp':
+        k, s, v = d[0]
+        if k == 'inf':
+            return vals[0], 0
+        lim = _exp_limit(w)
+        n = max(-lim, min(lim, _signed(vals[1], nw)))
+        return num(s, abs(v) * Fraction(2) ** n)
+    raise ValueError(op)
+
+
+def strict_nan_flags(vals, w, any_nan=False):
+    """The flags of a comparison: 'invalid' for a signaling NaN, or for
+    each NaN if ``any_nan`` (a signaling comparison)."""
+    test = is_nan if any_nan else is_snan
+    return FE_INVALID if any(test(v, w) for v in vals) else 0
+
+
+def fma_invalid_choice(vals, w):
+    """FE_INVALID_FMA if the operands are (0, infinity, quiet NaN) or
+    (infinity, 0, quiet NaN), else 0."""
+    a, b, c = (decode(v, w) for v in vals)
+    if is_nan(vals[2], w) and is_quiet(vals[2], w) and \
+            'nan' not in (a[0], b[0]) and \
+            ((a[0] == 'inf' and b[2] == 0) or (b[0] == 'inf' and a[2] == 0)):
+        return FE_INVALID_FMA
+    return 0
+
+
+# ------------------------------------------------------- literals ---
+# The floating-point constants of the search grammar and of the
+# preconditions. A literal keeps its meaning in every format.
+LITERALS = {'f0': (0, Fraction(0)), 'f-0': (1, Fraction(0)),
+            'f1': (0, Fraction(1)), 'f-1': (1, Fraction(1)),
+            'f2': (0, Fraction(2)), 'f0.5': (0, Fraction(1, 2))}
+
+
+# The enumerator of gisynth::FPLiteral of each literal.
+LITERAL_CPP = {'f0': 'Zero', 'f-0': 'NegZero', 'f1': 'One', 'f-1': 'NegOne',
+               'f2': 'Two', 'f0.5': 'Half'}
+assert set(LITERAL_CPP) == set(LITERALS)
+
+
+def literal_str(k):
+    """'1.0' for 'f1'."""
+    sign, mag = LITERALS[k]
+    return '%s%s' % ('-' if sign else '', float(mag))
+
+
+def literal_bits(k, w):
+    sign, mag = LITERALS[k]
+    return encode(sign, mag, w)
+
+
+def has_exact_inverse(bits, w):
+    """The value is a power of 2 whose reciprocal is a normal number: the
+    division by it is the multiplication by the reciprocal, with the same
+    result for each operand (APFloat::getExactInverse)."""
+    eb, p = FORMATS[w]
+    e = (bits >> (p - 1)) & ((1 << eb) - 1)
+    return bits & ((1 << (p - 1)) - 1) == 0 and 1 <= e <= 2 * _bias(w) - 1
+
+
+def z3_has_exact_inverse(x):
+    w = x.size()
+    eb, p = FORMATS[w]
+    e = z3.Extract(w - 2, p - 1, x)
+    return z3.And(z3.Extract(p - 2, 0, x) == 0, z3.UGE(e, 1),
+                  z3.ULE(e, 2 * _bias(w) - 1))
+
+
+# ------------------------------------------- the environment, SMT ---
+
+def z3_rm(env):
+    """The rounding mode of the environment ``env`` (ENV_BITS bits)."""
+    mode = z3.Extract(2, 0, env)
+
+    def is_(n):
+        return mode == z3.BitVecVal(n, 3)
+    return z3.If(is_(RM_ZERO), z3.RTZ(), z3.If(
+        is_(RM_UP), z3.RTP(), z3.If(is_(RM_DOWN), z3.RTN(), z3.If(
+            is_(RM_AWAY), z3.RNA(), z3.RNE()))))
+
+
+# The choices of an implementation (flag_views): free variables of a
+# formula, so that a proof holds for each choice.
+def z3_tiny_before():
+    return z3.Bool('fe_tiny_before')
+
+
+def z3_fma_invalid():
+    return z3.Bool('fe_fma_invalid')
+
+
+def z3_is_snan(x):
+    w = x.size()
+    p = FORMATS[w][1]
+    return z3.And(z3_is_nan(x), z3.Extract(p - 2, p - 2, x) == 0)
+
+
+def _z3_flags(invalid, divbyzero, overflow, underflow, inexact):
+    """The 5 flags that a program reads, as a bit vector (the first flag
+    is the bit 0)."""
+    one, zero = z3.BitVecVal(1, 1), z3.BitVecVal(0, 1)
+    return z3.Concat([z3.If(c, one, zero) for c in
+                      (inexact, underflow, overflow, divbyzero, invalid)])
+
+
+Z3_FLAG_BITS = 5
+
+
+def z3_no_flags():
+    return z3.BitVecVal(0, Z3_FLAG_BITS)
+
+
+def _z3_widen(f):
+    """The value of ``f`` in a format with 2 more bits of the exponent and
+    the same precision: the conversion is exact, and an operation on
+    values of the format of ``f`` has no overflow and no underflow
+    there."""
+    s = f.sort()
+    return z3.fpFPToFP(z3.RNE(), f, z3.FPSort(s.ebits() + 2, s.sbits()))
+
+
+def _z3_limits(sort, wide):
+    """(the largest number, the smallest normal number) of the format
+    ``sort``, as values of the format ``wide``."""
+    eb, p = sort.ebits(), sort.sbits()
+    big = z3.fpFP(z3.BitVecVal(0, 1), z3.BitVecVal((1 << eb) - 2, eb),
+                  z3.BitVecVal((1 << (p - 1)) - 1, p - 1))
+    small = z3.fpFP(z3.BitVecVal(0, 1), z3.BitVecVal(1, eb),
+                    z3.BitVecVal(0, p - 1))
+    if wide == sort:
+        return big, small
+    return z3.fpFPToFP(z3.RNE(), big, wide), \
+        z3.fpFPToFP(z3.RNE(), small, wide)
+
+
+def z3_strict(op, env, xs):
+    """(bit pattern, flags) of the constrained operation ``op`` on the bit
+    patterns ``xs``; see ``strict``. The flags are the terms of
+    ``_z3_flags``, for the choices z3_tiny_before and z3_fma_invalid.
+
+    The result is the operation of the solver in the mode of the
+    environment. The flags come from more results of the same operation:
+    * toward positive and toward negative: they are equal exactly if the
+      result is exact, and the one of them toward zero says if the exact
+      value is smaller than the smallest normal number;
+    * in a format with a larger exponent range: the result with an
+      exponent without limits, which IEEE 754 uses for the overflow and
+      for the tininess after the rounding."""
+    w = xs[0].size()
+    rm = z3_rm(env)
+    false = z3.BoolVal(False)
+    if op == 'ldexp':
+        return _z3_strict_ldexp(rm, xs[0], xs[1])
+    if op == 'sub':
+        op, xs = 'add', _z3_negated_second(xs)
+    fs = [z3_value(x) for x in xs]
+    sort = fs[0].sort()
+    snan = z3.Or([z3_is_snan(x) for x in xs])
+    any_nan = z3.Or([z3.fpIsNaN(f) for f in fs])
+    special = z3.Or([z3.Or(z3.fpIsNaN(f), z3.fpIsInf(f)) for f in fs])
+    if op == 'rem':
+        # Exact, and the same in each mode.
+        r = z3_rem(xs[0], xs[1])
+        invalid = z3.Or(snan, z3.And(z3.Not(any_nan), z3.Or(
+            z3.fpIsInf(fs[0]), z3.fpIsZero(fs[1]))))
+        return r, _z3_flags(invalid, false, false, false, false)
+    if op == 'sqrt':
+        r = z3.fpSqrt(rm, fs[0])
+        invalid = z3.Or(snan, z3.And(z3.fpIsNaN(r), z3.Not(any_nan)))
+        # Exact if the square of the result is the operand: the fused
+        # operation r * r - x has no rounding error that hides a
+        # difference in the wide format.
+        rw_, xw_ = _z3_widen(r), _z3_widen(fs[0])
+        diff = z3.fpFMA(z3.RNE(), rw_, rw_, z3.fpNeg(xw_))
+        inexact = z3.And(z3.Not(z3.fpIsNaN(r)), z3.Not(z3.fpIsInf(r)),
+                         z3.Not(z3.fpIsZero(diff)))
+        return z3_bits(r), _z3_flags(invalid, false, false, false, inexact)
+    fn = {'add': z3.fpAdd, 'mul': z3.fpMul, 'div': z3.fpDiv,
+          'fma': z3.fpFMA}[op]
+    r = fn(rm, *fs)
+    up, down = fn(z3.RTP(), *fs), fn(z3.RTN(), *fs)
+    wide = fn(rm, *[_z3_widen(f) for f in fs])
+    big, small = _z3_limits(sort, wide.sort())
+    _, small_n = _z3_limits(sort, sort)
+    zero = z3.FPVal(0.0, sort)
+    invalid = z3.Or(snan, z3.And(z3.fpIsNaN(r), z3.Not(any_nan)))
+    divbyzero = false
+    if op == 'div':
+        divbyzero = z3.And(z3.fpIsZero(fs[1]), z3.Not(z3.fpIsZero(fs[0])),
+                           z3.Not(z3.fpIsInf(fs[0])),
+                           z3.Not(z3.fpIsNaN(fs[0])))
+    if op == 'fma':
+        # An implementation chooses if 0 * infinity with a quiet NaN is
+        # invalid.
+        prod = z3.Or(z3.And(z3.fpIsInf(fs[0]), z3.fpIsZero(fs[1])),
+                     z3.And(z3.fpIsZero(fs[0]), z3.fpIsInf(fs[1])))
+        invalid = z3.Or(invalid, z3.And(z3_fma_invalid(), prod,
+                                        z3.fpIsNaN(fs[2]),
+                                        z3.Not(z3_is_snan(xs[2]))))
+    regular = z3.And(z3.Not(special), z3.Not(divbyzero))
+    inexact = z3.And(z3.Not(z3.fpIsNaN(r)), z3.Not(z3.fpEQ(up, down)))
+    overflow = z3.And(regular, z3.fpGT(z3.fpAbs(wide), big))
+    if op == 'add':
+        # A sum that is smaller than the smallest normal number is exact.
+        underflow = false
+    else:
+        pos, neg = z3.fpGT(up, zero), z3.fpLT(down, zero)
+        toward_zero = z3.If(pos, down, up)
+        tiny_b = z3.And(z3.Or(pos, neg),
+                        z3.fpLT(z3.fpAbs(toward_zero), small_n))
+        tiny_a = z3.And(regular, z3.Not(z3.fpIsZero(wide)),
+                        z3.fpLT(z3.fpAbs(wide), small))
+        underflow = z3.And(inexact,
+                           z3.If(z3_tiny_before(), tiny_b, tiny_a))
+    return z3_bits(r), _z3_flags(invalid, divbyzero, overflow, underflow,
+                                 inexact)
+
+
+def _z3_strict_ldexp(rm, x, n):
+    """x * 2 ** n: the exact product in a wide format, and one rounding
+    to the format of x."""
+    w, nw = x.size(), n.size()
+    f = z3_value(x)
+    sort = f.sort()
+    eb, p = FORMATS[w]
+    sign, exp, sig, _ = _z3_wide(f)
+    cw = max(nw, eb + 4)
+    if nw < cw:
+        n = z3.SignExt(cw - nw, n)
+    lim = z3.BitVecVal(_exp_limit(w), cw)
+    n = z3.If(n > lim, lim, z3.If(n < -lim, -lim, n))
+    scaled = z3.fpFP(sign, exp + z3.Extract(eb + 2, 0, n), sig)
+    same = z3.Or(z3.fpIsZero(f), z3.fpIsInf(f), z3.fpIsNaN(f))
+    r = z3.If(same, x, z3_bits(z3.fpFPToFP(rm, scaled, sort)))
+    up = z3.fpFPToFP(z3.RTP(), scaled, sort)
+    down = z3.fpFPToFP(z3.RTN(), scaled, sort)
+    big, small = _z3_limits(sort, scaled.sort())
+    regular = z3.Not(same)
+    inexact = z3.And(regular, z3.Not(z3.fpEQ(up, down)))
+    overflow = z3.And(regular, z3.fpGT(z3.fpAbs(scaled), big))
+    # The product has the precision of the format: it is its own
+    # rounding with an exponent without limits.
+    underflow = z3.And(inexact, z3.fpLT(z3.fpAbs(scaled), small))
+    false = z3.BoolVal(False)
+    return r, _z3_flags(z3_is_snan(x), false, overflow, underflow, inexact)
+
+
+def z3_strict_compare(xs, any_nan=False):
+    """The flags of a comparison; see strict_nan_flags."""
+    test = z3_is_nan if any_nan else z3_is_snan
+    false = z3.BoolVal(False)
+    return _z3_flags(z3.Or([test(x) for x in xs]), false, false, false,
+                     false)
+
+
+def z3_flag_view(flags, tiny_before, fma_invalid):
+    """The value of ``_z3_flags`` for the concrete flags ``flags`` and a
+    choice of the implementation."""
+    v = flag_views(flags)[(0 if tiny_before else 2) +
+                          (0 if fma_invalid else 1)]
+    return sum(int(b) << i for i, b in enumerate(v))
+
+
+def z3_env_ignores(env):
+    """The program does not read the exceptions (ENV_IGNORE)."""
+    return z3.Extract(3, 3, env) == 1
+
+
+def strict_op(op, env, vals, w, nw=None):
+    """``strict`` with the choice of an fma in its flags."""
+    bits, flags = strict(op, env, vals, w, nw)
+    if op == 'fma':
+        flags |= fma_invalid_choice(vals, w)
+    return bits, flags

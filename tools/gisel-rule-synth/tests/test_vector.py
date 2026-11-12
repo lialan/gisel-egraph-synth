@@ -533,8 +533,7 @@ class Lift(unittest.TestCase):
         sy.finalize([inst])
         r = sy.rules[rid]
         self.assertTrue(emit._rule_needs_cpp_apply(r))
-        self.assertIn('B.buildConstant(MRI.getType(Dst)',
-                      emit._cpp_apply(r))
+        self.assertIn('B.buildConstant(Dst, ', emit._cpp_apply(r))
 
     def test_not_lane_wise_is_not_lifted(self):
         rec = json.loads(json.dumps(self.REC))

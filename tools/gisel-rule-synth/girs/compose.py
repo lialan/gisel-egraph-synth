@@ -194,6 +194,10 @@ class Index:
         if ir.phi_nodes(ir.from_json(rule['source_json'])):
             # The edge of a G_PHI is not a value of an expression.
             return
+        if ir.constrained_nodes(ir.from_json(rule['source_json'])):
+            # Neither is the floating-point environment, and a step has
+            # no exceptions.
+            return
         if ir.has_forwarded_load(ir.from_json(rule['source_json'])):
             # A load after a G_STORE is the root of a tree only.
             return

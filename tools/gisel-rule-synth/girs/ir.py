@@ -3,8 +3,10 @@
 An expression is an immutable tuple:
 
     ('var', i)              pattern variable i (an input register)
-    ('lit', w, k)           width-w literal, k in LITERALS ('0', '1', '-1');
-                            it keeps its meaning at every width
+    ('lit', w, k)           width-w literal, k in LITERALS ('0', '1', '-1')
+                            or in FP_LITERALS ('f1': the floating-point
+                            constant 1.0); it keeps its meaning at every
+                            width
     ('const', w, v)         the width-w constant v (an arbitrary APInt)
     (op, w, a, ...)         operation producing a width-w value
 
@@ -43,6 +45,8 @@ BINOPS = ('G_ADD', 'G_SUB', 'G_MUL', 'G_AND', 'G_OR', 'G_XOR',
 CASTS = ('G_TRUNC', 'G_ZEXT', 'G_SEXT')
 assert BINOPS + CASTS == ops.ENUMERATED
 LITERALS = ('0', '1', '-1')
+# The floating-point literals: 0.0, -0.0, 1.0, -1.0, 2.0 and 0.5 (fp.py).
+FP_LITERALS = tuple(fp.LITERALS)
 
 
 def op_cost(op):
@@ -65,7 +69,14 @@ def lit_value(w, k):
     """The value of the literal ``k`` of the width ``w``; for a vector,
     the value of each lane."""
     w = elem(w)
+    if k in fp.LITERALS:
+        return fp.literal_bits(k, w)
     return {'0': 0, '1': 1 & mask(w), '-1': mask(w)}[k]
+
+
+def lit_kind(k):
+    """The kind of the literal ``k``: 'f' or 'i'."""
+    return 'f' if k in fp.LITERALS else 'i'
 
 
 def is_var(e):
@@ -123,9 +134,11 @@ def rule_cost(e, const_vars=()):
 
 def is_linear_in(e, const_vars=()):
     """True if no variable occurs twice in ``e``, except the variables
-    that are constants (a constant is never undef)."""
+    that are constants (a constant is never undef) and the floating-point
+    environment of the constrained operations (not a register)."""
+    env = env_vars(e)
     return all(c <= 1 for v, c in occurrences(e).items()
-               if v not in const_vars)
+               if v not in const_vars and v not in env)
 
 
 # The operators of a computed constant. Their only poison is a shift
@@ -138,8 +151,13 @@ RECIPE_OPS = BASE_RECIPE_OPS + (
     'G_SMIN', 'G_SMAX', 'G_UMIN', 'G_UMAX', 'G_UADDSAT', 'G_SADDSAT',
     'G_USUBSAT', 'G_SSUBSAT')
 SHIFT_OPS = ('G_SHL', 'G_LSHR', 'G_ASHR')
+# The operators of a computed floating-point constant. G_FNEG changes the
+# sign bit. G_FDIV is the division that the compiler computes when the
+# rule applies, rounded to nearest: the guard checks that the result is
+# not a NaN (the bits of a NaN that an operation makes are not specified).
+FP_RECIPE_OPS = ('G_FNEG', 'G_FDIV')
 # G_ZEXT of the literal -1 is the mask of the low bits of a narrower type.
-CONST_OPS = RECIPE_OPS + ('G_ZEXT',)
+CONST_OPS = RECIPE_OPS + ('G_ZEXT',) + FP_RECIPE_OPS
 
 
 def computed_constants(e, const_vars=(), out=None):
@@ -177,6 +195,8 @@ def result_kind(e, expected=None):
     pointer, 'i' if it is an integer, None if the operators do not say (a
     variable, or a select or a freeze of such values). ``expected`` is the
     kind that the user of ``e`` needs."""
+    if is_lit(e) and lit_kind(e[2]) == 'f':
+        return 'f'
     if not is_op(e) or not ops.known(e[0]):
         return expected
     info, _, res = ops.parse(e[0])
@@ -220,6 +240,8 @@ def type_of(e, vw, vk):
     integers."""
     if is_var(e):
         return (vw[e[1]], vk[e[1]])
+    if is_lit(e):
+        return (e[1], lit_kind(e[2]))
     if not is_op(e):
         return (e[1], 'i')
     kinds = []
@@ -272,6 +294,8 @@ def operand_kind(e, k, expected=None):
         roles = info.vec_kinds[0]
         role = roles[min(k, len(roles) - 1)]
         return result_kind(e, expected) if role == 'v' else role
+    if info.constrained and k == len(e) - 3:
+        return 'e'
     if info.freeze or (info.shape == 'select' and k > 0) or \
             (info.phi and k > 0):
         return result_kind(e, expected)
@@ -375,6 +399,83 @@ def phi_error(e):
     if any(is_op(a) for n in phis for a in n[3:]):
         return 'an incoming value of a G_PHI is an operation'
     return None
+
+
+def constrained_nodes(e, out=None):
+    """The constrained operations of ``e`` (OpInfo.constrained), one entry
+    per node."""
+    if out is None:
+        out = []
+    for n in nodes(e):
+        if ops.known(n[0]) and ops.parse(n[0])[0].constrained and \
+                n not in out:
+            out.append(n)
+    return out
+
+
+def env_vars(e):
+    """The variables of ``e`` that are the floating-point environment of a
+    constrained operation. No register has their value: a pattern does
+    not match them, and a precondition reads only the bit fp.ENV_IGNORE
+    of them."""
+    return frozenset(n[-1][1] for n in constrained_nodes(e)
+                     if is_var(n[-1]))
+
+
+def env_error(src, tgt=None, const_vars=()):
+    """None if the constrained operations of the source ``src`` and of
+    the replacement ``tgt`` have the form of the model, else the reason:
+
+    * The operations have one environment, a variable that nothing else
+      reads: the guard of a rule checks that the instructions are in one
+      block with no instruction between them that reads or writes the
+      environment (gisynth::isSameFPEnvironment).
+    * No other operation rounds or raises an exception (ops.raises): a
+      function has constrained operations only, or none. A constant that
+      the compiler computes when the rule applies is not an operation of
+      the program."""
+    exprs = [src] + ([tgt] if tgt is not None else [])
+    cons = [n for e in exprs for n in constrained_nodes(e)]
+    envs = {n[-1] for n in cons}
+
+    def reads_env(n):
+        if is_var(n):
+            return n in envs
+        if not is_op(n):
+            return False
+        con = ops.known(n[0]) and ops.parse(n[0])[0].constrained
+        return any(reads_env(a) for a in (n[2:-1] if con else n[2:]))
+    if not cons:
+        return None
+    if len(envs) != 1 or not all(is_var(x) for x in envs):
+        return 'constrained operations without one environment'
+    if tgt is not None and not constrained_nodes(src):
+        return 'a constrained operation in the replacement only'
+    if any(reads_env(e) for e in exprs):
+        return 'an operator reads the floating-point environment'
+    for e in exprs:
+        for n in nodes(e):
+            if ops.known(n[0]) and ops.raises(ops.parse(n[0])[0]) and \
+                    not is_constant_expr(n, const_vars):
+                return 'a floating-point operation that is not ' \
+                    'constrained next to a constrained one'
+    return None
+
+
+def fp_flags(e, vw, env):
+    """The exceptions that the constrained operations of ``e`` raise for
+    the variable assignment ``env`` (the bits fp.FE_*), or None if an
+    operand of one of them is poison: the exceptions are then not
+    specified."""
+    flags = 0
+    for n in constrained_nodes(e):
+        vals = [evaluate(a, vw, env) for a in n[2:]]
+        if any(v is None or v is UB for v in vals):
+            return None
+        info, attr, res = ops.parse(n[0])
+        flags |= info.fe_eval(n[1], [width(a, vw) for a in n[2:]], attr,
+                              res, vals)
+    return flags
 
 
 def intrinsic_error(sources, targets, vw):
@@ -510,6 +611,8 @@ def well_typed(e, vw):
     """Structural type check with the typing rule of each operator."""
     if is_const(e):
         return 0 <= e[2] <= mask(elem(e[1]))
+    if is_lit(e):
+        return lit_kind(e[2]) == 'i' or fp.is_format(elem(e[1]))
     if not is_op(e):
         return True
     args = e[2:]

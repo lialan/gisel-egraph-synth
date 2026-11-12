@@ -112,6 +112,9 @@ class OpInfo:
         self.name = name
         self.namespace = namespace
         self.shape = shape
+        # The shape of the instruction of a constrained operation (the
+        # shape is 'constrained').
+        self.shape_of = shape
         self.operands = operands      # None if it varies
         self.results = results
         self.attr = attr              # None | 'pred' | 'imm'
@@ -237,6 +240,27 @@ class OpInfo:
         # same intrinsic: the tool does not know which intrinsics the
         # subtarget of a function has.
         self.intrinsic = None
+        # The instruction has no register operand and its value is a
+        # constant of the function: 'constant' (G_CONSTANT, G_FCONSTANT:
+        # the value is known) or 'address' (G_GLOBAL_VALUE, G_FRAME_INDEX:
+        # the bits are not known, and the value is neither undef nor
+        # poison). Such a value is an input of a tree, not a node: a rule
+        # reads it with gisynth::getConstantBits and builds it with
+        # gisynth::buildConstantBits.
+        self.leaf = None
+        # A constrained floating-point operation (G_STRICT_FADD): the IEEE
+        # operation in the rounding mode of the floating-point
+        # environment, with the exceptions that it raises. The last
+        # operand is the environment (fp.ENV_BITS bits): an input of the
+        # source that no register has, like the edge of a G_PHI. A proof
+        # holds for each environment. A replacement reads the environment
+        # only as the last operand of a constrained operation.
+        # ``fe_eval(w, ws, attr, res, vals)`` gives the exceptions (the
+        # bits fp.FE_*), ``fe_smt(w, ws, attr, res, xs)`` the 5 flags that
+        # a program reads (fp._z3_flags).
+        self.constrained = False
+        self.fe_eval = None
+        self.fe_smt = None
 
     def ident(self):
         """The operator in the name of a rule."""
@@ -298,6 +322,16 @@ class OpInfo:
                 return None
             return vk.pop() if rrole == 'v' and vk else \
                 (None if rrole == 'v' else rrole)
+        if self.constrained:
+            # The values, then the environment.
+            if not ks or ks[-1] != 'e' or any(
+                    k != ('i' if i in self.int_operands else 'f')
+                    for i, k in enumerate(ks[:-1])):
+                return None
+            return 'i' if self.shape_of == 'compare' else 'f'
+        if 'e' in ks:
+            # Only a constrained operation reads the environment.
+            return None
         if self.freeze or self.forwarded:
             return ks[0]
         if self.phi:
@@ -325,6 +359,19 @@ class OpInfo:
             return None
         return 'f' if self.fp_result and res not in self.int_results \
             else 'i'
+
+
+def raises(info):
+    """True if the operation is not constrained, and the processor can
+    raise a floating-point exception for it or round its result in the
+    mode of the environment: each operation on the value of a number (an
+    operator of a target also). A rule with a constrained operation has no
+    such operation next to it (ir.env_error)."""
+    if info.constrained or info.bitcast or info.name in _FP_BIT_OPS:
+        return False
+    if info.vector:
+        return info.name.startswith(('G_VECREDUCE_F', 'G_VECREDUCE_SEQ_F'))
+    return info.fp_operand or info.fp_result
 
 
 REGISTRY = {}
@@ -426,7 +473,9 @@ def typecheck(key, w, ws):
     n = lanes(w)
     for k, x in enumerate(ws):
         if lanes(x) != n and not (info.shape == 'select' and k == 0 and
-                                  x == 1) and not (info.phi and k == 0):
+                                  x == 1) and \
+                not (info.phi and k == 0) and \
+                not (info.constrained and k == len(ws) - 1):
             return False
     return bool(info.typecheck(elem(w), [elem(x) for x in ws], attr, res))
 
@@ -1486,6 +1535,33 @@ EVAL['G_FCANONICALIZE'] = lambda w, ws, at, r, v: \
 SMT['G_FCANONICALIZE'] = lambda w, ws, at, r, x: (
     z3.If(fp.z3_is_nan(x[0]), _bv(fp.qnan(w), w), x[0]), None, None)
 
+# Constrained operations (OpInfo.constrained): the last operand is the
+# environment. The value and the exceptions are fp.strict.
+_STRICT = {'G_STRICT_FADD': 'add', 'G_STRICT_FSUB': 'sub',
+           'G_STRICT_FMUL': 'mul', 'G_STRICT_FDIV': 'div',
+           'G_STRICT_FREM': 'rem', 'G_STRICT_FMA': 'fma',
+           'G_STRICT_FSQRT': 'sqrt', 'G_STRICT_FLDEXP': 'ldexp'}
+# G_STRICT_FCMPS is a signaling comparison: each NaN is invalid.
+_STRICT_CMP = {'G_STRICT_FCMP': False, 'G_STRICT_FCMPS': True}
+FE_EVAL, FE_SMT = {}, {}
+for _name, _fn in _STRICT.items():
+    EVAL[_name] = (lambda f: lambda w, ws, at, r, v: fp.strict_op(
+        f, v[-1], v[:-1], w, ws[-2])[0])(_fn)
+    FE_EVAL[_name] = (lambda f: lambda w, ws, at, r, v: fp.strict_op(
+        f, v[-1], v[:-1], w, ws[-2])[1])(_fn)
+    SMT[_name] = (lambda f: lambda w, ws, at, r, x: (
+        fp.z3_strict(f, x[-1], x[:-1])[0], None, None))(_fn)
+    FE_SMT[_name] = (lambda f: lambda w, ws, at, r, x:
+                     fp.z3_strict(f, x[-1], x[:-1])[1])(_fn)
+for _name, _sig in _STRICT_CMP.items():
+    EVAL[_name] = lambda w, ws, at, r, v: fp.compare(at, v[0], v[1], ws[0])
+    FE_EVAL[_name] = (lambda sg: lambda w, ws, at, r, v:
+                      fp.strict_nan_flags(v[:2], ws[0], sg))(_sig)
+    SMT[_name] = lambda w, ws, at, r, x: (
+        _b2bv(fp.z3_compare(at, x[0], x[1])), None, None)
+    FE_SMT[_name] = (lambda sg: lambda w, ws, at, r, x:
+                     fp.z3_strict_compare(x[:2], sg))(_sig)
+
 _FP_UNARY = ('G_FSQRT', 'G_FCANONICALIZE') + tuple(_FP_ROUND)
 _FP_BINARY = ('G_FADD', 'G_FSUB', 'G_FMUL', 'G_FDIV', 'G_FREM') + \
     tuple(_FP_MINMAX)
@@ -1494,7 +1570,11 @@ _FP_TERNARY = ('G_FMA', 'G_FMAD')
 _MAKES_NAN = _FP_UNARY + _FP_BINARY + _FP_TERNARY + (
     'G_FMODF', 'G_FLDEXP', 'G_FFREXP')
 # (the operands, the results) that are integers.
-_FP_INTEGERS = {'G_FLDEXP': ((1,), ()), 'G_FFREXP': ((), (1,))}
+_FP_INTEGERS = {'G_FLDEXP': ((1,), ()), 'G_FFREXP': ((), (1,)),
+                'G_STRICT_FLDEXP': ((1,), ())}
+# The floating-point operators on the bits of a value: no exception and no
+# rounding (OpInfo.raises).
+_FP_BIT_OPS = ('G_FNEG', 'G_FABS', 'G_FCOPYSIGN', 'G_IS_FPCLASS')
 # The operators whose result depends on the treatment of subnormal
 # numbers (OpInfo.denormal): each operation on the value of a number. Not
 # an operation on the bits (the sign, the class) and not a conversion to
@@ -1554,6 +1634,21 @@ for _name in _FP_TERNARY:
 for _name in _FP_ROUND_INT:
     _MODEL_TYPECHECK[_name] = lambda w, ws, attr, res: \
         len(ws) == 1 and fp.is_format(ws[0]) and w > 1
+for _name, _fn in _STRICT.items():
+    if _fn == 'ldexp':
+        _MODEL_TYPECHECK[_name] = lambda w, ws, attr, res: \
+            len(ws) == 3 and ws[2] == fp.ENV_BITS and ws[0] == w and \
+            fp.is_format(w) and ws[1] > 1
+    else:
+        _MODEL_TYPECHECK[_name] = (
+            lambda n: lambda w, ws, attr, res:
+            len(ws) == n + 1 and ws[-1] == fp.ENV_BITS and
+            all(x == w for x in ws[:-1]) and fp.is_format(w))(
+                {'sqrt': 1, 'fma': 3}.get(_fn, 2))
+for _name in _STRICT_CMP:
+    _MODEL_TYPECHECK[_name] = lambda w, ws, attr, res: \
+        len(ws) == 3 and w == 1 and ws[2] == fp.ENV_BITS and \
+        ws[0] == ws[1] and fp.is_format(ws[0]) and attr in fp.FP_PREDS
 # The class sets that a search tries as the immediate of G_IS_FPCLASS:
 # NaN, infinity, zero, finite, and the negative / positive values.
 _IMM_DOMAIN = {
@@ -1764,7 +1859,7 @@ ENUMERATED_EXTRA = ENUMERATED_BINARY + ENUMERATED_UNARY + \
 
 # Shapes the emitter can write as a match pattern and as a replacement.
 _EMIT_SHAPES = ('binary', 'unary', 'cast', 'bitcount', 'compare', 'select',
-                'typed', 'ptradd', 'merge')
+                'typed', 'ptradd', 'merge', 'constrained')
 # Shapes the emitter can write as a match pattern below the root. A rule
 # does not build G_UNMERGE_VALUES, and it is not the root of a pattern: it
 # has several results.
@@ -1773,8 +1868,26 @@ _MATCH_SHAPES = _EMIT_SHAPES + ('unmerge', 'vector', 'phi')
 _COSTS = {'G_MUL': 2, 'G_UMULH': 2, 'G_SMULH': 2, 'G_UDIV': 4, 'G_SDIV': 4,
           'G_UREM': 4, 'G_SREM': 4, 'G_UDIVREM': 4, 'G_SDIVREM': 4,
           'G_UMULO': 2, 'G_SMULO': 2,
+          # As for the integers: a multiplication costs more than an
+          # addition, and a division more than a multiplication.
+          'G_FMUL': 2, 'G_FMA': 2, 'G_FMAD': 2, 'G_FDIV': 4, 'G_FREM': 4,
+          'G_FSQRT': 4, 'G_STRICT_FMUL': 2, 'G_STRICT_FMA': 2,
+          'G_STRICT_FDIV': 4, 'G_STRICT_FREM': 4, 'G_STRICT_FSQRT': 4,
           # A hint is not an instruction of the final code.
           'G_ASSERT_ZEXT': 0, 'G_ASSERT_SEXT': 0, 'G_ASSERT_ALIGN': 0}
+
+
+def _load_leaf(m):
+    """A constant (OpInfo.leaf): an input of a tree."""
+    info = OpInfo(m['name'], 'leaf', 0, 1, None, meta=m, cost=0)
+    info.leaf = m['leaf']
+    why = 'the value is an input of a tree: a constant with its bits' \
+        if info.leaf == 'constant' else \
+        'the value is an input of a tree: the bits of an address are ' \
+        'not known, and the value is neither undef nor poison'
+    for st in STAGES[1:]:
+        info.unsupported[st] = why
+    register(info)
 
 
 def _load_generic():
@@ -1795,14 +1908,22 @@ def _load_generic():
         if shape == 'vector':
             _load_vector(m)
             continue
+        if m.get('leaf'):
+            _load_leaf(m)
+            continue
         results = len(m.get('result_kinds', [0]))
         attr = 'pred' if shape == 'compare' else \
             ('imm' if m.get('imm_attr') else None)
-        info = OpInfo(name, shape, m['operands'] if m['operands'] >= 0
-                      else None, results, attr,
+        operands = m['operands'] if m['operands'] >= 0 else None
+        if m.get('constrained'):
+            # The environment is the last operand.
+            shape, operands = 'constrained', operands + 1
+        info = OpInfo(name, shape, operands, results, attr,
                       commutative=bool(m.get('commutative')), meta=m,
                       cost=_COSTS.get(name, 1),
                       strict=shape not in ('select', 'phi'))
+        info.shape_of = m['shape']
+        info.constrained = bool(m.get('constrained'))
         info.phi = shape == 'phi'
         if shape == 'unmerge':
             info.results = None
@@ -1823,12 +1944,15 @@ def _load_generic():
             info.fp_result = kind in ('fpext', 'fptrunc', 'sitofp',
                                       'uitofp')
             info.makes_nan = kind in ('fpext', 'fptrunc') or \
-                name in _MAKES_NAN
+                name in _MAKES_NAN or name in _STRICT
             info.nan_insensitive = kind in _FP_TO_INT or \
-                (bool(m.get('fp')) and shape == 'compare') or \
+                (bool(m.get('fp')) and m['shape'] == 'compare') or \
                 name in _FP_ROUND_INT
-            info.denormal = name in _DENORMAL
+            info.denormal = name in _DENORMAL or info.constrained
+            # A constrained operation is the IEEE operation: LLVM does not
+            # permit it to give the signaling NaN of an operand.
             info.nan_quiet = name == 'G_FCANONICALIZE' or \
+                name in _STRICT or \
                 _FP_MINMAX.get(name, ('',))[0] == 'ieee'
             if _FP_MINMAX.get(name, ('',))[0] == 'num':
                 info.tgt_choice = 2
@@ -1836,8 +1960,8 @@ def _load_generic():
                 # The operands are floating-point values, and so is the
                 # result unless it is one bit (a comparison, a test).
                 info.fp_operand = True
-                info.fp_result = shape not in ('compare', 'cast')
-                if shape == 'compare':
+                info.fp_result = m['shape'] not in ('compare', 'cast')
+                if m['shape'] == 'compare':
                     info.preds = fp.FP_PREDS
                     info.swapped_pred = fp.FP_SWAPPED_PRED
             info.bitcast = name == 'G_BITCAST'
@@ -1847,6 +1971,8 @@ def _load_generic():
             info.nan_through = name == 'G_FNEG'
             info.int_operands, info.int_results = _FP_INTEGERS.get(
                 name, ((), ()))
+            if info.constrained:
+                info.fe_eval, info.fe_smt = FE_EVAL[name], FE_SMT[name]
             info.unspecified = _UNSPECIFIED.get(name)
             if name in _UNSPECIFIED_IF:
                 info.unspecified = lambda w, ws: mask(w)

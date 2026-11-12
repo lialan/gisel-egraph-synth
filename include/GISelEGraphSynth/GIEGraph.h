@@ -39,6 +39,7 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/FloatingPointMode.h"
 #include "llvm/ADT/FunctionExtras.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/SmallVector.h"
@@ -741,6 +742,27 @@ struct OpProperties {
   /// the behaviour undefined or the operation not defined for these widths.
   std::optional<APInt> (*FoldN)(ArrayRef<APInt> Ops, uint64_t Attr,
                                 unsigned ResultWidth) = nullptr;
+
+  //===--- Constants and constrained operations ---------------------------===//
+
+  /// The instruction has no register operand, and its value is a constant
+  /// of the function: "constant" (G_CONSTANT, G_FCONSTANT: the instruction
+  /// has the value) or "address" (G_GLOBAL_VALUE, G_FRAME_INDEX: the value is
+  /// not known, and it is neither undef nor poison). An expression tree has
+  /// such a value as an input, not as a node. Only operators of
+  /// getModelOnlyOpProperties have this property.
+  const char *Leaf = nullptr;
+  /// A constrained floating-point operation (G_STRICT_FADD): it rounds in
+  /// the mode of the floating-point environment and raises exceptions.
+  /// Only operators of getModelOnlyOpProperties have this property.
+  bool IsConstrained = false;
+  /// FoldEnv has no exceptions to compare with.
+  static constexpr unsigned NoStatus = ~0u;
+  /// Constant folding of a constrained operation in the rounding mode
+  /// \p RM: the result and the exceptions that APFloat reports
+  /// (APFloat::opStatus), or NoStatus if APFloat does not report them.
+  std::pair<APInt, unsigned> (*FoldEnv)(ArrayRef<APInt> Ops, uint64_t Attr,
+                                        RoundingMode RM) = nullptr;
 
   //===--- Pointer arithmetic ---------------------------------------------===//
 

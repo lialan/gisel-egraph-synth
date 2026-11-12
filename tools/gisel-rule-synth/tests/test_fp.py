@@ -225,8 +225,8 @@ class FreezeTest(unittest.TestCase):
         self.assertTrue(precond.eval_atom(a, ((0, 0), (0, 0, True)),
                                           (32, 32)))
         self.assertIn(a, precond.enumerate_atoms((32, 32), 32))
-        self.assertEqual(precond.cpp_atom(a),
-                         'isGuaranteedNotToBeUndefOrPoison(X1, MRI)')
+        # The fact of the compiler, and each address constant.
+        self.assertEqual(precond.cpp_atom(a), 'isDefinedValue(X1, MRI)')
         self.assertEqual(precond.pred_vars((a,)), [])
 
     def test_precondition_is_found_from_the_fact(self):
@@ -279,11 +279,15 @@ class EmitTest(unittest.TestCase):
         self.assertEqual(emit.why_not_emittable(r),
                          'no floating-point operand with width 32')
 
-    def test_float_constant_is_not_written(self):
+    def test_float_constant_is_built_by_the_builder(self):
+        # An apply pattern has G_CONSTANT with an integer type only: the
+        # apply function builds a G_FCONSTANT.
         src = op('G_FPEXT', 64, op('G_SITOFP', 32, V(0)))
         r = self.rule(src, L(64, '0'), (16,))
-        self.assertEqual(emit.why_not_emittable(r),
-                         'a floating-point constant in the replacement')
+        self.assertIsNone(emit.why_not_emittable(r))
+        self.assertTrue(emit._rule_needs_cpp_apply(r))
+        self.assertIn('buildConstantBits(B, Dst, ', emit._cpp_apply(r))
+        self.assertIn('/*IsFP=*/true', emit._cpp_apply(r))
 
     def test_freeze_is_matched_but_not_created(self):
         src = op('G_FREEZE', 32, V(0))

@@ -139,7 +139,8 @@ bool isSupportedValue(const MachineRegisterInfo &MRI, const DataLayout &DL,
 /// operator: the predicate of a comparison and a trailing immediate.
 bool isSupportedInstr(const MachineRegisterInfo &MRI, const MachineInstr &MI) {
   const egraph::OpProperties *P = getSupportedOp(MI.getOpcode());
-  if (!P || MI.getNumExplicitDefs() == 0)
+  // A constant (OpProperties::Leaf) is an input of a tree, not a node.
+  if (!P || P->Leaf || MI.getNumExplicitDefs() == 0)
     return false;
   // The synthesizer has a value with unspecified bits for integers only: a
   // floating-point or pointer G_IMPLICIT_DEF is an input.
@@ -381,6 +382,15 @@ public:
   }
 
   void write(raw_ostream &OS, const MachineFunction &MF, const Tree &T) const {
+    // The constrained operations of a tree have one floating-point
+    // environment, which is the one of the root: a rule checks the same
+    // (gisynth::isSameFPEnvironment).
+    const MachineInstr *Root = T.Nodes.back().MI;
+    for (const TreeNode &N : T.Nodes)
+      if (N.MI && N.MI != Root &&
+          gisynth::isConstrainedFPOpcode(N.MI->getOpcode()) &&
+          !gisynth::isSameFPEnvironment(*N.MI, *Root))
+        return;
     // Inputs are numbered in order of first (left-to-right) occurrence, and a
     // register that occurs twice is the same input.
     DenseMap<Register, unsigned> InputIdx;
@@ -419,32 +429,21 @@ public:
             J.attribute("one", hex(KB.One));
             // A fact like the known bits: a rule that needs it checks it
             // again where it matches.
-            J.attribute("noundef", isGuaranteedNotToBeUndefOrPoison(R, MRI));
+            J.attribute("noundef", gisynth::isDefinedValue(R, MRI));
             const MachineInstr *Def = MRI.getVRegDef(R);
             J.attribute("def", Def ? std::string(opcodeName(Def))
                                    : std::string("<none>"));
-            // A floating-point constant is its bit pattern. A pointer
-            // constant is an input like every other: a rule does not match
-            // or build a G_CONSTANT with a pointer type.
-            if (Ty.getScalarType().isPointer())
-              return;
-            // A vector constant with the same value in each lane is the
-            // value of a lane.
-            if (Ty.isVector()) {
-              if (auto C = getIConstantSplatVal(R, MRI))
-                J.attribute("const", hex(*C));
-              else if (auto FC = getFConstantSplat(R, MRI,
-                                                   /*AllowUndef=*/false))
-                J.attribute("const", hex(FC->Value.bitcastToAPInt()));
-              return;
-            }
-            if (auto C = getIConstantVRegVal(R, MRI))
+            // The address of an object: a constant whose bits are not
+            // known.
+            if (gisynth::isAddressConstant(R, MRI))
+              J.attribute("address", true);
+            // The bits of a constant: an integer, a pointer, the bit
+            // pattern of a floating-point value, or the value of a lane
+            // of a vector with the same constant in each lane. A rule
+            // reads a constant with the same function.
+            if (std::optional<APInt> C =
+                    gisynth::getConstantBits(R, MRI, /*AllowSplat=*/true))
               J.attribute("const", hex(*C));
-            else if (Def && Def->getOpcode() == TargetOpcode::G_FCONSTANT)
-              J.attribute("const", hex(Def->getOperand(1)
-                                           .getFPImm()
-                                           ->getValueAPF()
-                                           .bitcastToAPInt()));
           });
         }
       });
@@ -535,6 +534,10 @@ private:
           J.value("disjoint");
         if (N.MI->getFlag(MachineInstr::NonNeg))
           J.value("nneg");
+        // The program does not read the exceptions of a constrained
+        // operation.
+        if (N.MI->getFlag(MachineInstr::NoFPExcept))
+          J.value("nofpexcept");
       });
       J.attributeArray("args", [&] {
         for (unsigned A : N.Args)

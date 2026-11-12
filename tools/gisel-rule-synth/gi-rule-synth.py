@@ -18,6 +18,7 @@ commands do not.
 """
 
 import argparse
+import copy
 import concurrent.futures
 import hashlib
 import json
@@ -405,7 +406,8 @@ class _DiscoveryCache:
         with open(self._file(inst)) as f:
             rec = json.load(f)
         self.hits += 1
-        return ([{'tgt': ir.from_json(t)} for t in rec['candidates']],
+        return ([{'tgt': ir.from_json(t), 'const_vars': tuple(cv)}
+                 for t, cv in zip(rec['candidates'], rec['const_vars'])],
                 rec['stats'], rec['log'])
 
     def put(self, inst, cands, st, log):
@@ -415,6 +417,8 @@ class _DiscoveryCache:
         tmp = self._file(inst) + '.tmp'
         with open(tmp, 'w') as f:
             json.dump({'candidates': [ir.to_json(c['tgt']) for c in cands],
+                       'const_vars': [list(c.get('const_vars', ()))
+                                      for c in cands],
                        'stats': st, 'log': log}, f)
         os.replace(tmp, self._file(inst))
         self.stored += 1
@@ -538,7 +542,15 @@ def cmd_synth(args):
         rids = []
         for c in cands:
             dstats['candidates'] += 1
-            rids.append(sy.add(inst, c['tgt']))
+            cinst = inst
+            if c.get('const_vars'):
+                # The replacement computes with constants of the source:
+                # the rule matches these inputs as constants.
+                cinst = copy.copy(inst)
+                cinst.const_vars = tuple(c['const_vars'])
+                dstats['computed_constants'] = dstats.get(
+                    'computed_constants', 0) + 1
+            rids.append(sy.add(cinst, c['tgt']))
             if rids[-1]:
                 found.setdefault(inst.key(), []).append(c['tgt'])
             if args.regions and rids[-1] and region.interior_outputs(inst):
@@ -836,6 +848,12 @@ def cmd_recheck(args):
         if choice == 'model' and not r['needs_one_use']:
             ok = False
         status = 'valid' if ok else 'structural'
+        slow = max([p.get('timeout_ms', 0)
+                    for d in r['disjuncts'] +
+                    r.get('unselected_disjuncts', [])
+                    for p in d['proofs']] +
+                   [p.get('timeout_ms', 0) for p in
+                    r['semantic_status'].get('dnf_proofs', [])])
         checks = []
         for d in r['disjuncts'] + r.get('unselected_disjuncts', []):
             pred = tuple(precond.atom_from_json(a) for a in d['pred_json'])
@@ -855,8 +873,13 @@ def cmd_recheck(args):
                 status = 'structural' if None in sched else \
                     region.verify(sched, dnf, backend)[0]
                 continue
-            status, _ = synth.verify(synth.rule_schedules(r, wmaps), dnf,
-                                     backend, cv, strong)
+            sched = synth.rule_schedules(r, wmaps)
+            status, _ = synth.verify(sched, dnf, backend, cv, strong)
+            if status == 'unknown' and slow > backend.timeout_ms:
+                # A proof of the rule had a longer time limit.
+                with backend.limit(slow, slow / 1000.0 * len(sched)):
+                    status, _ = synth.verify(sched, dnf, backend, cv,
+                                             strong)
         if status != 'valid':
             bad += 1
             print('FAIL %s: %s' % (r['id'], status))

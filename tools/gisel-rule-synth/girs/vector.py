@@ -492,12 +492,17 @@ def lanewise_only(*exprs):
     return True
 
 
-def lift(code_expr, vw):
+def lift(code_expr, vw, scalars=None):
     """The scalar expression and the scalar widths of an expression whose
     values are all vectors with one number of lanes and whose operators are
-    all lane-wise (lanewise_only), or None."""
-    # The edge of a G_PHI is a scalar: one edge for all lanes.
-    edge = ir.edge_vars(code_expr)
+    all lane-wise (lanewise_only), or None. `scalars` are the variables
+    that are scalars for all lanes; without it they are those of
+    `code_expr` (a part of an expression does not show all of them)."""
+    # The edge of a G_PHI is a scalar: one edge for all lanes. So is the
+    # floating-point environment of the constrained operations.
+    edge = ir.edge_vars(code_expr) | ir.env_vars(code_expr)
+    if scalars is not None:
+        edge = edge | set(scalars)
     ls = {lanes(w) for i, w in enumerate(vw) if i not in edge}
     for n in ir.nodes(code_expr):
         ls.add(lanes(n[1]))

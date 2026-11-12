@@ -843,7 +843,112 @@ every disjunct of `P` and for the emitted disjunction as a whole.
   so a proof for the flag-free source also covers them. Replacements carry no
   flags.
 
+- Constants. `G_CONSTANT` and `G_FCONSTANT` are not nodes of a tree: the
+  value is an input that the rule matches as a constant, with each bit
+  known. This holds for an integer, a pointer (`G_CONSTANT` of a pointer
+  type) and a floating-point value (its bit pattern), and for a
+  `G_BUILD_VECTOR` with one such constant in each lane. A rule reads a
+  constant with `gisynth::getConstantBits` and builds one with
+  `gisynth::buildConstantBits`.
+  - The address opcodes (`G_GLOBAL_VALUE`, `G_FRAME_INDEX`,
+    `G_CONSTANT_POOL`, `G_BLOCK_ADDR`, `G_JUMP_TABLE`,
+    `G_PTRAUTH_GLOBAL_VALUE`) are constants whose bits the compiler does
+    not know. Such a value is an input with no known bit, and it is neither
+    undef nor poison (`def(x)` holds, `gisynth::isDefinedValue`).
+  - The search grammar and the preconditions have the floating-point
+    literals 0.0, -0.0, 1.0, -1.0, 2.0 and 0.5 (`ir.FP_LITERALS`,
+    `gisynth::FPLiteral`). A literal has its meaning in each format, so one
+    rule holds for half, single and double. The atom `is_<literal>(x)` says
+    that a constant of the source is the literal.
+  - The atom `finv(x)` says that a floating-point constant is a power of 2
+    whose reciprocal is a normal number (`gisynth::hasExactInverse`, the
+    test of `APFloat::getExactInverse`). A division by such a constant is
+    the multiplication by the reciprocal for each operand and in each
+    rounding mode.
+  - A computed floating-point constant is `G_FNEG` (the sign bit) or
+    `G_FDIV` (`ir.FP_RECIPE_OPS`) of constants of the source and literals.
+    The compiler computes the division when the rule applies, rounded to
+    nearest. The bits of a NaN that an operation makes are not specified,
+    so the guard rejects a result that is a NaN (`gisynth::isNaNBits`), and
+    the proof has this condition.
+  - The value tracking has no known bits for a `G_FCONSTANT`; a guard
+    reads `gisynth::getKnownBitsOrConstant`.
+- The constrained operations: `G_STRICT_FADD`, `G_STRICT_FSUB`,
+  `G_STRICT_FMUL`, `G_STRICT_FDIV`, `G_STRICT_FREM`, `G_STRICT_FMA`,
+  `G_STRICT_FSQRT`, `G_STRICT_FLDEXP`, `G_STRICT_FCMP` and
+  `G_STRICT_FCMPS`. Each one is the IEEE 754 operation in the rounding mode
+  of the floating-point environment, with the exceptions that it raises
+  (`fp.strict`, `fp.z3_strict`).
+  - The environment is one more input of the source (`fp.ENV_BITS` bits)
+    that no register has, like the edge of a `G_PHI`. Its low 3 bits are
+    the rounding mode (the numbers of `llvm::RoundingMode`: toward zero, to
+    nearest with ties to even, toward positive, toward negative, to nearest
+    with ties away; each other number is to nearest with ties to even). A
+    proof holds for each mode. A replacement and a precondition do not read
+    the mode.
+  - The exceptions are invalid, division by zero, overflow, underflow and
+    inexact. IEEE 754 lets an implementation choose two things, and a proof
+    holds for each choice (`fp.flag_views`): tininess is found before or
+    after the rounding, and `fma(0, infinity, quiet NaN)` raises invalid or
+    does not.
+  - A replacement must raise the same set of exceptions as the source
+    (`smt.flags_differ`), not a subset: with the exception behaviour
+    "strict" a program observes an exception that is absent, and a trap of
+    the replacement must be a trap of the source. The exceptions of a
+    source with a poison operand are not specified.
+  - The atom `nofpe` says that each constrained instruction of the source
+    has the flag `nofpexcept` (the bit `fp.ENV_IGNORE` of the environment):
+    the program does not read the exceptions, so only the values must be
+    equal. A rule with this atom gives the flag to each new instruction.
+  - A NaN result is a quiet NaN; LLVM does not permit a constrained
+    operation to give the signaling NaN of an operand.
+    `G_STRICT_FCMPS` raises invalid for each NaN operand, `G_STRICT_FCMP`
+    only for a signaling NaN.
+  - The constrained operations of a rule have one environment
+    (`ir.env_error`). The extractor writes a tree, and the guard accepts a
+    match, only if these instructions are in one block, at most 64
+    instructions before the root, with no instruction between them that can
+    read or write the environment or that a trap must stay before or after:
+    a call, an instruction with a side effect, a write to memory, inline
+    assembly, an instruction of the target, a copy of a physical register
+    (`gisynth::isSameFPEnvironment`).
+  - An operation that rounds or raises an exception and is not constrained
+    (`ops.raises`, for example `G_FADD`) is not in a rule next to a
+    constrained one: such an operation assumes the default environment. A
+    rule creates a constrained operation only if its source has one. A
+    constant that the compiler computes when the rule applies is not an
+    operation of the program.
+  - The compiler does not remove a constrained operation that no
+    instruction reads (it raises exceptions). The apply function erases the
+    operations of the source below the root that no instruction reads
+    (`gisynth::eraseDeadSourceOp`): the replacement raises their
+    exceptions.
+  - `opcheck` compares the value and the exceptions of each constrained
+    operation, in each rounding mode, with the solver encoding and with
+    `APFloat` in the compiler (the status of the operation). `APFloat` finds
+    tininess after the rounding and its fma of (0, infinity, quiet NaN) is
+    invalid, so this comparison is for these choices. `APFloat` differs
+    from IEEE 754 (7.4, 7.5) in two cases, which the comparison permits
+    and the model does not have: no overflow if a directed rounding gives
+    the largest finite number, and no underflow if the result is the
+    smallest normal number.
+  - No model: the opcodes that read or write the environment
+    (`G_GET_ROUNDING`, `G_SET_ROUNDING`, the `FPENV` and `FPMODE` opcodes).
+    They are barriers of `isSameFPEnvironment`. The lanes of a vector
+    have one environment, so a rule with constrained operations is applied
+    lane by lane like each other lane-wise rule.
+
 An UNKNOWN solver result is never accepted.
+
+A candidate that the solver does not decide in the usual time limit
+(`--timeout-ms`, 10 s) gets one more attempt with a long limit
+(`synth.SynthLimits`: 120 s for a check, 300 s for all checks of the
+candidate, one hour for a run). The proof of a floating-point
+multiplication or division with 64 bits needs this: without it a rule with
+such an operation is proved for half and single only. The proof record has
+the limit (`timeout_ms`), the guard as a whole is proved with the same
+limit, and `recheck` gives the proof this limit. The time limit does not
+change what a proof is.
 
 A check first has each product of two operands that are not constants as
 an uninterpreted function (`smt.abstract_products`). Each model of the

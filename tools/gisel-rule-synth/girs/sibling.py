@@ -148,6 +148,10 @@ def freeze_ok(a, sibs):
     # G_PHI is in another block.
     if ir.phi_nodes(a) or any(ir.phi_nodes(b) for b in sibs):
         return False
+    # And no constrained operation: the roots have one position, and each
+    # constrained operation has its own position in the environment.
+    if any(ir.constrained_nodes(x) for x in [a] + list(sibs)):
+        return False
     # And no load after a G_STORE: the value of the load is no operand of
     # its instruction, so the rule cannot find the load from the value.
     if any(ir.has_forwarded_load(x) for x in [a] + list(sibs)):

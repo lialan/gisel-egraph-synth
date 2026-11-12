@@ -24,13 +24,14 @@ class Instance:
                  sub_facts=None, kinds=None):
         self.expr = expr            # ir expression; leaves are ('var', i)
         self.vw = tuple(vw)         # variable widths
-        # Per variable 'f' (a floating-point value), 'p' (a pointer) or
-        # 'i' (an integer): what the operators of the expression need,
+        # Per variable 'f' (a floating-point value), 'p' (a pointer), 'e'
+        # (the floating-point environment of the constrained operations)
+        # or 'i' (an integer): what the operators of the expression need,
         # else what the type of the register says (``kinds``), else an
         # integer.
         need = ir.var_kinds(expr)
         self.vk = tuple(
-            need[i] if need.get(i) in ('i', 'f', 'p') else
+            need[i] if need.get(i) in ('i', 'f', 'p', 'e') else
             ((kinds[i] if kinds else None) or 'i')
             for i in range(len(self.vw)))
         # Per variable (known_zero, known_one) or (known_zero, known_one,
@@ -141,6 +142,21 @@ def _convert(node, inputs, interior_uses, flags, shared, root=False,
         inputs.append({'reg': None, 'w': bits, 'zero': '0x0', 'one': '0x0',
                        'type': '', 'noundef': True, 'edge': True})
         args.insert(0, ('var', len(inputs) - 1))
+    if ops.REGISTRY[node['op']].constrained:
+        # The floating-point environment: one input of the tree that no
+        # register has (OpInfo.constrained). The extractor writes a tree
+        # only if its constrained operations have one environment.
+        env = next((i for i, x in enumerate(inputs) if x.get('env')), None)
+        if env is None:
+            env = len(inputs)
+            inputs.append({'reg': None, 'w': fp.ENV_BITS, 'zero': '0x0',
+                           'one': '0x0', 'type': '', 'noundef': True,
+                           'env': True, 'nofpe': True})
+        # The program does not read the exceptions if each constrained
+        # instruction has the flag nofpexcept.
+        inputs[env]['nofpe'] = inputs[env]['nofpe'] and \
+            'nofpexcept' in node.get('flags', [])
+        args.append(('var', env))
     if node['op'] == 'G_BITCAST':
         a = node['args'][0]
         if ('in' in a and inputs[a['in']].get('lanes', 0) or
@@ -199,6 +215,9 @@ def parse_record(rec, source='', why=None):
         if z & o:
             raise ValueError('inconsistent known bits in corpus: %r' % inp)
         c = int(inp['const'], 16) if 'const' in inp else None
+        if inp.get('env'):
+            # The one fact of an environment (fp.ENV_IGNORE).
+            z, o = (0, fp.ENV_IGNORE) if inp['nofpe'] else (fp.ENV_IGNORE, 0)
         if c is not None:
             # Every bit of a constant is known. The value tracking of the
             # compiler reports no known bits for a floating-point
@@ -219,6 +238,9 @@ def parse_record(rec, source='', why=None):
         why.append('not well typed for the model: %s' %
                    ops.base(expr[0]))
         return None
+    if ir.env_error(expr) is not None:
+        why.append(ir.env_error(expr))
+        return None
     lifted = False
     if vector.has_vector(vw, expr):
         # A source that computes each lane of its vectors from the same
@@ -226,9 +248,16 @@ def parse_record(rec, source='', why=None):
         # rule holds for each lane.
         low = vector.lift(expr, vw)
         if low is not None:
-            sub_facts = {vector.lift(e, vw)[0]: f
+            scalars = ir.edge_vars(expr) | ir.env_vars(expr)
+            sub_facts = {vector.lift(e, vw, scalars)[0]: f
                          for e, f in sub_facts.items()}
             (expr, vw), lifted = low, True
+        elif ir.constrained_nodes(expr):
+            # The lanes of a vector have one environment, and the model
+            # of an operator on a whole vector has none.
+            why.append('a constrained operation next to an operator on '
+                       'a whole vector')
+            return None
     inst = Instance(expr, vw, facts, consts, uses, sorted(flags),
                     [(source, rec['fn'], rec['root'])], sub_facts, kinds)
     inst.lifted = lifted

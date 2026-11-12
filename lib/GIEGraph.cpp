@@ -1301,6 +1301,93 @@ static std::vector<OpProperties> buildModelOnlyOpProperties() {
   Vec(G_STEP_VECTOR, "G_STEP_VECTOR", 0);
   Vec(G_VSCALE, "G_VSCALE", 0);
 
+  // Constants. The instruction has no register operand: an expression
+  // tree has its value as an input. The extractor writes the value of a
+  // G_CONSTANT and of a G_FCONSTANT; the value of an address is not known.
+  auto LeafOp = [&](unsigned Opc, const char *Name, const char *Kind) {
+    Op(Opc, Name, OpShape::Typed, {}, {Main})->Leaf = Kind;
+  };
+  LeafOp(G_CONSTANT, "G_CONSTANT", "constant");
+  LeafOp(G_FCONSTANT, "G_FCONSTANT", "constant");
+  LeafOp(G_GLOBAL_VALUE, "G_GLOBAL_VALUE", "address");
+  LeafOp(G_PTRAUTH_GLOBAL_VALUE, "G_PTRAUTH_GLOBAL_VALUE", "address");
+  LeafOp(G_FRAME_INDEX, "G_FRAME_INDEX", "address");
+  LeafOp(G_CONSTANT_POOL, "G_CONSTANT_POOL", "address");
+  LeafOp(G_BLOCK_ADDR, "G_BLOCK_ADDR", "address");
+  LeafOp(G_JUMP_TABLE, "G_JUMP_TABLE", "address");
+
+  // Constrained floating-point operations: the IEEE operation in the
+  // rounding mode of the floating-point environment. The fold gives the
+  // result and the exceptions of APFloat.
+  using EnvFoldFn =
+      std::pair<APInt, unsigned> (*)(ArrayRef<APInt>, uint64_t, RoundingMode);
+  auto StrictOp = [&](unsigned Opc, const char *Name, unsigned NumOperands,
+                      EnvFoldFn Fold, bool Commutative = false) {
+    OpProperties *P = NumOperands == 1   ? Op(Opc, Name, OpShape::Unary)
+                      : NumOperands == 2 ? Op(Opc, Name, OpShape::Binary)
+                                         : Op(Opc, Name, OpShape::Typed,
+                                              {Main, Main, Main}, {Main});
+    P->IsFP = true;
+    P->IsConstrained = true;
+    P->Commutative = Commutative;
+    P->FoldEnv = Fold;
+    return P;
+  };
+#define STRICT_FOLD(CALL)                                                      \
+  [](ArrayRef<APInt> O, uint64_t,                                              \
+     RoundingMode RM) -> std::pair<APInt, unsigned> {                          \
+    APFloat F = getFPValue(O[0]);                                              \
+    APFloat::opStatus St = F.CALL;                                             \
+    return {F.bitcastToAPInt(), static_cast<unsigned>(St)};                    \
+  }
+  StrictOp(G_STRICT_FADD, "G_STRICT_FADD", 2,
+           STRICT_FOLD(add(getFPValue(O[1]), RM)), /*Commutative=*/true);
+  StrictOp(G_STRICT_FSUB, "G_STRICT_FSUB", 2,
+           STRICT_FOLD(subtract(getFPValue(O[1]), RM)));
+  StrictOp(G_STRICT_FMUL, "G_STRICT_FMUL", 2,
+           STRICT_FOLD(multiply(getFPValue(O[1]), RM)), /*Commutative=*/true);
+  StrictOp(G_STRICT_FDIV, "G_STRICT_FDIV", 2,
+           STRICT_FOLD(divide(getFPValue(O[1]), RM)));
+  StrictOp(G_STRICT_FREM, "G_STRICT_FREM", 2,
+           STRICT_FOLD(mod(getFPValue(O[1]))));
+  StrictOp(
+      G_STRICT_FMA, "G_STRICT_FMA", 3,
+      STRICT_FOLD(fusedMultiplyAdd(getFPValue(O[1]), getFPValue(O[2]), RM)));
+#undef STRICT_FOLD
+  // APFloat has no square root.
+  StrictOp(G_STRICT_FSQRT, "G_STRICT_FSQRT", 1, nullptr);
+  {
+    // The exponent is a signed integer of a type of its own. scalbn does
+    // not report the exceptions.
+    OpProperties *P = Op(G_STRICT_FLDEXP, "G_STRICT_FLDEXP", OpShape::Typed,
+                         {Main, Free}, {Main});
+    P->IsFP = true;
+    P->IsConstrained = true;
+    P->FoldEnv = [](ArrayRef<APInt> O, uint64_t,
+                    RoundingMode RM) -> std::pair<APInt, unsigned> {
+      int Exp = std::clamp<int64_t>(O[1].getSExtValue(), -65536, 65536);
+      return {scalbn(getFPValue(O[0]), Exp, RM).bitcastToAPInt(),
+              OpProperties::NoStatus};
+    };
+  }
+  // The comparisons: ENode::Attr is a floating-point CmpInst::Predicate.
+  // G_STRICT_FCMP raises "invalid" for a signaling NaN and G_STRICT_FCMPS
+  // for each NaN; APFloat does not report the exceptions of a comparison.
+  for (auto [Opc, Name] :
+       {std::pair<unsigned, const char *>{G_STRICT_FCMP, "G_STRICT_FCMP"},
+        {G_STRICT_FCMPS, "G_STRICT_FCMPS"}}) {
+    OpProperties *P = Op(Opc, Name, OpShape::Compare);
+    P->IsFP = true;
+    P->IsConstrained = true;
+    P->FoldEnv = [](ArrayRef<APInt> O, uint64_t Pred,
+                    RoundingMode) -> std::pair<APInt, unsigned> {
+      return {
+          APInt(1, FCmpInst::compare(getFPValue(O[0]), getFPValue(O[1]),
+                                     static_cast<CmpInst::Predicate>(Pred))),
+          OpProperties::NoStatus};
+    };
+  }
+
   // The canonical encoding of a value: a NaN becomes a quiet NaN.
   FPOp(G_FCANONICALIZE, "G_FCANONICALIZE", 1,
        [](ArrayRef<APInt> O, uint64_t, unsigned) -> std::optional<APInt> {
@@ -1869,6 +1956,93 @@ static void printFPOpSamples(json::OStream &J, const OpProperties &P,
   }
 }
 
+/// Write the samples of the constrained operator \p P with operands of
+/// \p W bits (a free operand has \p W2 bits): the result and the
+/// exceptions of APFloat in each rounding mode.
+static void printConstrainedOpSamples(json::OStream &J, const OpProperties &P,
+                                      unsigned W, unsigned W2) {
+  const fltSemantics &Sem = getFltSemanticForLLT(LLT::scalar(W));
+  unsigned NumOps = P.NumOperands;
+  // The values of getFewFPSampleValues, and values with results that are
+  // not exact, that are tiny and that are near the limits.
+  SmallVector<APInt, 8> Values = getFewFPSampleValues(W);
+  Values.push_back(APFloat::getSmallestNormalized(Sem).bitcastToAPInt());
+  for (double D : {3.0, 0.1}) {
+    APFloat F(D);
+    bool LosesInfo;
+    F.convert(Sem, APFloat::rmNearestTiesToEven, &LosesInfo);
+    Values.push_back(F.bitcastToAPInt());
+  }
+  APFloat Next = APFloat::getOne(Sem);
+  Next.next(/*nextDown=*/false);
+  Values.push_back(Next.bitcastToAPInt());
+  SmallVector<SmallVector<APInt, 8>, 3> Vals;
+  for (unsigned I = 0; I != NumOps; ++I) {
+    bool IsFree =
+        P.Shape == OpShape::Typed && P.OperandKinds[I] == TypeKind::Free;
+    if (IsFree) {
+      Vals.emplace_back();
+      for (int64_t Exp : {0, 1, -1, 7, -7, 30, -30, 200, -200, 1100, -1100})
+        Vals.back().push_back(APInt(W2, Exp, /*isSigned=*/true));
+    } else if (I == 2) {
+      // The third operand of a fused operation: fewer values.
+      Vals.emplace_back();
+      for (unsigned K : {0u, 3u, 4u, 5u, 7u, 9u, 12u})
+        Vals.back().push_back(Values[K]);
+    } else {
+      Vals.push_back(Values);
+    }
+  }
+  SmallVector<uint64_t, 16> Attrs = {0};
+  if (P.Shape == OpShape::Compare) {
+    Attrs.clear();
+    for (unsigned Pred = CmpInst::FIRST_FCMP_PREDICATE;
+         Pred <= CmpInst::LAST_FCMP_PREDICATE; ++Pred)
+      Attrs.push_back(Pred);
+  }
+  const RoundingMode Modes[] = {
+      RoundingMode::TowardZero, RoundingMode::NearestTiesToEven,
+      RoundingMode::TowardPositive, RoundingMode::TowardNegative,
+      RoundingMode::NearestTiesToAway};
+  SmallVector<unsigned, 3> Idx(NumOps, 0);
+  while (true) {
+    SmallVector<APInt, 3> Ops;
+    for (unsigned I = 0; I != NumOps; ++I)
+      Ops.push_back(Vals[I][Idx[I]]);
+    for (uint64_t Attr : Attrs) {
+      for (RoundingMode RM : Modes) {
+        // A comparison does not round.
+        if (P.Shape == OpShape::Compare &&
+            RM != RoundingMode::NearestTiesToEven)
+          continue;
+        std::pair<APInt, unsigned> Out = P.FoldEnv(Ops, Attr, RM);
+        J.object([&] {
+          J.attribute("w", Out.first.getBitWidth());
+          J.attribute("rm", static_cast<int64_t>(RM));
+          if (P.Shape == OpShape::Compare)
+            J.attribute("pred", getICmpPredicateName(Attr));
+          J.attributeArray("ops", [&] {
+            for (const APInt &V : Ops)
+              J.value(std::to_string(V.getBitWidth()) + ":0x" +
+                      toString(V, 16, /*Signed=*/false));
+          });
+          J.attribute("out", "0x" + toString(Out.first, 16, /*Signed=*/false));
+          if (Out.second != OpProperties::NoStatus)
+            J.attribute("status", Out.second);
+        });
+      }
+    }
+    unsigned I = 0;
+    for (; I != NumOps; ++I) {
+      if (++Idx[I] < Vals[I].size())
+        break;
+      Idx[I] = 0;
+    }
+    if (I == NumOps)
+      break;
+  }
+}
+
 /// Write the entry of the model-only operator \p P.
 static void printModelOnlyOp(json::OStream &J, const OpProperties &P,
                              bool WithSamples) {
@@ -1896,8 +2070,17 @@ static void printModelOnlyOp(json::OStream &J, const OpProperties &P,
       J.attribute("imm_attr", true);
     if (P.MayBePoison)
       J.attribute("may_be_poison", true);
-    if (P.FoldN)
+    if (P.Leaf)
+      J.attribute("leaf", P.Leaf);
+    if (P.IsConstrained)
+      J.attribute("constrained", true);
+    if (P.FoldN || P.FoldEnv)
       J.attribute("has_fold", true);
+    if (WithSamples && P.FoldEnv)
+      J.attributeArray("samples", [&] {
+        for (unsigned W : {16, 32, 64})
+          printConstrainedOpSamples(J, P, W, W == 32 ? 64 : 32);
+      });
     if (!WithSamples || !P.FoldN)
       return;
     if (P.IsFP)

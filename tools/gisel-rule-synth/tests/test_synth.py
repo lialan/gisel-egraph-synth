@@ -169,6 +169,10 @@ class GrammarTest(unittest.TestCase):
         widths = (1, 8, 16, 32, 33, 64)
         for name in list(kernels.KERNELS) + list(kernels.NONSTRICT):
             info = ops.REGISTRY[name]
+            if info.constrained:
+                # The last operand is the environment: test_strict.py has
+                # the comparison in each rounding mode.
+                continue
             checked = 0
             for key in ops.search_keys(name, [3]):
                 _, attr, res = ops.parse(key)
@@ -744,6 +748,25 @@ class SelectTest(unittest.TestCase):
                '    %2:_(s32), %3:_(s1) = G_UADDO %0, %1\n'
                '    %4:_(s32) = G_ZEXT %3(s1)\n')
         self.assertEqual(select.count(mir), {'f': 2})
+
+    def test_size_has_the_cost_of_the_operators(self):
+        # With an equal number of instructions, the function with the
+        # multiplication is smaller than the one with the division: the
+        # probe of x / 2.0 -> x * 0.5 then says that the rule is new.
+        div = ('name: f\n'
+               '    %0:_(s32) = COPY $vgpr0\n'
+               '    %1:_(s32) = G_FCONSTANT float 2.0\n'
+               '    %2:_(s32) = G_FDIV %0, %1\n')
+        mul = div.replace('G_FDIV', 'G_FMUL')
+        self.assertEqual(select.count(div), select.count(mul))
+        self.assertLess(select.size(mul)['f'], select.size(div)['f'])
+        # The number of instructions is first.
+        two = mul + '    %3:_(s32) = G_FNEG %2\n'
+        self.assertLess(select.size(div)['f'], select.size(two)['f'])
+        # An instruction that is not an operator of the registry costs 1.
+        other = ('name: f\n'
+                 '    %0:_(s32) = G_NOT_AN_OPERATOR %1\n')
+        self.assertEqual(select.size(other), {'f': (1, 1)})
 
 
 class EmitTest(unittest.TestCase):

@@ -591,6 +591,277 @@ inline void releaseResults(MachineRegisterInfo &MRI, MachineInstr &MI) {
     MO.setReg(MRI.cloneVirtualRegister(MO.getReg()));
 }
 
+//===--- Constants ------------------------------------------------------===//
+
+/// True if \p Reg is the address of an object of the function or of the
+/// module (G_GLOBAL_VALUE, G_FRAME_INDEX, ...): a constant of the function
+/// whose bits the compiler does not know. It is neither undef nor poison.
+inline bool isAddressConstant(Register Reg, const MachineRegisterInfo &MRI) {
+  const MachineInstr *Def = Reg.isVirtual() ? MRI.getVRegDef(Reg) : nullptr;
+  if (!Def)
+    return false;
+  switch (Def->getOpcode()) {
+  case TargetOpcode::G_GLOBAL_VALUE:
+  case TargetOpcode::G_PTRAUTH_GLOBAL_VALUE:
+  case TargetOpcode::G_FRAME_INDEX:
+  case TargetOpcode::G_CONSTANT_POOL:
+  case TargetOpcode::G_BLOCK_ADDR:
+  case TargetOpcode::G_JUMP_TABLE:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/// True if the value of \p Reg is neither undef nor poison: the fact of the
+/// compiler, and also each address constant.
+inline bool isDefinedValue(Register Reg, const MachineRegisterInfo &MRI) {
+  return isAddressConstant(Reg, MRI) ||
+         isGuaranteedNotToBeUndefOrPoison(Reg, MRI);
+}
+
+/// The bits of the constant that defines \p Reg: a G_CONSTANT (an integer or
+/// a pointer), a G_FCONSTANT (its bit pattern), or, with \p AllowSplat, a
+/// G_BUILD_VECTOR with one such constant in each lane. A rule reads each
+/// constant of its source with this function, and the extractor writes the
+/// same values.
+inline std::optional<APInt> getConstantBits(Register Reg,
+                                            const MachineRegisterInfo &MRI,
+                                            bool AllowSplat = false) {
+  LLT Ty = MRI.getType(Reg);
+  if (!Ty.isValid())
+    return std::nullopt;
+  if (Ty.isVector()) {
+    if (!AllowSplat || Ty.getElementType().isPointer())
+      return std::nullopt;
+    if (std::optional<APInt> C = getIConstantSplatVal(Reg, MRI))
+      return C;
+    if (std::optional<FPValueAndVReg> FC =
+            getFConstantSplat(Reg, MRI, /*AllowUndef=*/false))
+      return FC->Value.bitcastToAPInt();
+    return std::nullopt;
+  }
+  if (std::optional<APInt> C = getIConstantVRegVal(Reg, MRI))
+    return C;
+  const MachineInstr *Def = MRI.getVRegDef(Reg);
+  if (Def && Def->getOpcode() == TargetOpcode::G_FCONSTANT)
+    return Def->getOperand(1).getFPImm()->getValueAPF().bitcastToAPInt();
+  return std::nullopt;
+}
+
+/// The floating-point constants that a rule names: a rule with the literal
+/// has the constant in each format.
+enum class FPLiteral { Zero, NegZero, One, NegOne, Two, Half };
+
+/// The bit pattern of \p Lit in the format with \p Bits bits (16, 32 or 64).
+inline APInt getFPLiteralBits(FPLiteral Lit, unsigned Bits) {
+  const fltSemantics &Sem = Bits == 16   ? APFloat::IEEEhalf()
+                            : Bits == 32 ? APFloat::IEEEsingle()
+                                         : APFloat::IEEEdouble();
+  assert((Bits == 16 || Bits == 32 || Bits == 64) && "no format of the model");
+  APFloat F = APFloat::getZero(Sem);
+  switch (Lit) {
+  case FPLiteral::Zero:
+    break;
+  case FPLiteral::NegZero:
+    F = APFloat::getZero(Sem, /*Negative=*/true);
+    break;
+  case FPLiteral::One:
+    F = APFloat::getOne(Sem);
+    break;
+  case FPLiteral::NegOne:
+    F = APFloat::getOne(Sem, /*Negative=*/true);
+    break;
+  case FPLiteral::Two:
+    F = scalbn(APFloat::getOne(Sem), 1, APFloat::rmNearestTiesToEven);
+    break;
+  case FPLiteral::Half:
+    F = scalbn(APFloat::getOne(Sem), -1, APFloat::rmNearestTiesToEven);
+    break;
+  }
+  return F.bitcastToAPInt();
+}
+
+/// True if \p Bits is the bit pattern of a power of 2 whose reciprocal is a
+/// normal number of the format: a division by the value is the
+/// multiplication by the reciprocal, with the same result for each operand
+/// and in each rounding mode.
+inline bool hasExactInverse(const APInt &Bits) {
+  unsigned W = Bits.getBitWidth();
+  if (W != 16 && W != 32 && W != 64)
+    return false;
+  const fltSemantics &Sem = W == 16   ? APFloat::IEEEhalf()
+                            : W == 32 ? APFloat::IEEEsingle()
+                                      : APFloat::IEEEdouble();
+  APFloat F(Sem, Bits);
+  APFloat Inv(Sem);
+  return F.isFiniteNonZero() && !F.isDenormal() && F.getExactInverse(&Inv) &&
+         !Inv.isDenormal();
+}
+
+/// The IEEE format with \p Bits bits (16, 32 or 64): the formats of the
+/// model.
+inline const fltSemantics &getIEEEFormat(unsigned Bits) {
+  assert((Bits == 16 || Bits == 32 || Bits == 64) && "no format of the model");
+  return Bits == 16   ? APFloat::IEEEhalf()
+         : Bits == 32 ? APFloat::IEEEsingle()
+                      : APFloat::IEEEdouble();
+}
+
+/// Builds the constant with the bit pattern \p Bits into \p Res (a type or
+/// a register): a G_FCONSTANT if \p IsFP, else a G_CONSTANT (an integer or
+/// a pointer). The builder makes a G_BUILD_VECTOR for a vector type.
+inline MachineInstrBuilder buildConstantBits(MachineIRBuilder &B,
+                                             const DstOp &Res,
+                                             const APInt &Bits, bool IsFP) {
+  assert(Res.getLLTTy(*B.getMRI()).getScalarSizeInBits() ==
+             Bits.getBitWidth() &&
+         "wrong width");
+  if (IsFP)
+    return B.buildFConstant(Res,
+                            APFloat(getIEEEFormat(Bits.getBitWidth()), Bits));
+  return B.buildConstant(Res, Bits);
+}
+
+/// The known bits of \p Reg. The value tracking has no known bits for a
+/// G_FCONSTANT; each bit of a constant is known (getConstantBits).
+inline KnownBits getKnownBitsOrConstant(GISelValueTracking &VT,
+                                        const MachineRegisterInfo &MRI,
+                                        Register Reg) {
+  if (std::optional<APInt> C = getConstantBits(Reg, MRI, /*AllowSplat=*/true))
+    return KnownBits::makeConstant(*C);
+  return VT.getKnownBits(Reg);
+}
+
+/// The bit pattern of the negation of the floating-point value \p A.
+inline APInt fpNegBits(const APInt &A) {
+  APInt R = A;
+  R.flipBit(A.getBitWidth() - 1);
+  return R;
+}
+
+/// The bit pattern of \p A / \p B, rounded to nearest (ties to even): a
+/// constant that a rule computes. The bits of a NaN result are not
+/// specified, so a rule checks isNaNBits before it uses the result.
+inline APInt fpDivBits(const APInt &A, const APInt &B) {
+  const fltSemantics &Sem = getIEEEFormat(A.getBitWidth());
+  APFloat F(Sem, A);
+  F.divide(APFloat(Sem, B), APFloat::rmNearestTiesToEven);
+  return F.bitcastToAPInt();
+}
+
+/// True if \p A is the bit pattern of a NaN.
+inline bool isNaNBits(const APInt &A) {
+  return APFloat(getIEEEFormat(A.getBitWidth()), A).isNaN();
+}
+
+//===--- The floating-point environment ---------------------------------===//
+
+/// The largest number of instructions between a constrained operation of a
+/// source and the root of its rule (isSameFPEnvironment).
+constexpr unsigned MaxFPEnvDistance = 64;
+
+/// True if \p Opc is a constrained floating-point operation: it rounds in
+/// the mode of the floating-point environment and raises exceptions. It
+/// does not change the mode and does not read the exception flags.
+inline bool isConstrainedFPOpcode(unsigned Opc) {
+  switch (Opc) {
+  case TargetOpcode::G_STRICT_FADD:
+  case TargetOpcode::G_STRICT_FSUB:
+  case TargetOpcode::G_STRICT_FMUL:
+  case TargetOpcode::G_STRICT_FDIV:
+  case TargetOpcode::G_STRICT_FREM:
+  case TargetOpcode::G_STRICT_FMA:
+  case TargetOpcode::G_STRICT_FSQRT:
+  case TargetOpcode::G_STRICT_FLDEXP:
+  case TargetOpcode::G_STRICT_FCMP:
+  case TargetOpcode::G_STRICT_FCMPS:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/// True if \p MI can read or write the floating-point environment, or has
+/// an effect that a trap of a floating-point exception must stay before or
+/// after: a call, an instruction with a side effect (the instructions that
+/// read or set the rounding mode and the exception flags are such), a write
+/// to memory, inline assembly, an instruction of the target and a copy of a
+/// physical register. A constrained operation is not such an instruction.
+inline bool mayAccessFPEnvironment(const MachineInstr &MI) {
+  if (MI.isDebugInstr() || isConstrainedFPOpcode(MI.getOpcode()))
+    return false;
+  if (MI.isCall() || MI.isInlineAsm() || MI.mayStore() ||
+      MI.hasUnmodeledSideEffects())
+    return true;
+  if (isPreISelGenericOpcode(MI.getOpcode()))
+    return false;
+  if (!MI.isCopy())
+    return true;
+  return any_of(MI.operands(), [](const MachineOperand &MO) {
+    return MO.isReg() && MO.getReg().isPhysical();
+  });
+}
+
+/// True if \p Def is before \p Use in the block of \p Use, at most
+/// MaxFPEnvDistance instructions before it, and no instruction between them
+/// is one of mayAccessFPEnvironment. The two instructions then have the same
+/// rounding mode, the program reads the exception flags of \p Def only
+/// after \p Use, and an instruction at the position of \p Use can raise the
+/// exceptions of \p Def in its place.
+inline bool isSameFPEnvironment(const MachineInstr &Def,
+                                const MachineInstr &Use) {
+  if (Def.getParent() != Use.getParent() || &Def == &Use)
+    return false;
+  const MachineBasicBlock &MBB = *Use.getParent();
+  unsigned Distance = 0;
+  for (MachineBasicBlock::const_iterator I = Use.getIterator(), B = MBB.begin();
+       I != B;) {
+    --I;
+    if (&*I == &Def)
+      return true;
+    if (++Distance > MaxFPEnvDistance || mayAccessFPEnvironment(*I))
+      return false;
+  }
+  return false;
+}
+
+/// isSameFPEnvironment for the definitions of two registers.
+inline bool isSameFPEnvironment(const MachineRegisterInfo &MRI, Register Def,
+                                Register Use) {
+  const MachineInstr *D = MRI.getVRegDef(Def);
+  const MachineInstr *U = MRI.getVRegDef(Use);
+  return D && U && isSameFPEnvironment(*D, *U);
+}
+
+/// True if the constrained operation that defines \p Reg has the flag
+/// nofpexcept: the program does not read the exceptions that it raises.
+inline bool ignoresFPExceptions(const MachineRegisterInfo &MRI, Register Reg) {
+  const MachineInstr *Def = MRI.getVRegDef(Reg);
+  return Def && Def->getFlag(MachineInstr::NoFPExcept);
+}
+
+/// Erases the instruction of a source that defines \p Reg if no instruction
+/// reads a result of it. A constrained operation without the flag nofpexcept
+/// is never dead for the compiler (it raises exceptions); the apply step of
+/// a rule calls this for each value below its root, from the root down,
+/// after it erased the root: the replacement raises the exceptions of the
+/// constrained operations of the source.
+inline void eraseDeadSourceOp(MachineRegisterInfo &MRI, Register Reg) {
+  MachineInstr *Def = MRI.getVRegDef(Reg);
+  if (!Def)
+    return;
+  if (!isConstrainedFPOpcode(Def->getOpcode())) {
+    if (isTriviallyDead(*Def, MRI))
+      Def->eraseFromParent();
+    return;
+  }
+  for (const MachineOperand &MO : Def->all_defs())
+    if (!MRI.use_nodbg_empty(MO.getReg()))
+      return;
+  Def->eraseFromParent();
+}
+
 #include "llvm/CodeGen/GlobalISel/GISynthGeneratedPredicates.inc"
 
 } // end namespace gisynth

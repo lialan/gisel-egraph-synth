@@ -30,6 +30,7 @@ an already proved, no more expensive candidate refines on the samples is
 dropped without a solver call.
 """
 
+import copy
 import itertools
 import random
 import time
@@ -297,6 +298,11 @@ class Bank:
         self.limits = limits
         self.grammar = tuple(grammar)
         self.cw = tuple(w for w, _ in types)
+        # The variables that are a floating-point environment. No register
+        # has their value: each constrained operation of a term reads the
+        # one environment, so a term can have such a variable many times.
+        self.env_mask = sum(1 << i for i, c in enumerate(self.var_cls)
+                            if types[c][1] == 'e')
         rng = random.Random('bank:%d:%r:%r' % (limits.seed, self.var_cls,
                                                self.types))
         n = limits.bank_samples
@@ -331,8 +337,13 @@ class Bank:
             self._leaf('var', i, c, 1 << i,
                        np.array([env[i] for env in envs], U64))
         for c, (w, kind) in enumerate(self.types):
+            if kind == 'f' and fp.is_format(w):
+                # The floating-point constants of the grammar.
+                for k in ir.FP_LITERALS:
+                    self._leaf('lit', k, c, 0,
+                               np.full(n, ir.lit_value(w, k), U64))
             if kind != 'i':
-                continue   # a literal is an integer constant
+                continue   # the other literals are integer constants
             for k in ir.LITERALS:
                 if w == 1 and k == '-1':
                     continue   # the same value as 1
@@ -394,7 +405,9 @@ class Bank:
         self.cost_np = np.array(self.cost, np.int16)
         self.vars_np = np.array(self.vars, np.int64)
         self.lit_np = np.array([o == 'lit' for o in self.op], bool)
-        self.opnd_np = np.full((len(self.op), 3), -1, np.int64)
+        # A constrained operation with 3 values has 4 operands.
+        arity = max([3] + [len(o) for o in self.opnds])
+        self.opnd_np = np.full((len(self.op), arity), -1, np.int64)
         for i, o in enumerate(self.opnds):
             self.opnd_np[i, :len(o)] = o
 
@@ -611,6 +624,7 @@ class Bank:
                 yield [a], self.vars_np[a]
             return
         A = parts[0]
+        registers = ~np.int64(self.env_mask)
         for rest, rv in self._products(parts[1:], chunk):
             n = len(rest[0])
             step = max(1, chunk // n)
@@ -619,7 +633,7 @@ class Bank:
                 ai = np.repeat(a, n)
                 va = self.vars_np[ai]
                 vr = np.tile(rv, len(a))
-                sel = (va & vr) == 0
+                sel = (va & vr & registers) == 0
                 if sel.any():
                     yield [ai[sel]] + [np.tile(r, len(a))[sel]
                                        for r in rest], (va | vr)[sel]
@@ -801,10 +815,66 @@ def _canon_nan(vals, ty):
     return np.where(nan, U64(fp.qnan(w)), vals)
 
 
-def prove_concrete(inst, tgt, backend):
+def const_recipes(inst):
+    """The constants that a replacement can have next to the constants of
+    the source: (expression over the constant inputs, value) each. The
+    compiler computes such a constant when the rule applies (a "computed
+    constant", ir.is_constant_expr), so it costs nothing.
+
+    For a floating-point constant c these are -c and 1 / c (rounded to
+    nearest; not if the result is a NaN). The search has them as inputs
+    with a known value. The proof of a rule then holds for each constant:
+    a division by c is the multiplication by 1 / c only if the reciprocal
+    is exact, which the precondition 'finv' says."""
+    out = []
+    env = [c or 0 for c in inst.consts]
+    for i, c in enumerate(inst.consts):
+        w = inst.vw[i]
+        if c is None or inst.vk[i] != 'f' or not fp.is_format(w):
+            continue
+        x = ('var', i)
+        for e in (('G_FNEG', w, x), ('G_FDIV', w, ('lit', w, 'f1'), x)):
+            v = ir.evaluate(e, inst.vw, env)
+            if _defined(v) and not fp.is_nan(v, w):
+                out.append((e, v))
+    return out
+
+
+def _with_recipes(inst, recipes):
+    """The instance with one more input for each computed constant of
+    ``recipes``: a constant with the value of the recipe."""
+    out = copy.copy(inst)
+    ws = tuple(e[1] for e, _ in recipes)
+    out.vw = inst.vw + ws
+    out.vk = inst.vk + ('f',) * len(recipes)
+    out.facts = tuple(inst.facts) + tuple(
+        (ir.mask(w) & ~v, v, True) for w, (_, v) in zip(ws, recipes))
+    out.consts = tuple(inst.consts) + tuple(v for _, v in recipes)
+    return out
+
+
+def flags_refine_on(inst, tgt, env):
+    """True if the constrained operations of ``tgt`` raise the exceptions
+    of those of the source for the input assignment ``env``, for each
+    choice of an implementation (smt.flags_differ)."""
+    envs = ir.env_vars(inst.expr)
+    if not envs or env[next(iter(envs))] & fp.ENV_IGNORE:
+        return True
+    sf = ir.fp_flags(inst.expr, inst.vw, env)
+    if sf is None:
+        return True
+    tf = ir.fp_flags(tgt, inst.vw, env)
+    return tf is not None and fp.flag_views(tf) == fp.flag_views(sf)
+
+
+def prove_concrete(inst, tgt, backend, const_vars=None):
     """SMT: tgt refines inst.expr for every input consistent with the
-    instance's *concrete* facts. Returns a smt.Result."""
-    enc = smt.Encoder(inst.vw)
+    instance's *concrete* facts. ``const_vars`` are the inputs whose
+    constants the replacement computes with (default: those of the
+    instance). Returns a smt.Result."""
+    if const_vars is None:
+        const_vars = getattr(inst, 'const_vars', ())
+    enc = smt.Encoder(inst.vw, None, const_vars)
     eqs = []
     for i, f in enumerate(inst.facts):
         w = inst.vw[i]
@@ -831,6 +901,8 @@ def refines_on(inst, tgt, env):
     s = ir.evaluate(inst.expr, inst.vw, env)
     if not _defined(s):
         return True
+    if not flags_refine_on(inst, tgt, env):
+        return False
     if ir.has_unspecified(tgt):
         return True
     t = ir.evaluate(tgt, inst.vw, env)
@@ -858,11 +930,14 @@ def max_search_cost(inst, limits):
 
 
 def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
-                     log=None):
+                     log=None, const_vars=None):
     """Proves candidate replacements (cheapest first) under the instance's
     concrete facts. A refuting model becomes a sample: it filters the
-    remaining candidates and is kept for later instances."""
+    remaining candidates and is kept for later instances. ``const_vars``
+    gives, for a candidate with computed constants, the inputs that they
+    read."""
     out = []
+    const_vars = const_vars or {}
     cex = []
     envs = envs or []
     vals = {}
@@ -888,7 +963,8 @@ def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
             if cv != tv and all(t is None or t == v
                                 for t, v in zip(tv, cv)):
                 return True
-            if cv == tv and c['cost'] < ir.cost(tgt):
+            if cv == tv and c['cost'] < ir.rule_cost(
+                    tgt, const_vars.get(tgt, ())):
                 return True
         return False
 
@@ -914,7 +990,7 @@ def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
             break
         stats['smt_checks'] += 1
         t0 = time.monotonic()
-        r = prove_concrete(inst, tgt, backend)
+        r = prove_concrete(inst, tgt, backend, const_vars.get(tgt))
         ctx.seconds['smt'] += time.monotonic() - t0
         if r.status == 'sat':
             stats['smt_refuted'] += 1
@@ -929,7 +1005,9 @@ def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
             note(tgt, 'smt_unknown')
             continue
         note(tgt, 'proved')
-        out.append({'tgt': tgt, 'cost': ir.cost(tgt), 'proof': r})
+        out.append({'tgt': tgt, 'proof': r,
+                    'cost': ir.rule_cost(tgt, const_vars.get(tgt, ())),
+                    'const_vars': tuple(const_vars.get(tgt, ()))})
         if len(out) >= limits.max_candidates:
             if n + 1 < len(cands):
                 stats['stop'] = 'candidate_limit'
@@ -945,7 +1023,10 @@ def literal_spellings(inst):
     for i, c in enumerate(inst.consts):
         if c is None:
             continue
-        for k in ir.LITERALS:
+        lits = ir.LITERALS
+        if inst.vk[i] == 'f':
+            lits = ir.FP_LITERALS if fp.is_format(inst.vw[i]) else ()
+        for k in lits:
             if ir.lit_value(inst.vw[i], k) == c:
                 subs[i] = ('lit', inst.vw[i], k)
                 break
@@ -988,6 +1069,14 @@ def discover(inst, backend, limits=None, ctx=None, log=None):
     stats['stop'] = 'complete'
     if ir.cost(inst.expr) == 0:
         return [], stats
+    # The computed constants are inputs of the search: the variables from
+    # ``nreal``. A term with such a variable is a replacement with the
+    # recipe in its place.
+    orig, nreal = inst, len(inst.vw)
+    recipes = const_recipes(inst)
+    if recipes:
+        inst = _with_recipes(inst, recipes)
+    unrecipe = {('var', nreal + j): e for j, (e, _) in enumerate(recipes)}
     sig = signature(inst)
     if sig is None:
         stats['stop'] = 'no_signature'
@@ -1032,6 +1121,7 @@ def discover(inst, backend, limits=None, ctx=None, log=None):
     # No register has the edge of a G_PHI: a replacement does not read it.
     edge = ir.edge_vars(inst.expr)
     found = {}
+    cvs = {}
     stages = []
     truncated = None
     for label, names in grammar_stages(inst, limits, types):
@@ -1051,11 +1141,24 @@ def discover(inst, backend, limits=None, ctx=None, log=None):
             e = bank.expr(i, types)
             # A bank has type classes, not types: an operator can have a
             # type rule that the widths of this instance do not meet.
-            if e not in src_variants and e not in found and \
-                    ir.well_typed(e, inst.vw) and \
-                    not (edge and edge & set(ir.variables(e))):
+            if not ir.well_typed(e, inst.vw):
+                continue
+            cv = ()
+            used = [v for v in ir.variables(e) if v >= nreal]
+            if used:
+                # The inputs that the computed constants of the term read.
+                cv = tuple(sorted({x for v in used for x in ir.variables(
+                    unrecipe[('var', v)])}))
+                e = ir.substitute(e, unrecipe)
+            if e not in src_variants and \
+                    (e not in found or bank.cost[i] < found[e][0]) and \
+                    not (edge and edge & set(ir.variables(e))) and \
+                    ir.env_error(orig.expr, e, cv) is None and \
+                    all(flags_refine_on(orig, e, env[:nreal])
+                        for env in envs):
+                new += e not in found
                 found[e] = (bank.cost[i], ir.to_sexpr(e), e)
-                new += 1
+                cvs[e] = cv
         cut = bank.truncated and bank.truncated_at[0] <= max_cost
         if cut and truncated is None:
             truncated = label
@@ -1068,8 +1171,9 @@ def discover(inst, backend, limits=None, ctx=None, log=None):
     cands = sorted(found.values())
     stats['fingerprint_matches'] = len(cands)
     clog = [] if log is not None else None
-    out = prove_candidates(inst, [e for _, _, e in cands], backend, limits,
-                           ctx, stats, envs, clog)
+    out = prove_candidates(orig, [e for _, _, e in cands], backend, limits,
+                           ctx, stats, [env[:nreal] for env in envs], clog,
+                           {e: cv for e, cv in cvs.items() if cv})
     # The first limit that was reached, in the order of the search.
     if truncated is not None:
         stats['stop'] = 'bank_truncated'

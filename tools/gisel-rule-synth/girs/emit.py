@@ -25,6 +25,7 @@ import json
 import os
 import re
 
+from . import fp
 from . import ir
 from . import ops
 from . import precond
@@ -196,9 +197,10 @@ def _forms(n):
             res.append(_Node(n.op, n.w, n.name,
                              [args[1], args[0]] + args[2:]))
         elif info.attr == 'pred' and info.swapped_pred[attr] != attr:
+            # (The environment of a constrained comparison stays last.)
             res.append(_Node(ops.make_key(info.name,
                                           info.swapped_pred[attr]),
-                             n.w, n.name, [args[1], args[0]]))
+                             n.w, n.name, [args[1], args[0]] + args[2:]))
     return res
 
 
@@ -292,6 +294,9 @@ def _lines(n, out, checks=None):
         if info.phi and k == 0:
             # The edge: no operand.
             continue
+        if info.constrained and k == len(n.args) - 1:
+            # The floating-point environment: no operand.
+            continue
         if isinstance(a, _Node):
             _lines(a, out, checks)
             operands.append('$x%d' % a.args[0][1] if a.as_load else a.name)
@@ -381,6 +386,9 @@ def record_names(rule):
 
 
 def _lit_imm(k):
+    if ir.lit_kind(k) == 'f':
+        # The builder functions write it (_cpp_apply).
+        raise ValueError('a floating-point literal in an apply pattern')
     return {'0': '0', '1': '1', '-1': '-1'}[k]
 
 
@@ -402,14 +410,29 @@ def _needs_cpp_apply(tgt, const_vars=()):
 
 
 def _rule_needs_cpp_apply(rule):
+    src = ir.from_json(rule['source_json'])
     tgt = ir.from_json(rule['replacement_json'])
     # A constant of a vector type is not a G_CONSTANT: the builder makes a
-    # G_BUILD_VECTOR.
-    return bool(rule.get('region')) or _forwarded(rule) is not None or \
+    # G_BUILD_VECTOR. The apply function of a rule with a constrained
+    # operation gives the flag nofpexcept to the new instructions and
+    # erases the operations of the source that no instruction reads.
+    if bool(rule.get('region')) or _forwarded(rule) is not None or \
         (lifts(rule) and (ir.is_lit(tgt) or
                           any(ir.is_lit(a) for n in ir.nodes(tgt)
                               for a in n[2:]))) or \
-        _needs_cpp_apply(tgt, tuple(rule.get('const_vars', ())))
+        ir.constrained_nodes(src) or \
+            _needs_cpp_apply(tgt, tuple(rule.get('const_vars', ()))):
+        return True
+    try:
+        _apply_patterns(tgt, rule['vw'], rule['source_json']['w'], src)
+    except ValueError:
+        # A floating-point or pointer constant: an apply pattern has
+        # G_CONSTANT with an integer type, and the builder functions of
+        # the apply function write each constant (gisynth::
+        # buildConstantBits). Another error is an error of that function
+        # also.
+        return True
+    return False
 
 
 def lifts(rule):
@@ -429,6 +452,28 @@ def _const_fn(rule):
     for a rule that accepts vectors, also the value of each lane of a
     vector with one constant in all lanes."""
     return 'getConstantOrSplat' if lifts(rule) else 'getIConstantVRegVal'
+
+
+def _const_read(rule, i):
+    """The C++ expression (a std::optional<APInt>) of the value of the
+    variable ``i`` that the rule matches as a constant. A floating-point
+    value or a pointer has the bits of its constant (gisynth::
+    getConstantBits: a G_FCONSTANT, or a G_CONSTANT with a pointer
+    type)."""
+    kind = ir.var_kinds(ir.from_json(rule['source_json'])).get(i)
+    if kind in ('f', 'p'):
+        return 'getConstantBits(X%d, MRI, /*AllowSplat=*/%s)' % (
+            i, 'true' if lifts(rule) else 'false')
+    return '%s(X%d, MRI)' % (_const_fn(rule), i)
+
+
+def _fp_env_regs(rule):
+    """The registers of the constrained operations of the source: 'Dst'
+    for the root and 'T<k>' for a value below it."""
+    src = ir.from_json(rule['source_json'])
+    return [r for r, n in zip(['Dst'] + ['T%d' % k for k in range(
+        len(ir.interior_nodes(src)))], [src] + ir.interior_nodes(src))
+        if ops.parse(n[0])[0].constrained]
 
 
 def _region_outputs(rule):
@@ -478,10 +523,16 @@ def _sibling_vars(rule):
     return list((rule.get('region') or {}).get('sibling_vars', ()))
 
 
+def _no_reg_vars(src):
+    """The variables of the source ``src`` that no register has: the edge
+    of a G_PHI (ir.edge_vars) and the floating-point environment of the
+    constrained operations (ir.env_vars)."""
+    return ir.edge_vars(src) | ir.env_vars(src)
+
+
 def _edge_vars(rule):
-    """The variables that are the edge of a G_PHI: no register has them
-    (ir.edge_vars)."""
-    return ir.edge_vars(ir.from_json(rule['source_json']))
+    """The variables of the rule that no register has (_no_reg_vars)."""
+    return _no_reg_vars(ir.from_json(rule['source_json']))
 
 
 def _pattern_vars(rule):
@@ -716,6 +767,20 @@ _CPP_APINT = {'G_ADD': '(%s + %s)', 'G_SUB': '(%s - %s)',
               'G_USUBSAT': '%s.usub_sat(%s)',
               'G_SSUBSAT': '%s.ssub_sat(%s)'}
 assert set(_CPP_APINT) == set(ir.RECIPE_OPS)
+# The functions of the computed floating-point constants (gisynth).
+_CPP_FP = {'G_FNEG': 'fpNegBits(%s)', 'G_FDIV': 'fpDivBits(%s, %s)'}
+assert set(_CPP_FP) == set(ir.FP_RECIPE_OPS)
+_CPP_LIT = {'0': 'APInt::getZero(%s)', '1': 'APInt(%s, 1)',
+            '-1': 'APInt::getAllOnes(%s)'}
+
+
+def _cpp_lit(k, size):
+    """The C++ APInt expression of the literal ``k`` with ``size`` (a C++
+    expression) bits."""
+    if ir.lit_kind(k) == 'f':
+        return 'getFPLiteralBits(FPLiteral::%s, %s)' % (
+            fp.LITERAL_CPP[k], size)
+    return _CPP_LIT[k] % size
 
 
 def _cpp_const(e, bits):
@@ -725,25 +790,29 @@ def _cpp_const(e, bits):
     if ir.is_var(e):
         return 'C%d' % e[1]
     if ir.is_lit(e):
-        return {'0': 'APInt::getZero(%s)', '1': 'APInt(%s, 1)',
-                '-1': 'APInt::getAllOnes(%s)'}[e[2]] % bits(e[1])
+        return _cpp_lit(e[2], bits(e[1]))
     if not ir.is_op(e):
         return 'APInt(%s, UINT64_C(%d))' % (bits(e[1]), e[2])
     if e[0] == 'G_ZEXT':
         return '%s.zext(%s)' % (_cpp_const(e[2], bits), bits(e[1]))
-    return _CPP_APINT[e[0]] % tuple(_cpp_const(a, bits) for a in e[2:])
+    return {**_CPP_APINT, **_CPP_FP}[e[0]] % tuple(
+        _cpp_const(a, bits) for a in e[2:])
 
 
 def _cpp_recipe_checks(tgt, const_vars, bits):
     """The C++ conditions of smt.Encoder.recipe_guard, in the same order:
     each shift of a computed constant has an amount smaller than its
-    width, and so has each shift whose amount is a computed constant."""
+    width, a computed floating-point constant is not a NaN (the bits of a
+    NaN that an operation makes are not specified), and each shift whose
+    amount is a computed constant has an amount smaller than its width."""
     out = []
     for c in ir.computed_constants(tgt, const_vars):
         for n in ir.nodes(c):
             if n[0] in ir.SHIFT_OPS:
                 out.append('%s.ult(%s)' % (_cpp_const(n[3], bits),
                                            bits(n[1])))
+            if ops.parse(n[0])[0].makes_nan:
+                out.append('!isNaNBits(%s)' % _cpp_const(n, bits))
     for w, c in ir.computed_amounts(tgt, const_vars):
         out.append('%s.ult(%s)' % (_cpp_const(c, bits), bits(w)))
     return out
@@ -759,8 +828,8 @@ def _bits_fn(rule):
 
 
 _KIND_NAME = {'f': 'floating-point', 'i': 'integer', 'p': 'pointer'}
-# The kinds whose constants a rule does not match and does not build: the
-# patterns have G_CONSTANT with an integer type.
+# The kinds whose constants an apply pattern does not build: the patterns
+# have G_CONSTANT with an integer type. The apply function builds them.
 _NO_CONSTANT = {'f': 'a floating-point constant', 'p': 'a pointer constant'}
 
 
@@ -782,9 +851,7 @@ def _type_source(types, w, kind=None, fmt='%s'):
 
 def _check_kinds(src, tgt):
     """Raises ValueError if the types of the rule cannot be written: a
-    value that is an integer and a floating-point value, or a
-    floating-point or pointer constant (the patterns match and build
-    G_CONSTANT with an integer type)."""
+    value that is an integer and a floating-point value."""
     root_kind = ir.result_kind(src)
     kinds = ir.var_kinds(tgt, root_kind, ir.var_kinds(src))
     if 'x' in kinds.values():
@@ -929,7 +996,7 @@ def _type_sources(rule):
             if ops.parse(b[0])[0].results == 1]
     return [(src[1], root_kind, 'Dst')] + \
         [(w, kinds.get(i), 'X%d' % i) for i, w in enumerate(rule['vw'])
-         if i not in ir.edge_vars(src)] + \
+         if i not in _no_reg_vars(src)] + \
         [(w, k, 'T%d' % n)
          for n, (w, k) in enumerate(zip(interior, _interior_kinds(src)))] + \
         sibs
@@ -951,8 +1018,7 @@ def _cpp_apply(rule):
     types = _type_sources(rule)
     bits = _bits_fn(rule)
     # The guard checked that these are constants.
-    body = ['  APInt C%d = *%s(X%d, MRI);' % (i, _const_fn(rule), i)
-            for i in cv]
+    body = ['  APInt C%d = *%s;' % (i, _const_read(rule, i)) for i in cv]
     built = {}   # (instruction, operands) -> variable
     n = [0]
 
@@ -962,9 +1028,20 @@ def _cpp_apply(rule):
     def ty(w, kind=None):
         return _type_source(types, w, kind, 'MRI.getType(%s)')
 
-    def no_fp_constant(kind):
+    def constant(dst, w, kind, val, is_fp_lit=False):
+        """The instruction of the constant with the bits ``val`` (a C++
+        APInt expression of the size of the type) that its user needs
+        with the kind ``kind``. ``dst`` is its register, or None: a new
+        register with the type of a value of the rule that has the width
+        ``w`` and the kind. A floating-point literal is a floating-point
+        value where the kind is not known."""
+        if kind is None and is_fp_lit:
+            kind = 'f'
+        t = dst or ty(w, kind)
         if kind in _NO_CONSTANT:
-            raise ValueError('%s in the replacement' % _NO_CONSTANT[kind])
+            return new('buildConstantBits(B, %s, %s, /*IsFP=*/%s)' % (
+                t, val, 'true' if kind == 'f' else 'false'))
+        return new('B.buildConstant(%s, %s)' % (t, val))
 
     def new(text):
         name = 'N%d' % n[0]
@@ -1002,22 +1079,21 @@ def _cpp_apply(rule):
             # the match: a literal is 0, 1 or -1 at every width, and
             # another constant is its value modulo that width, as in the
             # proof.
-            no_fp_constant(kind)
-            t = ty(e[1], kind)
-            size = '%s.getScalarSizeInBits()' % t
+            fp_lit = ir.is_lit(e) and ir.lit_kind(e[2]) == 'f'
+            size = '%s.getScalarSizeInBits()' % (
+                'MRI.getType(%s)' % dst if dst else ty(
+                    e[1], 'f' if kind is None and fp_lit else kind))
             if ir.is_lit(e):
-                val = {'0': 'APInt::getZero(%s)', '1': 'APInt(%s, 1)',
-                       '-1': 'APInt::getAllOnes(%s)'}[e[2]] % size
+                val = _cpp_lit(e[2], size)
             else:
                 val = ('APInt(%s, UINT64_C(%d), /*isSigned=*/false, '
                        '/*implicitTrunc=*/true)' % (size, ir.leaf_value(e)))
-            return new('B.buildConstant(%s, %s)' % (t, val)) + '.getReg(0)'
+            return constant(dst, e[1], kind, val, fp_lit) + '.getReg(0)'
         if ir.is_constant_expr(e, cv):
             # A computed constant.
-            no_fp_constant(kind)
             if e not in built:
-                built[e] = new('B.buildConstant(%s, %s)' % (
-                    dst or ty(e[1], kind), _cpp_const(e, bits)))
+                built[e] = constant(dst, e[1], ir.result_kind(e, kind),
+                                    _cpp_const(e, bits))
             return '%s.getReg(0)' % built[e]
         if e in reuse:
             return reuse[e]
@@ -1025,8 +1101,10 @@ def _cpp_apply(rule):
         kind = ir.result_kind(e, kind)
         key = _instr_key(e)
         if key not in built:
+            # The environment of a constrained operation is no operand.
             args = [walk(a, None, ir.operand_kind(e, k, kind))
-                    for k, a in enumerate(e[2:])]
+                    for k, a in enumerate(e[2:])
+                    if not (info.constrained and k == len(e) - 3)]
             # Each result of the instruction gets its type from the
             # operator: the main type or s1.
             if info.results == 1:
@@ -1040,7 +1118,14 @@ def _cpp_apply(rule):
                 rtys = [want.get((key, n)) or
                         (ty(mainw, mk) if k == 'main' else ty(1, 'i'))
                         for n, k in enumerate(kinds)]
-            if info.attr == 'pred':
+            if info.constrained:
+                # The new instruction has the flag nofpexcept if each
+                # constrained operation of the source has it.
+                text = 'B.buildInstr(TargetOpcode::%s, {%s}, {%s}, ' \
+                    'FPFlags)' % (info.name, rtys[0], ', '.join(
+                        ([_cpp_pred(info, attr)] if info.attr == 'pred'
+                         else []) + args))
+            elif info.attr == 'pred':
                 text = 'B.build%sCmp(%s, %s, %s)' % (
                     'F' if info.fp_operand else 'I', _cpp_pred(info, attr),
                     rtys[0], ', '.join(args))
@@ -1083,6 +1168,12 @@ def _cpp_apply(rule):
         ['Register %s' % p for p in _apply_params(rule)]
     head = ['  B.setInstrAndDebugLoc(Root);']
     tail = []
+    env_regs = _fp_env_regs(rule)
+    if env_regs:
+        head.append('  [[maybe_unused]] unsigned FPFlags = %s ? '
+                    'MachineInstr::NoFPExcept : 0;' % ' && '.join(
+                        'ignoresFPExceptions(MRI, %s)' % r
+                        for r in env_regs))
     if region_rule:
         # The replacement of an output that is not the result of a new
         # instruction of its own is a copy.
@@ -1135,7 +1226,13 @@ def _cpp_apply(rule):
     out = ['/// Builds %s.' % rule['replacement'],
            'inline void %s(%s) {' % (_apply_name(rule), ', '.join(params)),
            '  [[maybe_unused]] MachineRegisterInfo &MRI = *B.getMRI();'] + \
-        head + body + tail + ['  Root.eraseFromParent();', '}']
+        head + body + tail + ['  Root.eraseFromParent();'] + (
+            # The replacement raises the exceptions of the constrained
+            # operations of the source. The compiler does not remove such
+            # an operation that no instruction reads.
+            ['  eraseDeadSourceOp(MRI, T%d);' % k
+             for k in range(len(ir.interior_nodes(src)))]
+            if env_regs else []) + ['}']
     return '\n'.join(out)
 
 
@@ -1151,6 +1248,8 @@ def why_not_emittable(rule):
             'before the other G_PHI of the block'
     if ir.phi_nodes(src) and rule.get('region'):
         return 'a rule with several outputs has no G_PHI'
+    if ir.constrained_nodes(src) and rule.get('region'):
+        return 'a rule with several outputs has no constrained operation'
     for n in [src] + ir.interior_nodes(src):
         info = ops.parse(n[0])[0]
         if info.forwarded:
@@ -1162,11 +1261,10 @@ def why_not_emittable(rule):
             continue
         if info.shape not in ops._MATCH_SHAPES:
             return 'no match pattern for the shape %s' % info.shape
-    # The guard reads a constant of the source with getIConstantVRegVal.
-    src_kinds = ir.var_kinds(src)
-    for v in cv:
-        if src_kinds.get(v) in _NO_CONSTANT:
-            return '%s in the source' % _NO_CONSTANT[src_kinds[v]]
+    # The guard reads each constant of the source (_const_read). The
+    # environment is not a constant.
+    if set(cv) & _no_reg_vars(src):
+        return 'a constant that no register has'
     sibs = _siblings(rule)
     for j, (b, rb, refs) in enumerate(sibs):
         info = ops.parse(b[0])[0]
@@ -1318,7 +1416,7 @@ def _cpp_guard(r):
     _, interior = _annotate(src)
     # The variables that a register has (not the edge of a G_PHI), and the
     # index of each in the width tables.
-    real = [i for i in range(len(vw)) if i not in ir.edge_vars(src)]
+    real = [i for i in range(len(vw)) if i not in _no_reg_vars(src)]
     n, k = len(real), len(interior)
     cols = [vw[i] for i in real] + interior + [src[1]]
     sibs = _siblings(r)
@@ -1410,8 +1508,8 @@ def _cpp_guard(r):
                    'and the conditions')
         out.append('  // on the computed constants of the replacement.')
     for i in cv:
-        out += ['  std::optional<APInt> OptC%d = %s(X%d, '
-                'MRI);' % (i, _const_fn(r), i),
+        out += ['  std::optional<APInt> OptC%d = %s;' % (
+                    i, _const_read(r, i)),
                 '  if (!OptC%d)' % i, '    return false;',
                 '  [[maybe_unused]] const APInt &C%d = *OptC%d;' % (i, i)]
     for c in _cpp_recipe_checks(ir.from_json(r['replacement_json']), cv,
@@ -1420,6 +1518,25 @@ def _cpp_guard(r):
     for c in _bitcast_checks(r):
         out += ['  // A G_BITCAST of the replacement changes the type.',
                 '  if (!(%s))' % c, '    return false;']
+    env_regs = _fp_env_regs(r)
+    if env_regs:
+        out += ['  // The constrained operations of the source have one '
+                'floating-point',
+                '  // environment, and the replacement raises their '
+                'exceptions at the root.']
+        for x in env_regs:
+            if x != 'Dst':
+                out += ['  if (!isSameFPEnvironment(MRI, %s, Dst))' % x,
+                        '    return false;']
+        out.append('  [[maybe_unused]] bool NoFPExcept = %s;' % ' && '.join(
+            'ignoresFPExceptions(MRI, %s)' % x for x in env_regs))
+    # The value tracking has no known bits of a G_FCONSTANT.
+    src_kinds = ir.var_kinds(src)
+
+    def known(v):
+        if src_kinds.get(v) == 'f':
+            return 'getKnownBitsOrConstant(*VT, MRI, X%d)' % v
+        return 'VT->getKnownBits(X%d)' % v
     cpp = [[precond.cpp_atom(a) for a in p] for p in dnf]
     text = ' '.join(c for p in cpp for c in p)
     for pos, i in enumerate(real):
@@ -1450,8 +1567,7 @@ def _cpp_guard(r):
             out.append('  // %s' % r['disjuncts'][i]['pred'])
         if first:
             for v in new:
-                out.append('  KnownBits K%d = VT->getKnownBits(X%d);' %
-                           (v, v))
+                out.append('  KnownBits K%d = %s;' % (v, known(v)))
             out.append('  bool Pass = %s;' % cond)
             first = False
         else:
@@ -1459,7 +1575,7 @@ def _cpp_guard(r):
                 out.append('  KnownBits K%d;' % v)
             out.append('  if (!Pass) {')
             for v in new:
-                out.append('    K%d = VT->getKnownBits(X%d);' % (v, v))
+                out.append('    K%d = %s;' % (v, known(v)))
             out.append('    Pass = %s;' % cond.replace('\n', '\n  '))
             out.append('  }')
     out += ['  if (!Pass)', '    return false;']
