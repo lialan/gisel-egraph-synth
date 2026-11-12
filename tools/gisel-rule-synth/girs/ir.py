@@ -337,11 +337,39 @@ def freeze_terms(e, out=None):
 
 
 def repeated_freeze(e):
-    """True if one G_FREEZE term occurs twice in ``e``. A pattern matches
-    each occurrence with an instruction of its own, and two G_FREEZE of
-    one poison value can have different values; the model has one value
-    per term."""
+    """True if one G_FREEZE term occurs twice in ``e``. The encoder has no
+    model for it (smt.Encoder): a G_FREEZE of a poison value has a value
+    of its own."""
     terms = freeze_terms(e)
+    return len(terms) != len(set(terms))
+
+
+def nondet_terms(e, out=None):
+    """The nodes of ``e`` whose value is not a function of the values of
+    their operands, one entry per occurrence: G_FREEZE (of poison), an
+    operator with bits that it does not define (OpInfo.unspecified), an
+    operator that makes a NaN (its payload) and an operator with a choice
+    (OpInfo.tgt_choice, for example the sign of a zero)."""
+    if out is None:
+        out = []
+    if is_op(e):
+        if ops.known(e[0]):
+            info = ops.parse(e[0])[0]
+            if info.freeze or info.unspecified is not None or \
+                    info.makes_nan or info.tgt_choice:
+                out.append(e)
+        for a in e[2:]:
+            nondet_terms(a, out)
+    return out
+
+
+def repeated_nondet(e):
+    """True if one term of nondet_terms occurs twice in the source ``e``.
+    Two equal terms of a source are two instructions: a register with two
+    users is an input of the tree. A pattern matches each occurrence with
+    an instruction of its own, and the two can have different values. The
+    proof has one value per term, so it does not hold for such a source."""
+    terms = nondet_terms(e)
     return len(terms) != len(set(terms))
 
 

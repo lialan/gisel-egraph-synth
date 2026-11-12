@@ -329,13 +329,13 @@ class Importer:
             return False
         if any(reg.vw[v] is None for v in ir.variables(s)):
             return False
-        if ir.repeated_freeze(s):
+        if ir.repeated_nondet(s):
             return False
         inst, tgt = self._instance(reg, s, t)
         if not ir.well_typed(inst.expr, inst.vw) or \
                 not ir.well_typed(tgt, inst.vw):
             return False
-        key = (inst.expr, tgt, inst.vw, inst.facts)
+        key = (inst.expr, tgt, inst.vw, inst.vk, inst.facts)
         if key not in self._proved:
             if self._budget <= 0:
                 return False
@@ -536,10 +536,10 @@ class Importer:
         if len(order) > lim.max_vars:
             return self._reject('more than %d inputs' % lim.max_vars, rec,
                                 s, t, kind)
-        if ir.repeated_freeze(s):
-            return self._reject('the source has one G_FREEZE term twice '
-                                '(they can be two instructions)', rec, s,
-                                t, kind)
+        if ir.repeated_nondet(s):
+            return self._reject('the source has one term with a value of '
+                                'its own twice (they are two '
+                                'instructions)', rec, s, t, kind)
         cvars = sorted({v for c in ir.computed_constants(t, set(const_of))
                         for v in ir.variables(c)})
         if not ir.is_linear_in(t, cvars):

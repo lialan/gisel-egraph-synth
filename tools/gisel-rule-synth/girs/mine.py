@@ -110,6 +110,14 @@ def _sha_file(path):
     return h.hexdigest()
 
 
+def _sha_content(path):
+    """_sha_file, or None for a file that cannot be read."""
+    try:
+        return _sha_file(path)
+    except OSError:
+        return None
+
+
 def _dump(obj, path):
     tmp = path + '.tmp'
     with open(tmp, 'w') as f:
@@ -235,34 +243,59 @@ class Run:
     def _compile_many(self, llc, paths, out_path, synth=False, disabled=(),
                       flags=(), count_rules=True):
         """path -> compile result, kept per file in ``out_path`` so that an
-        interrupted stage continues."""
+        interrupted stage continues. The kept results are used again only
+        for the same compiler, options and rules (the first line of the
+        file), and a result of a file only for the same file content."""
         part = out_path + '.part'
+        ident = self._compile_identity(llc, synth, disabled, flags,
+                                       count_rules)
         done = {}
         if os.path.exists(part):
             with open(part) as f:
-                for line in f:
-                    try:
-                        k, v = json.loads(line)
-                    except ValueError:
-                        continue   # the line of an interrupted write
+                lines = f.read().splitlines()
+            same = False
+            try:
+                same = json.loads(lines[0]) == {'identity': ident}
+            except (ValueError, IndexError):
+                pass
+            for line in lines[1:] if same else ():
+                try:
+                    k, sha, v = json.loads(line)
+                except ValueError:
+                    continue   # the line of an interrupted write
+                if sha is not None and sha == _sha_content(k):
                     done[k] = v
+            if not same:
+                os.remove(part)
         todo = [p for p in paths if p not in done]
 
         def one(path):
-            return path, measure.compile_ll(
+            return path, _sha_content(path), measure.compile_ll(
                 llc, self.target, path, flags, synth=synth,
                 disabled=disabled, count_rules=count_rules)
+        new = not os.path.exists(part)
         with open(part, 'a') as f, \
                 concurrent.futures.ThreadPoolExecutor(
                     self.cfg['jobs']) as ex:
-            for path, res in ex.map(one, todo):
+            if new:
+                f.write(json.dumps({'identity': ident}) + '\n')
+            for path, sha, res in ex.map(one, todo):
                 done[path] = res
-                f.write(json.dumps([path, res]) + '\n')
+                f.write(json.dumps([path, sha, res]) + '\n')
                 f.flush()
         res = {p: done[p] for p in paths}
         _dump(res, out_path)
         os.remove(part)
         return res
+
+    def _compile_identity(self, llc, synth, disabled, flags, count_rules):
+        """What the results of _compile_many depend on, besides the
+        files."""
+        return _sha_text(json.dumps({
+            'llc': _sha_file(llc), 'target': self.target.name,
+            'flags': list(flags), 'synth': bool(synth),
+            'disabled': sorted(disabled), 'count_rules': bool(count_rules)},
+            sort_keys=True))
 
     # -- stage driver --
 

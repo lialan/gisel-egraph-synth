@@ -187,8 +187,10 @@ class Encoder:
     A G_FREEZE term has the value of its operand, or a value of its own
     (``frozen``) if the operand is poison. The terms of the source and of
     the replacement have different values: a G_FREEZE of the replacement is
-    a new instruction. One term must not occur twice in the source (see
-    ir.repeated_freeze).
+    a new instruction. One G_FREEZE term must not occur twice in the
+    source (ir.repeated_freeze). Two equal terms have one value; the
+    callers refuse a source in which they are two instructions
+    (ir.repeated_nondet).
 
     Two kinds of bits are not specified: the bits of a result that the
     operator does not define (G_ANYEXT, G_IMPLICIT_DEF; OpInfo.unspecified)

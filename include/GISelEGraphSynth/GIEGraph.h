@@ -1004,6 +1004,12 @@ public:
   const ENode *getChosenNode(EClassId Id) const;
   /// Sum of node costs of the distinct classes needed to compute \p Roots.
   uint64_t getDagCost(ArrayRef<EClassId> Roots) const;
+  /// The identity of the instruction of \p N, an operation with several
+  /// results: the nodes of its results have the same key. The type of the
+  /// parts is part of the key of an unmerge, because a value can be divided
+  /// in more than one way. The DAG cost and the emission use this key, so
+  /// the cost counts the instructions that the emission builds.
+  std::vector<uint64_t> getMultiResultKey(const ENode &N) const;
   /// Print the chosen expression as an S-expression.
   void printExpr(
       raw_ostream &OS, EClassId Id,

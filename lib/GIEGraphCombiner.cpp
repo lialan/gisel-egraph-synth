@@ -1215,17 +1215,11 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       }
       unsigned Opc = getInstrOpcode(*N);
       uint32_t Flags = N->Flags & ~PoisonVariantFlag;
-      // The key of an instruction with several results. The type of the
-      // parts is part of the key of an unmerge: a value can be divided in
-      // more than one way.
+      // The key of an instruction with several results (the same key as
+      // the DAG cost).
       std::vector<uint64_t> Key;
-      if (P->hasProjections()) {
-        Key = {Opc, Flags};
-        if (P->Shape == OpShape::Unmerge)
-          Key.push_back(getTypeKey(N->Ty));
-        for (EClassId Op : N->Ops)
-          Key.push_back(E.resolve(Op));
-      }
+      if (P->hasProjections())
+        Key = E.getMultiResultKey(*N);
       // Use an instruction of the region again if it computes this node
       // from the same registers.
       if (!P->hasProjections() || !MultiDefs.count(Key)) {

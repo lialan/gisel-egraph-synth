@@ -774,6 +774,16 @@ class SelectTest(unittest.TestCase):
                '    %1:_(s32) = G_SEXT_INREG %0, 8\n')
         self.assertEqual(select.size(imm)['f'][0], 1)
 
+    def test_size_counts_vectors_flags_and_several_results(self):
+        mir = ('name: f\n'
+               '    %2:_(<2 x s32>) = G_ADD %0, %1\n'
+               '    %3:_(s32) = nuw nsw G_ADD %4, %5\n'
+               '    %6:_(f32) = nofpexcept G_STRICT_FADD %7, %8, %9\n'
+               '    %a:_(s32), %b:_(s1) = G_UADDO %4, %5\n'
+               '    %c:_(p1) = G_PTR_ADD %10, %11(s64)\n'
+               '    $vgpr0 = COPY %3(s32)\n')
+        self.assertEqual(select.count(mir), {'f': 5})
+
 
 class EmitTest(unittest.TestCase):
     def setUp(self):

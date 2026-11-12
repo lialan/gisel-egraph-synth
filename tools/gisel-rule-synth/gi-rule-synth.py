@@ -375,12 +375,13 @@ def _record_emission(rules):
 
 def _model_sha():
     """A hash of what decides the result of a search or of a proof: the
-    operator table and the modules with the semantics and the search."""
+    operator table and every module of the tool. A list of the modules
+    with the semantics would miss a module that one of them imports (the
+    models of the intrinsics are in amdgcn.py, the lanes in vector.py)."""
     girs = os.path.join(HERE, 'girs')
-    return _sha([os.path.join(girs, f) for f in (
-        'gmir_ops.json', 'ops.py', 'ir.py', 'fp.py', 'smt.py',
-        'discover.py', 'kernels.py', 'corpus.py', 'region.py',
-        'sibling.py', 'precond.py')])
+    return _sha([os.path.join(girs, 'gmir_ops.json')] + sorted(
+        os.path.join(girs, f) for f in os.listdir(girs)
+        if f.endswith('.py')))
 
 
 class _DiscoveryCache:

@@ -467,6 +467,12 @@ class Synthesizer:
         """Generalizes and verifies one concrete discovery. Returns the rule
         id, or None if no precondition was found."""
         self.stats['discoveries'] += 1
+        # Two instructions with equal trees and a value of their own have
+        # one value in the proof (ir.repeated_nondet).
+        if ir.repeated_nondet(inst.expr):
+            self.stats['nondet_rejected'] = \
+                self.stats.get('nondet_rejected', 0) + 1
+            return None
         # The edge of a G_PHI is not a value of a register: a replacement
         # cannot read it (ir.edge_vars).
         if ir.phi_error(inst.expr) is not None or (

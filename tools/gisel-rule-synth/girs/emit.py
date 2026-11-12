@@ -875,6 +875,10 @@ def _apply_patterns(tgt, vw, root_w, src=None):
                 _lit_imm(tgt[2])]
     pats = []
     n = [0]
+    # One temporary for equal terms: the proof gives two equal terms one
+    # value, so the replacement has one instruction for them, as the C++
+    # apply has (built in _cpp_apply).
+    temps = {}
     types = [(root_w, root_kind, 'dst')] + \
         [(w, kinds.get(i), 'x%d' % i) for i, w in enumerate(vw)]
 
@@ -892,9 +896,12 @@ def _apply_patterns(tgt, vw, root_w, src=None):
                     raise ValueError('%s in the replacement' %
                                      _NO_CONSTANT[ak])
                 ops.append('(%s %s)' % (type_of(a[1], ak), _lit_imm(a[2])))
+            elif (a, ak) in temps:
+                ops.append(temps[a, ak])
             else:
                 t = '$n%d' % n[0]
                 n[0] += 1
+                temps[a, ak] = t
                 ak = ir.result_kind(a, ak)
                 walk(a, '%s:%s' % (type_of(a[1], ak), t), ak)
                 ops.append(t)

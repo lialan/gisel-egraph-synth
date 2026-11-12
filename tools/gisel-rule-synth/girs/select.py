@@ -487,9 +487,10 @@ def size(mir_out):
         if line.startswith('name:'):
             name = line.split()[1]
             res[name] = (0, 0)
-        # An instruction with several results is one instruction.
-        m = re.match(r'\s+%\d+:_\(\S+\)(?:, %\d+:_\(\S+\))* = (G_\w+)',
-                     line)
+        # An instruction with several results is one instruction. A type
+        # can have spaces (<2 x s32>), and flags (nuw, nofpexcept, ...)
+        # can come before the opcode.
+        m = _DEF.match(line)
         if m and name and m.group(1) not in ('G_CONSTANT',
                                              'G_IMPLICIT_DEF'):
             op = m.group(1)
@@ -499,6 +500,10 @@ def size(mir_out):
                 else 1
             res[name] = (res[name][0] + 1, res[name][1] + cost)
     return res
+
+
+_DEF = re.compile(r'\s+%[\w.]+:\w*\([^)]*\)(?:, %[\w.]+:\w*\([^)]*\))*'
+                  r' = (?:[a-z][a-z-]* )*(G_\w+)')
 
 
 def count(mir_out):

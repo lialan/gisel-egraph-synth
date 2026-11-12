@@ -441,7 +441,7 @@ def extend(sy, pending, backend, limits, ctx):
         if base is None or \
                 base.get('const_vars') or not base['disjuncts'] or \
                 base['class'] not in ('reduces_cost', 'equal_cost') or \
-                ir.repeated_freeze(inst.expr) or \
+                ir.repeated_nondet(inst.expr) or \
                 ir.phi_nodes(inst.expr) or \
                 ir.constrained_nodes(inst.expr) or \
                 ir.has_forwarded_load(inst.expr):

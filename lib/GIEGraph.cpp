@@ -4230,18 +4230,25 @@ uint64_t Extractor::getDagCost(ArrayRef<EClassId> Roots) const {
     if (!N)
       return Infinite;
     bool Counted = false;
-    if (N->isOperation() && getOpProperties(N->Opcode)->hasProjections()) {
-      std::vector<uint64_t> Key = {N->Opcode, N->Flags};
-      for (EClassId Op : N->Ops)
-        Key.push_back(G.find(Op));
-      Counted = !Instructions.insert(std::move(Key)).second;
-    }
+    if (N->isOperation() && getOpProperties(N->Opcode)->hasProjections())
+      Counted = !Instructions.insert(getMultiResultKey(*N)).second;
     if (!Counted)
       Total = addCost(Total, Choices[Id].LocalCost);
     for (EClassId Op : N->Ops)
       Work.push_back(resolve(Op));
   }
   return Total;
+}
+
+std::vector<uint64_t> Extractor::getMultiResultKey(const ENode &N) const {
+  assert(N.isOperation() && getOpProperties(N.Opcode)->hasProjections() &&
+         "not an operation with several results");
+  std::vector<uint64_t> Key = {N.Opcode, N.Flags};
+  if (getOpProperties(N.Opcode)->Shape == OpShape::Unmerge)
+    Key.push_back(getTypeKey(N.Ty));
+  for (EClassId Op : N.Ops)
+    Key.push_back(resolve(Op));
+  return Key;
 }
 
 void Extractor::printExpr(

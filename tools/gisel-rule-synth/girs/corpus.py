@@ -65,8 +65,10 @@ class Instance:
         return self.sub_facts.get(e)
 
     def key(self):
-        """Deduplication key: same shape, widths and facts."""
-        return (self.expr, self.vw, self.facts)
+        """Deduplication key: same shape, widths, kinds of the inputs and
+        facts. The search reads the kinds (vk): a G_SELECT of two f32 and
+        a G_SELECT of two i32 are different instances."""
+        return (self.expr, self.vw, self.vk, self.facts)
 
     def to_json(self):
         return {
@@ -240,6 +242,11 @@ def parse_record(rec, source='', why=None):
         return None
     if ir.env_error(expr) is not None:
         why.append(ir.env_error(expr))
+        return None
+    if ir.repeated_nondet(expr):
+        # Two instructions with equal trees and a value of their own
+        # (ir.repeated_nondet): the proof would give them one value.
+        why.append('two equal instructions with a value of their own')
         return None
     lifted = False
     if vector.has_vector(vw, expr):

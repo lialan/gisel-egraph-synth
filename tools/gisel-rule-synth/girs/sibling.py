@@ -141,7 +141,7 @@ def freeze_ok(a, sibs):
     poison value can have different values. An operand of a sibling is a
     value of the region (operand_refs), so only a sibling that is a
     G_FREEZE itself is a new instruction."""
-    if ir.repeated_freeze(a):
+    if ir.repeated_nondet(a):
         return False
     # A rule with several roots has no G_PHI: its replacement is built at
     # a position in the block of the roots that the rule finds, and a

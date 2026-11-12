@@ -206,8 +206,8 @@ class FreezeTest(unittest.TestCase):
 
     def test_one_term_twice(self):
         f = op('G_FREEZE', 32, V(0))
-        self.assertTrue(ir.repeated_freeze(op('G_XOR', 32, f, f)))
-        self.assertFalse(ir.repeated_freeze(
+        self.assertTrue(ir.repeated_nondet(op('G_XOR', 32, f, f)))
+        self.assertFalse(ir.repeated_nondet(
             op('G_XOR', 32, f, op('G_FREEZE', 32, V(1)))))
 
     def test_select_does_not_take_poison_of_the_other_operand(self):
