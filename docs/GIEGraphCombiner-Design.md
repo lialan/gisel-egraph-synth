@@ -564,12 +564,27 @@ without undefined behaviour (`isLaneWiseOperator`: binary and unary
 operators, bit counts, comparisons, selects, integer extensions and
 truncations; not division and remainder) is a region instruction with
 vectors of one number of lanes; the condition of a `G_SELECT` can be one
-scalar. The table rules apply to such a class when they relate existing
-classes or a literal: the rules are identities of scalars, so a literal is
-the same constant in each lane (a splat). A vector class has no `Const`: a
-vector constant is a `G_BUILD_VECTOR` of scalar constant classes, so
-arithmetic on it is never arithmetic of the integer that the lanes make
-together; `SplatConst` only lets a literal match a splat.
+scalar. Table rules can build these lane-wise operations with fixed integer
+vector types. A comparison produces a mask with the same number of lanes
+and one bit per lane; a select also accepts that mask type.
+
+Value literals in table rules denote the same integer in every lane.
+`getScalarOrSplatConstant` recognizes a `G_BUILD_VECTOR` whose scalar lanes
+are all the same exact constant, and `addConstantSplat` builds that form.
+`EClass::SplatConst` retains the cached analysis for a build that repeats
+one constant class; the query also recognizes equal constant lane values.
+The payload of a constant variable or computed constant is one element;
+its full `LLT` retains the lane count. Literal values, masks, shifts and
+integer cast folds use the element width. Opcode attributes, such as the
+bit count of `G_SEXT_INREG`, remain single immediates.
+
+`EClass::Const` remains scalar-only. Vector constants stay as builds of
+scalar constant classes, so arithmetic never carries between lanes. A
+non-splat or a build with an unknown lane does not match a literal. The
+query does not follow refinement edges; the matcher follows them explicitly
+and records that the match only justifies refinement. Thus `(x ^ y) ^ y`
+can simplify to `x` through `xor-self` and `xor-zero`, while an unknown
+`y ^ y` refines to a zero splat rather than merging with it.
 
 The operators of `OpShape::Vector` move lanes. Their index or mask is part
 of the node identity: two shuffles of the same operands with different masks
@@ -679,15 +694,12 @@ applied rewrites and estimated cost saved. `-time-passes` adds
   floating-point values for the conversions, and fixed vectors of integers),
   and capped at 32 instructions; larger connected components are split by
   the cap.
-* A literal of a table rule matches a vector class that is a splat of
-  one constant (`EClass::SplatConst`, in the width of a lane), and a
-  literal on a right-hand side with a vector type is such a splat. A
-  constant variable (`#c`) and a computed constant (`$0`) are scalars only,
-  so a fold that computes with the width never sees a vector. The lane
-  rules fold constant lanes one by one through `G_BUILD_VECTOR`.
-* A table rule builds a new operation only for scalar types; on a vector
-  class only the rules whose right-hand side is an existing class or a
-  literal (absorption, identities, involutions, AC canonical forms) apply.
+* Table-rule constant variables match scalar constants and fixed integer
+  splats. Non-splat vector constants fold through the lane rules instead.
+  New vector RHS operations are restricted to `isLaneWiseOperator` with
+  matching lane counts; scalable vectors, vector pointers and floating-point
+  vectors, vector division/remainder and multi-result operations are outside
+  this subset.
 * Inputs are almost never provably defined in real code, so most profitable
   candidates are refinements. They are still sound to apply.
 * Congruence closure rebuilds from scratch each iteration, and every rule is

@@ -6,7 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 /// \file
-/// The default library of algebraic rewrite rules for scalar integer gMIR.
+/// The default library of algebraic rewrite rules for integer gMIR. The
+/// supported lane-wise operators also apply to fixed integer vectors, with
+/// value literals and constant variables denoting constant splats.
 ///
 /// Most rules are generated from the operator properties in
 /// getAllOpProperties() (GIEGraph.cpp): commutativity, associativity,
@@ -52,8 +54,7 @@ using Computed = SmallVectorImpl<APInt>;
 /// Rules about G_MERGE_VALUES are generated for 2 to this many parts.
 constexpr unsigned MaxMergeParts = 4;
 
-/// The width of the root: of a lane for a vector (the rules are identities
-/// of scalars, applied to each lane).
+/// Width of a scalar, or of one element of a lane-wise vector operation.
 unsigned rootWidth(const EGraph &G, const RuleMatch &M) {
   return G.getType(M.Root).getScalarSizeInBits();
 }
@@ -142,7 +143,8 @@ RewriteRule::ApplyFn signedLiteralGuard(const OpProperties &P, int64_t C) {
   if (!P.SignedLiterals || Bits <= 1)
     return nullptr;
   return [Bits](const EGraph &G, const RuleMatch &M, Computed &) {
-    return !M.isSumBound(0) && G.getType(M.Vars[0]).getSizeInBits() >= Bits;
+    return !M.isSumBound(0) &&
+           G.getType(M.Vars[0]).getScalarSizeInBits() >= Bits;
   };
 }
 
@@ -175,8 +177,8 @@ SmallVector<CmpInst::Predicate, 10> icmpPredicates() {
 
 APInt boolean(bool V) { return APInt(1, V); }
 
-/// The width of the class bound to variable \p V (never an AC term in the
-/// positions this is used for).
+/// The element width of the class bound to variable \p V (never an AC term
+/// in the positions this is used for).
 unsigned varWidth(const EGraph &G, const RuleMatch &M, unsigned V) {
   assert(!M.isSumBound(V) && "variable bound to an AC term");
   return G.getType(M.Vars[V]).getScalarSizeInBits();
@@ -660,7 +662,7 @@ void llvm::egraph::addStructuralRulesFromProperties(
       Rules.emplace_back(Name, un(P, un(Inv, "?a")), "?a",
                          [](const EGraph &G, const RuleMatch &M, Computed &) {
                            return G.getType(M.PatClasses[1]).getSizeInBits() ==
-                                  rootWidth(G, M);
+                                  G.getType(M.Root).getSizeInBits();
                          });
       continue;
     }
@@ -685,7 +687,8 @@ void llvm::egraph::addStructuralRulesFromProperties(
           (Twine(Inv.ShortName) + "-of-" + P.ShortName + "-" + Twine(N)).str(),
           "(" + std::string(Inv.Name) + Results + ")", "?a",
           [](const EGraph &G, const RuleMatch &M, Computed &) {
-            return varWidth(G, M, 0) == rootWidth(G, M);
+            return G.getType(M.Vars[0]).getSizeInBits() ==
+                   G.getType(M.Root).getSizeInBits();
           });
     }
   }
@@ -786,10 +789,22 @@ void llvm::egraph::addFoldingRulesFromProperties(
       // are poison for the same operands.
       Rules.emplace_back(
           Name, un(P, "#a"), "$0",
-          [Fold = P.FoldCast](const EGraph &G, const RuleMatch &M,
-                              Computed &Out) {
+          [Fold = P.FoldCast, LaneWise = isLaneWiseOperator(P)](
+              const EGraph &G, const RuleMatch &M, Computed &Out) {
             LLT SrcTy = G.getType(M.ConstClasses[0]);
             LLT DstTy = G.getType(M.Root);
+            if (SrcTy.isVector() || DstTy.isVector()) {
+              if (!LaneWise || !SrcTy.isFixedVector() ||
+                  !DstTy.isFixedVector() ||
+                  SrcTy.getNumElements() != DstTy.getNumElements() ||
+                  !SrcTy.getElementType().isScalar() ||
+                  !DstTy.getElementType().isScalar() ||
+                  SrcTy.getElementType().isFloat() ||
+                  DstTy.getElementType().isFloat())
+                return false;
+              SrcTy = SrcTy.getElementType();
+              DstTy = DstTy.getElementType();
+            }
             std::optional<APInt> R = Fold(*M.Consts[0], SrcTy, DstTy);
             if (!R || R->getBitWidth() != DstTy.getSizeInBits())
               return false;
@@ -853,7 +868,7 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
         // Do not rewrite a negation (0 - b) itself.
         if (M.isSumBound(0))
           return true;
-        std::optional<APInt> A = G.getConstant(M.Vars[0]);
+        std::optional<APInt> A = G.getScalarOrSplatConstant(M.Vars[0]);
         return !(A && A->isZero());
       });
   Add("add-neg-to-sub", "(G_ADD ?a (G_SUB 0 ?b))", "(G_SUB ?a ?b)");
@@ -897,7 +912,7 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
   Add("zext-of-trunc-to-and", "(G_ZEXT (G_TRUNC ?a))", "(G_AND ?a $0)",
       [](const EGraph &G, const RuleMatch &M, Computed &Out) {
         unsigned W = rootWidth(G, M);
-        unsigned MidW = G.getType(M.PatClasses[1]).getSizeInBits();
+        unsigned MidW = G.getType(M.PatClasses[1]).getScalarSizeInBits();
         if (varWidth(G, M, 0) != W)
           return false;
         Out.push_back(APInt::getLowBitsSet(W, MidW));
@@ -909,7 +924,7 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
       "(G_SEXT_INREG:$0 ?a)",
       [](const EGraph &G, const RuleMatch &M, Computed &Out) {
         unsigned W = rootWidth(G, M);
-        unsigned MidW = G.getType(M.PatClasses[1]).getSizeInBits();
+        unsigned MidW = G.getType(M.PatClasses[1]).getScalarSizeInBits();
         if (varWidth(G, M, 0) != W)
           return false;
         Out.push_back(APInt(64, MidW));

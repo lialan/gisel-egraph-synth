@@ -10,8 +10,9 @@
 ///
 /// E-nodes reuse TargetOpcode::G_* opcodes and LLT types: scalar integer
 /// arithmetic, casts, comparisons, selects, bit operations, pointer
-/// arithmetic, PHIs and conditional branches (see OpProperties). The graph
-/// supports hash-consing, union-find with congruence closure, a small
+/// arithmetic, fixed integer vectors, PHIs and conditional branches (see
+/// OpProperties). The graph supports hash-consing, union-find with congruence
+/// closure, a small
 /// e-class analysis (constant value, "not undef", "not poison") and
 /// *refinement edges*.
 ///
@@ -126,7 +127,8 @@ struct EClass {
   SmallVector<ENode, 2> Nodes;
   /// Classes whose value refines this class' value (this ~> target).
   SmallVector<EClassId, 1> RefinesTo;
-  /// Analysis: known constant value of the class.
+  /// Analysis: known scalar constant value of the class. Vector constants
+  /// remain G_BUILD_VECTOR nodes; see EGraph::getScalarOrSplatConstant.
   std::optional<APInt> Const;
   /// Analysis: for a fixed vector, the constant of each lane if the class
   /// has a G_BUILD_VECTOR of one constant class (a splat). A pattern literal
@@ -173,6 +175,9 @@ public:
   /// Add a symbolic input with the given definedness facts.
   EClassId addInput(const InputInfo &Info);
   EClassId addConstant(LLT Ty, const APInt &Val);
+  /// Add a scalar constant, or a fixed integer vector with Val in every
+  /// lane. Val has the element width, never the total vector width.
+  EClassId addConstantSplat(LLT Ty, const APInt &Val);
   EClassId addOp(unsigned Opcode, LLT Ty, ArrayRef<EClassId> Ops,
                  uint32_t Flags = 0, uint64_t Attr = 0);
   /// Generic hash-consed node insertion. Operands are canonicalized.
@@ -204,6 +209,10 @@ public:
   std::optional<APInt> getConstant(EClassId Id) const {
     return getClass(Id).Const;
   }
+  /// The exact scalar constant, or the element value of a fixed integer
+  /// vector whose lanes are all the same exact constant. Does not follow
+  /// refinement edges or treat undef/poison lanes as constant lanes.
+  std::optional<APInt> getScalarOrSplatConstant(EClassId Id) const;
   const InputInfo &getInputInfo(unsigned Idx) const { return Inputs[Idx]; }
   unsigned getNumInputs() const { return Inputs.size(); }
 
@@ -314,8 +323,9 @@ private:
 ///                                root, transformed by OpProperties::InvertAttr
 /// An operation without an attribute matches a node with any attribute; on
 /// the RHS it is created with attribute 0.
-/// The literals `smin` and `smax` are the smallest and the largest signed
-/// value of the width.
+/// Value literals denote a scalar or a constant splat, according to their
+/// operand type. The literals `smin` and `smax` are the smallest and the
+/// largest signed value of the element width. Attributes are not splats.
 struct PatNode {
   enum KindTy : uint8_t { Var, ConstVar, Literal, Computed, Op } Kind;
   enum AttrKindTy : uint8_t {
@@ -351,6 +361,8 @@ struct RuleMatch {
   /// the matched pattern and Rest the remaining leaves of the root's view.
   /// The rule then relates the root to `RHS op Rest`.
   ACTerm Rest;
+  /// Scalar values, or element values of constant splats. ConstClasses
+  /// retains the complete type, including the lane count.
   SmallVector<std::optional<APInt>, 2> Consts;
   /// The class that each constant variable was first matched with (its type
   /// is the type of the constant).

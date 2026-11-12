@@ -1,4 +1,4 @@
-# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-mode=rewrite -o - %s | FileCheck %s
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-mode=rewrite -verify-machineinstrs -o - %s | FileCheck %s
 # RUN: rm -f %t.jsonl
 # RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-export=%t.jsonl -o /dev/null %s
 # RUN: FileCheck %s --check-prefix=EXPORT --input-file=%t.jsonl
@@ -21,12 +21,12 @@
 # CHECK: [[E:%[0-9]+]]:_(s32) = G_EXTRACT_VECTOR_ELT %1(<2 x s32>), [[IDX]](i32)
 # CHECK: $vgpr0 = COPY [[E]](s32)
 
-# A lane-wise operation of constant vectors folds lane by lane, in the width
-# of a lane: 2 + 0xffff is 1 in 16 bits (not a carry into the other lane).
+# Overflow of the low lane does not carry into the high lane:
+# <0xffff, 2> + <1, 3> is <0, 5>, not the packed integer sum <0, 6>.
 # CHECK-LABEL: name: constant_lanes
-# CHECK-DAG: [[ONE:%[0-9]+]]:_(s16) = G_CONSTANT i16 1
-# CHECK-DAG: [[FOUR:%[0-9]+]]:_(s16) = G_CONSTANT i16 4
-# CHECK: [[V:%[0-9]+]]:_(<2 x s16>) = G_BUILD_VECTOR [[FOUR]](s16), [[ONE]](s16)
+# CHECK-DAG: [[ZERO:%[0-9]+]]:_(s16) = G_CONSTANT i16 0
+# CHECK-DAG: [[FIVE:%[0-9]+]]:_(s16) = G_CONSTANT i16 5
+# CHECK: [[V:%[0-9]+]]:_(<2 x s16>) = G_BUILD_VECTOR [[ZERO]](s16), [[FIVE]](s16)
 # CHECK-NOT: G_ADD
 # CHECK: $vgpr0 = COPY [[V]](<2 x s16>)
 
@@ -36,12 +36,43 @@
 # CHECK: G_SHUFFLE_VECTOR %0(<2 x s16>), %1, shufflemask(0, 3)
 # CHECK: G_XOR
 
-# (x ^ y) ^ y is x lane by lane: y ^ y is the splat of 0 (a literal of a
-# rule is a splat for a vector type), and x ^ splat(0) is x. y can be undef,
-# so this is a refinement, which the rewrite mode applies.
+# Table rules create a splat zero for y ^ y and match it in x ^ zero.
+# The final value is the original opaque vector, without scalarization.
+# With possibly undef or poison y, this is a directed refinement.
 # CHECK-LABEL: name: xor_twice
+# CHECK: %0:_(<2 x s16>) = COPY $vgpr0
 # CHECK-NOT: G_XOR
 # CHECK: $vgpr0 = COPY %0(<2 x s16>)
+
+# Literal identities match all lanes, using the element width for -1.
+# CHECK-LABEL: name: splat_identities
+# CHECK: %0:_(<2 x s16>) = COPY $vgpr0
+# CHECK-NOT: G_XOR
+# CHECK-NOT: G_AND
+# CHECK: $vgpr0 = COPY %0(<2 x s16>)
+
+# The literal on a rule's RHS is emitted as a scalar constant and a build,
+# never as a G_CONSTANT with a vector type. The shared add makes the splat
+# strictly cheaper than the original root (a lone XOR has the build's cost).
+# CHECK-LABEL: name: xor_self
+# CHECK: [[SELF_ZERO:%[0-9]+]]:_(s16) = G_CONSTANT i16 0
+# CHECK: [[ZEROS:%[0-9]+]]:_(<2 x s16>) = G_BUILD_VECTOR [[SELF_ZERO]](s16), [[SELF_ZERO]](s16)
+# CHECK-NOT: G_XOR
+# CHECK-NOT: G_ADD
+# CHECK: $vgpr0 = COPY [[ZEROS]](<2 x s16>)
+
+# A zero in only one lane does not match the literal zero.
+# CHECK-LABEL: name: nonuniform_zero
+# CHECK: %4:_(<2 x s16>) = G_XOR %0(<2 x s16>), %3
+# CHECK: $vgpr0 = COPY %4(<2 x s16>)
+
+# A #constant match and a computed RHS constant retain the vector shape.
+# CHECK-LABEL: name: mul_splat_power_of_two
+# CHECK: [[THREE:%[0-9]+]]:_(s16) = G_CONSTANT i16 3
+# CHECK: [[AMOUNT:%[0-9]+]]:_(<2 x s16>) = G_BUILD_VECTOR [[THREE]](s16), [[THREE]](s16)
+# CHECK-NOT: G_MUL
+# CHECK: [[SHIFT:%[0-9]+]]:_(<2 x s16>) = G_SHL %0(<2 x s16>), [[AMOUNT]]
+# CHECK: $vgpr0 = COPY [[SHIFT]](<2 x s16>)
 
 # The export has the index of a lane ("imm"), the mask of a shuffle ("mask")
 # and the names of the lane rules.
@@ -57,6 +88,9 @@
 # EXPORT: {"version":2,"fn":"constant_lanes"
 # EXPORT-SAME: "vector-lanewise-of-build":1
 # EXPORT-NOT: "fn":"two_masks"
+# EXPORT: {"version":2,"fn":"xor_twice"
+# EXPORT-SAME: "optimized":[{"id":0,"in":0}]
+# EXPORT-SAME: "roots":[{"reg":"%3","original":3,"optimized":0}]
 
 ---
 name: build_of_extracts
@@ -89,10 +123,10 @@ body: |
 name: constant_lanes
 body: |
   bb.0:
-    %0:_(s16) = G_CONSTANT i16 1
+    %0:_(s16) = G_CONSTANT i16 -1
     %1:_(s16) = G_CONSTANT i16 2
-    %2:_(s16) = G_CONSTANT i16 3
-    %3:_(s16) = G_CONSTANT i16 -1
+    %2:_(s16) = G_CONSTANT i16 1
+    %3:_(s16) = G_CONSTANT i16 3
     %4:_(<2 x s16>) = G_BUILD_VECTOR %0(s16), %1(s16)
     %5:_(<2 x s16>) = G_BUILD_VECTOR %2(s16), %3(s16)
     %6:_(<2 x s16>) = G_ADD %4, %5
@@ -121,6 +155,57 @@ body: |
     %1:_(<2 x s16>) = COPY $vgpr1
     %2:_(<2 x s16>) = G_XOR %0, %1
     %3:_(<2 x s16>) = G_XOR %2, %1
+    $vgpr0 = COPY %3(<2 x s16>)
+    SI_RETURN implicit $vgpr0
+...
+---
+name: splat_identities
+body: |
+  bb.0:
+    liveins: $vgpr0
+    %0:_(<2 x s16>) = COPY $vgpr0
+    %1:_(s16) = G_CONSTANT i16 0
+    %2:_(s16) = G_CONSTANT i16 -1
+    %3:_(<2 x s16>) = G_BUILD_VECTOR %1(s16), %1(s16)
+    %4:_(<2 x s16>) = G_BUILD_VECTOR %2(s16), %2(s16)
+    %5:_(<2 x s16>) = G_XOR %0, %3
+    %6:_(<2 x s16>) = G_AND %5, %4
+    $vgpr0 = COPY %6(<2 x s16>)
+    SI_RETURN implicit $vgpr0
+...
+---
+name: xor_self
+body: |
+  bb.0:
+    liveins: $vgpr0
+    %0:_(<2 x s16>) = COPY $vgpr0
+    %1:_(<2 x s16>) = G_XOR %0, %0
+    %2:_(<2 x s16>) = G_ADD %1, %1
+    $vgpr0 = COPY %2(<2 x s16>)
+    SI_RETURN implicit $vgpr0
+...
+---
+name: nonuniform_zero
+body: |
+  bb.0:
+    liveins: $vgpr0
+    %0:_(<2 x s16>) = COPY $vgpr0
+    %1:_(s16) = G_CONSTANT i16 0
+    %2:_(s16) = G_CONSTANT i16 1
+    %3:_(<2 x s16>) = G_BUILD_VECTOR %1(s16), %2(s16)
+    %4:_(<2 x s16>) = G_XOR %0, %3
+    $vgpr0 = COPY %4(<2 x s16>)
+    SI_RETURN implicit $vgpr0
+...
+---
+name: mul_splat_power_of_two
+body: |
+  bb.0:
+    liveins: $vgpr0
+    %0:_(<2 x s16>) = COPY $vgpr0
+    %1:_(s16) = G_CONSTANT i16 8
+    %2:_(<2 x s16>) = G_BUILD_VECTOR %1(s16), %1(s16)
+    %3:_(<2 x s16>) = G_MUL %0, %2
     $vgpr0 = COPY %3(<2 x s16>)
     SI_RETURN implicit $vgpr0
 ...
