@@ -486,6 +486,17 @@ def _schedule(insts, share):
     return out
 
 
+def precondition_source(rule):
+    """'lhs' if the emitted precondition of the rule is true (no guard),
+    'guard' if each emitted disjunct tests facts of the inputs, 'mixed'
+    if some do."""
+    ds = rule.get('disjuncts') or []
+    empty = [not d.get('pred_json') for d in ds]
+    if all(empty):
+        return 'lhs'
+    return 'guard' if not any(empty) else 'mixed'
+
+
 def cmd_synth(args):
     from girs import parallel
     if args.search_jobs < 0 or args.slow_jobs < 1 or args.search_batch < 1:
@@ -712,14 +723,22 @@ def _cmd_synth(args, session=None):
             gkey = (ir.to_sexpr(c.inst.expr), c.group) if c.group else None
             if gkey in done:
                 continue
-            rid = sy.add(c.inst, c.tgt, provenance={
-                'discovery': 'egraph', 'egraph_rules': c.rules,
-                'egraph_refinement': c.refinement})
+            rid = imp.synthesize(c, sy)
             if rid:
                 hit.add(rid)
                 generalized += 1
                 if gkey:
                     done.add(gkey)
+                if c.joint and args.regions and \
+                        region.interior_outputs(c.inst):
+                    # The roots are results of one instruction with
+                    # several results: the region step searches the
+                    # other outputs.
+                    joint.append((c.inst, c.tgt, rid))
+                    imp.stats['multi_root']['region_seeds_searched'] = \
+                        imp.stats['multi_root'].get(
+                            'region_seeds_searched', 0) + 1
+        imp.cross_check()
         einsts = [c.inst for c in cands]
         estats = dict(imp.stats)
         estats.update({
@@ -835,6 +854,10 @@ def _cmd_synth(args, session=None):
 
     rules = [synth.strip_private(sy.rules[rid]) for rid in sorted(sy.rules)]
     for r in rules:
+        # Where the precondition of the rule comes from: 'lhs' (the rule
+        # has no guard: the condition follows from the matched source) or
+        # 'guard' (known bits of the inputs, tested by the emitted guard).
+        r['precondition_source'] = precondition_source(r)
         if target_cost_search:
             # Opt-in eligibility for measurement, not profitability.
             # Emission and selection must not discard these candidates

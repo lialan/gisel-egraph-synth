@@ -2,8 +2,8 @@
 
 `llc -gisel-egraph-export=<file>` writes one JSON record per region for
 which equality saturation found a cheaper form: the typed DAG of the region
-and the DAG the extractor selected (format version 1, see README.md). This
-module turns each record into *candidates* for the same pipeline the
+and the DAG the extractor selected (format versions 1 to 3, see README.md).
+This module turns each record into *candidates* for the same pipeline the
 enumerative search feeds: a concrete source expression with the known bits
 of its inputs, and a replacement.
 
@@ -28,8 +28,34 @@ A region is much larger than the rewrite that made it cheaper, so each
 Every reduction step is checked by an SMT proof; a step that cannot be
 proved is not taken. Candidates that cannot enter the pipeline are counted
 by reason (``Importer.stats``), never dropped silently.
+
+Where the precondition of a candidate comes from (``precondition_source``):
+
+* ``lhs``: the candidate is proved with no fact of its inputs (no known
+  bit, no ``noundef``), so the condition of the rewrite follows from the
+  matched source; the rule has no guard.
+* ``guard``: the proof needs known bits of the inputs; CEGIS turns them
+  into the precondition of the rule, which the emitted guard tests.
+  A candidate whose facts have no expression in the precondition grammar,
+  or that the solver does not decide, is rejected and counted by reason
+  (``stats['precondition']``).
+
+Version 3 records also list the e-graph rules whose precondition needed
+the known bits of the inputs (``context_facts``, FactSource::Context in
+GIEGraph). ``cross_check`` puts every such record in one bucket: it gave a
+guarded rule, or a counted rejection, or only candidates that were proved
+without facts, or no candidate (``stats['context_facts']``).
+
+A record whose roots are results of one instruction with several results
+in the selected DAG (one G_UADDO for the sum and for the carry) is a
+rewrite of several roots. If one root reads the other (``c = icmp ult s,
+a`` with ``s = add a, b``), the candidate of the reading root is a seed of
+a rule with several outputs (``Candidate.joint``, region.py). Roots that do
+not read each other are a rule for several roots (sibling.py), which the
+import does not make: they are counted (``stats['multi_root']``).
 """
 
+import copy
 import json
 import os
 
@@ -37,10 +63,14 @@ from . import corpus
 from . import discover
 from . import ir
 from . import ops
+from . import synth
 from . import vector
 
 # Version 2: fixed vectors ("imm": the constant index of a lane, "mask": the
 # mask of a shuffle, the known bits of a vector are those of a lane).
+# Version 3: "features" (the parts of the engine that were on), "views"
+# (statistics of the analysis views) and "context_facts" (the rules whose
+# precondition needed known bits of the inputs, and "known-constant").
 FORMAT_VERSIONS = (1, 2, 3)
 FORMAT_VERSION = 3
 
@@ -238,6 +268,24 @@ class Candidate:
         # Candidates with the same group are recipes for the same computed
         # constant, best first: the first that is proved is the rule.
         self.group = group
+        # 'lhs' (proved without a fact of the inputs) or 'guard' (the
+        # proof needs known bits of the inputs).
+        self.precondition_source = None
+        # The rules of the records that needed context facts (version 3),
+        # and the records of the candidate that have such rules.
+        self.context_facts = set()
+        self.records = set()
+        # The candidate of a root that reads another root, both results of
+        # one instruction with several results: a seed of a rule with
+        # several outputs (region.py).
+        self.joint = False
+
+    def provenance(self):
+        """The provenance of a rule made from the candidate."""
+        return {'discovery': 'egraph', 'egraph_rules': self.rules,
+                'egraph_refinement': self.refinement,
+                'egraph_context_facts': sorted(self.context_facts),
+                'precondition_source': self.precondition_source}
 
     def key(self):
         return (self.inst.expr, self.tgt, self.inst.vw, self.inst.facts,
@@ -311,18 +359,35 @@ class Importer:
                       'roots_effect': 0, 'steps': 0, 'steps_not_cheaper': 0,
                       'pairs': 0, 'candidates': 0, 'distinct': 0,
                       'computed_constants': 0,
-                      'smt_checks': 0, 'rejected': {}}
+                      'smt_checks': 0, 'rejected': {},
+                      'versions': {}, 'features': {}, 'views': {},
+                      'precondition': {
+                          s: {'candidates': 0, 'distinct': 0, 'rules': 0,
+                              'known': 0, 'rejected': {}}
+                          for s in ('lhs', 'guard')},
+                      'context_facts': {'records': 0, 'rules': {}},
+                      'multi_root': {'records': 0, 'groups': 0,
+                                     'region_seeds': 0, 'parts': 0}}
         self.rejected_examples = {}
         self._proved = {}
+        self._free = {}
+        # Per record with context facts (its index): the record, the
+        # rejections counted while it was read, its candidates and what
+        # became of them (synthesize).
+        self._records = {}
+        self._rec = None
 
     # -- bookkeeping --
 
     def _reject(self, reason, rec, src=None, tgt=None, kind='step'):
         """Counts a rewrite that gives no candidate. ``kind`` is 'step' (a
-        local step: an opportunity that is lost) or 'root' (the complete
-        rewrite of a root; its local steps are candidates of their own)."""
+        local step: an opportunity that is lost), 'root' (the complete
+        rewrite of a root; its local steps are candidates of their own) or
+        'multi-root' (roots of one instruction with several results)."""
         r = self.stats['rejected'].setdefault(kind, {})
         r[reason] = r.get(reason, 0) + 1
+        if self._rec is not None:
+            self._rec['rejected'] += 1
         ex = self.rejected_examples.setdefault(kind + ': ' + reason, [])
         if len(ex) < 3:
             ex.append({'fn': rec['fn'], 'bb': rec['bb'],
@@ -447,9 +512,20 @@ class Importer:
                              '%s' % (source, rec.get('version'),
                                      FORMAT_VERSIONS))
         self.stats['records'] += 1
+        v = self.stats['versions']
+        v[rec['version']] = v.get(rec['version'], 0) + 1
+        self._read_v3(rec)
         reg = _Region(rec)
         self._budget = self.limits.max_proofs
         rules = sorted(rec.get('rules', {}))
+        ctx = rec.get('context_facts') or {}
+        self._rec = None
+        if ctx:
+            self._rec = {'fn': rec['fn'], 'bb': rec['bb'],
+                         'context_facts': sorted(ctx), 'rejected': 0,
+                         'candidates': 0, 'outcomes': set()}
+            self._records[self.stats['records']] = self._rec
+        joint, parts = self._multi_root(reg, rec)
         # The local steps: one per value whose selected expression is not
         # the node itself.
         for n, s, t in reg.steps:
@@ -470,8 +546,78 @@ class Importer:
             if t is None or s == t:
                 self.stats['roots_unchanged'] += 1
                 continue
+            if root['reg'] in parts:
+                # A result of an instruction that the rewrite of several
+                # roots computes once; alone it is not the rewrite.
+                self.stats['multi_root']['parts'] += 1
+                continue
+            self._joint = root['reg'] in joint
             self._add_rewrite(reg, rec, root['reg'], s, t, rules, source,
                               local=False)
+            self._joint = False
+        self._rec = None
+
+    def _read_v3(self, rec):
+        """The statistics of the fields of version 3: the features that
+        were on, the views, and the rules that needed context facts."""
+        for f in rec.get('features', ()):
+            self.stats['features'][f] = self.stats['features'].get(f, 0) + 1
+        for name, vs in (rec.get('views') or {}).items():
+            out = self.stats['views'].setdefault(name, {})
+            for k, n in vs.items():
+                out[k] = out.get(k, 0) + n
+        ctx = rec.get('context_facts') or {}
+        if ctx:
+            c = self.stats['context_facts']
+            c['records'] += 1
+            for name, n in ctx.items():
+                c['rules'][name] = c['rules'].get(name, 0) + n
+
+    def _multi_root(self, reg, rec):
+        """The roots of the record that the rewrite changes into results
+        of one instruction with several results. Returns (the registers of
+        the roots that read another root of their group: seeds of a rule
+        with several outputs, the registers of the other roots of a
+        group)."""
+        groups = {}
+        for root in rec['roots']:
+            t = reg.opt.get(root.get('optimized'))
+            if 'reg' not in root or t is None or not ir.is_op(t) or \
+                    '@' in t[0] or not ops.known(t[0]) or \
+                    reg.orig[root['original']] == t:
+                # Not a rewrite: a root that the region computes as it is
+                # (the instruction with several results is in the source).
+                continue
+            info, attr, _ = ops.parse(t[0])
+            if (info.results or 1) < 2:
+                continue
+            groups.setdefault((info.name, attr) + t[2:], []).append(root)
+        joint, parts = set(), set()
+        groups = [g for g in groups.values() if len(g) > 1]
+        if groups:
+            self.stats['multi_root']['records'] += 1
+        for g in groups:
+            self.stats['multi_root']['groups'] += 1
+            srcs = {r['reg']: reg.orig[r['original']] for r in g}
+            # A root whose source has every other root of the group as a
+            # value below it.
+            prim = [r for r in g if all(
+                o == r['reg'] or srcs[o] in _subterms(srcs[r['reg']], set())
+                for o in srcs)]
+            if prim:
+                joint.add(prim[0]['reg'])
+                parts |= set(srcs) - {prim[0]['reg']}
+                self.stats['multi_root']['region_seeds'] += 1
+            else:
+                parts |= set(srcs)
+                self._reject('roots that do not read each other are '
+                             'results of one instruction with several '
+                             'results: a rule for several roots, which '
+                             'the import does not make (synth --siblings '
+                             'searches them in the corpus)', rec,
+                             srcs[g[0]['reg']], reg.opt[g[0]['optimized']],
+                             'multi-root')
+        return joint, parts
 
     def _add_rewrite(self, reg, rec, root_reg, s, t, rules, source, local):
         kind = 'step' if local else 'root'
@@ -610,9 +756,100 @@ class Importer:
         if old is None:
             self.by_key[c.key()] = c
             self.stats['distinct'] += 1
+            c.precondition_source = self._precondition_source(inst, tgt)
+            self.stats['precondition'][c.precondition_source][
+                'distinct'] += 1
         else:
             old.inst.prov.extend(inst.prov)
             old.rules = sorted(set(old.rules) | set(rules))
+            c = old
+        c.context_facts |= set(rec.get('context_facts') or ())
+        if self._rec is not None:
+            c.records.add(self.stats['records'])
+            self._rec['candidates'] += 1
+        if getattr(self, '_joint', False) and kind == 'root':
+            c.joint = True
+
+    def _precondition_source(self, inst, tgt):
+        """'lhs' if ``tgt`` refines the source of ``inst`` with no fact of
+        the inputs (each value, poison and undef included; the constant
+        inputs of computed constants for every value), else 'guard'. An
+        answer that is not a proof is 'guard'."""
+        free = copy.copy(inst)
+        free.facts = tuple((0, 0) for _ in inst.vw)
+        key = (inst.expr, tgt, inst.vw, inst.vk, inst.const_vars)
+        if key not in self._free:
+            self.stats['smt_checks'] += 1
+            r = discover.prove_concrete(free, tgt, self.backend)
+            self._free[key] = 'lhs' if r.status == 'unsat' else 'guard'
+        return self._free[key]
+
+    def synthesize(self, c, sy, provenance=None):
+        """``sy.add`` of the candidate ``c`` with its provenance, and the
+        record of the result: per precondition source the rules and the
+        rejections by reason (a candidate whose facts have no expression
+        in the precondition grammar, or that the solver does not decide).
+        Returns the rule id or None."""
+        prov = c.provenance()
+        prov.update(provenance or {})
+        before = dict(sy.stats)
+        rid = sy.add(c.inst, c.tgt, provenance=prov)
+        p = self.stats['precondition'][c.precondition_source]
+        p['candidates'] += 1
+        # A rule of the catalog that covers the candidate is its rule.
+        outcome = 'guarded' if c.precondition_source == 'guard' else 'lhs'
+        if rid:
+            p['rules'] += 1
+            guarded = any(d['_pred'] for d in sy.rules[rid]['disjuncts'])
+            if c.precondition_source == 'guard' and not guarded:
+                p['guard_without_guarded_rule'] = p.get(
+                    'guard_without_guarded_rule', 0) + 1
+        else:
+            why = _why_not_added(c, sy, before)
+            if why == 'known':
+                p['known'] += 1
+            else:
+                p['rejected'][why] = p['rejected'].get(why, 0) + 1
+                outcome = 'rejected'
+        for r in c.records:
+            self._records[r]['outcomes'].add(outcome)
+        return rid
+
+    def cross_check(self):
+        """Puts each record with context facts in one bucket: 'guarded' (a
+        candidate of it is a rule with a guard, new or of the catalog),
+        'rejected' (a rejection was counted for it: while it was read, or
+        of a candidate in synthesize), 'proved_without_facts' (each
+        candidate of it was proved with no fact of its inputs: the rewrite
+        that needed the facts did not give a candidate),
+        'not_synthesized' (candidates that synthesize did not see, e.g. at
+        a deadline) or 'no_candidate'. Returns the counts, also in
+        stats['context_facts']['outcome']."""
+        out = dict.fromkeys(('guarded', 'rejected', 'proved_without_facts',
+                             'not_synthesized', 'no_candidate'), 0)
+        examples = {}
+        for i, r in sorted(self._records.items()):
+            o = r['outcomes']
+            if 'guarded' in o:
+                b = 'guarded'
+            elif 'rejected' in o or r['rejected']:
+                b = 'rejected'
+            elif 'lhs' in o:
+                b = 'proved_without_facts'
+            elif r['candidates']:
+                b = 'not_synthesized'
+            else:
+                b = 'no_candidate'
+            out[b] += 1
+            if b not in ('guarded', 'rejected'):
+                ex = examples.setdefault(b, [])
+                if len(ex) < 3:
+                    ex.append({'fn': r['fn'], 'bb': r['bb'],
+                               'context_facts': r['context_facts']})
+        self.stats['context_facts']['outcome'] = out
+        if examples:
+            self.stats['context_facts']['examples'] = examples
+        return out
 
     def add_file(self, path):
         with open(path) as f:
@@ -634,6 +871,31 @@ class Importer:
             # The recipes of one constant stay in their order.
             order[id(c)] if c.group else 0,
             ir.to_sexpr(c.tgt), c.inst.vw, c.inst.facts))
+
+
+def _why_not_added(c, sy, before):
+    """Why ``sy.add`` gave no rule for the candidate ``c``: the reason of
+    the rejected class (no precondition in the grammar, solver unknown),
+    'known' (a rule of the catalog covers it), or the counter of the
+    synthesizer that the call increased."""
+    grew = sorted(k for k, v in sy.stats.items()
+                  if isinstance(v, int) and v > before.get(k, 0) and
+                  k not in ('discoveries',))
+    if 'known' in grew:
+        return 'known'
+    try:
+        src, tgt, vw, facts, perm = synth.canonicalize(
+            c.inst.expr, c.tgt, c.inst.vw, c.inst.facts)
+        cv = tuple(sorted(new for new, old in enumerate(perm)
+                          if old in c.inst.const_vars))
+        rej = sy.rejected.get(synth.class_key(src, tgt, vw, cv))
+    except (AssertionError, KeyError, ValueError, TypeError):
+        rej = None
+    if rej is not None:
+        return rej['reason']
+    if 'uncovered' in grew:
+        return 'no_precondition_in_grammar'
+    return grew[0] if grew else 'not_added'
 
 
 def _restore_consts(e, order, const_of, reg):
