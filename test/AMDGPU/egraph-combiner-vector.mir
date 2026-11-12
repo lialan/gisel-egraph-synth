@@ -51,19 +51,18 @@
 # CHECK-NOT: G_AND
 # CHECK: $vgpr0 = COPY %0(<2 x s16>)
 
-# The literal on a rule's RHS is emitted as a scalar constant and a build,
-# never as a G_CONSTANT with a vector type. The shared add makes the splat
-# strictly cheaper than the original root (a lone XOR has the build's cost).
+# %0 may be undef, so x ^ x only refines to a zero splat, and
+# (x ^ x) + (x ^ x) refines to x ^ x (add-zero through the refinement edge).
+# Both refinements cost one instruction; the extractor keeps the first, the
+# existing XOR, and drops the add.
 # CHECK-LABEL: name: xor_self
-# CHECK: [[SELF_ZERO:%[0-9]+]]:_(s16) = G_CONSTANT i16 0
-# CHECK: [[ZEROS:%[0-9]+]]:_(<2 x s16>) = G_BUILD_VECTOR [[SELF_ZERO]](s16), [[SELF_ZERO]](s16)
-# CHECK-NOT: G_XOR
+# CHECK: %1:_(<2 x s16>) = G_XOR %0, %0
 # CHECK-NOT: G_ADD
-# CHECK: $vgpr0 = COPY [[ZEROS]](<2 x s16>)
+# CHECK: $vgpr0 = COPY %1(<2 x s16>)
 
 # A zero in only one lane does not match the literal zero.
 # CHECK-LABEL: name: nonuniform_zero
-# CHECK: %4:_(<2 x s16>) = G_XOR %0(<2 x s16>), %3
+# CHECK: %4:_(<2 x s16>) = G_XOR %0, %3
 # CHECK: $vgpr0 = COPY %4(<2 x s16>)
 
 # A #constant match and a computed RHS constant retain the vector shape.
@@ -71,25 +70,25 @@
 # CHECK: [[THREE:%[0-9]+]]:_(s16) = G_CONSTANT i16 3
 # CHECK: [[AMOUNT:%[0-9]+]]:_(<2 x s16>) = G_BUILD_VECTOR [[THREE]](s16), [[THREE]](s16)
 # CHECK-NOT: G_MUL
-# CHECK: [[SHIFT:%[0-9]+]]:_(<2 x s16>) = G_SHL %0(<2 x s16>), [[AMOUNT]]
+# CHECK: [[SHIFT:%[0-9]+]]:_(<2 x s16>) = G_SHL %0, [[AMOUNT]](<2 x s16>)
 # CHECK: $vgpr0 = COPY [[SHIFT]](<2 x s16>)
 
 # The export has the index of a lane ("imm"), the mask of a shuffle ("mask")
 # and the names of the lane rules.
-# EXPORT: {"version":2,"fn":"build_of_extracts"
+# EXPORT: {"version":3,"fn":"build_of_extracts"
 # EXPORT-SAME: "type":"<2 x s16>"
 # EXPORT-SAME: {"id":1,"op":"G_EXTRACT_VECTOR_ELT","imm":0,
 # EXPORT-SAME: "roots":[{"reg":"%5","original":3,"optimized":0}]
 # EXPORT-SAME: "vector-build-of-extracts":1
-# EXPORT: {"version":2,"fn":"extract_through_shuffle"
+# EXPORT: {"version":3,"fn":"extract_through_shuffle"
 # EXPORT-SAME: {"id":2,"op":"G_SHUFFLE_VECTOR","mask":[3,0],
 # EXPORT-SAME: "optimized":[{"id":1,"in":1},{"id":3,"op":"G_EXTRACT_VECTOR_ELT","imm":1,"type":"s32","args":[1]}
 # EXPORT-SAME: "vector-extract-of-shuffle":1
-# EXPORT: {"version":2,"fn":"constant_lanes"
+# EXPORT: {"version":3,"fn":"constant_lanes"
 # EXPORT-SAME: "vector-lanewise-of-build":1
 # EXPORT-NOT: "fn":"two_masks"
-# EXPORT: {"version":2,"fn":"xor_twice"
-# EXPORT-SAME: "optimized":[{"id":0,"in":0}]
+# EXPORT: {"version":3,"fn":"xor_twice"
+# EXPORT-SAME: "optimized":[{"id":0,"in":0},
 # EXPORT-SAME: "roots":[{"reg":"%3","original":3,"optimized":0}]
 
 ---

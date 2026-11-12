@@ -1080,7 +1080,9 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
   // No bit is one in both operands: a + b == a | b == a ^ b. One read of
   // each operand on each side.
   auto Disjoint = [FactsHold](const EGraph &G, const RuleMatch &M) {
-    if (M.isSumBound(0) || M.isSumBound(1))
+    // An operand 0 is left to the identity rules.
+    if (M.isSumBound(0) || M.isSumBound(1) || G.isAllZero(M.Vars[0]) ||
+        G.isAllZero(M.Vars[1]))
       return std::optional<FactSource>();
     return FactsHold([&](FactSource S) {
       const KnownBits &A = G.getKnownBits(M.Vars[0], S);

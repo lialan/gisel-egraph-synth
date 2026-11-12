@@ -4736,12 +4736,10 @@ SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
       }
       std::optional<FactSource> Used;
       ApplyResult AR = applyMatch(G, Rules[RI], M, &Used);
-      if (Rules[RI].getFactFn()) {
+      if (Rules[RI].getFactFn() && AR != ApplyResult::Rejected) {
+        // A rejected match is one whose precondition does not hold.
         ViewStats &FS = Stats.Views["facts"];
-        if (AR == ApplyResult::Rejected)
-          ++FS.Unsafe;
-        else
-          ++FS.Views;
+        ++FS.Views;
         FS.count(AR);
         if (Used == FactSource::Context &&
             (AR == ApplyResult::Merged || AR == ApplyResult::Refined)) {
