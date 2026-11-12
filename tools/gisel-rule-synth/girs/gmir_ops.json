@@ -2,6 +2,98 @@
  "version": 1,
  "operators": [
   {
+   "name": "G_IMPLICIT_DEF",
+   "shape": "typed",
+   "operands": 0,
+   "operand_kinds": [],
+   "result_kinds": [
+    "main"
+   ],
+   "model_only": true
+  },
+  {
+   "name": "G_ASSERT_ZEXT",
+   "shape": "unary",
+   "operands": 1,
+   "model_only": true,
+   "imm_attr": true,
+   "may_be_poison": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_ASSERT_SEXT",
+   "shape": "unary",
+   "operands": 1,
+   "model_only": true,
+   "imm_attr": true,
+   "may_be_poison": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_ASSERT_ALIGN",
+   "shape": "unary",
+   "operands": 1,
+   "model_only": true,
+   "imm_attr": true,
+   "may_be_poison": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_BITCAST",
+   "shape": "cast",
+   "operands": 1,
+   "model_only": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FNEG",
+   "shape": "unary",
+   "operands": 1,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FABS",
+   "shape": "unary",
+   "operands": 1,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FCOPYSIGN",
+   "shape": "typed",
+   "operands": 2,
+   "operand_kinds": [
+    "main",
+    "free"
+   ],
+   "result_kinds": [
+    "main"
+   ],
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_FCMP",
+   "shape": "compare",
+   "operands": 2,
+   "model_only": true,
+   "fp": true,
+   "has_fold": true
+  },
+  {
+   "name": "G_IS_FPCLASS",
+   "shape": "cast",
+   "operands": 1,
+   "model_only": true,
+   "fp": true,
+   "imm_attr": true,
+   "has_fold": true
+  },
+  {
    "name": "G_ADD",
    "shape": "binary",
    "operands": 2,

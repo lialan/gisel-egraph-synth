@@ -595,10 +595,41 @@ every disjunct of `P` and for the emitted disjunction as a whole.
   to nearest, ties to even. `G_FPTOSI` and `G_FPTOUI` round toward zero and
   are poison for a NaN and for a number outside of the range of the result;
   the `_SAT` forms give the nearest value of the range, and 0 for a NaN.
-- LLVM does not specify the payload of a NaN that a conversion makes. The
-  proof accepts each NaN of the replacement where the source value is such
-  a NaN. Where the source gives the NaN of an input unchanged (through
-  `G_SELECT` or `G_FREEZE`), the replacement must give the same bits.
+- A NaN that a floating-point operation makes is one value of a set
+  (LangRef, "Behavior of Floating-Point NaN values"; `fp.nan_member`): the
+  sign is not specified, and the quiet bit and the payload are quiet with
+  the payload zero, quiet with the payload of a NaN operand, or the quiet
+  bit and the payload of a NaN operand. A conversion keeps the first bits
+  of the payload. The payloads that only some targets add are not in the
+  set. The replacement has each value of the set of its operations. The
+  source has some value: at the root, the proof accepts a NaN of the
+  replacement that is in the set of the source operation, and a NaN below
+  an operation that reads its bits is a value that the source chooses.
+  Where the source gives the NaN of an input unchanged (through `G_SELECT`
+  or `G_FREEZE`), the replacement must give the same bits.
+- Some operators have bits that are not specified: the high bits of
+  `G_ANYEXT` and all bits of an integer `G_IMPLICIT_DEF`. They are not
+  poison. The source has *some* value for them and the replacement has
+  *each* value: `anyext(x) -> zext(x)` is proved and `zext(x) -> anyext(x)`
+  is not. One term of the source has one value (two matches of it can be
+  one instruction), and each occurrence in the replacement has its own
+  value. The solver does not decide the quantifier reliably, so the proof
+  writes the source for a set of values (zeros, the sign of the operand, the
+  values of the replacement, the inputs, ones). A larger set proves more
+  rules; no set makes a proof wrong. A rule can match `G_IMPLICIT_DEF` but
+  does not create one.
+- The hints `G_ASSERT_ZEXT`, `G_ASSERT_SEXT` and `G_ASSERT_ALIGN` have the
+  value of their operand, and they are poison if the hint does not hold
+  (the known-bits analysis of the compiler takes the hint as a fact). A
+  hint costs nothing, it is not a level of an extracted tree, it is not a
+  root, and a rule does not create one.
+- `G_BITCAST` between an integer and a floating-point value of one width
+  does not change the bits. The guard of a rule that builds one checks that
+  the two register types are different.
+- `G_FNEG`, `G_FABS` and `G_FCOPYSIGN` change only the sign bit, also of a
+  NaN. `G_FCMP` (16 predicates) and `G_IS_FPCLASS` are exact functions of
+  the bits: `fpext(fabs x) -> fabs(fpext x)` is proved and the other
+  direction is not (its NaN can be negative).
 - `T` uses only `S`'s inputs, and each of them at most once, so undef inputs
   are handled soundly. An input that the rule matches as a constant can
   occur more than once: a constant is not undef.

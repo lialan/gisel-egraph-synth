@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/GlobalISel/GIEGraph.h"
+#include "llvm/ADT/FloatingPointMode.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/IR/InstrTypes.h"
@@ -1802,6 +1803,54 @@ TEST_F(GIEGraphFPConversionTest, IntegerExtensionBeforeConversion) {
   EXPECT_TRUE(G.equivalent(UZ, un(T::G_UITOFP, S32, A)));
   EXPECT_FALSE(G.equivalent(US, un(T::G_UITOFP, S32, A)));
   EXPECT_FALSE(G.equivalent(US, un(T::G_SITOFP, S32, A)));
+}
+
+// The operators that only the rule synthesizer has a model for: the e-graph
+// has no node for them, and their folds are the reference of the model.
+TEST(GIEGraphModelOnlyTest, NotOperatorsOfTheEGraph) {
+  for (const OpProperties &P : getModelOnlyOpProperties()) {
+    EXPECT_EQ(getOpProperties(P.Opcode), nullptr) << P.Name;
+    EXPECT_EQ(getModelOnlyOpProperties(P.Opcode), &P) << P.Name;
+  }
+  EXPECT_EQ(getModelOnlyOpProperties(T::G_ADD), nullptr);
+  EXPECT_NE(getModelOnlyOpProperties(T::G_IMPLICIT_DEF), nullptr);
+}
+
+TEST(GIEGraphModelOnlyTest, HintsArePoisonIfTheyDoNotHold) {
+  auto Fold = [](unsigned Opc, uint64_t V, uint64_t Imm) {
+    const OpProperties *P = getModelOnlyOpProperties(Opc);
+    EXPECT_TRUE(P->MayBePoison);
+    return P->FoldN({APInt(32, V)}, Imm, 32);
+  };
+  EXPECT_EQ(Fold(T::G_ASSERT_ZEXT, 0xff, 8), APInt(32, 0xff));
+  EXPECT_EQ(Fold(T::G_ASSERT_ZEXT, 0x100, 8), std::nullopt);
+  EXPECT_EQ(Fold(T::G_ASSERT_SEXT, 0xffffff80, 8), APInt(32, 0xffffff80));
+  EXPECT_EQ(Fold(T::G_ASSERT_SEXT, 0x80, 8), std::nullopt);
+  EXPECT_EQ(Fold(T::G_ASSERT_ALIGN, 0x18, 8), APInt(32, 0x18));
+  EXPECT_EQ(Fold(T::G_ASSERT_ALIGN, 0x14, 8), std::nullopt);
+  EXPECT_EQ(Fold(T::G_ASSERT_ALIGN, 7, 1), APInt(32, 7));
+}
+
+TEST(GIEGraphModelOnlyTest, OperationsOnTheBitsOfAFloat) {
+  auto Fold = [](unsigned Opc, std::initializer_list<APInt> Ops,
+                 uint64_t Attr = 0, unsigned W = 32) {
+    return getModelOnlyOpProperties(Opc)->FoldN(Ops, Attr, W);
+  };
+  const APInt One(32, 0x3f800000), MinusOne(32, 0xbf800000);
+  const APInt NaN(32, 0x7fc00005), MinusZero64(64, uint64_t(1) << 63);
+  EXPECT_EQ(Fold(T::G_FNEG, {One}), MinusOne);
+  // The payload of a NaN does not change.
+  EXPECT_EQ(Fold(T::G_FNEG, {NaN}), APInt(32, 0xffc00005));
+  EXPECT_EQ(Fold(T::G_FABS, {MinusOne}), One);
+  EXPECT_EQ(Fold(T::G_FCOPYSIGN, {One, MinusZero64}), MinusOne);
+  EXPECT_EQ(Fold(T::G_BITCAST, {NaN}), NaN);
+  EXPECT_EQ(Fold(T::G_FCMP, {One, MinusOne}, CmpInst::FCMP_OGT, 1),
+            APInt(1, 1));
+  EXPECT_EQ(Fold(T::G_FCMP, {One, NaN}, CmpInst::FCMP_OGT, 1), APInt(1, 0));
+  EXPECT_EQ(Fold(T::G_FCMP, {One, NaN}, CmpInst::FCMP_UGT, 1), APInt(1, 1));
+  EXPECT_EQ(Fold(T::G_IS_FPCLASS, {NaN}, fcNan, 1), APInt(1, 1));
+  EXPECT_EQ(Fold(T::G_IS_FPCLASS, {NaN}, fcSNan, 1), APInt(1, 0));
+  EXPECT_EQ(Fold(T::G_IS_FPCLASS, {MinusOne}, fcNegNormal, 1), APInt(1, 1));
 }
 
 } // namespace

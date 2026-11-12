@@ -71,6 +71,9 @@ namespace {
 const egraph::OpProperties *getSupportedOp(unsigned Opc) {
   uint32_t Flags;
   const egraph::OpProperties *P = egraph::getOpPropertiesForInstr(Opc, Flags);
+  // An operator that only the synthesizer has a model for.
+  if (!P)
+    P = egraph::getModelOnlyOpProperties(Opc);
   if (!P)
     return nullptr;
   switch (P->Shape) {
@@ -101,6 +104,11 @@ bool isSupportedInstr(const MachineRegisterInfo &MRI, const MachineInstr &MI) {
   const egraph::OpProperties *P = getSupportedOp(MI.getOpcode());
   if (!P || MI.getNumExplicitDefs() == 0)
     return false;
+  // The synthesizer has a value with unspecified bits for integers only: a
+  // floating-point G_IMPLICIT_DEF is an input.
+  if (MI.getOpcode() == TargetOpcode::G_IMPLICIT_DEF &&
+      MRI.getType(MI.getOperand(0).getReg()).isFloat())
+    return false;
   for (const MachineOperand &MO : MI.operands()) {
     if (MO.isReg()) {
       if (MO.isImplicit() || !isSupportedScalar(MRI, MO.getReg()))
@@ -114,6 +122,12 @@ bool isSupportedInstr(const MachineRegisterInfo &MRI, const MachineInstr &MI) {
     return false;
   }
   return true;
+}
+
+bool isHint(unsigned Opc) {
+  return Opc == TargetOpcode::G_ASSERT_ZEXT ||
+         Opc == TargetOpcode::G_ASSERT_SEXT ||
+         Opc == TargetOpcode::G_ASSERT_ALIGN;
 }
 
 std::string hex(const APInt &V) { return "0x" + toString(V, 16, false); }
@@ -169,11 +183,13 @@ public:
     if (!Def || Def->getParent() != &MBB || !isSupportedInstr(MRI, *Def))
       return Out;
 
-    // Cartesian product of the operand variants.
+    // Cartesian product of the operand variants. A hint is not an
+    // instruction of the final code: it is not a level of the tree.
+    unsigned Below = isHint(Def->getOpcode()) ? Depth : Depth - 1;
     std::vector<std::vector<Tree>> OpVariants;
     for (const MachineOperand &MO : Def->uses())
       if (MO.isReg())
-        OpVariants.push_back(enumerate(MO.getReg(), Depth - 1));
+        OpVariants.push_back(enumerate(MO.getReg(), Below));
     SmallVector<unsigned, 2> Idx(OpVariants.size(), 0);
     while (Out.size() < MaxTreesPerRoot + 1) {
       Tree T;
@@ -434,7 +450,10 @@ bool GISynthCorpusExtractor::runOnMachineFunction(MachineFunction &MF) {
   for (const MachineBasicBlock &MBB : MF) {
     Extractor E(MRI, VT, MBB);
     for (const MachineInstr &MI : MBB) {
-      if (!isSupportedInstr(MRI, MI))
+      // An instruction without operands and a hint are nodes of a tree,
+      // not roots: no replacement is better than they are.
+      if (!isSupportedInstr(MRI, MI) || isHint(MI.getOpcode()) ||
+          MI.getNumExplicitOperands() == MI.getNumExplicitDefs())
         continue;
       // One set of trees per result of the instruction.
       for (const MachineOperand &DefMO : MI.defs()) {

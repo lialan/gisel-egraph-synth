@@ -595,6 +595,11 @@ struct OpProperties {
   /// with that opcode is an e-node of this operator with PoisonVariantFlag,
   /// so like every flagged node it only matches as a refinement.
   unsigned PoisonVariant = 0;
+  /// The operands and the results of the main type, and the free operands,
+  /// are floating-point values (a result of the kind Bool and the result of
+  /// an OpShape::Compare operator are integers). Only operators of
+  /// getModelOnlyOpProperties have this property.
+  bool IsFP = false;
   /// OpShape::Typed: the kinds of the operands and of the results.
   SmallVector<TypeKind, 3> OperandKinds;
   SmallVector<TypeKind, 2> ResultKinds;
@@ -777,6 +782,15 @@ LLT getTypedResultType(const OpProperties &P, unsigned Index, LLT MainTy);
 
 /// The properties of all supported operators, in a fixed order.
 ArrayRef<OpProperties> getAllOpProperties();
+/// Operators that the e-graph combiner does not rewrite (an instruction with
+/// such an opcode is an input of a region) and that llvm/utils/gisel-rule-synth
+/// has a model for. An entry gives the shape of the instruction, so that the
+/// corpus extractor of the synthesizer can write it, and a fold function that
+/// the model of the synthesizer is compared with. No rule is derived from an
+/// entry, and getOpProperties does not return one.
+ArrayRef<OpProperties> getModelOnlyOpProperties();
+/// The entry of getModelOnlyOpProperties for \p Opcode, or null.
+const OpProperties *getModelOnlyOpProperties(unsigned Opcode);
 /// The name of the operator \p Opcode as it is written in patterns.
 StringRef getOperatorName(unsigned Opcode);
 /// The name of the CmpInst::Predicate \p Attr of an OpShape::Compare node.

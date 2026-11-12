@@ -73,8 +73,8 @@ def _orders(e):
     forms = [e[:2] + o for o in out]
     if info.commutative:
         forms += [e[:2] + (o[1], o[0]) + o[2:] for o in out]
-    elif info.attr == 'pred' and ops.SWAPPED_PRED[attr] != attr:
-        key = ops.make_key(info.name, ops.SWAPPED_PRED[attr], res)
+    elif info.attr == 'pred' and info.swapped_pred[attr] != attr:
+        key = ops.make_key(info.name, info.swapped_pred[attr], res)
         forms += [(key, e[1], o[1], o[0]) for o in out]
     return forms
 

@@ -34,7 +34,7 @@ def instances(info, widths=(1, 8, 16, 32)):
     n = info.operands if info.operands is not None else 2
     attrs = [None]
     if info.attr == 'pred':
-        attrs = list(ops.PREDS)
+        attrs = list(info.preds)
     for w in widths:
         cands = set()
         for a in widths:
@@ -43,7 +43,7 @@ def instances(info, widths=(1, 8, 16, 32)):
                     cands.add(tuple([a, b, c][:n]))
         for ws in sorted(cands):
             if info.attr == 'imm':
-                attrs = [1, w // 2, w - 1]
+                attrs = sorted({1, w // 2, w - 1} | set(info.imm_domain))
             results = range(info.results) if info.results else range(4)
             for res in results:
                 for at in attrs:
@@ -82,7 +82,7 @@ def _same(info, w, a, b):
     is not specified."""
     if a == b:
         return True
-    return info.fp_result and isinstance(a, int) and isinstance(b, int) \
+    return info.makes_nan and isinstance(a, int) and isinstance(b, int) \
         and fp.same_bits(a, b, w)
 
 

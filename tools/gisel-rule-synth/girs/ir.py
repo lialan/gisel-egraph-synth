@@ -179,9 +179,15 @@ def result_kind(e, expected=None):
         return 'f'
     if info.freeze:
         return result_kind(e[2], expected)
+    if info.bitcast:
+        # The other kind than the operand.
+        return expected or _OTHER_KIND.get(result_kind(e[2]))
     if info.shape == 'select':
         return expected or result_kind(e[3]) or result_kind(e[4])
     return 'i'
+
+
+_OTHER_KIND = {'i': 'f', 'f': 'i'}
 
 
 def type_of(e, vw, vk):
@@ -240,6 +246,8 @@ def operand_kind(e, k, expected=None):
     info = ops.parse(e[0])[0]
     if info.freeze or (info.shape == 'select' and k > 0):
         return result_kind(e, expected)
+    if info.bitcast:
+        return _OTHER_KIND.get(result_kind(e, expected))
     return 'f' if info.fp_operand else 'i'
 
 
@@ -402,17 +410,21 @@ def _sext(v, w):
     return ops.sx(v, w)
 
 
-def apply_op(op, w, ws, vals):
+def apply_op(op, w, ws, vals, fill=1):
     """Concrete value of one operation of width ``w`` on operand values
     ``vals`` of widths ``ws``. None is poison and UB is undefined
-    behaviour."""
+    behaviour. The bits that the operator does not specify
+    (OpInfo.unspecified) are ``fill``."""
     info, attr, res = ops.parse(op)
     if any(v is UB for v in vals):
         return UB
     if info.strict:
         if any(v is None for v in vals):
             return None
-        return info.eval(w, ws, attr, res, vals)
+        v = info.eval(w, ws, attr, res, vals)
+        if not fill and info.unspecified is not None:
+            v &= ~info.unspecified(w, ws)
+        return v
     if info.freeze:
         # Any value is a correct result for a poison operand.
         return 0 if vals[0] is None else vals[0]
@@ -422,16 +434,25 @@ def apply_op(op, w, ws, vals):
     return vals[1] if vals[0] else vals[2]
 
 
-def evaluate(e, vw, env):
+def evaluate(e, vw, env, fill=1):
     """Concrete value of ``e`` under variable assignment ``env``.
 
-    Returns None for poison and UB for undefined behaviour."""
+    Returns None for poison and UB for undefined behaviour. An operation
+    with bits that are not specified has many values; this is the value
+    with each such bit equal to ``fill`` (see has_unspecified)."""
     if is_var(e):
         return env[e[1]]
     if not is_op(e):
         return leaf_value(e)
-    vals = [evaluate(a, vw, env) for a in e[2:]]
-    return apply_op(e[0], e[1], [width(a, vw) for a in e[2:]], vals)
+    vals = [evaluate(a, vw, env, fill) for a in e[2:]]
+    return apply_op(e[0], e[1], [width(a, vw) for a in e[2:]], vals, fill)
+
+
+def has_unspecified(e):
+    """True if an operation of ``e`` has bits that are not specified
+    (G_ANYEXT, G_IMPLICIT_DEF): ``e`` then has more than one value."""
+    return is_op(e) and (ops.known(e[0]) and ops.has_unspecified(e[0]) or
+                         any(has_unspecified(a) for a in e[2:]))
 
 
 def rename(e, mapping):

@@ -806,11 +806,26 @@ def prove_concrete(inst, tgt, backend):
     return backend.check(f, want_model_of=enc.x)
 
 
+def _defined(v):
+    return v is not None and v is not ir.UB
+
+
 def refines_on(inst, tgt, env):
-    """Concrete refinement check of one input assignment."""
+    """Concrete refinement check of one input assignment. If the source
+    has bits that are not specified, the check is a filter only: the
+    replacement must agree with the source in the bits that are equal for
+    two values of the unspecified bits (the proof decides). A replacement
+    with such bits is not filtered."""
     s = ir.evaluate(inst.expr, inst.vw, env)
-    return s is None or s is ir.UB or ir.same_value(
-        ir.evaluate(tgt, inst.vw, env), s, inst.expr)
+    if not _defined(s):
+        return True
+    if ir.has_unspecified(tgt):
+        return True
+    t = ir.evaluate(tgt, inst.vw, env)
+    if not ir.has_unspecified(inst.expr):
+        return ir.same_value(t, s, inst.expr)
+    s0 = ir.evaluate(inst.expr, inst.vw, env, fill=0)
+    return not _defined(s0) or (_defined(t) and not (t ^ s) & ~(s ^ s0))
 
 
 def instance_envs(inst, limits, ctx):
@@ -971,6 +986,18 @@ def discover(inst, backend, limits=None, ctx=None, log=None):
     # Poison and undefined behaviour of the source allow every value.
     src = [None if v is ir.UB else v
            for v in (ir.evaluate(inst.expr, inst.vw, env) for env in envs)]
+    care = None
+    if ir.has_unspecified(inst.expr):
+        # The source has many values. A replacement is compared in the
+        # bits that are equal for two values of the unspecified bits (all
+        # ones and all zeros); the proof decides. A replacement that only
+        # gives these bits a value has no gain: it must cost less.
+        max_cost = min(max_cost, ir.cost(inst.expr) - 1)
+        src0 = [ir.evaluate(inst.expr, inst.vw, env, fill=0)
+                for env in envs]
+        src = [v if _defined(z) else None for v, z in zip(src, src0)]
+        care = np.array([ir.mask(64) & ~(v ^ z) if v is not None else 0
+                         for v, z in zip(src, src0)], U64)
     if all(v is None for v in src):
         # Always poison on the samples: nothing to learn.
         stats['stop'] = 'source_always_poison'
@@ -1000,8 +1027,10 @@ def discover(inst, backend, limits=None, ctx=None, log=None):
         n = V.shape[0]
         stats['terms'] += n
         rows = np.nonzero(bank.cls_np[:n] == root_cls)[0]
-        agree = (((_canon_nan(V[rows], root) == src_val) & OK[rows]) |
-                 ~src_ok).all(axis=1)
+        vals = _canon_nan(V[rows], root)
+        equal = vals == src_val if care is None else \
+            ((vals ^ src_val) & care) == U64(0)
+        agree = ((equal & OK[rows]) | ~src_ok).all(axis=1)
         ctx.seconds['bank_eval'] += time.monotonic() - t0
         new = 0
         for i in rows[agree].tolist():

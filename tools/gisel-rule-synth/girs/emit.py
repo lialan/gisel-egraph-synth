@@ -170,9 +170,9 @@ def _forms(n):
         if info.commutative:
             res.append(_Node(n.op, n.w, n.name,
                              [args[1], args[0]] + args[2:]))
-        elif info.attr == 'pred' and ops.SWAPPED_PRED[attr] != attr:
+        elif info.attr == 'pred' and info.swapped_pred[attr] != attr:
             res.append(_Node(ops.make_key(info.name,
-                                          ops.SWAPPED_PRED[attr]),
+                                          info.swapped_pred[attr]),
                              n.w, n.name, [args[1], args[0]]))
     return res
 
@@ -183,7 +183,11 @@ def _plain(n):
     return (n.op, n.w) + tuple(_plain(a) for a in n.args)
 
 
-_CPP_PRED = {p: 'CmpInst::ICMP_' + p.upper() for p in ops.PREDS}
+def _cpp_pred(info, pred):
+    """The CmpInst::Predicate of a predicate name of the comparison
+    ``info`` (an integer or a floating-point comparison)."""
+    return 'CmpInst::%sCMP_%s' % ('F' if info.fp_operand else 'I',
+                                  pred.upper())
 
 
 def _lines(n, out, checks=None):
@@ -209,8 +213,8 @@ def _lines(n, out, checks=None):
                 for k in range(info.results)]
     if info.attr == 'pred':
         operands.insert(0, '$%s_p' % tag)
-        checks.append('${%s_p}.getPredicate() == %s' % (tag,
-                                                        _CPP_PRED[attr]))
+        checks.append('${%s_p}.getPredicate() == %s' % (
+            tag, _cpp_pred(info, attr)))
     elif info.attr == 'imm':
         operands.append('$%s_i' % tag)
         checks.append('${%s_i}.getImm() == %d' % (tag, attr))
@@ -444,8 +448,8 @@ def _cpp_find_siblings(rule):
         forms = [(attr, refs)]
         if info.commutative:
             forms.append((attr, (refs[1], refs[0]) + refs[2:]))
-        elif info.attr == 'pred' and ops.SWAPPED_PRED[attr] != attr:
-            forms.append((ops.SWAPPED_PRED[attr], (refs[1], refs[0])))
+        elif info.attr == 'pred' and info.swapped_pred[attr] != attr:
+            forms.append((info.swapped_pred[attr], (refs[1], refs[0])))
         fresh = {r[1] for r in refs
                  if r[0] == 'var' and r[1] in svars and r[1] not in bound}
         anchor = [r for r in refs if not (r[0] == 'var' and r[1] in fresh)][0]
@@ -461,7 +465,8 @@ def _cpp_find_siblings(rule):
         body = ['        if (%s)' % ' ||\n            '.join(conds),
                 '          return false;']
         for a, rs in dict.fromkeys(forms):
-            c = ['MI.getOperand(1).getPredicate() == %s' % _CPP_PRED[a]] \
+            c = ['MI.getOperand(1).getPredicate() == %s' %
+                 _cpp_pred(info, a)] \
                 if info.attr == 'pred' else []
             got = {}
             for k, r in enumerate(rs):
@@ -648,6 +653,46 @@ def _apply_patterns(tgt, vw, root_w, src=None):
     return pats
 
 
+def _bitcast_checks(rule):
+    """The C++ conditions of the guard for the G_BITCAST instructions that
+    the rule builds: the operand and the result have different types. An
+    instruction with equal types is not valid, and the types of a target
+    that does not tell integers from floating-point values are equal."""
+    src = ir.from_json(rule['source_json'])
+    tgt = ir.from_json(rule['replacement_json'])
+    if not any(ops.parse(n[0])[0].bitcast for n in ir.nodes(tgt)):
+        return []
+    if rule.get('region'):
+        raise ValueError('a rule with several outputs does not build '
+                         'G_BITCAST')
+    types = _type_sources(rule)
+    out = []
+
+    def reg(e, kind, root):
+        if root:
+            return 'Dst'
+        if ir.is_var(e):
+            return 'X%d' % e[1]
+        return _type_source(types, e[1], kind)
+
+    def walk(e, kind, root):
+        if not ir.is_op(e):
+            return
+        kind = ir.result_kind(e, kind)
+        for k, a in enumerate(e[2:]):
+            ak = ir.operand_kind(e, k, kind)
+            if ir.is_op(a):
+                ak = ir.result_kind(a, ak)
+            if ops.parse(e[0])[0].bitcast:
+                c = 'MRI.getType(%s) != MRI.getType(%s)' % (
+                    reg(e, kind, root), reg(a, ak, False))
+                if c not in out:
+                    out.append(c)
+            walk(a, ak, False)
+    walk(tgt, ir.result_kind(src), True)
+    return out
+
+
 def _interior_kinds(src):
     """The kinds of the interior values of the source, in the order of
     _annotate."""
@@ -787,8 +832,9 @@ def _cpp_apply(rule):
                         (ty(mainw, 'i') if k == 'main' else ty(1, 'i'))
                         for n, k in enumerate(kinds)]
             if info.attr == 'pred':
-                text = 'B.buildICmp(%s, %s, %s)' % (
-                    _CPP_PRED[attr], rtys[0], ', '.join(args))
+                text = 'B.build%sCmp(%s, %s, %s)' % (
+                    'F' if info.fp_operand else 'I', _cpp_pred(info, attr),
+                    rtys[0], ', '.join(args))
             else:
                 srcs = list(args)
                 if info.attr == 'imm':
@@ -892,6 +938,7 @@ def why_not_emittable(rule):
             return '%s: %s' % (n[0], why)
     try:
         _annotate(src)
+        _bitcast_checks(rule)
         _cpp_recipe_checks(tgt, cv, _bits_fn(rule))
         if _rule_needs_cpp_apply(rule):
             _cpp_apply(rule)
@@ -1081,6 +1128,9 @@ def _cpp_guard(r):
     for c in _cpp_recipe_checks(ir.from_json(r['replacement_json']), cv,
                                 _bits_fn(r)):
         out += ['  if (!%s)' % c, '    return false;']
+    for c in _bitcast_checks(r):
+        out += ['  // A G_BITCAST of the replacement changes the type.',
+                '  if (!(%s))' % c, '    return false;']
     cpp = [[precond.cpp_atom(a) for a in p] for p in dnf]
     text = ' '.join(c for p in cpp for c in p)
     for i in range(n):

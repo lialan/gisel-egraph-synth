@@ -95,8 +95,29 @@ class OpInfo:
         self.unsupported = {}
         # The values of an immediate attribute that a search tries, next
         # to the values of the source (see search_keys). A comparison has
-        # every predicate.
+        # every predicate of ``preds``.
         self.imm_domain = ()
+        self.preds = PREDS
+        self.swapped_pred = SWAPPED_PRED
+        # G_BITCAST: the bits of the operand in the type of the other kind.
+        self.bitcast = False
+        # (w, ws) -> the mask of the bits of the result that are not
+        # specified (G_ANYEXT, G_IMPLICIT_DEF), or None. The evaluator and
+        # the SMT model give these bits the value 1. In a proof, the source
+        # has some value for them and the replacement has every value
+        # (smt.Encoder).
+        self.unspecified = None
+        # The operation computes a floating-point result: if it is a NaN,
+        # its bits are not specified (fp.py). An operation on the bits of
+        # a value (G_FNEG, G_SELECT, G_BITCAST) does not make a NaN.
+        self.makes_nan = False
+        # A NaN operand with unspecified bits gives a NaN result with
+        # unspecified bits (G_FNEG).
+        self.nan_through = False
+        # The result is the same for every NaN operand: a conversion to
+        # an integer (poison) and a comparison. (A NaN result of another
+        # operation can have the payload of the operand.)
+        self.nan_insensitive = False
 
     # -- the contract of a search --
 
@@ -128,6 +149,8 @@ class OpInfo:
         ks = list(operand_kinds)
         if self.freeze:
             return ks[0]
+        if self.bitcast:
+            return 'i' if ks[0] == 'f' else 'f'
         if self.shape in ('merge', 'unmerge'):
             # The bits of the operands, of any kind.
             return 'i'
@@ -223,7 +246,7 @@ def search_keys(name, imms=()):
     info = REGISTRY[name]
     attrs = [None]
     if info.attr == 'pred':
-        attrs = PREDS
+        attrs = info.preds
     elif info.attr == 'imm':
         attrs = sorted(set(info.imm_domain) | set(imms))
     return [make_key(name, a, r) for a in attrs
@@ -239,6 +262,10 @@ def rhs_operators(namespace='generic'):
 
 def is_commutative(key):
     return parse(key)[0].commutative
+
+
+def has_unspecified(key):
+    return parse(key)[0].unspecified is not None
 
 
 def cost(key):
@@ -891,8 +918,115 @@ EVAL['G_FREEZE'] = lambda w, ws, at, r, v: v[0]
 SMT['G_FREEZE'] = lambda w, ws, at, r, x: (x[0], None, None)
 
 
+# G_ANYEXT: the low bits are the operand and the high bits are not
+# specified (OpInfo.unspecified). G_IMPLICIT_DEF: no bit is specified.
+EVAL['G_ANYEXT'] = lambda w, ws, at, r, v: v[0] | (mask(w) & ~mask(ws[0]))
+SMT['G_ANYEXT'] = lambda w, ws, at, r, x: (
+    z3.Concat(_bv(mask(w - ws[0]), w - ws[0]), x[0]), None, None)
+EVAL['G_IMPLICIT_DEF'] = lambda w, ws, at, r, v: mask(w)
+SMT['G_IMPLICIT_DEF'] = lambda w, ws, at, r, x: (_bv(mask(w), w), None, None)
+_UNSPECIFIED = {
+    'G_ANYEXT': lambda w, ws: mask(w) & ~mask(ws[0]),
+    'G_IMPLICIT_DEF': lambda w, ws: mask(w),
+}
+
+# Hints. The result is the operand; it is poison if the operand is not a
+# zero extension / a sign extension from ``at`` bits, or not a multiple of
+# the alignment ``at``. (The compiler takes the hint as a fact in its
+# known-bits analysis, GISelValueTracking.)
+
+
+def _hint(name, holds, smt_holds):
+    EVAL[name] = lambda w, ws, at, r, v: v[0] if holds(v[0], w, at) else None
+    SMT[name] = lambda w, ws, at, r, x: (
+        x[0], z3.Not(smt_holds(x[0], w, at)), None)
+
+
+def _align_bits(at):
+    # Log2_64 of the alignment, as the known-bits analysis reads it.
+    return at.bit_length() - 1
+
+
+_hint('G_ASSERT_ZEXT', lambda v, w, at: v >> at == 0,
+      lambda x, w, at: z3.Extract(w - 1, at, x) == 0)
+_hint('G_ASSERT_SEXT', lambda v, w, at: sx(v & mask(at), at) & mask(w) == v,
+      lambda x, w, at: z3.SignExt(w - at, z3.Extract(at - 1, 0, x)) == x)
+_hint('G_ASSERT_ALIGN', lambda v, w, at: v & mask(min(_align_bits(at), w)) == 0,
+      lambda x, w, at: z3.BoolVal(True) if _align_bits(at) == 0 else
+      z3.Extract(min(_align_bits(at), w) - 1, 0, x) == 0)
+_HINTS = ('G_ASSERT_ZEXT', 'G_ASSERT_SEXT', 'G_ASSERT_ALIGN')
+
+# The bits of a value in the type of the other kind.
+EVAL['G_BITCAST'] = lambda w, ws, at, r, v: v[0]
+SMT['G_BITCAST'] = lambda w, ws, at, r, x: (x[0], None, None)
+
+# Operations on the sign of a floating-point value: no other bit changes,
+# also not of a NaN. The second operand of G_FCOPYSIGN gives the sign.
+EVAL['G_FNEG'] = lambda w, ws, at, r, v: v[0] ^ fp.sign_bit(w)
+SMT['G_FNEG'] = lambda w, ws, at, r, x: (
+    x[0] ^ _bv(fp.sign_bit(w), w), None, None)
+EVAL['G_FABS'] = lambda w, ws, at, r, v: v[0] & ~fp.sign_bit(w)
+SMT['G_FABS'] = lambda w, ws, at, r, x: (
+    x[0] & _bv(mask(w - 1), w), None, None)
+EVAL['G_FCOPYSIGN'] = lambda w, ws, at, r, v: \
+    (v[0] & ~fp.sign_bit(w)) | (v[1] >> (ws[1] - 1) << (w - 1))
+SMT['G_FCOPYSIGN'] = lambda w, ws, at, r, x: (
+    z3.Concat(z3.Extract(ws[1] - 1, ws[1] - 1, x[1]),
+              z3.Extract(w - 2, 0, x[0])), None, None)
+
+# A floating-point comparison and a class test: exact functions of the
+# bits. The immediate of G_IS_FPCLASS is a set of FPClassTest bits.
+EVAL['G_FCMP'] = lambda w, ws, at, r, v: fp.compare(at, v[0], v[1], ws[0])
+SMT['G_FCMP'] = lambda w, ws, at, r, x: (
+    _b2bv(fp.z3_compare(at, x[0], x[1])), None, None)
+EVAL['G_IS_FPCLASS'] = lambda w, ws, at, r, v: \
+    int(fp.classify(v[0], ws[0]) & at != 0)
+SMT['G_IS_FPCLASS'] = lambda w, ws, at, r, x: (
+    _b2bv(fp.z3_classify(x[0], at)), None, None)
+
+
+def _fp_formats(*ws):
+    return all(fp.is_format(w) for w in ws)
+
+
+# The typing of the operators that are not in the table of the e-graph
+# (the entries with "model_only" of gmir_ops.json): the table gives the
+# layout of the instruction, and the type rule is here.
+_MODEL_TYPECHECK = {
+    'G_IMPLICIT_DEF': lambda w, ws, attr, res: not ws,
+    'G_ASSERT_ZEXT': lambda w, ws, attr, res:
+        len(ws) == 1 and ws[0] == w and 0 < attr < w,
+    'G_ASSERT_SEXT': lambda w, ws, attr, res:
+        len(ws) == 1 and ws[0] == w and 0 < attr < w,
+    'G_ASSERT_ALIGN': lambda w, ws, attr, res:
+        len(ws) == 1 and ws[0] == w and attr >= 1,
+    'G_BITCAST': lambda w, ws, attr, res:
+        len(ws) == 1 and ws[0] == w and fp.is_format(w),
+    'G_FNEG': lambda w, ws, attr, res:
+        len(ws) == 1 and ws[0] == w and fp.is_format(w),
+    'G_FABS': lambda w, ws, attr, res:
+        len(ws) == 1 and ws[0] == w and fp.is_format(w),
+    'G_FCOPYSIGN': lambda w, ws, attr, res:
+        len(ws) == 2 and ws[0] == w and _fp_formats(*ws),
+    'G_FCMP': lambda w, ws, attr, res:
+        len(ws) == 2 and w == 1 and ws[0] == ws[1] and
+        fp.is_format(ws[0]) and attr in fp.FP_PREDS,
+    'G_IS_FPCLASS': lambda w, ws, attr, res:
+        len(ws) == 1 and w == 1 and fp.is_format(ws[0]) and
+        0 < attr <= fp.FC_ALL,
+}
+# The class sets that a search tries as the immediate of G_IS_FPCLASS:
+# NaN, infinity, zero, finite, and the negative / positive values.
+_IMM_DOMAIN = {
+    'G_IS_FPCLASS': (
+        fp.FC_SNAN | fp.FC_QNAN, fp.FC_NINF | fp.FC_PINF,
+        fp.FC_NZERO | fp.FC_PZERO,
+        fp.FC_ALL & ~(fp.FC_SNAN | fp.FC_QNAN | fp.FC_NINF | fp.FC_PINF),
+        fp.FC_NINF | fp.FC_NNORM | fp.FC_NSUB | fp.FC_NZERO,
+        fp.FC_PINF | fp.FC_PNORM | fp.FC_PSUB | fp.FC_PZERO),
+}
+
 _NO_SEMANTICS = {
-    'G_ANYEXT': 'the high bits are not specified',
     'G_CLMUL': 'no model yet', 'G_CLMULR': 'no model yet',
     'G_CLMULH': 'no model yet',
     'G_EXTRACT': 'no model yet', 'G_INSERT': 'no model yet',
@@ -928,7 +1062,9 @@ _EMIT_SHAPES = ('binary', 'unary', 'cast', 'bitcount', 'compare', 'select',
 
 _COSTS = {'G_MUL': 2, 'G_UMULH': 2, 'G_SMULH': 2, 'G_UDIV': 4, 'G_SDIV': 4,
           'G_UREM': 4, 'G_SREM': 4, 'G_UDIVREM': 4, 'G_SDIVREM': 4,
-          'G_UMULO': 2, 'G_SMULO': 2}
+          'G_UMULO': 2, 'G_SMULO': 2,
+          # A hint is not an instruction of the final code.
+          'G_ASSERT_ZEXT': 0, 'G_ASSERT_SEXT': 0, 'G_ASSERT_ALIGN': 0}
 
 
 def _load_generic():
@@ -968,8 +1104,27 @@ def _load_generic():
                 kind in _FP_TO_INT
             info.fp_result = kind in ('fpext', 'fptrunc', 'sitofp',
                                       'uitofp')
-            if shape == 'cast' and m['cast'] in ('ptrtoint', 'inttoptr',
-                                                 'extract'):
+            info.makes_nan = kind in ('fpext', 'fptrunc')
+            info.nan_insensitive = kind in _FP_TO_INT or \
+                (bool(m.get('fp')) and shape == 'compare')
+            if m.get('fp'):
+                # The operands are floating-point values, and so is the
+                # result unless it is one bit (a comparison, a test).
+                info.fp_operand = True
+                info.fp_result = shape not in ('compare', 'cast')
+                if shape == 'compare':
+                    info.preds = fp.FP_PREDS
+                    info.swapped_pred = fp.FP_SWAPPED_PRED
+            info.bitcast = name == 'G_BITCAST'
+            info.nan_through = name == 'G_FNEG'
+            info.unspecified = _UNSPECIFIED.get(name)
+            if m.get('model_only'):
+                if name in _MODEL_TYPECHECK:
+                    info.typecheck = _MODEL_TYPECHECK[name]
+                else:
+                    info.unsupported['typecheck'] = 'no model yet'
+            elif shape == 'cast' and m['cast'] in ('ptrtoint', 'inttoptr',
+                                                   'extract'):
                 info.unsupported['typecheck'] = _NO_SEMANTICS[name]
             else:
                 info.typecheck = _TYPECHECK[shape](info)
@@ -981,7 +1136,7 @@ def _load_generic():
                 info.unsupported['eval'] = why
                 info.unsupported['smt'] = why
         if attr == 'imm':
-            info.imm_domain = (1, 8, 16, 32)
+            info.imm_domain = _IMM_DOMAIN.get(name, (1, 8, 16, 32))
         if 'typecheck' in info.unsupported:
             for st in ('eval', 'smt'):
                 info.unsupported.setdefault(st,
@@ -1001,6 +1156,12 @@ def _load_generic():
             elif info.freeze:
                 info.unsupported['emit'] = \
                     'a rule can match G_FREEZE but must not create it'
+            elif name == 'G_IMPLICIT_DEF':
+                info.unsupported['emit'] = \
+                    'a rule can match G_IMPLICIT_DEF but does not create it'
+            elif name in _HINTS:
+                info.unsupported['emit'] = \
+                    'a rule can match a hint but does not create it'
         register(info)
 
 

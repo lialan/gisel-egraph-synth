@@ -47,7 +47,7 @@ from . import smt
 WIDTHS = (8, 16, 32, 64)
 # v2: each input can be poison, G_FREEZE, the conversions between integers
 # and floating-point values.
-SEMANTIC_MODEL = 'gmir-v2'
+SEMANTIC_MODEL = 'gmir-v3'
 
 
 class SynthLimits:
@@ -396,6 +396,17 @@ class Synthesizer:
         """Generalizes and verifies one concrete discovery. Returns the rule
         id, or None if no precondition was found."""
         self.stats['discoveries'] += 1
+        # The replacement has the type of the source: two values with the
+        # same bits and different kinds (an integer and a floating-point
+        # value, G_BITCAST) are not the same register type.
+        vk = getattr(inst, 'vk', None)
+        if vk is not None and (ir.is_var(tgt) or ir.is_op(tgt)):
+            st = ir.type_of(inst.expr, inst.vw, vk)
+            tt = ir.type_of(tgt, inst.vw, vk)
+            if st is not None and tt is not None and tt != st:
+                self.stats['kind_mismatch'] = \
+                    self.stats.get('kind_mismatch', 0) + 1
+                return None
         src, tgt, vw, facts, perm = canonicalize(inst.expr, tgt, inst.vw,
                                                  inst.facts)
         cv = tuple(sorted(new for new, old in enumerate(perm)

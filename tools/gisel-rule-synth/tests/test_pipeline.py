@@ -68,7 +68,8 @@ body: |
     %32:_(s64) = G_ANYEXT %0
     %33:_(s32) = G_TRUNC %32
     %34:_(s32) = G_OR %22, %27
-    %35:_(s16) = G_TRUNC %33
+    %40:_(s32) = G_CLMUL %33, %0
+    %35:_(s16) = G_TRUNC %40
     %36:_(s16) = G_OR %35, %31
     %37:_(s32) = G_ZEXT %36
     %38:_(s32) = G_OR %34, %37
@@ -92,6 +93,41 @@ body: |
     %4:_(s32) = G_PHI %0, %bb.0, %3, %bb.1
     %5:_(s32) = G_SUB %4, %1
     $vgpr0 = COPY %5
+    SI_RETURN implicit $vgpr0
+...
+---
+name: bits
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1
+    %0:_(s32) = COPY $vgpr0
+    %1:_(s32) = COPY $vgpr1
+    %2:_(s32) = G_ASSERT_ZEXT %0, 8
+    %3:_(s32) = G_ASSERT_SEXT %1, 16
+    %4:_(s32) = G_ASSERT_ALIGN %3, 4
+    %5:_(s32) = G_ADD %2, %4
+    %6:_(f32) = G_BITCAST %5
+    %7:_(f32) = G_FNEG %6
+    %8:_(f32) = G_FABS %7
+    %9:_(f64) = G_FPEXT %6
+    %10:_(f32) = G_FCOPYSIGN %8, %9
+    %11:_(s1) = G_FCMP floatpred(olt), %10, %6
+    %12:_(s1) = G_IS_FPCLASS %10, 3
+    %13:_(s1) = G_OR %11, %12
+    %14:_(s64) = G_ANYEXT %13
+    %15:_(s32) = G_IMPLICIT_DEF
+    %16:_(s64) = G_ANYEXT %15
+    %17:_(s64) = G_AND %14, %16
+    %18:_(s32) = G_BITCAST %10
+    %19:_(s64) = G_ZEXT %18
+    %20:_(s64) = G_XOR %17, %19
+    %21:_(f32) = G_IMPLICIT_DEF
+    %22:_(f32) = G_FNEG %21
+    %23:_(s32) = G_BITCAST %22
+    %24:_(s32) = G_TRUNC %20
+    %25:_(s32) = G_OR %24, %23
+    $vgpr0 = COPY %25
     SI_RETURN implicit $vgpr0
 ...
 '''
@@ -263,7 +299,8 @@ class RealExtractionTest(unittest.TestCase):
         # 1.5 as an IEEE single: the bit pattern, not the number.
         self.assertEqual(int(r['inputs'][0]['const'], 16), 0x3fc00000)
         inst = next(i for i in self.insts
-                    if i.expr == ('G_FPEXT', 64, ('var', 0)))
+                    if i.expr == ('G_FPEXT', 64, ('var', 0)) and
+                    i.consts[0] is not None)
         self.assertEqual(inst.consts, (0x3fc00000,))
         # The compiler reports no known bits for the floating-point
         # constant; the instance has all of them.
@@ -344,12 +381,54 @@ class RealExtractionTest(unittest.TestCase):
     def test_reader_refuses_with_a_reason(self):
         reasons = self.stats['unsupported_reasons']
         self.assertIn('type bf16 has no model', reasons)
-        self.assertTrue(any('G_ANYEXT' in r for r in reasons), reasons)
+        self.assertTrue(any('G_CLMUL' in r for r in reasons), reasons)
         self.assertEqual(self.stats['unsupported'], sum(reasons.values()))
         for i in self.insts:
             for n in ir.nodes(i.expr):
-                self.assertNotIn(ops.base(n[0]), ('G_ANYEXT', 'G_PTRTOINT',
+                self.assertNotIn(ops.base(n[0]), ('G_CLMUL', 'G_PTRTOINT',
                                                   'G_INTTOPTR'))
+
+    def test_bits_and_hints(self):
+        """The operators on the bits of a value, the hints and the values
+        with unspecified bits are nodes of the trees, with their
+        attributes and types."""
+        roots = self._roots('bits')
+        keys = {n[0] for i in self.insts for n in ir.nodes(i.expr)}
+        for k in ('G_ANYEXT', 'G_BITCAST', 'G_FNEG', 'G_FABS',
+                  'G_FCOPYSIGN', 'G_FCMP:olt', 'G_IS_FPCLASS:3',
+                  'G_IMPLICIT_DEF', 'G_ASSERT_ZEXT:8', 'G_ASSERT_SEXT:16',
+                  'G_ASSERT_ALIGN:4'):
+            self.assertIn(k, keys)
+        self.assertEqual(roots['%11']['expr']['pred'], 'olt')
+        self.assertEqual(roots['%12']['expr']['imm'], 3)
+        self.assertEqual(roots['%6']['expr']['type'], 'f32')
+        self.assertEqual(roots['%18']['expr']['type'], 's32')
+        # A hint is a node: the tree goes on below it.
+        deep = {}
+        for r in self.records:
+            if r['fn'] == 'bits' and \
+                    r['interior'] > deep.get(r['root'], r)['interior'] - \
+                    (r['root'] not in deep):
+                deep[r['root']] = r
+        add = deep['%5']['expr']
+        self.assertEqual([a['op'] for a in add['args']],
+                         ['G_ASSERT_ZEXT', 'G_ASSERT_ALIGN'])
+        # A value without operands is a node and not a root.
+        self.assertNotIn('%15', roots)
+        any16 = deep['%16']
+        self.assertEqual(any16['expr']['args'][0]['op'], 'G_IMPLICIT_DEF')
+        self.assertEqual(any16['inputs'], [])
+        # A floating-point G_IMPLICIT_DEF is an input.
+        self.assertEqual(roots['%22']['expr']['args'][0].get('op'), None)
+        self.assertEqual(roots['%22']['inputs'][0]['def'], 'G_IMPLICIT_DEF')
+        # The instances type-check and have a value.
+        inst = next(i for i in self.insts if i.expr == (
+            'G_ADD', 32, ('G_ASSERT_ZEXT:8', 32, ('var', 0)),
+            ('G_ASSERT_ALIGN:4', 32, ('G_ASSERT_SEXT:16', 32, ('var', 1)))))
+        self.assertEqual(ir.evaluate(inst.expr, inst.vw, (0x7f, 0xfff8)),
+                         None)
+        self.assertEqual(ir.evaluate(inst.expr, inst.vw, (0x7f, 0x7ff8)),
+                         0x8077)
 
     def test_all_command(self):
         """`all` gives its subcommands every argument they read."""

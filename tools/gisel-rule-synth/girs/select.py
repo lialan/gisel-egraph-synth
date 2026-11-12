@@ -87,12 +87,25 @@ class _Fn:
         self.lines = []
         self.n = 0
         self.nargs = 0
+        self.kind = {}
 
-    def emit(self, w, rhs):
+    # The registers have the types i<w> / f<w> and not s<w>: a function
+    # with a G_BITCAST between an integer and a floating-point value.
+    typed = False
+
+    def emit(self, w, rhs, kind=None):
         r = '%%%d' % self.n
         self.n += 1
-        self.lines.append('    %s:_(s%d) = %s' % (r, w, rhs))
+        ty = ('f' if kind == 'f' else 'i') if self.typed else 's'
+        self.lines.append('    %s:_(%s%d) = %s' % (r, ty, w, rhs))
+        self.kind[r] = kind
         return r
+
+    def as_kind(self, r, w, kind):
+        """The register ``r`` in the type of ``kind``."""
+        if not self.typed or (self.kind.get(r) == 'f') == (kind == 'f'):
+            return r
+        return self.emit(w, 'G_BITCAST %s' % r, kind)
 
     def emit_results(self, ws, rhs):
         """An instruction with one result of each width of ``ws``."""
@@ -132,6 +145,7 @@ def build_mir(rule, example, name, target):
     facts = [(int(f[0], 16), int(f[1], 16)) for f in example['facts']]
     defined = [len(f) > 2 and f[2] for f in example['facts']]
     fn = _Fn(target)
+    fn.typed = any(ops.parse(n[0])[0].bitcast for n in ir.nodes(src))
     xs, live = [], []
     for w, (z, o), is_defined in zip(vw, facts, defined):
         mk = ir.mask(w)
@@ -156,25 +170,29 @@ def build_mir(rule, example, name, target):
     # node below it has its pre-order index plus 1 (ir.interior_nodes).
     node_reg = []
 
-    def walk(e):
+    def walk(e, expected=None):
         if ir.is_var(e):
-            return xs[e[1]]
+            return fn.as_kind(xs[e[1]], vw[e[1]], expected)
         if not ir.is_op(e):
-            return fn.emit(e[1], 'G_CONSTANT i%d %d' % (e[1],
-                                                       ir.leaf_value(e)))
+            return fn.as_kind(fn.emit(e[1], 'G_CONSTANT i%d %d' % (
+                e[1], ir.leaf_value(e))), e[1], expected)
         k = len(node_reg)
         node_reg.append(None)
-        node_reg[k] = instr(e, [walk(a) for a in e[2:]])
+        kind = ir.result_kind(e, expected)
+        node_reg[k] = instr(e, [walk(a, ir.operand_kind(e, i, kind))
+                                for i, a in enumerate(e[2:])], kind)
         return node_reg[k]
 
-    def instr(e, args):
+    def instr(e, args, kind=None):
         """The instruction of the root operator of ``e`` with the operand
         registers ``args``. Returns the register of the result that ``e``
-        is."""
+        is; ``kind`` is the kind of that result."""
         info, attr, res = ops.parse(e[0])
         # The attribute of the operator is an operand of the instruction.
         if info.attr == 'pred':
-            text = '%s intpred(%s), %s' % (info.name, attr, ', '.join(args))
+            text = '%s %spred(%s), %s' % (
+                info.name, 'float' if info.fp_operand else 'int', attr,
+                ', '.join(args))
         elif info.attr == 'imm':
             text = '%s %s, %d' % (info.name, ', '.join(args), attr)
         else:
@@ -185,7 +203,7 @@ def build_mir(rule, example, name, target):
         else:
             kinds = info.meta.get('result_kinds', ['main'])
             if len(kinds) == 1:
-                return fn.emit(e[1], text)
+                return fn.emit(e[1], text, kind)
             main = [ir.width(a, vw) for a, k in zip(
                 e[2:], info.meta['operand_kinds']) if k == 'main']
             ws = [1 if k == 'bool' else (main[0] if k == 'main' else e[1])
@@ -196,7 +214,7 @@ def build_mir(rule, example, name, target):
         return several[text][res]
     # The outputs of the function: the root, and for a rule with a region
     # each other value that has a user outside the region.
-    outs = [(walk(src), src[1])]
+    outs = [(fn.as_kind(walk(src), src[1], 'i'), src[1])]
     for o in region.get('outputs', ())[1:]:
         outs.append((node_reg[o['node']],
                      ir.interior_nodes(src)[o['node'] - 1][1]))

@@ -83,7 +83,38 @@ class Encoder:
     (``frozen``) if the operand is poison. The terms of the source and of
     the replacement have different values: a G_FREEZE of the replacement is
     a new instruction. One term must not occur twice in the source (see
-    ir.repeated_freeze)."""
+    ir.repeated_freeze).
+
+    Two kinds of bits are not specified: the bits of a result that the
+    operator does not define (G_ANYEXT, G_IMPLICIT_DEF; OpInfo.unspecified)
+    and the bits of a NaN that a floating-point operation makes
+    (OpInfo.makes_nan). The proof must hold if the source has *some* value
+    for them and the replacement has *each* value:
+
+    * Replacement: each occurrence of such an operation has a variable of
+      its own for these bits (``assumptions`` says that the bits of a NaN
+      are a NaN). A formula is satisfiable if some value of them shows a
+      difference.
+    * Source, unspecified bits: one variable per term (``choices``). The
+      formula of a difference must hold for each value of it. The solver
+      does not decide such a formula with a quantifier reliably, so
+      ``for_all_choices`` writes it for a set of values instead: all zeros,
+      all ones, the sign of the operand, and the inputs and the values of
+      the replacement that have the width. If no input shows a difference
+      for *each* of these values, then each input has a value among them
+      for which the source gives the result of the replacement. More
+      values prove more rules; the set never makes a proof wrong.
+    * A NaN that an operation makes is one of the values of
+      fp.nan_member. Source, NaN: the positive quiet NaN with the payload
+      zero, a value that every operation can give. (At the root, each
+      value of the set is a correct result of the replacement:
+      refinement_violation.) If
+      an operator of the source reads the bits of the NaN (G_BITCAST,
+      G_FABS, ...; ``mark_source``), the NaN is a variable like the
+      unspecified bits, with the values of the replacement as its set."""
+
+    # The largest number of value combinations of ``for_all_choices``.
+    MAX_INSTANCES = 64
 
     def __init__(self, vw, rw=None, const_vars=()):
         self.vw = tuple(vw)
@@ -95,6 +126,19 @@ class Encoder:
         self.ko = [z3.BitVec('ko%d' % i, w) for i, w in enumerate(vw)]
         self.xp = [z3.Bool('xp%d' % i) for i in range(len(vw))]
         self.frozen = {}   # (side, term) -> value for a poison operand
+        # (kind, source term) -> (variable, kind, values to try first), in
+        # the order of creation: a term is after the terms below it. The
+        # kind is 'bits' (unspecified bits; the value is the sign extension
+        # of the operand) or 'nan' (the bits of a NaN that the operation
+        # makes; the values are the NaNs with the payload of an operand).
+        self.choices = {}
+        # The terms of the source that make a NaN whose bits an operator
+        # of the source reads (mark_source).
+        self.nan_observed = set()
+        self.fresh = 0     # variables of the replacement
+        self.assume = []   # conditions on the variables of the replacement
+        self.tgt_values = []
+        self._nondet = {}
 
     def recipe_guard(self, tgt):
         """The condition on the computed constants of the replacement
@@ -128,6 +172,105 @@ class Encoder:
             cs += [(x & z) == 0, (x & o) == o]
         return z3.And(cs)
 
+    def nondet(self, e):
+        """True if ``e`` has an operation with bits that are not
+        specified."""
+        if e not in self._nondet:
+            r = False
+            if ir.is_op(e):
+                info = ops.parse(e[0])[0]
+                r = info.unspecified is not None or info.makes_nan or \
+                    any(self.nondet(a) for a in e[2:])
+            self._nondet[e] = r
+        return self._nondet[e]
+
+    def _fresh(self, prefix, w):
+        self.fresh += 1
+        return z3.BitVec('%s%d' % (prefix, self.fresh), w)
+
+    def assumptions(self):
+        return z3.And(self.assume) if self.assume else z3.BoolVal(True)
+
+    def mark_source(self, e, state='root'):
+        """Finds the terms of the source ``e`` that make a NaN whose bits
+        an operator above them reads. ``state`` says what reads the value
+        of ``e``: 'root' (each NaN is a correct result there), 'any' (an
+        operator that gives one result for every NaN) or 'bits'."""
+        if not ir.is_op(e) or not ops.known(e[0]):
+            return
+        info = ops.parse(e[0])[0]
+        if info.makes_nan and state == 'bits':
+            self.nan_observed.add(e)
+        for i, a in enumerate(e[2:]):
+            if info.freeze or info.nan_through or \
+                    (info.shape == 'select' and i > 0):
+                below = state
+            elif info.nan_insensitive:
+                below = 'any'
+            else:
+                below = 'bits'
+            self.mark_source(a, below)
+
+    def for_all_choices(self, bad, root=None):
+        """A formula that is satisfiable only if ``bad`` holds for each
+        value in a set of values of the unspecified bits of the source
+        (see the class comment). ``root`` is the value of the replacement.
+        """
+        if not self.choices:
+            return bad
+        items = []
+        # The value of the replacement first: the source has it if its
+        # unspecified bits are the bits of the replacement.
+        pool = ([root] if root is not None else []) + \
+            self.tgt_values[::-1] + list(self.x)
+
+        def resized(t, w):
+            if t.size() == w:
+                return t
+            if t.size() > w:
+                return z3.Extract(w - 1, 0, t)
+            return z3.ZeroExt(w - t.size(), t)
+        for var, kind, first in self.choices.values():
+            w = var.size()
+            if kind == 'nan':
+                # The value is a NaN of the operation (enc_full); a value
+                # of another width is not a value of the format.
+                cands = first[:len(first) // 2] + \
+                    [z3.BitVecVal(fp.qnan(w), w)] + first[len(first) // 2:]
+                from_pool = [t for t in pool if t.size() == w]
+            else:
+                cands = [z3.BitVecVal(0, w)] + first
+                from_pool = [resized(t, w) for t in pool]
+            seen = set()
+            for t in from_pool:
+                if t.get_id() not in seen:
+                    seen.add(t.get_id())
+                    cands.append(t)
+            if kind != 'nan':
+                cands.append(z3.BitVecVal(ops.mask(w), w))
+            items.append((var, cands))
+        # Not more than MAX_INSTANCES combinations: the first values of
+        # each variable.
+        per = len(items)
+        keep = max(1, int(round(self.MAX_INSTANCES ** (1.0 / per))))
+        while keep > 1 and keep ** per > self.MAX_INSTANCES:
+            keep -= 1
+        items = [(v, c[:keep]) for v, c in items]
+
+        def expand(f, rest):
+            if not rest:
+                return [f]
+            (var, cands), rest = rest[0], rest[1:]
+            out = []
+            for c in cands:
+                # A value of a later variable can have this variable (the
+                # sign of an operand with unspecified bits).
+                sub = [(v, [z3.substitute(x, (var, c)) for x in cs])
+                       for v, cs in rest]
+                out += expand(z3.substitute(f, (var, c)), sub)
+            return out
+        return z3.And(expand(bad, items))
+
     def enc(self, e):
         """Returns (value, poison) z3 terms for expression ``e``; for an
         expression without operations that can have undefined behaviour."""
@@ -142,7 +285,10 @@ class Encoder:
         source ('src') or those of the replacement ('tgt')."""
         if memo is None:
             memo = {}
-        if e in memo:
+        # Each occurrence of an operation of the replacement with bits
+        # that are not specified has bits of its own.
+        shared = not (side == 'tgt' and self.nondet(e))
+        if shared and e in memo:
             return memo[e]
         false = z3.BoolVal(False)
         if ir.is_var(e):
@@ -155,6 +301,40 @@ class Encoder:
             ws = [ir.width(a, self.vw) for a in e[2:]]
             v, p, ub = info.smt(e[1], ws, attr, res, [a[0] for a in args])
             ubs = [a[2] for a in args] + ([ub] if ub is not None else [])
+            if info.unspecified is not None:
+                m = info.unspecified(e[1], ws)
+                if side == 'tgt':
+                    bits = self._fresh('ut', e[1])
+                else:
+                    if ('bits', e) not in self.choices:
+                        sign = [z3.SignExt(e[1] - ws[0], args[0][0])] \
+                            if args and ws[0] < e[1] else []
+                        self.choices['bits', e] = (z3.BitVec(
+                            'us%d' % len(self.choices), e[1]), 'bits', sign)
+                    bits = self.choices['bits', e][0]
+                mv = z3.BitVecVal(m, e[1])
+                v = (v & ~mv) | (bits & mv)
+            if info.makes_nan:
+                # The bits of a NaN that the operation makes.
+                # The NaN values that the operation can give
+                # (fp.nan_member): a function of its operands.
+                fargs = _fp_operands(info, ws, [a[0] for a in args])
+                if side == 'tgt':
+                    nan = self._fresh('nan', e[1])
+                    self.assume.append(fp.z3_nan_member(nan, fargs))
+                else:
+                    nan = z3.BitVecVal(fp.qnan(e[1]), e[1])
+                    if e in self.nan_observed:
+                        if ('nan', e) not in self.choices:
+                            # The NaN of an operand unchanged, then quiet.
+                            first = [fp.z3_nan_from(a, e[1], q)
+                                     for q in (False, True) for a in fargs]
+                            self.choices['nan', e] = (z3.BitVec(
+                                'ns%d' % len(self.choices), e[1]), 'nan',
+                                first)
+                        c = self.choices['nan', e][0]
+                        nan = z3.If(fp.z3_nan_member(c, fargs), c, nan)
+                v = z3.If(fp.z3_is_nan(v), nan, v)
             if info.freeze:
                 if (side, e) not in self.frozen:
                     self.frozen[side, e] = z3.BitVec(
@@ -170,7 +350,10 @@ class Encoder:
             if p is not None:
                 ps.append(p)
             r = v, z3.Or(ps) if ps else false, z3.Or(ubs)
-        memo[e] = r
+            if side == 'tgt':
+                self.tgt_values.append(v)
+        if shared:
+            memo[e] = r
         return r
 
     def model_terms(self):
@@ -180,22 +363,33 @@ class Encoder:
             [z3.If(p, one, zero) for p in self.xp[:n]]
 
 
-def _made_nan(enc, e):
+def _fp_operands(info, ws, values):
+    """The operands of an operation that are floating-point values."""
+    if not info.fp_operand:
+        return []
+    return [v for v, w in zip(values, ws) if fp.is_format(w)]
+
+
+def _nan_of(enc, e, tv):
     """The condition that the value of the source expression ``e`` is a NaN
-    that a floating-point conversion made. The payload of such a NaN is not
-    specified, so each NaN is a correct result of the replacement. A NaN of
-    an input keeps its bits through G_SELECT and G_FREEZE: there the
-    replacement must give the same bits."""
+    that a floating-point operation made, and that ``tv`` is a value that
+    this operation can give (fp.nan_member): then ``tv`` is a correct
+    result of the replacement. A NaN of an input keeps its bits through
+    G_SELECT and G_FREEZE: there the replacement must give the same bits.
+    G_FNEG changes the sign, and the sign of the NaN is not specified."""
     if not ir.is_op(e) or not ops.known(e[0]):
         return z3.BoolVal(False)
     info = ops.parse(e[0])[0]
-    if info.fp_result:
-        return z3.fpIsNaN(fp.z3_value(enc.enc_full(e)[0]))
-    if info.freeze:
-        return _made_nan(enc, e[2])
+    if info.makes_nan:
+        ws = [ir.width(a, enc.vw) for a in e[2:]]
+        fargs = _fp_operands(info, ws, [enc.enc_full(a)[0] for a in e[2:]])
+        return z3.And(fp.z3_is_nan(enc.enc_full(e)[0]),
+                      fp.z3_nan_member(tv, fargs))
+    if info.freeze or info.nan_through:
+        return _nan_of(enc, e[2], tv)
     if info.shape == 'select':
-        return z3.If(enc.enc_full(e[2])[0] == 1, _made_nan(enc, e[3]),
-                     _made_nan(enc, e[4]))
+        return z3.If(enc.enc_full(e[2])[0] == 1, _nan_of(enc, e[3], tv),
+                     _nan_of(enc, e[4], tv))
     return z3.BoolVal(False)
 
 
@@ -205,14 +399,21 @@ def refinement_violation(enc, src, tgt, guard):
     behaviour, or the source is not poison and the target is poison or
     different."""
     assert not ir.repeated_freeze(src), 'one G_FREEZE term twice'
+    enc.mark_source(src)
     sv, sp, su = enc.enc_full(src)
     tv, tp, tu = enc.enc_full(tgt, side='tgt')
-    same = z3.Or(sv == tv, z3.And(_made_nan(enc, src),
-                                  z3.fpIsNaN(fp.z3_value(tv)))) \
-        if ir.result_kind(src) == 'f' else sv == tv
+    same = z3.Or(sv == tv, _nan_of(enc, src, tv)) \
+        if _is_fp(src) else sv == tv
+    bad = z3.And(z3.Not(su),
+                 z3.Or(tu, z3.And(z3.Not(sp), z3.Or(tp, z3.Not(same)))))
     return z3.And(enc.well_formed(), guard, enc.recipe_guard(tgt),
-                  z3.Not(su),
-                  z3.Or(tu, z3.And(z3.Not(sp), z3.Or(tp, z3.Not(same)))))
+                  enc.assumptions(), enc.for_all_choices(bad, tv))
+
+
+def _is_fp(e):
+    """True if the value of ``e`` can be a NaN that an operation made: a
+    floating-point value by its operators."""
+    return ir.result_kind(e) == 'f' and fp.is_format(e[1])
 
 
 def joint_violation(enc, pairs, guard):
@@ -230,18 +431,20 @@ def joint_violation(enc, pairs, guard):
     assert not ir.repeated_freeze(root), 'one G_FREEZE term twice'
     # The source has undefined behaviour if a value of it has: the root
     # (which has the nodes below it) or a root next to it.
+    for s, _ in pairs:
+        enc.mark_source(s)
     su = z3.Or([enc.enc_full(s)[2] for s, _ in pairs])
     bad = []
     for src, tgt in pairs:
         sv, sp, _ = enc.enc_full(src)
         tv, tp, tu = enc.enc_full(tgt, side='tgt')
-        same = z3.Or(sv == tv, z3.And(_made_nan(enc, src),
-                                      z3.fpIsNaN(fp.z3_value(tv)))) \
-            if ir.result_kind(src) == 'f' else sv == tv
+        same = z3.Or(sv == tv, _nan_of(enc, src, tv)) \
+            if _is_fp(src) else sv == tv
         bad.append(z3.Or(tu, z3.And(z3.Not(sp), z3.Or(tp, z3.Not(same)))))
     return z3.And(enc.well_formed(), guard,
                   z3.And([enc.recipe_guard(t) for _, t in pairs]),
-                  z3.Not(su), z3.Or(bad))
+                  enc.assumptions(),
+                  enc.for_all_choices(z3.And(z3.Not(su), z3.Or(bad))))
 
 
 def split_model(vals, n):

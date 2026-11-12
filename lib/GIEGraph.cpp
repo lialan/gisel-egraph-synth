@@ -21,6 +21,7 @@
 #include "llvm/CodeGen/LowLevelTypeUtils.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/IR/InstrTypes.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
@@ -976,6 +977,146 @@ ArrayRef<OpProperties> llvm::egraph::getAllOpProperties() {
   return Table;
 }
 
+/// The floating-point value with the bit pattern \p Bits, in the IEEE format
+/// of that width.
+static APFloat getFPValue(const APInt &Bits) {
+  return APFloat(getFltSemanticForLLT(LLT::scalar(Bits.getBitWidth())), Bits);
+}
+
+static std::vector<OpProperties> buildModelOnlyOpProperties() {
+  using namespace TargetOpcode;
+  std::vector<OpProperties> T;
+  const TypeKind Main = TypeKind::Main, Free = TypeKind::Free;
+  auto Op = [&](unsigned Opc, const char *Name, OpShape Shape,
+                std::initializer_list<TypeKind> Operands = {},
+                std::initializer_list<TypeKind> Results = {}) {
+    T.emplace_back();
+    OpProperties &P = T.back();
+    P.Opcode = Opc;
+    P.Name = Name;
+    P.ShortName = Name;
+    P.Shape = Shape;
+    switch (Shape) {
+    case OpShape::Binary:
+    case OpShape::Compare:
+      P.NumOperands = 2;
+      break;
+    case OpShape::Unary:
+    case OpShape::Cast:
+      P.NumOperands = 1;
+      break;
+    case OpShape::Typed:
+      P.OperandKinds = Operands;
+      P.ResultKinds = Results;
+      P.NumOperands = Operands.size();
+      break;
+    default:
+      llvm_unreachable("shape without a model-only operator");
+    }
+    return &P;
+  };
+
+  // A value with bits that are not specified. The synthesizer has it for
+  // integers only.
+  Op(G_IMPLICIT_DEF, "G_IMPLICIT_DEF", OpShape::Typed, {}, {Main});
+
+  // Hints: the result is the operand. The operand is known to be a zero
+  // extension or a sign extension from the immediate number of bits, or a
+  // multiple of the immediate. The result is poison if it is not.
+  using FoldFn = std::optional<APInt> (*)(ArrayRef<APInt>, uint64_t, unsigned);
+  auto Hint = [&](unsigned Opc, const char *Name, FoldFn Fold) {
+    OpProperties *P = Op(Opc, Name, OpShape::Unary);
+    P->ImmAttr = true;
+    P->MayBePoison = true;
+    P->FoldN = Fold;
+  };
+  Hint(G_ASSERT_ZEXT, "G_ASSERT_ZEXT",
+       [](ArrayRef<APInt> O, uint64_t Bits, unsigned) -> std::optional<APInt> {
+         if (!O[0].isIntN(Bits))
+           return std::nullopt;
+         return O[0];
+       });
+  Hint(G_ASSERT_SEXT, "G_ASSERT_SEXT",
+       [](ArrayRef<APInt> O, uint64_t Bits, unsigned) -> std::optional<APInt> {
+         if (!O[0].isSignedIntN(Bits))
+           return std::nullopt;
+         return O[0];
+       });
+  Hint(G_ASSERT_ALIGN, "G_ASSERT_ALIGN",
+       [](ArrayRef<APInt> O, uint64_t Align, unsigned) -> std::optional<APInt> {
+         if (O[0].countr_zero() < Log2_64(Align))
+           return std::nullopt;
+         return O[0];
+       });
+
+  // The bits of a value in a type of the other kind (an integer and a
+  // floating-point value of one width).
+  OpProperties *P = Op(G_BITCAST, "G_BITCAST", OpShape::Cast);
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t,
+                unsigned W) -> std::optional<APInt> {
+    if (O[0].getBitWidth() != W)
+      return std::nullopt;
+    return O[0];
+  };
+
+  // Operations on the sign of a floating-point value. They do not change
+  // another bit, also not of a NaN.
+  P = Op(G_FNEG, "G_FNEG", OpShape::Unary);
+  P->IsFP = true;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t, unsigned) -> std::optional<APInt> {
+    APFloat F = getFPValue(O[0]);
+    F.changeSign();
+    return F.bitcastToAPInt();
+  };
+  P = Op(G_FABS, "G_FABS", OpShape::Unary);
+  P->IsFP = true;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t, unsigned) -> std::optional<APInt> {
+    APFloat F = getFPValue(O[0]);
+    F.clearSign();
+    return F.bitcastToAPInt();
+  };
+  // The second operand gives the sign; it has a format of its own.
+  P = Op(G_FCOPYSIGN, "G_FCOPYSIGN", OpShape::Typed, {Main, Free}, {Main});
+  P->IsFP = true;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t, unsigned) -> std::optional<APInt> {
+    APFloat F = getFPValue(O[0]);
+    F.copySign(getFPValue(O[1]));
+    return F.bitcastToAPInt();
+  };
+
+  // A comparison of two floating-point values; ENode::Attr is a
+  // floating-point CmpInst::Predicate.
+  P = Op(G_FCMP, "G_FCMP", OpShape::Compare);
+  P->IsFP = true;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t Pred,
+                unsigned W) -> std::optional<APInt> {
+    return APInt(W, FCmpInst::compare(getFPValue(O[0]), getFPValue(O[1]),
+                                      static_cast<CmpInst::Predicate>(Pred)));
+  };
+  // A test of the class of a floating-point value; the immediate is a set
+  // of FPClassTest bits.
+  P = Op(G_IS_FPCLASS, "G_IS_FPCLASS", OpShape::Cast);
+  P->IsFP = true;
+  P->ImmAttr = true;
+  P->FoldN = [](ArrayRef<APInt> O, uint64_t Mask,
+                unsigned W) -> std::optional<APInt> {
+    return APInt(W, (getFPValue(O[0]).classify() & Mask) != 0);
+  };
+  return T;
+}
+
+ArrayRef<OpProperties> llvm::egraph::getModelOnlyOpProperties() {
+  static const std::vector<OpProperties> Table = buildModelOnlyOpProperties();
+  return Table;
+}
+
+const OpProperties *llvm::egraph::getModelOnlyOpProperties(unsigned Opcode) {
+  for (const OpProperties &P : getModelOnlyOpProperties())
+    if (P.Opcode == Opcode)
+      return &P;
+  return nullptr;
+}
+
 const OpProperties *llvm::egraph::getOpProperties(unsigned Opcode) {
   // Indexed by opcode: this is called for every node that is matched.
   static const std::vector<const OpProperties *> Index = [] {
@@ -1424,11 +1565,143 @@ static void printFPCastSamples(json::OStream &J, const OpProperties &P,
   }
 }
 
+/// A small set of bit patterns of the floating-point format of \p W bits,
+/// for the operators with more than one operand: zeros, numbers, the limits
+/// of the format, infinities and NaNs.
+static SmallVector<APInt, 8> getFewFPSampleValues(unsigned W) {
+  const fltSemantics &Sem = getFltSemanticForLLT(LLT::scalar(W));
+  SmallVector<APInt, 8> Vals;
+  for (bool Negative : {false, true}) {
+    Vals.push_back(APFloat::getZero(Sem, Negative).bitcastToAPInt());
+    Vals.push_back(APFloat::getOne(Sem, Negative).bitcastToAPInt());
+    Vals.push_back(APFloat::getSmallest(Sem, Negative).bitcastToAPInt());
+    Vals.push_back(APFloat::getLargest(Sem, Negative).bitcastToAPInt());
+    Vals.push_back(APFloat::getInf(Sem, Negative).bitcastToAPInt());
+    Vals.push_back(APFloat::getQNaN(Sem, Negative).bitcastToAPInt());
+  }
+  APFloat Num(2.5);
+  bool LosesInfo;
+  Num.convert(Sem, APFloat::rmNearestTiesToEven, &LosesInfo);
+  Vals.push_back(Num.bitcastToAPInt());
+  Vals.push_back(APFloat::getSNaN(Sem).bitcastToAPInt());
+  return Vals;
+}
+
+/// Write the samples of the model-only operator \p P with floating-point
+/// operands of \p W bits. A free operand has \p W2 bits.
+static void printFPOpSamples(json::OStream &J, const OpProperties &P,
+                             unsigned W, unsigned W2) {
+  unsigned NumOps = P.NumOperands;
+  SmallVector<SmallVector<APInt, 8>, 3> Vals;
+  for (unsigned I = 0; I != NumOps; ++I) {
+    bool IsFree =
+        P.Shape == OpShape::Typed && P.OperandKinds[I] == TypeKind::Free;
+    unsigned OW = IsFree ? W2 : W;
+    Vals.push_back(NumOps == 1 ? getFPSampleValues(OW)
+                               : getFewFPSampleValues(OW));
+  }
+  unsigned ResW = W;
+  SmallVector<uint64_t, 16> Attrs = {0};
+  if (P.Shape == OpShape::Compare) {
+    ResW = 1;
+    Attrs.clear();
+    for (unsigned Pred = CmpInst::FIRST_FCMP_PREDICATE;
+         Pred <= CmpInst::LAST_FCMP_PREDICATE; ++Pred)
+      Attrs.push_back(Pred);
+  } else if (P.ImmAttr) {
+    // G_IS_FPCLASS: each class, and some sets of classes.
+    ResW = 1;
+    Attrs.clear();
+    for (unsigned Bit = 0; Bit != 10; ++Bit)
+      Attrs.push_back(uint64_t(1) << Bit);
+    Attrs.append({fcNan, fcInf, fcZero, fcFinite, fcNormal, fcSubnormal,
+                  fcNegative, fcPositive, fcAllFlags});
+  }
+  SmallVector<unsigned, 3> Idx(NumOps, 0);
+  while (true) {
+    SmallVector<APInt, 3> Ops;
+    for (unsigned I = 0; I != NumOps; ++I)
+      Ops.push_back(Vals[I][Idx[I]]);
+    for (uint64_t Attr : Attrs) {
+      std::optional<APInt> Out = P.FoldN(Ops, Attr, ResW);
+      J.object([&] {
+        J.attribute("w", ResW);
+        if (P.Shape == OpShape::Compare)
+          J.attribute("pred", getICmpPredicateName(Attr));
+        else if (P.ImmAttr)
+          J.attribute("imm", Attr);
+        J.attributeArray("ops", [&] {
+          for (const APInt &V : Ops)
+            J.value(std::to_string(V.getBitWidth()) + ":0x" +
+                    toString(V, 16, /*Signed=*/false));
+        });
+        if (Out)
+          J.attribute("out", "0x" + toString(*Out, 16, /*Signed=*/false));
+        else
+          J.attribute("out", nullptr);
+      });
+    }
+    unsigned I = 0;
+    for (; I != NumOps; ++I) {
+      if (++Idx[I] < Vals[I].size())
+        break;
+      Idx[I] = 0;
+    }
+    if (I == NumOps)
+      break;
+  }
+}
+
+/// Write the entry of the model-only operator \p P.
+static void printModelOnlyOp(json::OStream &J, const OpProperties &P,
+                             bool WithSamples) {
+  J.object([&] {
+    J.attribute("name", P.Name);
+    J.attribute("shape", getShapeName(P.Shape));
+    J.attribute("operands", P.NumOperands);
+    if (P.Shape == OpShape::Typed) {
+      J.attributeArray("operand_kinds", [&] {
+        for (TypeKind K : P.OperandKinds)
+          J.value(getTypeKindName(K));
+      });
+      J.attributeArray("result_kinds", [&] {
+        for (TypeKind K : P.ResultKinds)
+          J.value(getTypeKindName(K));
+      });
+    }
+    J.attribute("model_only", true);
+    if (P.IsFP)
+      J.attribute("fp", true);
+    if (P.Commutative)
+      J.attribute("commutative", true);
+    if (P.ImmAttr)
+      J.attribute("imm_attr", true);
+    if (P.MayBePoison)
+      J.attribute("may_be_poison", true);
+    if (P.FoldN)
+      J.attribute("has_fold", true);
+    if (!WithSamples || !P.FoldN)
+      return;
+    if (P.IsFP)
+      J.attributeArray("samples", [&] {
+        for (unsigned W : {16, 32, 64})
+          printFPOpSamples(J, P, W, W == 32 ? 64 : 32);
+      });
+    else if (P.Shape == OpShape::Unary)
+      J.attributeArray("samples", [&] {
+        printOpSamples(J, P, 8, 32);
+        printOpSamples(J, P, 32, 64);
+      });
+  });
+}
+
 void llvm::egraph::printOpPropertiesJSON(raw_ostream &OS, bool WithSamples) {
   json::OStream J(OS, /*IndentSize=*/1);
   J.object([&] {
     J.attribute("version", 1);
     J.attributeArray("operators", [&] {
+      for (const OpProperties &P : getModelOnlyOpProperties())
+        printModelOnlyOp(J, P, WithSamples);
       for (const OpProperties &P : getAllOpProperties()) {
         J.object([&] {
           J.attribute("name", P.Name);
