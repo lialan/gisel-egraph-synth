@@ -23,6 +23,7 @@ files.
 import itertools
 import json
 import os
+import re
 
 from . import ir
 from . import ops
@@ -141,6 +142,9 @@ class _Node:
         # The number of results of the instruction, if the operator does
         # not give it (G_UNMERGE_VALUES): the pattern names each result.
         self.results = results
+        # A G_ASSERT_ZEXT or G_ASSERT_SEXT that the pattern matches as the
+        # extending load that defines its operand (_load_forms).
+        self.as_load = False
 
 
 def _annotate(src, vw=None):
@@ -196,6 +200,54 @@ def _forms(n):
     return res
 
 
+_EXT_LOAD = {'G_ASSERT_ZEXT': 'G_ZEXTLOAD', 'G_ASSERT_SEXT': 'G_SEXTLOAD'}
+
+
+def _load_forms(n):
+    """The forms of the pattern ``n`` in which an extending load is in the
+    place of a G_ASSERT_ZEXT or G_ASSERT_SEXT of a variable, without the
+    form ``n`` itself. The result of a G_ZEXTLOAD (G_SEXTLOAD) of N bits is
+    the zero (sign) extension of its low N bits, which is the fact of the
+    hint about its operand; the load is then the definition of the
+    variable."""
+    def alts(m):
+        if not isinstance(m, _Node):
+            return [m]
+        out = [[]]
+        for a in m.args:
+            out = [o + [f] for o in out for f in alts(a)]
+        res = []
+        for args in out:
+            c = _Node(m.op, m.w, m.name, args, m.results)
+            res.append(c)
+            if ops.parse(m.op)[0].name in _EXT_LOAD and \
+                    not isinstance(args[0], _Node):
+                d = _Node(m.op, m.w, m.name, args, m.results)
+                d.as_load = True
+                res.append(d)
+        return res
+    return alts(n)[1:]
+
+
+def _load_subst(n, out=None):
+    """The pattern name of each node of ``n`` that is matched as a load ->
+    the name of the variable that the load defines."""
+    out = {} if out is None else out
+    if isinstance(n, _Node):
+        if n.as_load:
+            out[n.name[1:]] = 'x%d' % n.args[0][1]
+        for a in n.args:
+            _load_subst(a, out)
+    return out
+
+
+class _Pats(list):
+    """The match patterns of one form of a rule. ``subst`` gives, for a
+    node that the form matches as a load, the variable that has its
+    register."""
+    subst = {}
+
+
 def _plain(n):
     if not isinstance(n, _Node):
         return n
@@ -217,13 +269,30 @@ def _lines(n, out, checks=None):
     operands = []
     info, attr, res = ops.parse(n.op)
     tag = n.name[1:]
+    if n.as_load:
+        # The load defines the operand of the hint.
+        x = n.args[0][1]
+        checks.append('gisynth::isExtLoadOf(MRI, ${x%d}.getReg(), '
+                      '/*Signed=*/%s, %d)' % (
+                          x, 'true' if info.name == 'G_ASSERT_SEXT'
+                          else 'false', attr))
+        out.append('(%s $x%d, $%s_ptr)' % (_EXT_LOAD[info.name], x, tag))
+        return out
+    if info.forwarded:
+        # The load and its pointer. The operand of the node is the value
+        # of a G_STORE, which no operand of the load has: the guard finds
+        # it (_forwarded).
+        checks.append('gisynth::getForwardedStoreValue(MRI, ${%s}.getReg(), '
+                      '%d).isValid()' % (tag, attr))
+        out.append('(%s %s, $%s_ptr)' % (info.name, n.name, tag))
+        return out
     for k, a in enumerate(n.args):
         if info.phi and k == 0:
             # The edge: no operand.
             continue
         if isinstance(a, _Node):
             _lines(a, out, checks)
-            operands.append(a.name)
+            operands.append('$x%d' % a.args[0][1] if a.as_load else a.name)
         else:
             operands.append('$x%d' % a[1])
         if info.phi:
@@ -288,11 +357,19 @@ def variants(rule):
         if sig in seen:
             continue
         seen.add(sig)
-        checks = []
-        pats = _lines(form, [], checks)
-        if checks:
-            pats.append('[{ return %s; }]' % ' && '.join(checks))
-        out.append(pats)
+        # A form with a load in the place of a hint has the instructions
+        # of the source without the hint. It is a rule only if the
+        # replacement has fewer instructions (a hint is no instruction),
+        # so that the rule makes the code smaller each time it applies.
+        loads = _load_forms(form) if not rule.get('region') and \
+            rule['cost']['replacement'] < rule['cost']['source'] else []
+        for f in [form] + loads:
+            checks = []
+            pats = _Pats(_lines(f, [], checks))
+            pats.subst = _load_subst(f)
+            if checks:
+                pats.append('[{ return %s; }]' % ' && '.join(checks))
+            out.append(pats)
     return out
 
 
@@ -325,7 +402,7 @@ def _rule_needs_cpp_apply(rule):
     tgt = ir.from_json(rule['replacement_json'])
     # A constant of a vector type is not a G_CONSTANT: the builder makes a
     # G_BUILD_VECTOR.
-    return bool(rule.get('region')) or \
+    return bool(rule.get('region')) or _forwarded(rule) is not None or \
         (lifts(rule) and (ir.is_lit(tgt) or
                           any(ir.is_lit(a) for n in ir.nodes(tgt)
                               for a in n[2:]))) or \
@@ -407,6 +484,27 @@ def _edge_vars(rule):
 def _pattern_vars(rule):
     sv = set(_sibling_vars(rule)) | _edge_vars(rule)
     return [i for i in range(len(rule['vw'])) if i not in sv]
+
+
+def _forwarded(rule):
+    """(variable, bits) if the root of the rule is a load that reads the
+    bits of the value of a G_STORE (OpInfo.forwarded): the variable is
+    that value. Else None."""
+    src = ir.from_json(rule['source_json'])
+    info, attr, _ = ops.parse(src[0])
+    if info.forwarded and ir.is_var(src[2]):
+        return src[2][1], attr
+    return None
+
+
+def _var_reg(rule, i):
+    """The C++ expression of the register of the variable ``i`` in a
+    match or apply fragment of the rule."""
+    fwd = _forwarded(rule)
+    if fwd and fwd[0] == i:
+        return 'gisynth::getForwardedStoreValue(MRI, ${dst}.getReg(), %d)' \
+            % fwd[1]
+    return '${x%d}.getReg()' % i
 
 
 def _sibling_results(b, vw):
@@ -961,7 +1059,10 @@ def _cpp_apply(rule):
 
     region_rule = bool(outs or sibs)
     if not region_rule:
-        walk(tgt, 'Dst', root_kind)
+        v = walk(tgt, 'Dst', root_kind)
+        if ir.is_var(tgt):
+            # The replacement of a load is the stored value.
+            body.append('  B.buildCopy(Dst, %s);' % v)
     params = ['MachineIRBuilder &B', 'MachineInstr &Root'] + \
         (['const RegionPlan &Plan'] if region_rule else []) + \
         ['Register %s' % p for p in _apply_params(rule)]
@@ -1037,6 +1138,13 @@ def why_not_emittable(rule):
         return 'a rule with several outputs has no G_PHI'
     for n in [src] + ir.interior_nodes(src):
         info = ops.parse(n[0])[0]
+        if info.forwarded:
+            # The guard finds the G_STORE of a root load, and its value
+            # is an input.
+            if n is not src or not ir.is_var(n[2]) or rule.get('region'):
+                return 'a load after a G_STORE is the root of a rule ' \
+                    'with one output, and the stored value is an input'
+            continue
         if info.shape not in ops._MATCH_SHAPES:
             return 'no match pattern for the shape %s' % info.shape
     # The guard reads a constant of the source with getIConstantVRegVal.
@@ -1132,7 +1240,7 @@ def emit_td(rules, sel):
         _, interior = _annotate(ir.from_json(r['source_json']))
         plan = ['${plan}'] if r.get('region') else []
         regs = ['${dst}.getReg()'] + \
-            ['${x%d}.getReg()' % i for i in _pattern_vars(r)] + \
+            [_var_reg(r, i) for i in _pattern_vars(r)] + \
             ['${t%d}.getReg()' % k for k in range(len(interior))]
         if _rule_needs_cpp_apply(r):
             apply_pats = ['[{ gisynth::%s(B, *${dst}.getParent(), %s); }]' % (
@@ -1145,6 +1253,12 @@ def emit_td(rules, sel):
         lines.append('//   if %s' % r['precondition'])
         names[r['id']] = record_names(r)
         for name, pats in zip(names[r['id']], variants(r)):
+            # A node that the form matches as a load has the register of
+            # the variable that the load defines.
+            def sub(text, subst=pats.subst):
+                for t, x in subst.items():
+                    text = re.sub(r'\$(\{?)%s\b' % t, r'$\g<1>%s' % x, text)
+                return text
             pats = list(pats)
             # A rule with siblings counts the users in its guard: a
             # sibling that the rule replaces is a user too.
@@ -1156,8 +1270,10 @@ def emit_td(rules, sel):
             lines.append('def %s : GICombineRule<' % name)
             lines.append('  (defs root:$dst%s),' % (
                 ', gisynth_region_plan:$plan' if plan else ''))
-            lines.append('  (match ' + ',\n         '.join(pats) + '),')
-            lines.append('  (apply ' + ',\n         '.join(apply_pats) + ')>;')
+            lines.append('  (match ' + ',\n         '.join(
+                sub(x) for x in pats) + '),')
+            lines.append('  (apply ' + ',\n         '.join(
+                sub(x) for x in apply_pats) + ')>;')
         lines.append('')
     for tname in sorted(sel):
         recs = [n for r in sel[tname] for n in names[r['id']]]

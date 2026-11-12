@@ -237,6 +237,18 @@ def build_mir(rule, example, name, target):
         registers ``args``. Returns the register of the result that ``e``
         is; ``kind`` is the kind of that result."""
         info, attr, res = ops.parse(e[0])
+        if info.forwarded:
+            # A G_STORE of the operand, then the load through the same
+            # pointer register.
+            pw = max(target.pointer_as)
+            ptr, phys = fn.arg(pw)
+            live.extend(phys)
+            ptr = fn.as_kind(ptr, pw, 'p')
+            mem = '(s%d), addrspace %d' % (attr, target.pointer_as[pw])
+            fn.lines.append('    G_STORE %s, %s :: (store %s)' % (
+                args[0], ptr, mem))
+            return fn.emit(e[1], '%s %s :: (load %s)' % (
+                info.name, ptr, mem), kind)
         # The attribute of the operator is an operand of the instruction.
         if info.attr == 'pred':
             text = '%s %spred(%s), %s' % (

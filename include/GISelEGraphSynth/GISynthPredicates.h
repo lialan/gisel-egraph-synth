@@ -22,6 +22,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
+#include "llvm/CodeGen/GlobalISel/GenericMachineInstrs.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
@@ -253,6 +254,101 @@ bool isStablePhi(const MachineRegisterInfo &MRI, const HelperT &Helper,
                     [&](const MachineInstr &DefMI, const MachineInstr &UseMI) {
                       return Helper.dominates(DefMI, UseMI);
                     });
+}
+
+/// The largest number of instructions between a load and the G_STORE whose
+/// value a rule takes for the load.
+constexpr unsigned MaxForwardDistance = 32;
+
+/// True if \p MI can change the content of memory, or if what it does is
+/// not known. The synthesizer has no list of the opcodes that write memory:
+/// each store, atomic operation, memory intrinsic, call and instruction
+/// with other effects has one of these properties.
+inline bool mayWriteMemory(const MachineInstr &MI) {
+  return MI.mayStore() || MI.isCall() || MI.hasUnmodeledSideEffects() ||
+         MI.isInlineAsm();
+}
+
+/// The number of bits that the load or store \p MI reads or writes, or 0
+/// if the number is not fixed.
+inline unsigned getFixedMemBits(const GMemOperation &MI) {
+  LocationSize Size = MI.getMemSizeInBits();
+  if (!Size.hasValue() || Size.isScalable())
+    return 0;
+  return Size.getValue().getFixedValue();
+}
+
+/// The value operand of the G_STORE whose bits the load that defines
+/// \p LoadDst reads, or no register. The load is a G_LOAD, G_ZEXTLOAD or
+/// G_SEXTLOAD of \p MemBits bits. The G_STORE is the nearest instruction
+/// before the load, in the block of the load, that can write memory
+/// (mayWriteMemory); it writes \p MemBits bits through the pointer
+/// register of the load, so the memory that the load reads has the low
+/// \p MemBits bits of the value. The two instructions are not volatile and
+/// not atomic. (A load that races with a write of another thread has an
+/// undefined result, so each value is a correct result for it.)
+///
+/// The result of the load and the value are integers (the value has at
+/// least \p MemBits bits; the result of a G_LOAD has \p MemBits bits and
+/// the result of an extending load has more), or the load is a G_LOAD and
+/// they have the same floating-point type or the same pointer type. The
+/// lanes of a vector in memory have no model.
+inline Register getForwardedStoreValue(const MachineRegisterInfo &MRI,
+                                       Register LoadDst, unsigned MemBits) {
+  const auto *Load = dyn_cast_or_null<GAnyLoad>(MRI.getVRegDef(LoadDst));
+  if (!Load || isa<GFPExtLoad>(Load) || !Load->isSimple() || MemBits == 0 ||
+      getFixedMemBits(*Load) != MemBits)
+    return Register();
+  LLT DstTy = MRI.getType(LoadDst);
+  bool IsExt = Load->getOpcode() != TargetOpcode::G_LOAD;
+  if (!DstTy.isValid() || DstTy.isVector() ||
+      (IsExt ? DstTy.getSizeInBits() <= MemBits
+             : DstTy.getSizeInBits() != MemBits))
+    return Register();
+  const MachineBasicBlock &MBB = *Load->getParent();
+  unsigned Distance = 0;
+  for (MachineBasicBlock::const_iterator I = Load->getIterator(),
+                                         B = MBB.begin();
+       I != B;) {
+    --I;
+    if (++Distance > MaxForwardDistance)
+      return Register();
+    if (!mayWriteMemory(*I))
+      continue;
+    // The nearest instruction that writes memory.
+    const auto *Store = dyn_cast<GStore>(&*I);
+    if (!Store || !Store->isSimple() ||
+        Store->getPointerReg() != Load->getPointerReg() ||
+        getFixedMemBits(*Store) != MemBits)
+      return Register();
+    Register Value = Store->getValueReg();
+    LLT Ty = MRI.getType(Value);
+    if (!Value.isVirtual() || !Ty.isValid() || Ty.isVector() ||
+        Ty.getSizeInBits() < MemBits)
+      return Register();
+    auto IsInteger = [](LLT T) { return T.isScalar() && !T.isFloat(); };
+    if (!IsInteger(DstTy) || !IsInteger(Ty)) {
+      // The same value, not the bits of a value of another type.
+      if (IsExt || DstTy != Ty)
+        return Register();
+    }
+    return Value;
+  }
+  return Register();
+}
+
+/// True if the definition of \p Reg is a G_ZEXTLOAD (or, with \p Signed, a
+/// G_SEXTLOAD) of \p MemBits bits: the value is the zero (sign) extension
+/// of its low \p MemBits bits. A rule matches such a load in the place of
+/// a G_ASSERT_ZEXT (G_ASSERT_SEXT) of its result.
+inline bool isExtLoadOf(const MachineRegisterInfo &MRI, Register Reg,
+                        bool Signed, unsigned MemBits) {
+  const MachineInstr *Def = MRI.getVRegDef(Reg);
+  unsigned Opc = Signed ? TargetOpcode::G_SEXTLOAD : TargetOpcode::G_ZEXTLOAD;
+  LLT Ty = MRI.getType(Reg);
+  return Def && Def->getOpcode() == Opc && Ty.isScalar() && MemBits != 0 &&
+         MemBits < Ty.getSizeInBits() &&
+         getFixedMemBits(cast<GMemOperation>(*Def)) == MemBits;
 }
 
 /// A rule for a region with several outputs replaces the root and, with it,

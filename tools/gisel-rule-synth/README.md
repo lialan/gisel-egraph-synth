@@ -233,7 +233,13 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
    only if each incoming value is a virtual register whose definition is
    in a block that properly dominates the block of the `G_PHI`, and it has
    at most 4 incoming values; its first argument in the tree is the edge
-   that the control flow took, which no register has. The values of a
+   that the control flow took, which no register has. A load is the root
+   of a tree only if a `G_STORE` before it wrote the bits that it reads
+   (see the memory model below): its operand in the tree is the stored
+   value, and its immediate is the number of bits of the memory. The
+   result of each other load is an input; for a `G_ZEXTLOAD` or
+   `G_SEXTLOAD` the tree can have a `G_ASSERT_ZEXT` or `G_ASSERT_SEXT`
+   node above that input (`"load": true`). The values of a
    tree are scalars, pointers, and fixed vectors of them with at most 16
    lanes (`-gisel-synth-corpus-max-lanes`); a vector node has the width of
    a lane (`w`) and the number of lanes (`lanes`), and a
@@ -734,6 +740,42 @@ every disjunct of `P` and for the emitted disjunction as a whole.
   - A rule whose root is a `G_PHI` is emitted only if its replacement is
     an input (a new instruction at that position is before the other
     `G_PHI` of the block). A rule with several outputs has no `G_PHI`.
+- Memory has no state in a proof. The model has the two facts about
+  memory that one block gives without an analysis of addresses:
+  - A load after a store. `gisynth::getForwardedStoreValue` finds, for a
+    `G_LOAD`, `G_ZEXTLOAD` or `G_SEXTLOAD` of N bits, the nearest
+    instruction before it in its block that can write memory
+    (`gisynth::mayWriteMemory`: an instruction that can store, a call, an
+    instruction with other effects, at most 32 instructions before the
+    load). If that instruction is a `G_STORE` of N bits through the same
+    pointer register, and the two instructions are not volatile and not
+    atomic, the load reads the low N bits of the stored value. The load
+    is then an operator on that value: `G_LOAD:N` is the low N bits,
+    `G_ZEXTLOAD:N` and `G_SEXTLOAD:N` are their extension. A rule with
+    such a load as its root matches the load, its guard finds the
+    `G_STORE`, and the replacement is built from the stored value. The
+    load and the value are integers, or the load is a `G_LOAD` and they
+    have the same floating-point or pointer type.
+  - The result of a `G_ZEXTLOAD` (`G_SEXTLOAD`) of N bits is the zero
+    (sign) extension of its low N bits, which is the fact of a
+    `G_ASSERT_ZEXT` (`G_ASSERT_SEXT`). A rule that removes an instruction
+    and has such a hint in its source also gets a pattern with the load
+    in the place of the hint (`gisynth::isExtLoadOf`).
+  - Limits. A rule does not create a load. A load below the root of a
+    tree, a `G_LOAD` whose result is wider than its memory (the high bits
+    are not specified), a vector in memory, a store in another block and
+    a store through another pointer register give no value. A rule for a
+    pointer needs an operator on pointers in its source, so the load of
+    a pointer after a store is extracted but its rule applies to
+    integers and floating-point values only.
+  - Each other instruction that reads or writes memory (`G_STORE`,
+    `G_FPTRUNCSTORE`, `G_FPEXTLOAD`, the indexed loads and stores, the
+    `G_ATOMIC_CMPXCHG*` and `G_ATOMICRMW_*` instructions, `G_MEMCPY`,
+    `G_MEMMOVE`, `G_MEMSET`, `G_BZERO` and their inline forms) is no
+    operator of a tree. A result of one of them is an input, and a load
+    takes no value across one of them. The registry lists them with this
+    reason (`capabilities`). A rule never moves, copies or removes one of
+    them, and it removes a load only if the load is its root.
 - `G_MERGE_VALUES` and `G_UNMERGE_VALUES` of scalars are the concatenation
   and the parts of the bits. A rule matches and builds a merge. It matches
   an unmerge below the root and does not build one.

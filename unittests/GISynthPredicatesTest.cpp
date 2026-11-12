@@ -511,4 +511,148 @@ TEST_F(AArch64GISelMITest, StablePhiInputs) {
       hasStablePhiInputs(*MRI, *findOpcode(*MF, TargetOpcode::G_PHI), Never));
 }
 
+TEST_F(AArch64GISelMITest, ForwardedStoreValue) {
+  StringRef MIRString =
+      "  %3:_(p0) = G_INTTOPTR %0(s64)\n"
+      "  %4:_(p0) = G_INTTOPTR %1(s64)\n"
+      "  G_STORE %2(s64), %3(p0) :: (store (s64))\n"
+      "  %5:_(s64) = G_ADD %0, %1\n"
+      "  %6:_(s64) = G_LOAD %3(p0) :: (load (s64))\n"
+      "  G_STORE %2(s64), %3(p0) :: (store (s8))\n"
+      "  %7:_(s64) = G_ZEXTLOAD %3(p0) :: (load (s8))\n"
+      "  %8:_(s64) = G_SEXTLOAD %3(p0) :: (load (s8))\n"
+      "  %9:_(s8) = G_LOAD %3(p0) :: (load (s8))\n"
+      "  %10:_(s64) = G_ZEXTLOAD %3(p0) :: (load (s16))\n"
+      "  G_STORE %2(s64), %3(p0) :: (store (s64))\n"
+      "  G_STORE %2(s64), %4(p0) :: (store (s64))\n"
+      "  %11:_(s64) = G_LOAD %3(p0) :: (load (s64))\n"
+      "  G_STORE %2(s64), %3(p0) :: (volatile store (s64))\n"
+      "  %12:_(s64) = G_LOAD %3(p0) :: (load (s64))\n"
+      "  G_STORE %2(s64), %3(p0) :: (store (s64))\n"
+      "  %13:_(s64) = G_LOAD %3(p0) :: (volatile load (s64))\n"
+      "  %14:_(s64) = G_LOAD %3(p0) :: (load seq_cst (s64))\n"
+      "  %15:_(p0) = G_LOAD %3(p0) :: (load (p0))\n"
+      "  %16:_(s64) = G_ATOMICRMW_ADD %4(p0), %0 :: (load store seq_cst "
+      "(s64))\n"
+      "  %17:_(s64) = G_LOAD %3(p0) :: (load (s64))\n"
+      "  G_STORE %3(p0), %4(p0) :: (store (p0))\n"
+      "  %18:_(p0) = G_LOAD %4(p0) :: (load (p0))\n"
+      "  %19:_(s64) = G_LOAD %4(p0) :: (load (s64))\n";
+  setUp(MIRString);
+  if (!TM)
+    GTEST_SKIP();
+  auto Dst = [&](unsigned Opc, unsigned Skip) {
+    return findOpcode(*MF, Opc, Skip)->getOperand(0).getReg();
+  };
+  auto Load = [&](unsigned Skip) { return Dst(TargetOpcode::G_LOAD, Skip); };
+  Register Ptr = Dst(TargetOpcode::G_INTTOPTR, 0);
+  Register ZExt8 = Dst(TargetOpcode::G_ZEXTLOAD, 0);
+  Register SExt8 = Dst(TargetOpcode::G_SEXTLOAD, 0);
+  Register ZExt16 = Dst(TargetOpcode::G_ZEXTLOAD, 1);
+
+  // %6: a G_ADD between the G_STORE and the load does not write memory.
+  EXPECT_EQ(getForwardedStoreValue(*MRI, Load(0), 64), Copies[2]);
+  // Not the number of bits of the load.
+  EXPECT_FALSE(getForwardedStoreValue(*MRI, Load(0), 32).isValid());
+  EXPECT_FALSE(getForwardedStoreValue(*MRI, Load(0), 0).isValid());
+  // %7, %8, %9: the low 8 bits of a wider value.
+  EXPECT_EQ(getForwardedStoreValue(*MRI, ZExt8, 8), Copies[2]);
+  EXPECT_EQ(getForwardedStoreValue(*MRI, SExt8, 8), Copies[2]);
+  EXPECT_EQ(getForwardedStoreValue(*MRI, Load(1), 8), Copies[2]);
+  // %10: the G_STORE wrote 8 bits and the load reads 16 bits.
+  EXPECT_FALSE(getForwardedStoreValue(*MRI, ZExt16, 16).isValid());
+  // %11: the nearest G_STORE has another pointer register.
+  EXPECT_FALSE(getForwardedStoreValue(*MRI, Load(2), 64).isValid());
+  // %12: a volatile G_STORE.
+  EXPECT_FALSE(getForwardedStoreValue(*MRI, Load(3), 64).isValid());
+  // %13, %14: a volatile load and an atomic load.
+  EXPECT_FALSE(getForwardedStoreValue(*MRI, Load(4), 64).isValid());
+  EXPECT_FALSE(getForwardedStoreValue(*MRI, Load(5), 64).isValid());
+  // %15: the bits of an integer are not a pointer.
+  EXPECT_FALSE(getForwardedStoreValue(*MRI, Load(6), 64).isValid());
+  // %17: an atomic read-modify-write is nearer than the G_STORE.
+  EXPECT_FALSE(getForwardedStoreValue(*MRI, Load(7), 64).isValid());
+  // %18: a pointer of the same type.
+  EXPECT_EQ(getForwardedStoreValue(*MRI, Load(8), 64), Ptr);
+  // %19: the bits of a pointer are not an integer.
+  EXPECT_FALSE(getForwardedStoreValue(*MRI, Load(9), 64).isValid());
+  // Not a load.
+  EXPECT_FALSE(getForwardedStoreValue(*MRI, Copies[0], 64).isValid());
+}
+
+TEST_F(AArch64GISelMITest, ForwardedStoreValueDistance) {
+  // MaxForwardDistance instructions is the limit: the G_STORE is the
+  // instruction number MaxForwardDistance before the first load, and one
+  // more before the second load.
+  std::string MIRString = "  %3:_(p0) = G_INTTOPTR %0(s64)\n"
+                          "  G_STORE %2(s64), %3(p0) :: (store (s64))\n";
+  for (unsigned I = 0; I + 1 < MaxForwardDistance; ++I)
+    MIRString += "  %" + std::to_string(10 + I) + ":_(s64) = G_ADD %0, %1\n";
+  MIRString += "  %4:_(s64) = G_LOAD %3(p0) :: (load (s64))\n"
+               "  %5:_(s64) = G_LOAD %3(p0) :: (load (s64))\n";
+  setUp(MIRString);
+  if (!TM)
+    GTEST_SKIP();
+  Register First =
+      findOpcode(*MF, TargetOpcode::G_LOAD, 0)->getOperand(0).getReg();
+  Register Second =
+      findOpcode(*MF, TargetOpcode::G_LOAD, 1)->getOperand(0).getReg();
+  EXPECT_EQ(getForwardedStoreValue(*MRI, First, 64), Copies[2]);
+  EXPECT_FALSE(getForwardedStoreValue(*MRI, Second, 64).isValid());
+}
+
+TEST_F(AArch64GISelMITest, ExtLoadFact) {
+  setUp("  %3:_(p0) = G_INTTOPTR %0(s64)\n"
+        "  %4:_(s64) = G_ZEXTLOAD %3(p0) :: (load (s8))\n"
+        "  %5:_(s64) = G_SEXTLOAD %3(p0) :: (load (s16))\n"
+        "  %6:_(s64) = G_LOAD %3(p0) :: (load (s64))\n");
+  if (!TM)
+    GTEST_SKIP();
+  auto Dst = [&](unsigned Opc) {
+    return findOpcode(*MF, Opc)->getOperand(0).getReg();
+  };
+  Register ZExt = Dst(TargetOpcode::G_ZEXTLOAD);
+  Register SExt = Dst(TargetOpcode::G_SEXTLOAD);
+  EXPECT_TRUE(isExtLoadOf(*MRI, ZExt, /*Signed=*/false, 8));
+  EXPECT_FALSE(isExtLoadOf(*MRI, ZExt, /*Signed=*/true, 8));
+  EXPECT_FALSE(isExtLoadOf(*MRI, ZExt, /*Signed=*/false, 16));
+  EXPECT_TRUE(isExtLoadOf(*MRI, SExt, /*Signed=*/true, 16));
+  EXPECT_FALSE(isExtLoadOf(*MRI, SExt, /*Signed=*/false, 16));
+  EXPECT_FALSE(isExtLoadOf(*MRI, SExt, /*Signed=*/true, 0));
+  // A G_LOAD and a value that no load defines.
+  EXPECT_FALSE(isExtLoadOf(*MRI, Dst(TargetOpcode::G_LOAD), false, 64));
+  EXPECT_FALSE(isExtLoadOf(*MRI, Copies[0], false, 8));
+}
+
+TEST_F(AArch64GISelMITest, MayWriteMemory) {
+  setUp("  %3:_(p0) = G_INTTOPTR %0(s64)\n"
+        "  %4:_(p0) = G_INTTOPTR %1(s64)\n"
+        "  %5:_(s64) = G_LOAD %3(p0) :: (load (s64))\n"
+        "  %6:_(s64) = G_ADD %0, %1\n"
+        "  G_STORE %2(s64), %3(p0) :: (store (s64))\n"
+        "  %7:_(s64) = G_ATOMICRMW_XCHG %3(p0), %0 :: (load store seq_cst "
+        "(s64))\n"
+        "  %8:_(s64) = G_ATOMIC_CMPXCHG %3(p0), %0, %1 :: (load store seq_cst "
+        "seq_cst (s64))\n"
+        "  G_MEMCPY %3(p0), %4(p0), %0(s64), 0 :: (store (s8)), (load (s8))\n"
+        "  %9:_(s8) = G_TRUNC %2(s64)\n"
+        "  G_MEMSET %3(p0), %9(s8), %0(s64), 0 :: (store (s8))\n"
+        "  G_FENCE 7, 1\n");
+  if (!TM)
+    GTEST_SKIP();
+  auto Writes = [&](unsigned Opc) {
+    return mayWriteMemory(*findOpcode(*MF, Opc));
+  };
+  EXPECT_FALSE(Writes(TargetOpcode::G_INTTOPTR));
+  EXPECT_FALSE(Writes(TargetOpcode::G_LOAD));
+  EXPECT_FALSE(Writes(TargetOpcode::G_ADD));
+  EXPECT_TRUE(Writes(TargetOpcode::G_STORE));
+  EXPECT_TRUE(Writes(TargetOpcode::G_ATOMICRMW_XCHG));
+  EXPECT_TRUE(Writes(TargetOpcode::G_ATOMIC_CMPXCHG));
+  EXPECT_TRUE(Writes(TargetOpcode::G_MEMCPY));
+  EXPECT_TRUE(Writes(TargetOpcode::G_MEMSET));
+  // What a G_FENCE does is not a property of its operands.
+  EXPECT_TRUE(Writes(TargetOpcode::G_FENCE));
+}
+
 } // namespace

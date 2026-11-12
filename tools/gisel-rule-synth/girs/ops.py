@@ -213,6 +213,12 @@ class OpInfo:
         # for each edge, and a replacement and a precondition do not read
         # it (ir.edge_vars).
         self.phi = False
+        # A load whose bits the G_STORE before it wrote: the operand is
+        # the value of that G_STORE, and the immediate is the number of
+        # bits of the memory. No register operand of the load has the
+        # value: the guard of a rule finds the G_STORE
+        # (gisynth::getForwardedStoreValue).
+        self.forwarded = False
         # (kind of each operand, kind of the result) of a vector
         # operator: 'v' (the kind of the lanes of the vector), 'i' or 'f'.
         # One operand kind stands for each operand if their number is not
@@ -274,7 +280,7 @@ class OpInfo:
                 return None
             return vk.pop() if rrole == 'v' and vk else \
                 (None if rrole == 'v' else rrole)
-        if self.freeze:
+        if self.freeze or self.forwarded:
             return ks[0]
         if self.phi:
             # The kind of the incoming values.
@@ -1888,6 +1894,91 @@ def _load_generic():
 
 
 _load_generic()
+
+
+# A load after a G_STORE through the same pointer register, with no
+# instruction between them that can write memory, reads the low bits of
+# the stored value (OpInfo.forwarded). G_LOAD has these bits, G_ZEXTLOAD
+# and G_SEXTLOAD have their extension. A load is not an operator of the
+# table of the compiler: its other form, without a known G_STORE, is an
+# input (and an extending load is an input with the fact of a
+# G_ASSERT_ZEXT or G_ASSERT_SEXT; the corpus extractor writes it so).
+LOADS = ('G_LOAD', 'G_ZEXTLOAD', 'G_SEXTLOAD')
+
+
+def _load_memory():
+    def tc(extends):
+        def check(w, ws, attr, res):
+            if not all(isinstance(t, int) for t in [w] + list(ws)):
+                return False
+            if len(ws) != 1 or res != 0 or not attr or ws[0] < attr:
+                return False
+            return w > attr if extends else w == attr
+        return check
+
+    def ev(signed):
+        def e(w, ws, at, r, v):
+            low = v[0] & mask(at)
+            return sx(low, at) & mask(w) if signed else low
+        return e
+
+    def sm(signed):
+        def s(w, ws, at, r, x):
+            low = z3.Extract(at - 1, 0, x[0])
+            if w == at:
+                return low, None, None
+            ext = z3.SignExt if signed else z3.ZeroExt
+            return ext(w - at, low), None, None
+        return s
+
+    for name in LOADS:
+        info = OpInfo(name, 'load', 1, 1, 'imm', cost=2,
+                      meta={'name': name, 'shape': 'load', 'operands': 1})
+        info.forwarded = True
+        info.lanewise = False
+        info.typecheck = tc(name != 'G_LOAD')
+        info.eval = ev(name == 'G_SEXTLOAD')
+        info.smt = sm(name == 'G_SEXTLOAD')
+        info.unsupported['emit'] = \
+            'a rule can match a load after a G_STORE but does not create ' \
+            'a load'
+        register(info)
+    # The other instructions that read or write memory are not operators
+    # of a tree. A result of one of them is an input, and a load does not
+    # take the value of a G_STORE that is before one of them
+    # (gisynth::mayWriteMemory).
+    for names, why in ((MEMORY_WRITERS, _WRITES_MEMORY),
+                       (MEMORY_READERS, _READS_MEMORY)):
+        for name in names:
+            info = OpInfo(name, 'effect', None, 0, None,
+                          meta={'name': name, 'shape': 'effect',
+                                'operands': -1})
+            info.lanewise = False
+            for st in STAGES[1:]:
+                info.unsupported[st] = why
+            register(info)
+
+
+# Without a value in a register.
+MEMORY_WRITERS = (
+    'G_STORE', 'G_FPTRUNCSTORE', 'G_MEMCPY', 'G_MEMCPY_INLINE', 'G_MEMMOVE',
+    'G_MEMSET', 'G_MEMSET_INLINE', 'G_BZERO')
+# With a value: what the memory had.
+MEMORY_READERS = (
+    'G_FPEXTLOAD', 'G_INDEXED_LOAD', 'G_INDEXED_SEXTLOAD',
+    'G_INDEXED_ZEXTLOAD', 'G_INDEXED_STORE', 'G_ATOMIC_CMPXCHG',
+    'G_ATOMIC_CMPXCHG_WITH_SUCCESS') + tuple(
+        'G_ATOMICRMW_' + n for n in (
+            'XCHG', 'ADD', 'SUB', 'AND', 'NAND', 'OR', 'XOR', 'MAX', 'MIN',
+            'UMAX', 'UMIN', 'FADD', 'FSUB', 'FMAX', 'FMIN', 'FMAXIMUM',
+            'FMINIMUM', 'FMAXIMUMNUM', 'FMINIMUMNUM', 'UINC_WRAP',
+            'UDEC_WRAP', 'USUB_COND', 'USUB_SAT'))
+_WRITES_MEMORY = 'the instruction writes memory and has no value: it ' \
+    'is no node of a tree'
+_READS_MEMORY = 'the value is what the memory has: it is an input of a ' \
+    'tree'
+
+_load_memory()
 
 
 def capability(info, stage):

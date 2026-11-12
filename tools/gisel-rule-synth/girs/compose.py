@@ -194,6 +194,9 @@ class Index:
         if ir.phi_nodes(ir.from_json(rule['source_json'])):
             # The edge of a G_PHI is not a value of an expression.
             return
+        if ir.has_forwarded_load(ir.from_json(rule['source_json'])):
+            # A load after a G_STORE is the root of a tree only.
+            return
         if rule['id'] in self.ids or synth.widened_width(
                 ir.from_json(rule['source_json']),
                 ir.from_json(rule['replacement_json'])) > self.widen_bits:

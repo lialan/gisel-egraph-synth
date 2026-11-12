@@ -333,6 +333,14 @@ def phi_nodes(e, out=None):
     return out
 
 
+def has_forwarded_load(e):
+    """True if ``e`` has a load that reads the value of a G_STORE
+    (OpInfo.forwarded)."""
+    return is_op(e) and (
+        (ops.known(e[0]) and ops.parse(e[0])[0].forwarded) or
+        any(has_forwarded_load(a) for a in e[2:]))
+
+
 def edge_vars(e):
     """The variables of ``e`` that are the edge of a G_PHI (OpInfo.phi).
     No register has their value: a pattern does not match them, and a

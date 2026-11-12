@@ -20,6 +20,7 @@
 #include "llvm/CodeGen/GlobalISel/GIEGraph.h"
 #include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
 #include "llvm/CodeGen/GlobalISel/GISynthPredicates.h"
+#include "llvm/CodeGen/GlobalISel/GenericMachineInstrs.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
 #include "llvm/CodeGen/MachineDominators.h"
@@ -206,7 +207,24 @@ struct TreeNode {
   const MachineInstr *MI = nullptr;
   Register Reg;
   SmallVector<unsigned, 2> Args; // indices into the owning Tree's Nodes.
+  /// MI is a load, and the operand of the node is the value of the G_STORE
+  /// whose bits the load reads (gisynth::getForwardedStoreValue). A load
+  /// without this flag is a fact about its own result.
+  bool Forwarded = false;
 };
+
+/// The number of bits that the G_ZEXTLOAD or G_SEXTLOAD that defines \p R
+/// reads, or 0: the result is the extension of these bits, which is the
+/// fact of a G_ASSERT_ZEXT or G_ASSERT_SEXT.
+unsigned getExtLoadBits(const MachineRegisterInfo &MRI, Register R) {
+  const MachineInstr *Def = MRI.getVRegDef(R);
+  if (!Def || (Def->getOpcode() != TargetOpcode::G_ZEXTLOAD &&
+               Def->getOpcode() != TargetOpcode::G_SEXTLOAD))
+    return 0;
+  unsigned Bits = gisynth::getFixedMemBits(cast<GMemOperation>(*Def));
+  bool Signed = Def->getOpcode() == TargetOpcode::G_SEXTLOAD;
+  return gisynth::isExtLoadOf(MRI, R, Signed, Bits) ? Bits : 0;
+}
 
 struct Tree {
   SmallVector<TreeNode, 8> Nodes; // Nodes.back() is the root.
@@ -240,6 +258,16 @@ public:
     if (Depth == 0)
       return Out;
     const MachineInstr *Def = MRI.getVRegDef(R);
+    if (getExtLoadBits(MRI, R) != 0 &&
+        isSupportedValue(MRI, Def->getMF()->getDataLayout(), R)) {
+      // The result of an extending load is an input with the fact that it
+      // is an extension. The fact is a node, like a hint, with the result
+      // as its operand.
+      Tree T = Out.front();
+      T.Nodes.push_back({Def, R, {0}});
+      Out.push_back(std::move(T));
+      return Out;
+    }
     if (!Def || Def->getParent() != &MBB || !isNode(*Def))
       return Out;
 
@@ -281,6 +309,25 @@ public:
         break;
     }
     return Out;
+  }
+
+  /// Writes the tree of the load \p Load whose bits a G_STORE before it
+  /// wrote: the load with the stored value as its operand.
+  void writeForwardedLoad(raw_ostream &OS, const MachineFunction &MF,
+                          const GAnyLoad &Load) const {
+    Register Dst = Load.getDstReg();
+    unsigned Bits = gisynth::getFixedMemBits(Load);
+    Register Value = gisynth::getForwardedStoreValue(MRI, Dst, Bits);
+    if (!Value.isValid())
+      return;
+    // The helper gives a value only with the types of the model.
+    const DataLayout &DL = MF.getDataLayout();
+    if (!isSupportedValue(MRI, DL, Dst) || !isSupportedValue(MRI, DL, Value))
+      return;
+    Tree T;
+    T.Nodes.push_back({nullptr, Value, {}});
+    T.Nodes.push_back({&Load, Dst, {0}, /*Forwarded=*/true});
+    write(OS, MF, T);
   }
 
   void write(raw_ostream &OS, const MachineFunction &MF, const Tree &T) const {
@@ -370,12 +417,26 @@ private:
         J.attribute("in", InputIdx.lookup(N.Reg));
         return;
       }
-      J.attribute("op", opcodeName(N.MI));
+      const egraph::OpProperties *P = getSupportedOp(N.MI->getOpcode());
+      if (const auto *Load = dyn_cast<GAnyLoad>(N.MI)) {
+        // A load that reads the bits of its operand, or the fact that the
+        // result of an extending load is an extension.
+        if (N.Forwarded)
+          J.attribute("op", opcodeName(N.MI));
+        else
+          J.attribute("op", N.MI->getOpcode() == TargetOpcode::G_SEXTLOAD
+                                ? "G_ASSERT_SEXT"
+                                : "G_ASSERT_ZEXT");
+        J.attribute("imm",
+                    static_cast<int64_t>(gisynth::getFixedMemBits(*Load)));
+        if (!N.Forwarded)
+          J.attribute("load", true);
+      } else
+        J.attribute("op", opcodeName(N.MI));
       // The attribute of the operator, and the index of the result if the
       // instruction has several results.
-      const egraph::OpProperties *P = getSupportedOp(N.MI->getOpcode());
       if (!P) {
-        // A G_PHI: no attribute and one result.
+        // A G_PHI or a load: no other attribute and one result.
       } else if (P->Shape == egraph::OpShape::Compare)
         J.attribute("pred", egraph::getComparePredicateName(
                                 N.MI->getOperand(1).getPredicate()));
@@ -588,6 +649,10 @@ bool GISynthCorpusExtractor::runOnMachineFunction(MachineFunction &MF) {
   for (const MachineBasicBlock &MBB : MF) {
     Extractor E(MRI, VT, MDT, MBB);
     for (const MachineInstr &MI : MBB) {
+      if (const auto *Load = dyn_cast<GAnyLoad>(&MI)) {
+        E.writeForwardedLoad(OS, MF, *Load);
+        continue;
+      }
       // An instruction without operands and a hint are nodes of a tree,
       // not roots: no replacement is better than they are.
       if (!E.isNode(MI) || isHint(MI.getOpcode()) ||

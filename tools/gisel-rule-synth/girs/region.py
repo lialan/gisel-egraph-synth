@@ -442,9 +442,10 @@ def extend(sy, pending, backend, limits, ctx):
                 base.get('const_vars') or not base['disjuncts'] or \
                 base['class'] not in ('reduces_cost', 'equal_cost') or \
                 ir.repeated_freeze(inst.expr) or \
-                ir.phi_nodes(inst.expr):
-            # (A rule with several outputs has no G_PHI; see
-            # sibling.freeze_ok.)
+                ir.phi_nodes(inst.expr) or \
+                ir.has_forwarded_load(inst.expr):
+            # (A rule with several outputs has no G_PHI and no load after
+            # a G_STORE; see sibling.freeze_ok.)
             continue
         stats['instances'] += 1
         outs, others = [], []
