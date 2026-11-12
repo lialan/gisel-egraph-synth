@@ -1,0 +1,17 @@
+tools/gisel-rule-synth/eval/views-corpus/add3_consts_div.ll
+tools/gisel-rule-synth/eval/views-corpus/add3_consts_uniform.ll
+tools/gisel-rule-synth/eval/views-corpus/add3_shared_inner.ll
+tools/gisel-rule-synth/eval/views-corpus/add_chain4.ll
+tools/gisel-rule-synth/eval/views-corpus/facts_even_plus_one.ll
+tools/gisel-rule-synth/eval/views-corpus/facts_high_byte.ll
+tools/gisel-rule-synth/eval/views-corpus/i64_consts.ll
+tools/gisel-rule-synth/eval/views-corpus/linear_cancel.ll
+tools/gisel-rule-synth/eval/views-corpus/linear_mixed.ll
+tools/gisel-rule-synth/eval/views-corpus/linear_shift_add.ll
+tools/gisel-rule-synth/eval/views-corpus/slice_byte.ll
+tools/gisel-rule-synth/eval/views-corpus/slice_nested.ll
+tools/gisel-rule-synth/eval/views-corpus/slice_sext.ll
+tools/gisel-rule-synth/eval/views-corpus/slice_trunc_zext.ll
+tools/gisel-rule-synth/eval/views-corpus/uaddo_both.ll
+tools/gisel-rule-synth/eval/views-corpus/uaddo_sum_only.ll
+tools/gisel-rule-synth/eval/views-corpus/vector_consts.ll

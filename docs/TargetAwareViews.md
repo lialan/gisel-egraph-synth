@@ -97,9 +97,14 @@ precondition as a property of the values:
 
 | Rule | Precondition |
 |---|---|
-| `add-disjoint-to-or`, `or-disjoint-to-add`, `xor-disjoint-to-or` | no bit is one in both operands |
+| `add-disjoint-to-or`, `xor-disjoint-to-or` | no bit is one in both operands |
 | `and-mask-of-known-zeros` (`a & c -> a`) | every bit of `a` outside of `c` is zero |
 | `or-mask-of-known-ones` (`a \| c -> a`) | every bit of `c` is one in `a` |
+
+There is no `or-disjoint-to-add`: it fed bit operations into the arithmetic
+rules, which replaced the shifts and ors that the AMDGPU selector fuses
+(`v_lshl_or_b32`, `v_or3_b32`) by a multiplication; on the validation corpus
+the facts then cost 45 instructions instead of saving any.
 
 A class whose bits are all known is related to that constant
 (`known-constants`): merged if it is never poison, refined otherwise.
