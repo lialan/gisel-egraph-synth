@@ -134,14 +134,15 @@ class CombinerLoop(RuntimeError):
 
 
 def run_combiner(llc, target, mir, synth=False, disabled=(), timeout=30):
-    """Runs the target's pre-legalizer combiner on MIR text. Returns the
+    """Runs the target's pre-legalizer combiner on MIR text, and with
+    ``synth`` the combiner of the synthesized rules after it. Returns the
     output MIR. Raises RuntimeError if llc fails, and CombinerLoop if it
     does not end in ``timeout`` seconds: a rule that loops with another combine makes the
     combiner run without end, and its memory grows all the time."""
-    cmd = [llc] + target.triple_flags + ['-run-pass=' + target.combiner,
+    passes = target.combiner + (',' + target.synth_pass if synth else '')
+    cmd = [llc] + target.triple_flags + ['-run-pass=' + passes,
                                          '-verify-machineinstrs']
     if synth:
-        cmd.append(target.enable_flag)
         if disabled:
             cmd.append(target.disable_rule_flag + ','.join(disabled))
     cmd += ['-x', 'mir', '-', '-o', '-']

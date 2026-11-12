@@ -25,8 +25,7 @@ cli = importlib.util.module_from_spec(spec)
 sys.modules['gi_rule_synth'] = cli
 spec.loader.exec_module(cli)
 
-LLC = os.environ.get('GIRS_LLC') or os.path.join(
-    os.path.dirname(cli.LLVM), 'build', 'bin', 'llc')
+LLC = os.environ.get('GIRS_LLC') or cli.paths.llc()
 HAVE_LLC = os.path.exists(LLC)
 
 CHAIN_MIR = '''---

@@ -1,4 +1,4 @@
-//===- llvm/CodeGen/GlobalISel/GIEGraph.h - Typed e-graph for gMIR -*- C++ -*-//
+//===- GISelEGraphSynth/GIEGraph.h - Typed e-graph for gMIR -*- C++ -*-//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -30,12 +30,12 @@
 ///    look through them (which in turn only yields refinements), but they are
 ///    never used to merge classes.
 ///
-/// See llvm/docs/GlobalISel/GIEGraphCombiner-Design.md for the full design and
+/// See docs/GIEGraphCombiner-Design.md for the full design and
 /// the soundness argument.
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CODEGEN_GLOBALISEL_GIEGRAPH_H
-#define LLVM_CODEGEN_GLOBALISEL_GIEGRAPH_H
+#ifndef GISELEGRAPHSYNTH_GIEGRAPH_H
+#define GISELEGRAPHSYNTH_GIEGRAPH_H
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -810,7 +810,7 @@ LLT getTypedResultType(const OpProperties &P, unsigned Index, LLT MainTy);
 /// The properties of all supported operators, in a fixed order.
 ArrayRef<OpProperties> getAllOpProperties();
 /// Operators that the e-graph combiner does not rewrite (an instruction with
-/// such an opcode is an input of a region) and that llvm/utils/gisel-rule-synth
+/// such an opcode is an input of a region) and that tools/gisel-rule-synth
 /// has a model for. An entry gives the shape of the instruction, so that the
 /// corpus extractor of the synthesizer can write it, and a fold function that
 /// the model of the synthesizer is compared with. No rule is derived from an
@@ -829,7 +829,7 @@ StringRef getComparePredicateName(uint64_t Attr);
 std::optional<APInt> foldOperator(const OpProperties &P, ArrayRef<APInt> Ops,
                                   uint64_t Attr, unsigned ResultWidth);
 /// Write the typing metadata of all supported operators as one JSON object.
-/// Tools outside of the compiler (llvm/utils/gisel-rule-synth) read it, so
+/// Tools outside of the compiler (tools/gisel-rule-synth) read it, so
 /// that they do not keep a second table of operator shapes. With
 /// \p WithSamples, each operator also has the values of its fold function
 /// on a fixed set of operands, to compare an independent model with it.
@@ -1027,4 +1027,4 @@ private:
 } // namespace egraph
 } // namespace llvm
 
-#endif // LLVM_CODEGEN_GLOBALISEL_GIEGRAPH_H
+#endif // GISELEGRAPHSYNTH_GIEGRAPH_H

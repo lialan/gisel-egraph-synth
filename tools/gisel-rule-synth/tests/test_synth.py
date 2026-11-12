@@ -1,6 +1,6 @@
-"""Unit tests for llvm/utils/gisel-rule-synth.
+"""Unit tests for tools/gisel-rule-synth.
 
-Run:  python3 -m unittest discover -s llvm/utils/gisel-rule-synth/tests
+Run:  python3 -m unittest discover -s tools/gisel-rule-synth/tests
 (needs the z3 and numpy Python modules; no llc).
 """
 
@@ -15,6 +15,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
+from girs import paths as _paths  # noqa: E402
 
 import z3  # noqa: E402
 
@@ -781,12 +782,9 @@ class EmitTest(unittest.TestCase):
 
     def test_in_tree_files_up_to_date(self):
         td, inc, _ = emit.emit(self.db, self.profiles)
-        llvm = os.path.dirname(os.path.dirname(ROOT))
-        with open(os.path.join(llvm, 'include/llvm/Target/GlobalISel/'
-                               'GISynthCombines.td')) as f:
+        with open(_paths.GEN_TD) as f:
             self.assertEqual(f.read(), td, 'run gi-rule-synth.py emit')
-        with open(os.path.join(llvm, 'include/llvm/CodeGen/GlobalISel/'
-                               'GISynthGeneratedPredicates.inc')) as f:
+        with open(_paths.GEN_INC) as f:
             self.assertEqual(f.read(), inc, 'run gi-rule-synth.py emit')
 
     def test_only_verified_cheaper_rules_emitted(self):

@@ -1,4 +1,4 @@
-//===- llvm/CodeGen/GlobalISel/GISynthPredicates.h --------------*- C++ -*-===//
+//===- GISelEGraphSynth/GISynthPredicates.h --------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -7,14 +7,14 @@
 //===----------------------------------------------------------------------===//
 /// \file
 /// Run-time guards of the combine rules produced by the offline rule
-/// synthesizer (llvm/utils/gisel-rule-synth). This header holds the small set
+/// synthesizer (tools/gisel-rule-synth). This header holds the small set
 /// of reusable primitives; the per-rule guards are generated into
 /// GISynthGeneratedPredicates.inc and only combine these primitives with
 /// GISelValueTracking known bits. No solver or search runs at compile time.
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CODEGEN_GLOBALISEL_GISYNTHPREDICATES_H
-#define LLVM_CODEGEN_GLOBALISEL_GISYNTHPREDICATES_H
+#ifndef GISELEGRAPHSYNTH_GISYNTHPREDICATES_H
+#define GISELEGRAPHSYNTH_GISYNTHPREDICATES_H
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -862,9 +862,9 @@ inline void eraseDeadSourceOp(MachineRegisterInfo &MRI, Register Reg) {
   Def->eraseFromParent();
 }
 
-#include "llvm/CodeGen/GlobalISel/GISynthGeneratedPredicates.inc"
+#include "GISelEGraphSynth/GISynthGeneratedPredicates.inc"
 
 } // end namespace gisynth
 } // end namespace llvm
 
-#endif // LLVM_CODEGEN_GLOBALISEL_GISYNTHPREDICATES_H
+#endif // GISELEGRAPHSYNTH_GISYNTHPREDICATES_H

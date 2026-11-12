@@ -7,20 +7,20 @@
 //===----------------------------------------------------------------------===//
 //
 // Writes small gMIR expression trees and their GISelValueTracking known bits
-// to a JSON-lines file for llvm/utils/gisel-rule-synth. See the header for an
-// overview and llvm/utils/gisel-rule-synth/README.md for the record format.
+// to a JSON-lines file for tools/gisel-rule-synth. See the header for an
+// overview and tools/gisel-rule-synth/README.md for the record format.
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/CodeGen/GlobalISel/GISynthCorpusExtractor.h"
+#include "GISelEGraphSynth/GISynthCorpusExtractor.h"
+#include "GISelEGraphSynth/GIEGraph.h"
+#include "GISelEGraphSynth/GISynthPredicates.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
-#include "llvm/CodeGen/GlobalISel/GIEGraph.h"
 #include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
-#include "llvm/CodeGen/GlobalISel/GISynthPredicates.h"
 #include "llvm/CodeGen/GlobalISel/GenericMachineInstrs.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
@@ -83,7 +83,7 @@ namespace {
 /// The entry of the operator table of the e-graph combiner for \p Opc, or
 /// null if an instruction with this opcode cannot be a node of a tree. The
 /// extractor has no list of opcodes of its own: an operator that is added to
-/// the table is extracted, and llvm/utils/gisel-rule-synth decides from its
+/// the table is extracted, and tools/gisel-rule-synth decides from its
 /// own registry which operators it has a model for.
 const egraph::OpProperties *getSupportedOp(unsigned Opc) {
   uint32_t Flags;
@@ -169,7 +169,7 @@ bool isSupportedInstr(const MachineRegisterInfo &MRI, const MachineInstr &MI) {
 
 /// True if \p ID is an intrinsic of -gisel-synth-corpus-intrinsics. The
 /// extractor has no list of intrinsics of its own: the operators of a target
-/// are in the registry of llvm/utils/gisel-rule-synth.
+/// are in the registry of tools/gisel-rule-synth.
 bool isModeledIntrinsic(Intrinsic::ID ID) {
   static const DenseSet<unsigned> IDs = [] {
     DenseSet<unsigned> Set;

@@ -11,7 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/CodeGen/GlobalISel/GISynthPredicates.h"
+#include "GISelEGraphSynth/GISynthPredicates.h"
 #include "GISelMITest.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"

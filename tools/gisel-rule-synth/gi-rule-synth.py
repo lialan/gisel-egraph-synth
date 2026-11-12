@@ -28,15 +28,17 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LLVM = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+from girs import paths  # noqa: E402
+
+# The root of the repository (the git work tree that the provenance of the
+# rules records).
+LLVM = paths.REPO
 
 DEFAULT_DB = os.path.join(HERE, 'rules.json')
 DEFAULT_PROOFS = os.path.join(HERE, 'proofs')
-DEFAULT_TD = os.path.join(LLVM, 'include', 'llvm', 'Target', 'GlobalISel',
-                          'GISynthCombines.td')
-DEFAULT_INC = os.path.join(LLVM, 'include', 'llvm', 'CodeGen', 'GlobalISel',
-                           'GISynthGeneratedPredicates.inc')
+DEFAULT_TD = paths.GEN_TD
+DEFAULT_INC = paths.GEN_INC
 SEED_MIR = os.path.join(HERE, 'corpus', 'seed.mir')
 
 
@@ -281,7 +283,8 @@ def cmd_check_ops(args):
             print('  no fold function in the compiler (not compared): %s' %
                   ', '.join(skipped))
         rc |= bool(bad)
-        opt = os.path.join(os.path.dirname(args.llc), 'opt')
+        # bin/llc of this repository has no opt next to it: the stock opt.
+        opt = paths.llvm_tool('opt')
         n, bad, none = opcheck.check_intrinsics(
             args.llc, opt, target.triple_flags, samples=args.samples,
             seed=args.seed)

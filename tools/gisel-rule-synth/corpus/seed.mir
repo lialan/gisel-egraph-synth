@@ -1,4 +1,4 @@
-# Seed corpus for llvm/utils/gisel-rule-synth.
+# Seed corpus for tools/gisel-rule-synth.
 #
 # These are *inputs* to rule discovery, not rules: small gMIR functions whose
 # values have known bits that GISelValueTracking can establish (zext, constant

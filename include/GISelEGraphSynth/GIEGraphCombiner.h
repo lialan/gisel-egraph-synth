@@ -1,4 +1,4 @@
-//===- llvm/CodeGen/GlobalISel/GIEGraphCombiner.h - E-graph combiner -*- C++
+//===- GISelEGraphSynth/GIEGraphCombiner.h - E-graph combiner -*- C++
 //-*-//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -28,15 +28,19 @@
 /// legalizer, it works on the operations that the legalizer made for the
 /// target: every instruction and constant that it creates is legal.
 ///
-/// The pass is not part of any default pipeline.
+/// The pass is not part of any default pipeline. lib/PassRegistration.cpp
+/// adds it to the pipeline of a target when an llc option asks for it.
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CODEGEN_GLOBALISEL_GIEGRAPHCOMBINER_H
-#define LLVM_CODEGEN_GLOBALISEL_GIEGRAPHCOMBINER_H
+#ifndef GISELEGRAPHSYNTH_GIEGRAPHCOMBINER_H
+#define GISELEGRAPHSYNTH_GIEGRAPHCOMBINER_H
 
 #include "llvm/CodeGen/MachineFunctionPass.h"
 
 namespace llvm {
+
+class PassRegistry;
+void initializeGIEGraphCombinerPass(PassRegistry &);
 
 class GIEGraphCombiner : public MachineFunctionPass {
 public:
@@ -58,4 +62,4 @@ public:
 
 } // end namespace llvm
 
-#endif // LLVM_CODEGEN_GLOBALISEL_GIEGRAPHCOMBINER_H
+#endif // GISELEGRAPHSYNTH_GIEGRAPHCOMBINER_H

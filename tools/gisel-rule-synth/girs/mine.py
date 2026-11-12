@@ -43,6 +43,7 @@ import sys
 import time
 
 from . import corpus
+from . import paths
 from . import emit
 from . import ir
 from . import measure
@@ -61,10 +62,10 @@ DEFAULTS = {
     'mode': 'semantics-only',
     'target': 'AMDGPU',
     'llc': None,          # default: <build_dir>/bin/llc
-    'opt': None,          # default: <build_dir>/bin/opt
-    'build_dir': None,    # default: <llvm-project>/build
+    'opt': None,          # default: the opt of the stock LLVM build
+    'build_dir': None,    # default: the plugin build (build/plugin)
     # role -> file with one .ll path per line, relative to the root of the
-    # repository.
+    # LLVM source tree (third_party/llvm-project).
     'manifests': {},
     'roles': {'discovery': ['discovery'],
               'selection': ['discovery', 'validation'],
@@ -100,6 +101,8 @@ def _sha_text(text):
 
 
 def _sha_file(path):
+    if path is None:
+        return None
     h = hashlib.sha256()
     with open(path, 'rb') as f:
         for block in iter(lambda: f.read(1 << 20), b''):
@@ -159,7 +162,7 @@ class Run:
     def __init__(self, config_path, run_dir, cli, log=print, local=None):
         self.cli = cli
         self.log = log
-        self.root = os.path.dirname(cli.LLVM)   # the llvm-project directory
+        self.root = paths.LLVM_ROOT   # the llvm-project directory
         with open(config_path) as f:
             self.cfg = _merge(DEFAULTS, json.load(f))
         if local:
@@ -169,10 +172,9 @@ class Run:
         if c['mode'] not in ('semantics-only', 'hybrid'):
             raise SystemExit('config: mode must be semantics-only or hybrid')
         c['build_dir'] = os.path.abspath(
-            c['build_dir'] or os.path.join(self.root, 'build'))
-        for tool in ('llc', 'opt'):
-            c[tool] = os.path.abspath(
-                c[tool] or os.path.join(c['build_dir'], 'bin', tool))
+            c['build_dir'] or paths.PLUGIN_BUILD)
+        c['llc'] = os.path.abspath(c['llc'] or paths.llc(c['build_dir']))
+        c['opt'] = os.path.abspath(c['opt'] or paths.llvm_tool('opt'))
         cdir = os.path.dirname(os.path.abspath(config_path))
         for role, p in list(c['manifests'].items()):
             if not os.path.isabs(p):
@@ -547,8 +549,9 @@ class Run:
                 'head': self.cli._git('rev-parse', 'HEAD')}
 
     def stage_build(self):
-        """Builds llc with every candidate of the library. The generated
-        files of the tree are replaced only for the time of the build."""
+        """Builds bin/llc with every candidate of the library and keeps a
+        copy of it. The generated files of the tree are replaced only for
+        the time of the build."""
         c, cli = self.cfg, self.cli
         os.makedirs(self.p('build'), exist_ok=True)
         td, inc, info = emit.emit(self.library(), {}, all_candidates=True)
@@ -559,7 +562,8 @@ class Run:
 
         def ninja(log_name):
             with open(self.p('build', log_name), 'w') as lf:
-                rc = subprocess.run(['ninja', '-C', c['build_dir'], 'llc'],
+                rc = subprocess.run(['ninja', '-C', c['build_dir'],
+                                     paths.LLC_TARGET],
                                     stdout=lf, stderr=subprocess.STDOUT
                                     ).returncode
             if rc:
@@ -575,8 +579,7 @@ class Run:
                     with open(path, 'w') as f:
                         f.write(text)
                 ninja('ninja.log')
-                shutil.copy2(os.path.join(c['build_dir'], 'bin', 'llc'),
-                             self.candidate_llc())
+                shutil.copy2(paths.llc(c['build_dir']), self.candidate_llc())
             finally:
                 for path, text in saved.items():
                     with open(path, 'w') as f:

@@ -72,8 +72,8 @@ complete search when a term, evaluation, proof or time budget is exhausted.
 For controlled discovery comparisons, from the repository root:
 
 ```sh
-python3 llvm/utils/gisel-rule-synth/eval/search_matrix.py \
-  --run-dir /tmp/girs-search-matrix --llc build/bin/llc \
+python3 tools/gisel-rule-synth/eval/search_matrix.py \
+  --run-dir /tmp/girs-search-matrix --llc build/plugin/bin/llc \
   --opt build/bin/opt --build-dir build --limit-files 128
 ```
 
@@ -92,10 +92,10 @@ alternative spellings together initially. Build with `mine --until build`,
 then run:
 
 ```sh
-python3 llvm/utils/gisel-rule-synth/eval/measure_candidates.py \
+python3 tools/gisel-rule-synth/eval/measure_candidates.py \
   --run-dir /tmp/girs-search-matrix/o2-equal-d2 \
   --llc /tmp/girs-search-matrix/o2-equal-d2/build/llc
-python3 llvm/utils/gisel-rule-synth/eval/validate_screen.py \
+python3 tools/gisel-rule-synth/eval/validate_screen.py \
   --run-dir /tmp/girs-search-matrix/o2-equal-d2 --top-per-class 2
 ```
 
@@ -123,8 +123,8 @@ itself evidence of LLVM-wide novelty or a machine-code improvement.
 ## The complete run: `mine`
 
 ```sh
-S=llvm/utils/gisel-rule-synth/gi-rule-synth.py
-$S mine --config llvm/utils/gisel-rule-synth/configs/m3-auto.json \
+S=tools/gisel-rule-synth/gi-rule-synth.py
+$S mine --config tools/gisel-rule-synth/configs/m3-auto.json \
         --run-dir runs/m3-auto
 ```
 
@@ -178,29 +178,29 @@ manual step between the stages:
 The steps of `mine` are also commands:
 
 ```sh
-S=llvm/utils/gisel-rule-synth/gi-rule-synth.py
-E=llvm/utils/gisel-rule-synth/eval/compare.py
+S=tools/gisel-rule-synth/gi-rule-synth.py
+E=tools/gisel-rule-synth/eval/compare.py
 
 # 1. Corpus: gMIR trees + GISelValueTracking known bits, as JSON lines.
 #    Depth 2 is searched; depth 3 is used for rule composition and coverage.
-$S extract --llc build/bin/llc -o corpus-d2 --ll-list train.txt
-$S extract --llc build/bin/llc -o corpus-d3 --ll-list train.txt --depth 3
-$S extract --llc build/bin/llc -o seed-d3 --depth 3 \
-    --mir llvm/utils/gisel-rule-synth/corpus/seed.mir
+$S extract --llc build/plugin/bin/llc -o corpus-d2 --ll-list train.txt
+$S extract --llc build/plugin/bin/llc -o corpus-d3 --ll-list train.txt --depth 3
+$S extract --llc build/plugin/bin/llc -o seed-d3 --depth 3 \
+    --mir tools/gisel-rule-synth/corpus/seed.mir
 
 # 1b. Second candidate source: the rewrites that the e-graph combiner
 #     finds on the same files, as JSON lines (one record per region).
-$S egraph-export --llc build/bin/llc -o egraph-train --ll-list train.txt
+$S egraph-export --llc build/plugin/bin/llc -o egraph-train --ll-list train.txt
 
 # 2. Discover, generalize, synthesize preconditions (CEGIS), prove (z3),
 #    compose. Writes rules.json, proofs/*.smt2 and rules.stats.json.
-$S synth corpus-d2 llvm/utils/gisel-rule-synth/corpus/seed.jsonl \
+$S synth corpus-d2 tools/gisel-rule-synth/corpus/seed.jsonl \
     --compose-corpus corpus-d3 seed-d3 --egraph egraph-train
 
 # 3. Select per target. Needs an llc with every candidate compiled in:
 $S emit --all-candidates && ninja -C build llc
-$E --llc build/bin/llc --list train.txt -o cmp.json --modes base,synth
-$S select --target AMDGPU --llc build/bin/llc --corpus corpus-d3 seed-d3 \
+$E --llc build/plugin/bin/llc --list train.txt -o cmp.json --modes base,synth
+$S select --target AMDGPU --llc build/plugin/bin/llc --corpus corpus-d3 seed-d3 \
     --compare cmp.json
 $S report --target AMDGPU      # ranked rules with the evidence
 
@@ -213,7 +213,7 @@ $S recheck
 
 # The operators: what each stage supports, and the checks of the models.
 $S capabilities                       # one row per operator
-$S check-ops --llc build/bin/llc      # evaluator against SMT and against llc
+$S check-ops --llc build/plugin/bin/llc      # evaluator against SMT and against llc
 ```
 
 Using the generated rules:
@@ -567,13 +567,13 @@ takes its place.
 | `eval/make_manifest.py` | writes a corpus manifest with the baseline compiler |
 | `configs/*.json` | run configurations of `mine` |
 | `manifests/*.txt` | corpus manifests: discovery, validation, held-out |
-| `tests/*.py` | unit tests (`python3 -m unittest discover -s llvm/utils/gisel-rule-synth/tests`); the tests of the real extraction chain need `build/bin/llc` or `GIRS_LLC` |
+| `tests/*.py` | unit tests (`python3 -m unittest discover -s tools/gisel-rule-synth/tests`); the tests of the real extraction chain need `build/plugin/bin/llc` or `GIRS_LLC` |
 
 Generated in-tree files:
-`llvm/include/llvm/Target/GlobalISel/GISynthCombines.td` and
-`llvm/include/llvm/CodeGen/GlobalISel/GISynthGeneratedPredicates.inc`.
+`td/GISynthCombines.td` and
+`include/GISelEGraphSynth/GISynthGeneratedPredicates.inc`.
 The hand-written guard primitives are in
-`llvm/include/llvm/CodeGen/GlobalISel/GISynthPredicates.h`. Lit tests:
+`include/GISelEGraphSynth/GISynthPredicates.h`. Lit tests:
 `llvm/test/CodeGen/{AMDGPU,AArch64}/GlobalISel/synth-combines.mir`.
 
 ## Semantic model, in short

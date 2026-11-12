@@ -1,4 +1,4 @@
-//===- llvm/CodeGen/GlobalISel/GIEGraphRules.cpp - E-graph rule library ---===//
+//===- GISelEGraphSynth/GIEGraphRules.cpp - E-graph rule library ---===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -28,14 +28,14 @@
 ///
 /// The bitvector identities, and the poison behaviour the classification
 /// assumes, were checked offline with an SMT solver
-/// (llvm/utils/gisel-egraph/verify_rules.py). Pattern operators denote the
+/// (tools/gisel-egraph/verify_rules.py). Pattern operators denote the
 /// unflagged operations; a flagged instruction (nuw/nsw/exact/disjoint...)
 /// only matches as a refinement, and so does a division that may trap.
 //===----------------------------------------------------------------------===//
 
+#include "GISelEGraphSynth/GIEGraph.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/Twine.h"
-#include "llvm/CodeGen/GlobalISel/GIEGraph.h"
 #include "llvm/CodeGen/LowLevelTypeUtils.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/IR/ConstantRange.h"

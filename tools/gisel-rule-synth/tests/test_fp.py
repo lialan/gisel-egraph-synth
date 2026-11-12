@@ -2,7 +2,7 @@
 """Tests of the models of G_FREEZE and of the conversions between integers
 and floating-point values.
 
-Run:  python3 -m unittest discover -s llvm/utils/gisel-rule-synth/tests
+Run:  python3 -m unittest discover -s tools/gisel-rule-synth/tests
 """
 
 import os

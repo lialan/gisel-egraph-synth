@@ -1,4 +1,4 @@
-//===- llvm/CodeGen/GlobalISel/GIEGraph.cpp - Typed e-graph for gMIR ------===//
+//===- GISelEGraphSynth/GIEGraph.cpp - Typed e-graph for gMIR ------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,7 +11,7 @@
 /// cost-based extraction.
 //===----------------------------------------------------------------------===//
 
-#include "llvm/CodeGen/GlobalISel/GIEGraph.h"
+#include "GISelEGraphSynth/GIEGraph.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/DenseSet.h"

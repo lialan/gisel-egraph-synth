@@ -4,7 +4,7 @@ operator, the joint proof of the lanes, the replacements that the lanes
 give, rules for scalars that also accept vectors lane by lane, and the
 generated code of a rule with vectors.
 
-Run:  python3 -m unittest discover -s llvm/utils/gisel-rule-synth/tests
+Run:  python3 -m unittest discover -s tools/gisel-rule-synth/tests
 """
 
 import json
@@ -19,14 +19,13 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
+from girs import paths as _paths  # noqa: E402
 
 from girs import (corpus, emit, ir, ops, select, smt, synth,  # noqa: E402
                   targets, vector)
 
-BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(ROOT))),
-                   'build', 'bin')
-LLC = os.environ.get('GIRS_LLC') or os.path.join(BIN, 'llc')
-OPT = os.path.join(os.path.dirname(LLC), 'opt')
+LLC = os.environ.get('GIRS_LLC') or _paths.llc()
+OPT = _paths.llvm_tool('opt')
 HAVE_LLC = os.path.exists(LLC)
 HAVE_OPT = os.path.exists(OPT)
 TRIPLE = ['-mtriple=amdgcn-amd-amdhsa', '-mcpu=gfx1100']

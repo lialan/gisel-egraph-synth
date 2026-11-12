@@ -1,4 +1,4 @@
-//===- llvm/CodeGen/GlobalISel/GIEGraphCombiner.cpp - E-graph combiner ----===//
+//===- GISelEGraphSynth/GIEGraphCombiner.cpp - E-graph combiner ----===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -7,10 +7,11 @@
 //===----------------------------------------------------------------------===//
 /// \file
 /// Experimental equality-saturation combiner for scalar gMIR. See
-/// GIEGraphCombiner.h and llvm/docs/GlobalISel/GIEGraphCombiner-Design.md.
+/// GIEGraphCombiner.h and docs/GIEGraphCombiner-Design.md.
 //===----------------------------------------------------------------------===//
 
-#include "llvm/CodeGen/GlobalISel/GIEGraphCombiner.h"
+#include "GISelEGraphSynth/GIEGraphCombiner.h"
+#include "GISelEGraphSynth/GIEGraph.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -20,7 +21,6 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
-#include "llvm/CodeGen/GlobalISel/GIEGraph.h"
 #include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
@@ -152,7 +152,7 @@ static cl::opt<std::string> ExportFile(
     "gisel-egraph-export", cl::Hidden,
     cl::desc("Append one JSON record per region with a cheaper candidate to "
              "this file: the typed DAG of the region and the DAG that the "
-             "extractor selected (for llvm/utils/gisel-rule-synth)"));
+             "extractor selected (for tools/gisel-rule-synth)"));
 static cl::opt<bool> ExportAll(
     "gisel-egraph-export-all", cl::Hidden, cl::init(false),
     cl::desc("With -gisel-egraph-export: also write the regions without a "

@@ -5,7 +5,7 @@ G_ASSERT_ALIGN), of G_BITCAST between an integer and a floating-point value,
 and of the operations on the bits of a floating-point value (G_FNEG, G_FABS,
 G_FCOPYSIGN, G_FCMP, G_IS_FPCLASS).
 
-Run:  python3 -m unittest discover -s llvm/utils/gisel-rule-synth/tests
+Run:  python3 -m unittest discover -s tools/gisel-rule-synth/tests
 """
 
 import os
@@ -17,15 +17,14 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
+from girs import paths as _paths  # noqa: E402
 
 import z3  # noqa: E402
 
 from girs import (corpus, discover, emit, fp, ir, ops, precond,  # noqa: E402
                   select, smt, synth, targets)
 
-LLC = os.environ.get('GIRS_LLC') or os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(ROOT))), 'build', 'bin',
-    'llc')
+LLC = os.environ.get('GIRS_LLC') or _paths.llc()
 HAVE_LLC = os.path.exists(LLC)
 
 

@@ -44,10 +44,15 @@ class Target:
         self.triple_flags = triple_flags
         self.ll_flags = triple_flags + ['-O2', '-global-isel',
                                         '-global-isel-abort=2']
-        self.combiner = combiner            # -run-pass name
+        # -run-pass name of the target's pre-legalizer combiner.
+        self.combiner = combiner
+        # -run-pass name of the combiner of the synthesized rules
+        # (lib/SynthCombiner*.cpp). enable_flag inserts it after
+        # self.combiner in the llc pipeline.
+        self.synth_pass = 'gisynth-%s-combiner' % name.lower()
         self.enable_flag = enable_flag
-        self.disable_rule_flag = '--%scombiner-disable-rule=' % \
-            combiner.replace('-combiner', '').replace('-', '')
+        self.disable_rule_flag = '--%s-disable-rule=' % \
+            self.synth_pass.replace('-', '')
         # llc flag that adds the corpus extractor after the pre-legalizer
         # combiner, or None: then the MIR is taken with -stop-after.
         self.corpus_flag = corpus_flag

@@ -2,7 +2,7 @@
 """Tests of the unified discovery pipeline: the operator registry, the
 import of e-graph candidates and the rules with a computed constant.
 
-Run:  python3 -m unittest discover -s llvm/utils/gisel-rule-synth/tests
+Run:  python3 -m unittest discover -s tools/gisel-rule-synth/tests
 """
 
 import os

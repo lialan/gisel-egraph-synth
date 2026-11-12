@@ -1,4 +1,4 @@
-//===- llvm/CodeGen/GlobalISel/GISynthCorpusExtractor.h ---------*- C++ -*-===//
+//===- GISelEGraphSynth/GISynthCorpusExtractor.h ---------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 /// \file
 /// Corpus extractor for the offline GlobalISel rule synthesizer
-/// (llvm/utils/gisel-rule-synth).
+/// (tools/gisel-rule-synth).
 ///
 /// The pass never modifies MIR. For every instruction that is a scalar
 /// operator of the operator table of the e-graph combiner (GIEGraph.h,
@@ -18,15 +18,19 @@
 /// extractor has no opcode list of its own, so an operator that is added to
 /// the table is extracted too.
 ///
-/// The pass is not part of any default pipeline.
+/// The pass is not part of any default pipeline. lib/PassRegistration.cpp
+/// adds it to the pipeline of a target when an llc option asks for it.
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CODEGEN_GLOBALISEL_GISYNTHCORPUSEXTRACTOR_H
-#define LLVM_CODEGEN_GLOBALISEL_GISYNTHCORPUSEXTRACTOR_H
+#ifndef GISELEGRAPHSYNTH_GISYNTHCORPUSEXTRACTOR_H
+#define GISELEGRAPHSYNTH_GISYNTHCORPUSEXTRACTOR_H
 
 #include "llvm/CodeGen/MachineFunctionPass.h"
 
 namespace llvm {
+
+class PassRegistry;
+void initializeGISynthCorpusExtractorPass(PassRegistry &);
 
 class GISynthCorpusExtractor : public MachineFunctionPass {
 public:
@@ -48,4 +52,4 @@ public:
 
 } // end namespace llvm
 
-#endif // LLVM_CODEGEN_GLOBALISEL_GISYNTHCORPUSEXTRACTOR_H
+#endif // GISELEGRAPHSYNTH_GISYNTHCORPUSEXTRACTOR_H

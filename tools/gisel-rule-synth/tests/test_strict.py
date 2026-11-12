@@ -3,7 +3,7 @@
 value in each rounding mode, the exceptions, the kernels, the rules and
 the floating-point environment of a tree.
 
-Run:  python3 -m unittest discover -s llvm/utils/gisel-rule-synth/tests
+Run:  python3 -m unittest discover -s tools/gisel-rule-synth/tests
 """
 
 import importlib.util
@@ -17,6 +17,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
+from girs import paths as _paths  # noqa: E402
 
 import numpy as np  # noqa: E402
 import z3  # noqa: E402
@@ -29,9 +30,7 @@ _spec = importlib.util.spec_from_file_location(
 cli = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cli)
 
-LLC = os.environ.get('GIRS_LLC') or os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(ROOT))), 'build', 'bin',
-    'llc')
+LLC = os.environ.get('GIRS_LLC') or _paths.llc()
 HAVE_LLC = os.path.exists(LLC)
 F = fp.Fraction
 W = 32

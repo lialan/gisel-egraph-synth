@@ -67,11 +67,11 @@ remove 196 and 183.
 
 | File | Contents |
 |------|----------|
-| `include/llvm/CodeGen/GlobalISel/GIEGraph.h`, `lib/CodeGen/GlobalISel/GIEGraph.cpp` | Target-independent e-graph: e-nodes, e-classes, hash-consing, union-find, congruence closure, analyses, refinement edges, pattern parser and matcher, saturation, extraction, cost model. Depends only on `Support` and `LLT`. |
-| `lib/CodeGen/GlobalISel/GIEGraphRules.cpp` | The rule library: rules generated from operator properties plus the hand-written cross-operator rules (572 rules applied; commutativity and associativity are implicit). |
-| `include/llvm/CodeGen/GlobalISel/GIEGraphCombiner.h`, `lib/CodeGen/GlobalISel/GIEGraphCombiner.cpp` | The `MachineFunctionPass`: region discovery, MIR -> e-graph, shadow report, MIR re-emission, statistics, timers. |
+| `include/GISelEGraphSynth/GIEGraph.h`, `lib/GIEGraph.cpp` | Target-independent e-graph: e-nodes, e-classes, hash-consing, union-find, congruence closure, analyses, refinement edges, pattern parser and matcher, saturation, extraction, cost model. Depends only on `Support` and `LLT`. |
+| `lib/GIEGraphRules.cpp` | The rule library: rules generated from operator properties plus the hand-written cross-operator rules (572 rules applied; commutativity and associativity are implicit). |
+| `include/GISelEGraphSynth/GIEGraphCombiner.h`, `lib/GIEGraphCombiner.cpp` | The `MachineFunctionPass`: region discovery, MIR -> e-graph, shadow report, MIR re-emission, statistics, timers. |
 | `lib/Target/AMDGPU/AMDGPUTargetMachine.cpp` | `-amdgpu-gisel-egraph` pipeline hook. |
-| `unittests/CodeGen/GlobalISel/GIEGraphTest.cpp` | Unit tests of the engine and of coverage of existing combines. |
+| `unittests/GIEGraphTest.cpp` | Unit tests of the engine and of coverage of existing combines. |
 | `test/CodeGen/AMDGPU/GlobalISel/egraph-combiner-*.{mir,ll}` | MIR/llc regression tests. |
 | `utils/gisel-egraph/verify_rules.py` | Offline Z3 proof of every rule's bitvector identity. |
 
@@ -679,7 +679,7 @@ applied rewrites and estimated cost saved. `-time-passes` adds
   from IR, so more candidates become exact equivalences.
 * **Automatic rule discovery** à la Ruler/Souper: enumerate small terms over
   the `G_*` operators, cluster by fingerprinting, prove candidates with Z3
-  offline, and add the verified rules to a library. `llvm/utils/gisel-rule-synth`
+  offline, and add the verified rules to a library. `tools/gisel-rule-synth`
   does this for the static combiner (it emits `GICombineRule` records), and
   it uses this pass as an oracle: a region that the e-graph improves and the
   synthesized rules do not shows what the rules still miss. Its grammar is

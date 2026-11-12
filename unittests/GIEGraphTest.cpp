@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/CodeGen/GlobalISel/GIEGraph.h"
+#include "GISelEGraphSynth/GIEGraph.h"
 #include "llvm/ADT/FloatingPointMode.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
