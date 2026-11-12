@@ -565,9 +565,11 @@ operators, bit counts, comparisons, selects, integer extensions and
 truncations; not division and remainder) is a region instruction with
 vectors of one number of lanes; the condition of a `G_SELECT` can be one
 scalar. The table rules apply to such a class when they relate existing
-classes. A vector class has no constant analysis: a vector constant is a
-`G_BUILD_VECTOR` of scalar constant classes, so arithmetic on it is never
-arithmetic of the integer that the lanes make together.
+classes or a literal: the rules are identities of scalars, so a literal is
+the same constant in each lane (a splat). A vector class has no `Const`: a
+vector constant is a `G_BUILD_VECTOR` of scalar constant classes, so
+arithmetic on it is never arithmetic of the integer that the lanes make
+together; `SplatConst` only lets a literal match a splat.
 
 The operators of `OpShape::Vector` move lanes. Their index or mask is part
 of the node identity: two shuffles of the same operands with different masks
@@ -677,14 +679,15 @@ applied rewrites and estimated cost saved. `-time-passes` adds
   floating-point values for the conversions, and fixed vectors of integers),
   and capped at 32 instructions; larger connected components are split by
   the cap.
-* A table rule that needs a literal or a constant does not apply to a
-  vector class: a vector class has no constant analysis, and the
-  instantiator writes a literal only for a scalar type. `(x ^ y) ^ y` of
-  vectors is therefore not simplified yet (it needs `y ^ y == 0`). The lane
+* A literal of a table rule matches a vector class that is a splat of
+  one constant (`EClass::SplatConst`, in the width of a lane), and a
+  literal on a right-hand side with a vector type is such a splat. A
+  constant variable (`#c`) and a computed constant (`$0`) are scalars only,
+  so a fold that computes with the width never sees a vector. The lane
   rules fold constant lanes one by one through `G_BUILD_VECTOR`.
 * A table rule builds a new operation only for scalar types; on a vector
-  class only the rules whose right-hand side is an existing class
-  (absorption, involutions, AC canonical forms) apply.
+  class only the rules whose right-hand side is an existing class or a
+  literal (absorption, identities, involutions, AC canonical forms) apply.
 * Inputs are almost never provably defined in real code, so most profitable
   candidates are refinements. They are still sound to apply.
 * Congruence closure rebuilds from scratch each iteration, and every rule is

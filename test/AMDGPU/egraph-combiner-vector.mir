@@ -36,11 +36,12 @@
 # CHECK: G_SHUFFLE_VECTOR %0(<2 x s16>), %1, shufflemask(0, 3)
 # CHECK: G_XOR
 
-# Not simplified yet: (x ^ y) ^ y needs y ^ y == 0, and a table rule writes
-# its literal only for a scalar type (a vector class has no constant).
+# (x ^ y) ^ y is x lane by lane: y ^ y is the splat of 0 (a literal of a
+# rule is a splat for a vector type), and x ^ splat(0) is x. y can be undef,
+# so this is a refinement, which the rewrite mode applies.
 # CHECK-LABEL: name: xor_twice
-# CHECK: G_XOR
-# CHECK: G_XOR
+# CHECK-NOT: G_XOR
+# CHECK: $vgpr0 = COPY %0(<2 x s16>)
 
 # The export has the index of a lane ("imm"), the mask of a shuffle ("mask")
 # and the names of the lane rules.

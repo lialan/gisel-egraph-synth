@@ -128,6 +128,11 @@ struct EClass {
   SmallVector<EClassId, 1> RefinesTo;
   /// Analysis: known constant value of the class.
   std::optional<APInt> Const;
+  /// Analysis: for a fixed vector, the constant of each lane if the class
+  /// has a G_BUILD_VECTOR of one constant class (a splat). A pattern literal
+  /// matches it in the width of a lane; the class has no Const, so no fold
+  /// takes the vector as one integer.
+  std::optional<APInt> SplatConst;
   /// Analysis: the value is a single well-defined value or poison (never a
   /// "fluctuating" undef value). Allows duplicating/merging uses.
   bool NotUndef = false;

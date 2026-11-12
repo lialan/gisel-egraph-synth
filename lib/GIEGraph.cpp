@@ -2558,6 +2558,12 @@ EClassId EGraph::add(ENode N) {
   C.Ty = N.Ty;
   if (N.isConstant())
     C.Const = N.Imm;
+  // A splat of one constant class (EClass::SplatConst).
+  if (N.isOperation() && N.Opcode == TargetOpcode::G_BUILD_VECTOR &&
+      !N.Ops.empty() && all_of(N.Ops, [&](EClassId Op) {
+        return find(Op) == find(N.Ops[0]);
+      }))
+    C.SplatConst = Classes[find(N.Ops[0])].Const;
   C.NotUndef = computeNodeNotUndef(N);
   C.NotPoison = computeNodeNotPoison(N);
   Memo.emplace(N, Id);
@@ -2588,6 +2594,8 @@ bool EGraph::merge(EClassId A, EClassId B) {
     assert(*W.Const == *L.Const && "merging classes with different constants");
   if (!W.Const)
     W.Const = L.Const;
+  if (!W.SplatConst)
+    W.SplatConst = L.SplatConst;
   W.NotUndef |= L.NotUndef;
   W.NotPoison |= L.NotPoison;
   for (ENode &N : L.Nodes)
@@ -2597,6 +2605,7 @@ bool EGraph::merge(EClassId A, EClassId B) {
   L.Nodes.clear();
   L.RefinesTo.clear();
   L.Const.reset();
+  L.SplatConst.reset();
   Parent[Loser] = Winner;
   --NumClasses;
   Dirty = true;
@@ -2721,6 +2730,13 @@ void EGraph::recomputeAnalyses() {
   for (EClassId Id : Ids) {
     EClass &C = Classes[Id];
     for (const ENode &N : C.Nodes) {
+      // A splat of one constant: the constant of each lane.
+      if (N.isOperation() && N.Opcode == TargetOpcode::G_BUILD_VECTOR &&
+          !C.SplatConst && !N.Ops.empty() &&
+          all_of(N.Ops, [&](EClassId Op) { return find(Op) == find(N.Ops[0]); }))
+        for (const ENode &E : Classes[find(N.Ops[0])].Nodes)
+          if (E.isConstant())
+            C.SplatConst = E.Imm;
       if (!N.isConstant())
         continue;
       if (C.Const)
@@ -3436,6 +3452,8 @@ private:
     case PatNode::Var:
       return true;
     case PatNode::Literal:
+      return Cls.Const.has_value() || Cls.SplatConst.has_value() ||
+             !Cls.RefinesTo.empty();
     case PatNode::ConstVar:
       return Cls.Const.has_value() || !Cls.RefinesTo.empty();
     case PatNode::Op:
@@ -3552,9 +3570,11 @@ private:
     case PatNode::Computed:
       llvm_unreachable("not structural");
     case PatNode::Literal: {
-      if (!Cls.Const)
+      // A literal has its value in each lane of a vector (a splat).
+      const std::optional<APInt> &V = Cls.Const ? Cls.Const : Cls.SplatConst;
+      if (!V)
         return;
-      if (*Cls.Const == getLiteralValue(PN.Value, Cls.Const->getBitWidth()))
+      if (*V == getLiteralValue(PN.Value, V->getBitWidth()))
         K();
       return;
     }
@@ -3718,12 +3738,26 @@ public:
         return std::nullopt;
       return C;
     }
-    case PatNode::Literal:
-      // A literal is an integer.
-      if (!Expected.isValid() || !Expected.isScalar() || Expected.isFloat())
+    case PatNode::Literal: {
+      // A literal is an integer; for a fixed vector of integers, the splat
+      // of the literal in the width of a lane (the rules are identities of
+      // scalars, and the operators of a vector class compute lane by lane).
+      if (!Expected.isValid() || Expected.isFloat())
+        return std::nullopt;
+      if (Expected.isFixedVector()) {
+        LLT Elt = Expected.getElementType();
+        if (!Elt.isScalar() || Elt.isFloat())
+          return std::nullopt;
+        EClassId C = G.addConstant(
+            Elt, getLiteralValue(PN.Value, Elt.getSizeInBits()));
+        SmallVector<EClassId, 8> Lanes(Expected.getNumElements(), C);
+        return G.addOp(TargetOpcode::G_BUILD_VECTOR, Expected, Lanes);
+      }
+      if (!Expected.isScalar())
         return std::nullopt;
       return G.addConstant(Expected,
                            getLiteralValue(PN.Value, Expected.getSizeInBits()));
+    }
     case PatNode::Computed:
       if (PN.Index >= Computed.size())
         return std::nullopt;

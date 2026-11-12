@@ -2003,15 +2003,49 @@ TEST_F(GIEGraphVectorTest, ConstantsFoldLaneByLane) {
   EXPECT_FALSE(G.getConstant(C).has_value());
 }
 
-TEST_F(GIEGraphVectorTest, NoScalarRuleConstantInAVectorClass) {
-  // x - x is 0 for scalars; a rule writes the literal 0 only for a scalar
-  // type, so the vector class gets no scalar constant.
-  EClassId A = in(V2S32);
+TEST_F(GIEGraphVectorTest, LiteralOfAVectorIsASplat) {
+  // x - x is 0 in each lane: the literal of the rule is a splat of the
+  // scalar 0 of the width of a lane, never a constant of 64 bits. (With an
+  // input that can be undef, 0 only refines x - x.)
+  EClassId A = in(V2S32, /*Defined=*/true);
   EClassId D = sub(A, A);
   runAll();
   for (const ENode &N : G.getClass(D).Nodes)
     EXPECT_FALSE(N.isConstant());
   EXPECT_EQ(G.getType(D), V2S32);
+  EXPECT_FALSE(G.getConstant(D).has_value());
+  ASSERT_TRUE(G.getClass(D).SplatConst.has_value());
+  EXPECT_EQ(*G.getClass(D).SplatConst, APInt(32, 0));
+  EXPECT_TRUE(G.equivalent(D, lookup([&] {
+    return build(V2S32, {cst(0), cst(0)});
+  })));
+}
+
+TEST_F(GIEGraphVectorTest, XorTwiceOfVectors) {
+  EClassId A = in(V2S16), B = in(V2S16, /*Defined=*/true);
+  EClassId X = op(T::G_XOR, op(T::G_XOR, A, B), B);
+  // B can be undef: (a ^ b) ^ b only refines to a.
+  EClassId C = in(V2S16), U = in(V2S16);
+  EClassId Y = op(T::G_XOR, op(T::G_XOR, C, U), U);
+  runAll();
+  EXPECT_TRUE(G.equivalent(X, A));
+  EXPECT_FALSE(G.equivalent(Y, C));
+  EXPECT_TRUE(G.refinesTo(Y, C));
+}
+
+TEST_F(GIEGraphVectorTest, LiteralMatchesASplatInTheWidthOfALane) {
+  EClassId A = in(V2S16);
+  // -1 of 16 bits in each lane.
+  EClassId M = build(V2S16, {cst(-1, S16), cst(-1, S16)});
+  EClassId And = op(T::G_AND, A, M);
+  EClassId Add = add(A, build(V2S16, {cst(0, S16), cst(0, S16)}));
+  // Not a splat: no literal.
+  EClassId Other = add(A, build(V2S16, {cst(0, S16), cst(1, S16)}));
+  runAll();
+  EXPECT_TRUE(G.equivalent(And, A));
+  EXPECT_TRUE(G.equivalent(Add, A));
+  EXPECT_FALSE(G.equivalent(Other, A));
+  EXPECT_FALSE(G.getClass(Other).SplatConst.has_value());
 }
 
 TEST_F(GIEGraphVectorTest, SelectWithAScalarCondition) {

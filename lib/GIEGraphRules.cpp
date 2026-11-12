@@ -52,8 +52,10 @@ using Computed = SmallVectorImpl<APInt>;
 /// Rules about G_MERGE_VALUES are generated for 2 to this many parts.
 constexpr unsigned MaxMergeParts = 4;
 
+/// The width of the root: of a lane for a vector (the rules are identities
+/// of scalars, applied to each lane).
 unsigned rootWidth(const EGraph &G, const RuleMatch &M) {
-  return G.getType(M.Root).getSizeInBits();
+  return G.getType(M.Root).getScalarSizeInBits();
 }
 
 /// Fold a binary operation on two constants with \p Fn. Folds that would
@@ -177,7 +179,7 @@ APInt boolean(bool V) { return APInt(1, V); }
 /// positions this is used for).
 unsigned varWidth(const EGraph &G, const RuleMatch &M, unsigned V) {
   assert(!M.isSumBound(V) && "variable bound to an AC term");
-  return G.getType(M.Vars[V]).getSizeInBits();
+  return G.getType(M.Vars[V]).getScalarSizeInBits();
 }
 
 /// Fold two constants (#a, #b) each with a third (#d) through a select:
