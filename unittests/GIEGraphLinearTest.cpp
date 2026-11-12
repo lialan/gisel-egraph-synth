@@ -6,10 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Tests of the views of sums: the AC canonical forms
-// (EGraph::canonicalizeAC) with AC matching. The tests check what may be
-// related and how (merge or refinement), including undef and poison inputs,
-// wrap-around, cycles and budgets.
+// Tests of the views of sums: the linear view modulo 2^W (applyLinearViews)
+// and the AC canonical forms (EGraph::canonicalizeAC) with AC matching. The
+// tests check what may be related and how (merge or refinement), including
+// undef and poison inputs, wrap-around, flags and budgets.
 //
 //===----------------------------------------------------------------------===//
 
@@ -101,6 +101,418 @@ protected:
     return E.getTreeCost(Root);
   }
 };
+
+//===----------------------------------------------------------------------===//
+// The linear view
+//===----------------------------------------------------------------------===//
+
+TEST_F(GIEGraphSumsTest, LinearViewOfShiftsAndSums) {
+  // ((x << 3) + x) - (y + y) + 7 is 9x - 2y + 7. The view relates it to the
+  // canonical implementation (x * 9 - (y << 1)) + 7: merged for defined
+  // inputs, refined for inputs that may be undef (x and y are read twice).
+  EClassId X = in(true), Y = in(true);
+  EClassId R = add(sub(add(shl(X, cst(3)), X), add(Y, Y)), cst(7));
+  EClassId U = in(), V = in();
+  EClassId Q = add(sub(add(shl(U, cst(3)), U), add(V, V)), cst(7));
+  G.rebuild();
+  unsigned Before = G.getNumNodes();
+  ViewStats S = linearOnce();
+  unsigned After = G.getNumNodes();
+  EClassId Canon =
+      lookup([&] { return add(sub(mul(X, cst(9)), shl(Y, cst(1))), cst(7)); });
+  EClassId QCanon =
+      lookup([&] { return add(sub(mul(U, cst(9)), shl(V, cst(1))), cst(7)); });
+  EXPECT_TRUE(G.equivalent(R, Canon));
+  EXPECT_FALSE(G.equivalent(Q, QCanon));
+  EXPECT_TRUE(G.refinesTo(Q, QCanon));
+  // The term 9x has the shift-add form 8x + x, which is the original
+  // (x << 3) + x: only for the defined x.
+  EXPECT_TRUE(G.equivalent(add(shl(X, cst(3)), X), mul(X, cst(9))));
+  EXPECT_FALSE(G.equivalent(add(shl(U, cst(3)), U), mul(U, cst(9))));
+  EXPECT_GE(S.Views, 2u);
+  EXPECT_GE(S.Merges, 2u);
+  EXPECT_GE(S.Refinements, 2u);
+  EXPECT_GE(S.Unsafe, 1u); // The shift-add form of 9u.
+  // Measured: 21 -> 31 nodes.
+  EXPECT_LE(After, Before + 12);
+}
+
+TEST_F(GIEGraphSumsTest, LinearViewOnlyAddsNodesWhereItSimplifies) {
+  // a + b, (a - b) + c and a * 3 show nothing that their nodes do not: no
+  // node is added.
+  EClassId A = in(), B = in(), C = in();
+  add(A, B);
+  add(sub(A, B), C);
+  mul(A, cst(3));
+  G.rebuild();
+  unsigned Before = G.getNumNodes();
+  ViewStats S = linearOnce();
+  EXPECT_EQ(G.getNumNodes(), Before);
+  EXPECT_EQ(S.Candidates, 0u);
+  EXPECT_EQ(S.Merges + S.Refinements, 0u);
+}
+
+TEST_F(GIEGraphSumsTest, LinearCancellationIsFoundInTheFirstIteration) {
+  // (x * 3) + (y * 2) - (x + x + x) is 2y. With inputs that may be undef or
+  // poison this is a refinement (x is dropped).
+  auto Build = [&] {
+    EClassId X = in(), Y = in();
+    EClassId R = sub(add(mul(X, cst(3)), mul(Y, cst(2))), add(add(X, X), X));
+    return std::make_pair(R, Y);
+  };
+  SaturationLimits One;
+  One.MaxIterations = 1;
+  EClassId R, Y;
+  std::tie(R, Y) = Build();
+  runAll(One);
+  EXPECT_EQ(extract(R), "(G_SHL %in1 1)");
+  EXPECT_TRUE(G.refinesTo(R, lookup([&] { return shl(Y, cst(1)); })));
+  // Measured: 19 nodes after the first iteration.
+  EXPECT_LE(G.getNumNodes(), 30u);
+
+  // The table rules alone need more iterations (5, with 136 nodes).
+  G = EGraph();
+  One.EnableLinear = false;
+  std::tie(R, Y) = Build();
+  runAll(One);
+  EXPECT_NE(extract(R), "(G_SHL %in1 1)");
+
+  // With the default budget the graph saturates. Measured: 9 iterations,
+  // 221 nodes; without the linear view the iteration limit stops the
+  // rules at 222 nodes.
+  G = EGraph();
+  std::tie(R, Y) = Build();
+  SaturationStats S = runAll();
+  EXPECT_TRUE(S.Saturated);
+  EXPECT_LE(G.getNumNodes(), 300u);
+  EXPECT_EQ(extract(R), "(G_SHL %in1 1)");
+}
+
+TEST_F(GIEGraphSumsTest, LinearCancellationOfDefinedValuesIsExact) {
+  EClassId X = in(true), Y = in(true);
+  EClassId Sum = add(add(X, X), X);
+  EClassId R = sub(add(mul(X, cst(3)), mul(Y, cst(2))), Sum);
+  linearOnce();
+  EXPECT_TRUE(G.equivalent(R, lookup([&] { return shl(Y, cst(1)); })));
+  // The inner sum is 3x as well.
+  EXPECT_TRUE(G.equivalent(Sum, lookup([&] { return mul(X, cst(3)); })));
+  // With all rules the graph saturates. Measured: 5 iterations, 61 nodes;
+  // without the linear view the iteration limit stops the rules at 195
+  // nodes.
+  G = EGraph();
+  X = in(true);
+  Y = in(true);
+  R = sub(add(mul(X, cst(3)), mul(Y, cst(2))), add(add(X, X), X));
+  SaturationStats S = runAll();
+  EXPECT_TRUE(S.Saturated);
+  EXPECT_LE(G.getNumNodes(), 100u);
+  EXPECT_EQ(extract(R), "(G_SHL %in1 1)");
+}
+
+TEST_F(GIEGraphSumsTest, LinearSameFormIsOneClass) {
+  // (x << 2) + x + 11, (x * 3) + (x + x) + 11 and x * 5 + 11 have the form
+  // 5x + 11. For a defined x all of them are related exactly to the same
+  // canonical implementation and become one class.
+  EClassId X = in(true);
+  EClassId A = add(add(shl(X, cst(2)), X), cst(11));
+  EClassId B = add(add(mul(X, cst(3)), add(X, X)), cst(11));
+  EClassId C = add(mul(X, cst(5)), cst(11));
+  // For an x that may be undef, A and B read x twice: both only refine to
+  // 5x + 11, and they stay apart.
+  EClassId U = in();
+  EClassId AU = add(add(shl(U, cst(2)), U), cst(11));
+  EClassId BU = add(add(mul(U, cst(3)), add(U, U)), cst(11));
+  EClassId CU = add(mul(U, cst(5)), cst(11));
+  linearOnce();
+  EXPECT_TRUE(G.equivalent(A, C));
+  EXPECT_TRUE(G.equivalent(B, C));
+  EXPECT_FALSE(G.equivalent(AU, CU));
+  EXPECT_FALSE(G.equivalent(BU, CU));
+  EXPECT_FALSE(G.equivalent(AU, BU));
+  EXPECT_TRUE(G.refinesTo(AU, CU));
+  EXPECT_TRUE(G.refinesTo(BU, CU));
+}
+
+TEST_F(GIEGraphSumsTest, LinearOriginalFormStaysInTheClass) {
+  // (x << 2) + x + c and 5x + c are one class; the shift form stays in it,
+  // so a cost model with an expensive multiplication still has it.
+  EClassId X = in(true), C = in();
+  EClassId A = add(add(shl(X, cst(2)), X), C);
+  EClassId B = add(mul(X, cst(5)), C);
+  runAll();
+  ASSERT_TRUE(G.equivalent(A, B));
+  std::string Cheap = extract(A, /*MulCost=*/10);
+  EXPECT_NE(Cheap.find("G_SHL"), std::string::npos) << Cheap;
+  EXPECT_EQ(Cheap.find("G_MUL"), std::string::npos) << Cheap;
+  // With the default costs (a multiplication costs as much as a shift and
+  // an add) a tie keeps a form with a shift too.
+  EXPECT_EQ(extract(A).find("G_MUL"), std::string::npos) << extract(A);
+}
+
+TEST_F(GIEGraphSumsTest, LinearCoefficientsWrapAround) {
+  // In 32 bits, x * 2^31 + x * 2^31 is 0, as is (x << 31) << 1; in 8 bits
+  // x * 200 + x * 100 is x * 44.
+  EClassId X = in(true);
+  EClassId A = add(mul(X, cst(INT32_MIN)), mul(X, cst(INT32_MIN)));
+  EClassId B = shl(shl(X, cst(31)), cst(1));
+  EClassId X8 = in(S8, true);
+  EClassId C = add(mul(X8, cst(200, S8)), mul(X8, cst(100, S8)));
+  // x * -1 + x is 0.
+  EClassId D = add(mul(X, cst(-1)), X);
+  linearOnce();
+  EClassId Zero = lookup([&] { return cst(0); });
+  EXPECT_TRUE(G.equivalent(A, Zero));
+  EXPECT_TRUE(G.equivalent(B, Zero));
+  EXPECT_TRUE(G.equivalent(D, Zero));
+  EXPECT_TRUE(G.equivalent(C, lookup([&] { return mul(X8, cst(44, S8)); })));
+  // A value that may be poison is only refined to 0 when it is dropped.
+  EClassId P = inNotUndef();
+  EClassId E = shl(shl(P, cst(31)), cst(1));
+  linearOnce();
+  EXPECT_FALSE(G.equivalent(E, Zero));
+  EXPECT_TRUE(G.refinesTo(E, Zero));
+}
+
+TEST_F(GIEGraphSumsTest, LinearNonLinearTermsAreOpaque) {
+  // x * y and x << y are leaves: (p + p) - p is p for p = x * y, and the
+  // view never sees x or y inside them.
+  EClassId X = in(true), Y = in(true);
+  EClassId P = mul(X, Y);
+  EClassId Q = shl(X, Y);
+  EClassId A = sub(add(P, P), P);
+  EClassId B = sub(add(Q, X), X);
+  // No polynomial expansion: (x + 1) * (y + 1) - x * y is not x + y + 1.
+  EClassId C = sub(mul(add(X, cst(1)), add(Y, cst(1))), P);
+  linearOnce();
+  EXPECT_TRUE(G.equivalent(A, P));
+  EXPECT_TRUE(G.equivalent(B, Q));
+  EXPECT_FALSE(G.equivalent(C, lookup([&] { return add(add(X, Y), cst(1)); })));
+  EXPECT_FALSE(G.equivalent(Q, P));
+}
+
+TEST_F(GIEGraphSumsTest, LinearOutOfRangeShiftIsALeaf) {
+  // x << 32 is poison in 32 bits, not x * 2^32 == 0: (x << 32) + y must not
+  // become y, even for a defined x.
+  EClassId X = in(true), Y = in(true);
+  EClassId S = shl(X, cst(32));
+  EClassId A = add(S, Y);
+  // (s + x) - s with the poison leaf s is only refined to x.
+  EClassId B = sub(add(S, X), S);
+  linearOnce();
+  EXPECT_FALSE(G.equivalent(A, Y));
+  EXPECT_FALSE(G.refinesTo(A, Y));
+  EXPECT_FALSE(G.equivalent(B, X));
+  EXPECT_TRUE(G.refinesTo(B, X));
+  EXPECT_EQ(G.getClass(S).Nodes.size(), 1u);
+}
+
+TEST_F(GIEGraphSumsTest, LinearFlaggedNodesAreLeaves) {
+  // add nsw (x, x) may be poison where x is not: (x +nsw x) - x is not x,
+  // whereas (x + x) - x is.
+  const uint32_t NSW = MachineInstr::NoSWrap;
+  EClassId X = in(true);
+  EClassId A = sub(op(G_ADD, X, X, NSW), X);
+  EClassId B = sub(add(X, X), X);
+  EClassId C = sub(op(G_SHL, X, cst(3), NSW), mul(X, cst(8)));
+  linearOnce();
+  EXPECT_FALSE(G.equivalent(A, X));
+  EXPECT_TRUE(G.equivalent(B, X));
+  EXPECT_FALSE(G.equivalent(C, lookup([&] { return cst(0); })));
+  // The table rules can drop the flag, which only refines.
+  runAll();
+  EXPECT_FALSE(G.equivalent(A, X));
+  EXPECT_FALSE(G.equivalent(C, lookup([&] { return cst(0); })));
+}
+
+TEST_F(GIEGraphSumsTest, LinearMaybeUndefIsOnlyRefined) {
+  // x + x - x reads x three times and the result once: exact iff x is not
+  // undef. Poison does not matter: both sides are poison iff x is.
+  EClassId U = in(), N = inNotUndef(), D = in(true);
+  EClassId RU = sub(add(U, U), U);
+  EClassId RN = sub(add(N, N), N);
+  EClassId RD = sub(add(D, D), D);
+  linearOnce();
+  EXPECT_FALSE(G.equivalent(RU, U));
+  EXPECT_TRUE(G.refinesTo(RU, U));
+  EXPECT_TRUE(G.equivalent(RN, N));
+  EXPECT_TRUE(G.equivalent(RD, D));
+}
+
+TEST_F(GIEGraphSumsTest, LinearDroppedPoisonIsOnlyRefined) {
+  // x - x + y drops x: exact iff x is neither undef nor poison.
+  EClassId Y = in();
+  EClassId U = in(), N = inNotUndef(), D = in(true);
+  EClassId RU = add(sub(U, U), Y);
+  EClassId RN = add(sub(N, N), Y);
+  EClassId RD = add(sub(D, D), Y);
+  linearOnce();
+  EXPECT_FALSE(G.equivalent(RU, Y));
+  EXPECT_TRUE(G.refinesTo(RU, Y));
+  EXPECT_FALSE(G.equivalent(RN, Y));
+  EXPECT_TRUE(G.refinesTo(RN, Y));
+  EXPECT_TRUE(G.equivalent(RD, Y));
+}
+
+TEST_F(GIEGraphSumsTest, LinearVectorsArePerLane) {
+  // <2 x s32> with splat constants: the arithmetic of each lane, in 32 bits.
+  EClassId X = in(V2S32, true), Y = in(V2S32, true);
+  EClassId R =
+      add(sub(add(shl(X, cst(3, V2S32)), X), add(Y, Y)), cst(7, V2S32));
+  // 2^31 + 2^31 wraps around in a lane; as one 64-bit integer it would not.
+  EClassId W =
+      add(mul(X, cst(INT32_MIN, V2S32)), mul(X, cst(INT32_MIN, V2S32)));
+  ViewStats S = linearOnce();
+  EClassId Canon = lookup([&] {
+    EClassId Diff = sub(mul(X, cst(9, V2S32)), shl(Y, cst(1, V2S32)));
+    return add(Diff, cst(7, V2S32));
+  });
+  EXPECT_TRUE(G.equivalent(R, Canon));
+  EXPECT_TRUE(G.equivalent(W, lookup([&] { return cst(0, V2S32); })));
+  EXPECT_EQ(S.Unsupported, 0u);
+}
+
+TEST_F(GIEGraphSumsTest, LinearNonSplatVectorIsUnsupported) {
+  // A constant with different lanes would need a coefficient per lane.
+  EClassId X = in(V2S32, true);
+  EClassId K = G.addOp(G_BUILD_VECTOR, V2S32, {cst(1), cst(2)});
+  EClassId A = sub(add(X, K), K);
+  EClassId B = add(mul(X, K), X);
+  ViewStats S = linearOnce();
+  EXPECT_FALSE(G.equivalent(A, X));
+  EXPECT_FALSE(G.refinesTo(A, X));
+  EXPECT_GE(S.Unsupported, 2u);
+  EXPECT_EQ(S.Candidates, 0u);
+  (void)B;
+}
+
+TEST_F(GIEGraphSumsTest, LinearShiftAddFormsNeedADefinedTerm) {
+  // (x * 7) + (x * 3) is x * 10, and 10 = 8 + 2 gives (x << 3) + (x << 1),
+  // which reads x twice. (x * 9) - (x * 16) is x * -7 = x - (x << 3).
+  EClassId X = in(true), U = in();
+  EClassId A = add(mul(X, cst(7)), mul(X, cst(3)));
+  EClassId B = sub(mul(X, cst(9)), mul(X, cst(16)));
+  EClassId AU = add(mul(U, cst(7)), mul(U, cst(3)));
+  ViewStats S = linearOnce();
+  EXPECT_TRUE(G.equivalent(A, lookup([&] { return mul(X, cst(10)); })));
+  EXPECT_TRUE(G.equivalent(
+      A, lookup([&] { return add(shl(X, cst(3)), shl(X, cst(1))); })));
+  EXPECT_TRUE(G.equivalent(B, lookup([&] { return mul(X, cst(-7)); })));
+  EXPECT_TRUE(G.equivalent(B, lookup([&] { return sub(X, shl(X, cst(3))); })));
+  // For an x that may be undef, x * 10 is only a refinement of AU and the
+  // shift-add form is not related to it.
+  EClassId SA = lookup([&] { return add(shl(U, cst(3)), shl(U, cst(1))); });
+  EXPECT_TRUE(G.refinesTo(AU, lookup([&] { return mul(U, cst(10)); })));
+  EXPECT_FALSE(G.equivalent(AU, SA));
+  EXPECT_FALSE(G.refinesTo(AU, SA));
+  EXPECT_GE(S.Unsafe, 1u);
+}
+
+TEST_F(GIEGraphSumsTest, LinearBudgetsAreCounted) {
+  // A view with more terms, visits or candidates than allowed is abandoned
+  // (counted), and the class keeps its nodes.
+  auto Build = [&] {
+    EClassId A = in(true), B = in(true), C = in(true);
+    return std::make_tuple(sub(add(add(A, B), C), C), A, B);
+  };
+  {
+    EClassId R, A, B;
+    std::tie(R, A, B) = Build();
+    SaturationLimits L;
+    L.MaxViewTerms = 2;
+    ViewStats S = linearOnce(L);
+    EXPECT_GE(S.Budget, 1u);
+    EXPECT_FALSE(G.equivalent(R, lookup([&] { return add(A, B); })));
+  }
+  G = EGraph();
+  {
+    EClassId R, A, B;
+    std::tie(R, A, B) = Build();
+    SaturationLimits L;
+    L.MaxViewVisits = 3;
+    ViewStats S = linearOnce(L);
+    EXPECT_GE(S.Budget, 1u);
+    EXPECT_FALSE(G.equivalent(R, lookup([&] { return add(A, B); })));
+  }
+  G = EGraph();
+  {
+    EClassId R, A, B;
+    std::tie(R, A, B) = Build();
+    SaturationLimits L;
+    L.MaxViewCandidates = 0;
+    ViewStats S = linearOnce(L);
+    EXPECT_GE(S.Budget, 1u);
+    EXPECT_FALSE(G.equivalent(R, lookup([&] { return add(A, B); })));
+  }
+  G = EGraph();
+  {
+    // At the node limit, no implementation is built.
+    EClassId X = in(true);
+    add(add(shl(X, cst(3)), X), cst(7));
+    G.rebuild();
+    SaturationLimits L;
+    L.MaxNodes = G.getNumNodes();
+    unsigned Before = G.getNumNodes();
+    ViewStats S = linearOnce(L);
+    EXPECT_EQ(S.Budget, 1u);
+    EXPECT_EQ(G.getNumNodes(), Before);
+  }
+  G = EGraph();
+  {
+    // Within the budgets the same view simplifies.
+    EClassId R, A, B;
+    std::tie(R, A, B) = Build();
+    ViewStats S = linearOnce();
+    EXPECT_EQ(S.Budget, 0u);
+    EXPECT_TRUE(G.equivalent(R, lookup([&] { return add(A, B); })));
+  }
+}
+
+TEST_F(GIEGraphSumsTest, LinearViewCanBeTurnedOff) {
+  EClassId X = in(), Y = in();
+  EClassId R = sub(add(mul(X, cst(3)), mul(Y, cst(2))), add(add(X, X), X));
+  SaturationLimits L;
+  L.EnableLinear = false;
+  L.MaxIterations = 1;
+  SaturationStats S = runAll(L);
+  EXPECT_EQ(S.Views.count("linear"), 0u);
+  EXPECT_NE(extract(R), "(G_SHL %in1 1)");
+}
+
+std::string buildAndExtract() {
+  EGraph G;
+  LLT S32 = LLT::scalar(32);
+  auto In = [&] {
+    InputInfo I;
+    I.Ty = S32;
+    return G.addInput(I);
+  };
+  auto Cst = [&](int64_t V) { return G.addConstant(S32, APInt(32, V)); };
+  auto Op = [&](unsigned Opc, EClassId A, EClassId B) {
+    return G.addOp(Opc, S32, {A, B});
+  };
+  EClassId X = In(), Y = In(), Z = In();
+  EClassId R1 =
+      Op(G_ADD, Op(G_SUB, Op(G_ADD, Op(G_SHL, X, Cst(3)), X), Op(G_ADD, Y, Y)),
+         Cst(7));
+  EClassId R2 = Op(G_SUB, Op(G_ADD, Op(G_MUL, X, Cst(3)), Op(G_MUL, Z, Cst(2))),
+                   Op(G_ADD, Op(G_ADD, X, X), X));
+  std::vector<RewriteRule> Rules = getDefaultIntegerRules();
+  SaturationStats S = saturate(G, Rules, SaturationLimits());
+  Extractor E(G, DefaultCostModel());
+  const ViewStats &V = S.Views["linear"];
+  return E.getExprString(R1) + " " + E.getExprString(R2) +
+         " nodes=" + std::to_string(G.getNumNodes()) +
+         " views=" + std::to_string(V.Views) +
+         " candidates=" + std::to_string(V.Candidates) +
+         " merges=" + std::to_string(V.Merges) +
+         " refinements=" + std::to_string(V.Refinements);
+}
+
+TEST_F(GIEGraphSumsTest, LinearViewIsDeterministic) {
+  std::string First = buildAndExtract();
+  for (int I = 0; I < 3; ++I)
+    EXPECT_EQ(First, buildAndExtract());
+}
 
 //===----------------------------------------------------------------------===//
 // AC terms

@@ -397,6 +397,163 @@ the synthesizer's own SMT model before it is a rule.
 and the rule of a sum with its carry from a corpus to a scratch build of
 llc and the lit tests of `test/SynthChain`.
 
+## Linear view
+
+`applyLinearViews` (`lib/GIEGraphLinear.cpp`, `SaturationLimits::EnableLinear`,
+`-gisel-egraph-features=linear`) sees a class of integers as the linear form
+
+    c + k_1 * t_1 + ... + k_n * t_n   (modulo 2^W)
+
+where `W` is the width of the integer, or of the element of a fixed vector
+(lane by lane, never as one wide integer). The coefficients `k_i` and the
+constant `c` are `APInt`s of width `W`, so they wrap around exactly like the
+operators: `x * 2^31 + x * 2^31` is `0` in 32 bits.
+
+### Decomposition
+
+The decomposition goes through these nodes, all without flags:
+
+| Node | Form |
+|---|---|
+| `G_ADD a, b` | `form(a) + form(b)` |
+| `G_SUB a, b` (`0 - b` is a negation) | `form(a) - form(b)` |
+| `G_MUL a, k` with a constant `k` (either operand) | `k * form(a)` |
+| `G_SHL a, s` with a constant `s < W` | `2^s * form(a)` |
+| a constant (`getSplatConstant`) | `c` |
+
+Everything else is a leaf `t_i`: inputs, other operators, flagged nodes
+(`nsw`, `nuw`, ... add poison), products of two non-constants (there is no
+polynomial expansion), shifts by a variable or by `W` or more (`x << 32` is
+poison in 32 bits, not `0`), and casts (a form has one width). In each class
+the decomposition takes the first such node, in the order of the class. A
+class is a leaf if it is being decomposed already, or if its decomposition
+has a leaf that is the class itself or uses it as an operand: after a merge
+such as `y == (y - x) + x`, expanding `y` only restates it. Leaves are
+merged by canonical class id. Each leaf records how many times the
+decomposition reads it, one read per occurrence: `(x << 3) + x` reads `x`
+twice and has the coefficient 9.
+
+Types: integer scalars, and fixed vectors of integers whose constants are
+all splats. A vector constant with different lanes would need a coefficient
+per lane; such a view is not supported (`ViewStats::Unsupported`), as is a
+class of pointers, floating-point values or a scalable vector.
+
+### Implementations
+
+The canonical implementation of a form is built from ordinary binary nodes:
+
+| Coefficient `k` | Term | Part |
+|---|---|---|
+| `1` | `t` | added |
+| `2^s` | `t << s` | added |
+| `-1` | `t` | subtracted |
+| `-2^s` | `t << s` | subtracted |
+| other | `t * k` | added |
+
+The added terms and the constant form the AC sum `P`, the subtracted terms
+the AC sum `N`, both in the canonical order of `EGraph::addACTerm`, so they
+are the canonical forms that `canonicalizeAC` would build. The
+implementation is `P` (with the constant as a leaf), `c - N` without added
+terms, or `(P - N) + c`; a form without terms is the constant. The shift
+amounts have the type of the value. Two classes with the same form get the
+same implementation by hash-consing, so they become one class when both
+relations are exact.
+
+A product `t * k` whose coefficient has two set bits, `2^a + 2^b`, or is a
+run of ones, `2^a - 2^b` (also for a negative `k`, e.g. `-3 = 2^0 - 2^2`),
+also gets the form `(t << a) +/- (t << b)` in its class. That form reads `t`
+twice, so it needs a `t` that is not undef.
+
+The original nodes stay in the class; extraction chooses. Extraction only
+takes a refinement edge that is strictly cheaper, and with the default
+costs a tie keeps the original: `((a << 3) + a) - (b + b) + 7` (form
+`9a - 2b + 7`) is not rewritten to `a * 9 - (b << 1) + 7`.
+
+### Which classes
+
+The view is computed for every class with a node of the table above, and
+recomputed in every iteration (no cache: classes change with merges). It
+adds nodes only where the form shows something that the nodes do not:
+
+* the canonical implementation has fewer operations than the
+  decomposition, or
+* the relation is exact and the form has like terms (a leaf read twice), a
+  zero coefficient, or folds two constants (equal forms then meet).
+
+Otherwise, with two or more operators, the canonical implementation is only
+looked up (no new node; an existing class with the same form is related),
+and with one operator (`a + b`, `x * 3`) there is nothing to do.
+
+### Soundness
+
+When every read of every leaf is the same value that is neither undef nor
+poison, the class and an implementation compute the same polynomial of
+degree one in the integers modulo `2^W` (a shift by `s < W` multiplies by
+`2^s`). Both sides consist of operators without poison-generating flags,
+with shift amounts in range and without division, so each side is poison
+iff a leaf that it reads is poison. These are the preconditions of
+`classifyLeafReads`. The left-hand side reads each leaf as often as the
+decomposition does (each class equals each of its nodes, so expanding a
+class into the chosen node is exact), the canonical implementation once per
+leaf with a nonzero coefficient, a shift-add form twice. `relateClasses`
+then merges, adds a refinement edge, or does nothing:
+
+| Rewrite | Merged if | Otherwise |
+|---|---|---|
+| `x + x - x -> x` (3 reads, 1 read) | `x` not undef | refinement |
+| `x - x + y -> y` (`x` dropped) | `x` neither undef nor poison | refinement |
+| `(x << 3) + x -> x * 9` | `x` not undef | refinement |
+| `x * 9 -> (x << 3) + x` (2 reads) | `x` not undef | nothing (unsafe) |
+| `x * 2^31 + x * 2^31 -> 0` | `x` neither undef nor poison | refinement |
+
+### Budgets and statistics
+
+| Budget | Default | Over budget |
+|---|---|---|
+| `MaxViewTerms` | 8 | distinct leaves of one view: the view is abandoned |
+| `MaxViewVisits` | 64 | classes visited by one decomposition (a shared class once per use): abandoned |
+| `MaxViewCandidates` | 3 | implementations of one view, the canonical one first and then one shift-add form per product: the rest is dropped |
+| `MaxNodes` | 5000 | no more nodes; views that only look their implementation up still relate it |
+
+Each stop is counted once in `ViewStats::Budget`, and the class keeps its
+node-by-node form. The pass uses the defaults. `SaturationStats::Views`
+`"linear"` counts the views computed (`Views`), the implementations related
+(`Candidates`), the merges and refinement edges, the rewrites that
+`classifyLeafReads` rejected (`Unsafe`: shift-add forms of terms that may be
+undef), the budget stops and the unsupported views. `applyLinearViews`
+returns the number of new nodes, merges and refinement edges.
+
+### Effect and limitations
+
+On `(x * 3) + (y * 2) - (x + x + x)` the view relates the root to `y << 1`
+in the first iteration (19 nodes for inputs that may be undef, 21 merged for
+defined ones). The table rules alone find it in the 5th (4th) iteration with
+136 (128) nodes. With the default budget the graph saturates after 9
+iterations with 221 nodes (5 iterations, 61 nodes for defined inputs), where
+the rules alone stop at the iteration limit with 222 (195) nodes
+(`unittests/GIEGraphLinearTest.cpp`). In MIR,
+`test/AMDGPU/egraph-combiner-linear.mir` has a cancellation over three
+values that the rules do not finish within the default iteration limit.
+
+* Saturation is still bounded by the rules: the negation and factoring
+  rules with AC extension keep producing new combinations `k * x + m * y`,
+  and the view's nodes and merges are more material for them. Of twelve
+  measured runs (six expressions, inputs that may be undef or defined), six
+  end with fewer nodes than without the view (five of them saturate where
+  the rules alone do not, e.g. 304 instead of 2598 nodes), three with the
+  same, and three with more: two cancellations with inputs that may be
+  undef (1625 instead of 998 and 2232 instead of 1504 nodes, both at the
+  iteration limit either way), and `(x * 3) * 5 - x * 15 + y` with defined
+  inputs, which no longer saturates (229 nodes instead of 59). In the ten
+  runs with a cheaper result, the view finds it in the first iteration.
+* One decomposition per class (its first linear node); another node of the
+  class is only used through the classes that contain it.
+* A shift amount of an implementation has the type of the value; after the
+  legalizer such a shift may not be legal (`G_SHL s64, s64` on AMDGPU), and
+  extraction then does not take it.
+* No coefficients per lane (vector constants that are not splats) and no
+  products of non-constants.
+
 ## AC views
 
 AC canonical forms and AC matching are described in
@@ -407,7 +564,7 @@ classification:
 
 | Operator | Repeated leaf | Constants |
 |---|---|---|
-| `G_ADD` | kept (`a + a` stays two reads; `add-self` relates it to `a * 2`) | folded modulo `2^W` (`fold-add`) |
+| `G_ADD` | kept (`a + a` stays two reads; `add-self` and the linear view relate it to `a << 1`) | folded modulo `2^W` (`fold-add`) |
 | `G_XOR` | a pair cancels (`xor-self`): exact only for a leaf that is neither undef nor poison | folded |
 | `G_AND`, `G_OR` | deduplicated (`and-self`, `or-self`): exact only for a leaf that is not undef | masks folded |
 | `G_MUL` | kept | folded |
