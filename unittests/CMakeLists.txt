@@ -16,6 +16,7 @@ set_target_properties(llvm_gtest_main PROPERTIES
 endif()
 
 add_executable(GISelEGraphSynthTests
+  GIEGraphSliceTest.cpp
   GIEGraphTest.cpp
   GIEGraphViewsTest.cpp
   GISynthPredicatesTest.cpp
