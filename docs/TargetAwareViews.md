@@ -600,3 +600,240 @@ merges (equal to `SaturationStats::ACMerges`), the flattenings abandoned at
 `MaxACLeaves` and the stops at `MaxNodes` (`Budget`), and the flagged AC
 nodes, which stay leaves (`Unsupported`). Flattenings that the matcher
 abandons (`getACViews`) are not counted.
+
+## Target pattern costs
+
+Extraction and profitability use one cost function for a DAG of nodes,
+`evaluateDag(G, CM, Dag)` (`lib/GIEGraph.cpp`), for the candidate that the
+extractor chose (`Extractor::getDag`) and for the original region (the pass
+builds a `CostDag` from the instructions of the region, one item per result
+and per leaf). A fusion that the instruction selector already makes in the
+original code is therefore not counted as a gain of the candidate.
+
+### Three metrics
+
+`CostVector` keeps three metrics apart:
+
+| Metric | Meaning |
+|---|---|
+| `Instrs` | the estimated number of instructions: the node costs of the cost model (`DefaultCostModel` weighs a multiplication as `-gisel-egraph-mul-cost`, a division as 16 and a value wider than 32 bits as one instruction per 32 bits), replaced by the target where it knows better |
+| `Bytes` | the estimated code size (a proxy): 4 bytes per instruction by default; on AMDGPU 4 for SOP1/SOP2/SOPC, VOP1/VOP2/VOPC, 8 for VOP3, 4 more for a literal |
+| `Depth` | the estimated critical path (a proxy): the longest path through the DAG in latency estimates (`CostModel::getNodeLatency`: 1 for a simple operation, 4 for a multiplication, 32 for a division, per 32 bits) |
+
+Extraction and profitability compare `Instrs`, then `Bytes`. `Depth` is only
+reported; an instruction is never taken as one cycle. The report
+(`-gisel-egraph-report`) prints `cost=` (instructions), `bytes=`, `depth=`
+and `covers=` for the original region and the candidate.
+
+### The pattern hook
+
+The generic core names no instruction of a target. A cost model describes
+the instructions that cover several nodes through two hooks:
+
+* `CostModel::getItemCost(G, Dag, I)`: the cost of item `I` on its own; a
+  target can use its bank state and its operands (literals).
+* `CostModel::findCovers(G, Dag, Covers)`: candidate `PatternCover`s, each a
+  root item, the inner items that it implements with it, and the cost of the
+  one target instruction (including the copies that it needs).
+
+`evaluateDag` applies the candidates greedily, users first (the order of the
+instruction selector), and decides from the final DAG: a cover is applied only
+if its root is not covered yet and each inner item is read exactly once (by
+the root or by another inner item of the cover), is not a root (a value used
+outside of the DAG), is not part of another cover and is not one result of an
+instruction with several. So an inner value that another user still needs
+keeps its cost (for `t = a + b; r = t + c; s = t ^ d`, `r` as one
+`v_add3_u32` still needs `t`: no saving), and no item is subtracted twice.
+
+### AMDGPU: the ThreeOp family
+
+`lib/GIEGraphTargetAMDGPU.cpp` (created only for AMDGPU functions; it uses no
+AMDGPU header: instructions are found by name through `TargetInstrInfo`, and
+subtarget features by name through `MCSubtargetInfo::checkFeatures`) models
+the three-operand VALU instructions that the selector of the pinned revision
+forms from two generic operations, `Outer(Inner(x0, x1), x2)`
+(`ThreeOp_i32_Pats` and `IMAD32_Pats` in `VOP3Instructions.td`):
+
+| Instruction | Outer, inner | Feature (predicate) |
+|---|---|---|
+| `V_MAD_U32` | add, mul | `mad-u32-inst` (AddedComplexity 10) |
+| `V_MAD_U64_U32` | add, mul | `gfx9-insts`, not `mad-intra-fwd-bug` |
+| `V_XOR3_B32` | xor, xor | `gfx10-insts` |
+| `V_XAD_U32` | add, xor | `gfx9-insts` |
+| `V_OR3_B32` | or, or | `gfx9-insts` |
+| `V_AND_OR_B32` | or, and | `gfx9-insts` |
+| `V_LSHL_OR_B32` | or, shl | `gfx9-insts` |
+| `V_ADD3_U32` | add, add; ptr_add, ptr_add (32-bit pointers) | `gfx9-insts` |
+| `V_ADD_LSHL_U32` | shl, add | `gfx9-insts` |
+| `V_LSHL_ADD_U32` | add, shl | `gfx9-insts` |
+| `V_ADD_{MAX,MIN}_{I,U}32` | smax/umax/smin/umin, saddsat/uaddsat | `add-min-max-insts` |
+
+The table is in the order in which the selector prefers the patterns when
+several match one operation (measured: higher complexity first, then the
+later definition). The conditions reproduce the selector and the folding of
+operands after it, because the pass emits generic MIR and the selector forms
+the instruction later:
+
+* the outer operation is divergent (the pattern produces a VGPR). A uniform
+  result is selected as SALU instructions: no credit (the SALU fusions
+  `s_lshl{1-4}_add_u32` are not modelled);
+* the inner operation is read once (`HasOneUseBinOp`) and is not a root;
+* the inner operation is divergent. A uniform inner operation is an SGPR value
+  that register bank legalization copies to a VGPR for the divergent outer
+  one, and the selector does not look through the copy, except for the outer
+  operator `cshl_32` (`V_ADD_LSHL_U32`, `GIIgnoreCopies`). Then the GISel
+  predicate of `ThreeOpFrag` counts the SGPR-bank sources (the two operands of
+  the uniform inner operation, constants included) against
+  `getConstantBusLimit` (1 before GFX10, 2 from GFX10 on);
+* for a divergent inner operation register bank legalization copies every
+  uniform source to a VGPR, so that predicate always holds; `SIFoldOperands`
+  then folds SGPR sources and constants back into the instruction as far as
+  the constant bus allows. An inline constant is free; a literal needs a VOP3
+  literal (GFX10 and later, one per instruction, it uses the bus). Every
+  source that cannot be folded stays a `v_mov_b32`, which the cover counts;
+* `V_MAD_U64_U32` gives one instruction only for a divergent addend and
+  sources without a literal (otherwise no credit).
+
+These conditions reproduce the measured selection of all combinations of
+VGPR, SGPR, inline and literal sources of each pattern on gfx803, gfx900 and
+gfx1100. The model also counts 64-bit `and`/`or`/`xor` of uniform values and
+64-bit shifts as one instruction (`s_and_b64`, `s_lshl_b64`,
+`v_lshlrev_b64`; the default counts two), so that splitting them into 32-bit
+halves does not look free.
+
+Not modelled: the `V_MAD_U64_U32_gfx11` variant on subtargets with
+`mad-intra-fwd-bug` (two or three instructions), `V_LSHL_ADD_U64`, SDWA
+(`v_or_b32_sdwa` on GFX8 folds a byte mask), the moves of literals of other
+VOP3-only instructions before GFX10, and uniform operations that only have a
+VALU form (computed in VGPRs and read back with `v_readfirstlane`).
+
+### Positions
+
+| Position | Bank of a value | What the model decides |
+|---|---|---|
+| before the legalizer | predicted from the uniformity analysis | covers of 32-bit operations, which the legalizer keeps; 16- and 64-bit operations get no cover (they are widened or split) |
+| after the legalizer, before register bank selection | predicted from the uniformity analysis | the same, on legal operations |
+| after register bank selection (shadow only: the pass does not rewrite there) | read from the register banks of the function | the same; the uniform sources of a VALU operation are then already copies to VGPRs, so the count of moves can be too low |
+
+`-gisel-egraph-report` prints the model of each function (`target-costs:`).
+
+### Results
+
+Instructions of the final ISA (`llc -global-isel`, without `s_waitcnt`,
+`s_setpc_b64` and `s_delay_alu`) of `test/AMDGPU/egraph-combiner-add3.ll`;
+"e-graph" is `-amdgpu-gisel-egraph -gisel-egraph-mode=rewrite` with all
+features, "none" with `-gisel-egraph-features=none`:
+
+| Function | gfx803 (all) | gfx900 (all) | gfx1100 stock | gfx1100 e-graph | gfx1100 none |
+|---|---|---|---|---|---|
+| `(a + 7) + (b + 9)` | 2 | 1 | 1 | 1 | 1 |
+| `t = a + b; r = t + c; s = t ^ d` | 3 | 3 | 3 | 3 | 3 |
+| uniform `(a + b) + c` | 3 | 3 | 3 | 3 | 3 |
+| `(s + v) + s'` | 2 | 2 | 1 | 1 | 1 |
+| `((s + s') + v) \| (v & 255)` | 3 | 4 | 3 | 2 | 3 |
+| `(a << 3) + a` | 2 | 1 | 1 | 1 | 1 |
+| `(s + s') << v` | 2 | 2 | 1 | 1 | 1 |
+
+The stock pipeline already selects one `v_add3_u32` for `(a + 7) + (b + 9)`
+(the pre-legalizer combiner reassociates the constants) and one
+`v_lshl_add_u32` for `(a << 3) + a`; the pattern costs keep the e-graph from
+calling `a * 9` a gain there (with `-gisel-egraph-mul-cost=1` the node count
+does). The e-graph changes the code only where its own choice changes:
+`((s + s') + v) | (v & 255)` on gfx1100, where the AC-canonical grouping
+`(v + s) + s'` has a divergent inner add and one `v_add3_u32` takes the two
+SGPR sources. Before GFX10 that needs a `v_mov_b32`, so the combiner keeps
+the original.
+
+### Corpus
+
+On the 1402 comparable files of `manifests/amdgpu-validation.txt` for gfx1100
+(`tools/gisel-rule-synth/eval/views_eval.py` of the integration branch,
+instructions of the final assembly; the same functions fall
+back to SelectionDAG in every configuration):
+
+| Configuration | Instructions | vs stock | Files better / worse than stock |
+|---|---|---|---|
+| stock | 295530 | | |
+| e-graph, `none` | 295033 | -497 | 68 / 17 |
+| e-graph, all features | 294796 | -734 | 86 / 27 |
+| all but `patterns` | 295064 | -466 | 72 / 23 |
+| all but `banks` | 294846 | -684 | 84 / 29 |
+| all but `dag` | 295077 | -453 | 70 / 20 |
+| all but `tuples` | 294796 | -734 | 86 / 27 |
+
+The pattern costs and the sharing-aware extraction each account for about
+270 instructions; most of it is shifts and adds that become one
+`v_lshl_add_u32` (56 in the stock code, 385 with all features). Against
+`none`, all features make 28 files smaller and 15 larger; the larger ones
+are mostly instruction order around uniform selects (SCC) and vector code
+whose node costs are rough. The tuple rules change nothing on this corpus
+(CodeGenPrepare already forms the overflow operations, see below). The CPU
+time of llc grows by about 2% over `none`.
+
+## Register banks
+
+Before register bank selection the pass predicts the bank of a value. It
+computes `MachineUniformityInfo` on first use (`computeMachineUniformityInfo`
+with a local `MachineCycleInfo` and the dominator tree of the pass) and again
+after each rewrite. AMDGPU register bank selection of the pinned revision
+(`AMDGPURegBankSelect`) puts a value in an SGPR exactly when the analysis
+finds it uniform at its definition (apart from copies with an implicit use of
+`exec` and lane masks, which are not region values), so the prediction is
+"uniform: SGPR, divergent: VGPR (VCC for a divergent `s1`)". A uniform value
+can still be computed in VGPRs (a load that cannot be scalar is a VGPR load
+and a `v_readfirstlane`); the model takes it as an SGPR, which only withholds
+VALU credit.
+
+Extraction keeps at most two bank states per class (`BankState::Any` and
+`BankState::Uniform`), never a Pareto frontier: the tree-cost fixpoint runs
+once for each state, and in the state Uniform a node is available only if all
+its operands are in that state and the cost model accepts it
+(`CostModel::canBeUniform`: an input or a PHI that the analysis finds
+uniform; a constant; an operation if its operands are). A new node therefore
+gets its bank bottom-up: divergent as soon as an operand is. A root whose
+value is uniform in the original function, and a terminator whose operands
+are, must be computed in the state Uniform: extraction takes their choices in
+that state, and `evaluateDag` gives an infinite cost to a DAG in which such a
+root is not uniform. A uniform value is thus never computed from a divergent
+one (which would need a copy from a VGPR to an SGPR, i.e. a
+`v_readfirstlane`, valid only for uniform values). Copies the other way, from
+an SGPR to a VGPR, are legal; they cost one `v_mov_b32` where an instruction
+cannot read the SGPR (the sources of a ThreeOp instruction beyond the
+constant bus). A VALU instruction with two operands reads one SGPR operand
+directly, so it needs no copy.
+
+After register bank selection the banks are read from the function (shadow
+mode only). On a target without a model (AArch64) there are no bank states.
+With `-gisel-egraph-features=no-banks` every value counts as divergent and the
+roots have no requirement.
+
+Not implemented: the extra `v_readfirstlane` of uniform operations without a
+SALU form, the bank of `s1` values (VCC versus SGPR) in costs, and the
+uniformity of values that an earlier rewrite of the same function created
+before the analysis is computed again (it is recomputed after every rewrite).
+
+## Sharing-aware extraction
+
+The tree-cost fixpoint chooses per class the cheapest node by tree cost,
+which counts a shared operand once per user. `Extractor::extract(Roots,
+RootStates, CM, Opts)` then improves the choices of the classes of the DAG
+by DAG cost: for a bounded number of rounds (4) it tries, for each class of
+the current DAG in DAG order, each allowed node whose operands have a choice
+and each refinement target, rebuilds the DAG and accepts the change if
+`evaluateDag` (pattern covers, bank states, an instruction with several
+results counted once) is strictly smaller. A change that makes the choices
+cyclic (through refinement edges or operands) is never accepted. The search
+stops after `-gisel-egraph-max-dag-evaluations` (512) evaluations per region.
+It is deterministic: classes, nodes and refinement targets are visited in a
+fixed order, and the first improvement is taken. By default it does not
+change the choices of classes of a vector type
+(`-gisel-egraph-dag-vectors`): their costs are rough (the legalizer splits or
+scalarizes most vector operations), and searching over them gained nothing on
+the corpus below. `-gisel-egraph-dag-size-tiebreak=false` accepts only
+changes that save instructions.
+
+Profitability compares `evaluateDag` of the candidate with `evaluateDag` of
+the original region under the same model. With
+`-gisel-egraph-features=no-dag` the choices are the tree-cost ones, as
+before.
+
