@@ -56,13 +56,21 @@
    "synth_xor_70267483": "5615614608bcf4bc6c316e9ff6268b45335f4b920425a2751ee2a636feec879b",
    "synth_zext_a25c36b8_1u": "a7f434302b14c0d6aa30731a4cb3b37999807f8c2ba5981d876371bc679e91f4"
   },
-  "semantics_sha256": "bb46b0bc04bd9609c9c17a45437cd544c2ac082c213c7dae7348d413d0b0e3b3"
+  "semantics_sha256": "fb7eaaefc9069ca3673aa9bbae3a0d532c5329d51619090223dfca989b8973be"
  },
  "combiner": "amdgpu-prelegalizer-combiner",
  "emitted_records": 77,
  "enable_flag": "-amdgpu-gisel-synth-combines",
  "evidence": {
   "compare": "cand_train.json",
+  "conversion_contract_validation": {
+   "base": "6b30621e4a6687615323a8ded4abfe3a7cfd917d",
+   "comparable": 14,
+   "compile_or_fallback_changes": 0,
+   "files": 14,
+   "instruction_delta": 0,
+   "per_file_regressions": 0
+  },
   "corpus_coverage": true,
   "corpus_files": 1416,
   "keep_unmeasured": false,

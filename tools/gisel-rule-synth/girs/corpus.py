@@ -14,6 +14,7 @@ from . import fp
 from . import ir
 from . import ops
 from . import vector
+from . import valuefacts
 
 
 class Instance:
@@ -169,7 +170,10 @@ def _convert(node, inputs, interior_uses, flags, shared, root=False,
             index = ops.REGROUP
     e = (node_key(node, index), type_code(node)) + tuple(args)
     if sub is not None and not root and 'zero' in node:
-        sub.append((e, (int(node['zero'], 16), int(node['one'], 16))))
+        f = (int(node['zero'], 16), int(node['one'], 16))
+        if node.get('noundef'):
+            f += (True,)
+        sub.append((e, valuefacts.from_record(f, node)))
     return e
 
 
@@ -217,7 +221,8 @@ def parse_record(rec, source='', why=None):
                        **({'lanes': node['lanes']} if 'lanes' in node
                           else {}),
                        'noundef': node.get('noundef', False),
-                       'one': node['one'], 'def': node['op']})
+                       'one': node['one'], 'def': node['op'],
+                       **({'fp_facts': node['fp_facts']} if 'fp_facts' in node else {})})
     sub = []
     node_regs = []
     expr = _convert(rec['expr'], inputs, uses, flags, shared, root=True,
@@ -254,6 +259,9 @@ def parse_record(rec, source='', why=None):
             facts.append((z, o, True))
         else:
             facts.append((z, o))
+        facts[-1] = valuefacts.from_record(facts[-1], inp)
+        if c is not None and kinds[-1] == 'f':
+            facts[-1] = valuefacts.concrete(facts[-1], c, w)
         consts.append(c)
     if not ir.well_typed(expr, vw):
         why.append('not well typed for the model: %s' %

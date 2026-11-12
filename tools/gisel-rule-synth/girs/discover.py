@@ -39,6 +39,7 @@ import numpy as np
 import z3
 
 from . import fp
+from . import valuefacts
 from . import ir
 from . import kernels
 from . import ops
@@ -52,7 +53,8 @@ class Limits:
                  equal_cost_max=1, max_proofs=48, seed=0, bank_samples=64,
                  max_cex_samples=16, grammar='source', max_evals=40000000,
                  capability=None, namespaces=('generic',), cost_slack=None,
-                 max_rhs_cost=0, semantic_variants=1):
+                 max_rhs_cost=0, semantic_variants=1, legalizer_stage='pre-legalizer',
+                 expand_types=False):
         if cost_slack is not None and cost_slack < -1:
             raise ValueError('cost_slack must be -1 or greater')
         if max_rhs_cost < 0 or semantic_variants < 1:
@@ -77,6 +79,10 @@ class Limits:
         # What the target can do with an operator at a type
         # (targets.Capability), or None. Only 'auto' reads it.
         self.capability = capability
+        if legalizer_stage not in ("pre-legalizer", "post-legalizer"):
+            raise ValueError("invalid legalizer stage")
+        self.legalizer_stage = legalizer_stage
+        self.expand_types = expand_types
         self.max_terms = max_terms          # per bank
         # Candidate terms that a bank evaluates on its samples, per cost
         # level (a term without a kernel counts Bank.GENERIC_WEIGHT).
@@ -163,16 +169,18 @@ def sample_envs(inst, n, rng):
             if inst.consts[i] is not None:
                 out.append(inst.consts[i])
                 continue
-            out.append(((env[i] & ~z) | o) & ir.mask(w))
+            val = ((env[i] & ~z) | o) & ir.mask(w)
+            out.append(valuefacts.sample(inst.facts[i], val, w, rng))
         envs.append(tuple(out))
     return envs
 
 
 def consistent(env, inst):
     """True if the input assignment respects the instance's facts."""
-    for v, (z, o), c in zip(env, [f[:2] for f in inst.facts],
-                            inst.consts):
-        if v & z or (v & o) != o or (c is not None and v != c):
+    for v, fact, c, w in zip(env, inst.facts, inst.consts, inst.vw):
+        z, o = fact[:2]
+        if v & z or (v & o) != o or (c is not None and v != c) or \
+                not valuefacts.permits(fact, v, w):
             return False
     return True
 
@@ -789,13 +797,25 @@ class Context:
                             for k, v in self.seconds.items()}}
 
 
-def signature(inst):
+def signature(inst, limits=None):
     """(type class of each variable, types by class, canonical types by
     class), or None if a bank does not support the types of the instance.
     A type is (width, kind): two types of one width are two classes."""
     types = ir.types_of(inst.expr, inst.vw, inst.vk)
     if types is None:
         return None
+    types = set(types)
+    if limits is not None and limits.expand_types:
+        # A bounded, target-aware type palette, independent of source shape.
+        # Each added class participates in the same registry enumeration.
+        palette = [(w, k) for w in (16, 32, 64, 8) for k in ('f', 'i')
+                   if k != 'f' or fp.is_format(w)]
+        for ty in palette:
+            if ty in types or len(types) >= MAX_CLASSES:
+                continue
+            if limits.capability is None or limits.capability.supports_width(ty[0]):
+                if canonical_types(tuple(sorted(types | {ty}))) is not None:
+                    types.add(ty)
     types = tuple(sorted(types))
     canon = canonical_types(types)
     if canon is None:
@@ -897,6 +917,7 @@ def prove_concrete(inst, tgt, backend, const_vars=None):
         # The value is known to be neither undef nor poison.
         if len(f) > 2 and f[2]:
             eqs.append(z3.Not(enc.xp[i]))
+        eqs.append(valuefacts.constraints(f, enc.x[i], enc.xp[i]))
     guard = z3.And(eqs) if eqs else z3.BoolVal(True)
     f = smt.refinement_violation(enc, inst.expr, tgt, guard)
     return backend.check(f, want_model_of=enc.x)
@@ -994,6 +1015,15 @@ def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
             stats['not_tried'] = len(cands) - n
             break
         ctx.count_ops(tgt, 'fingerprint_matches')
+        if limits.capability is not None:
+            old = set(ir.nodes(inst.expr))
+            actions = [limits.capability.can_create(n, inst.vw, limits.legalizer_stage)
+                       for n in ir.nodes(tgt) if n not in old and
+                       not ops.parse(n[0])[0].intrinsic]
+            if any(a is not True for a in actions):
+                stats['legality_rejected'] = stats.get('legality_rejected', 0) + 1
+                note(tgt, 'legality_unknown' if None in actions else 'illegal_rhs')
+                continue
         known = getattr(ctx, 'known', None)
         if known is not None and known.covers(inst, tgt, const_vars.get(tgt)):
             stats['known_candidates'] = stats.get('known_candidates', 0) + 1
@@ -1102,7 +1132,7 @@ def discover(inst, backend, limits=None, ctx=None, log=None):
     if recipes:
         inst = _with_recipes(inst, recipes)
     unrecipe = {('var', nreal + j): e for j, (e, _) in enumerate(recipes)}
-    sig = signature(inst)
+    sig = signature(inst, limits)
     if sig is None:
         stats['stop'] = 'no_signature'
         return [], stats

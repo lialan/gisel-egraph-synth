@@ -13,7 +13,7 @@
  "generator_version": "2.1",
  "knowledge": {
   "schema": 1,
-  "semantics_sha256": "bb46b0bc04bd9609c9c17a45437cd544c2ac082c213c7dae7348d413d0b0e3b3"
+  "semantics_sha256": "fb7eaaefc9069ca3673aa9bbae3a0d532c5329d51619090223dfca989b8973be"
  },
  "limits": {
   "discovery": {
@@ -2446,7 +2446,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ADD:s32 (G_ZEXT:s32 x0) x1)",
    "source_json": {
@@ -2627,7 +2627,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ADD:s1 x0 x1)",
    "source_json": {
@@ -3098,7 +3098,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ADD:s16 (G_TRUNC:s16 x0) (G_TRUNC:s16 x1))",
    "source_json": {
@@ -3574,7 +3574,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ADD:s16 (G_MUL:s16 (G_TRUNC:s16 x0) (G_TRUNC:s16 x1)) (G_TRUNC:s16 x2))",
    "source_json": {
@@ -3886,7 +3886,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ADD:s32 (G_AND:s32 x0 x1) (G_OR:s32 x0 x1))",
    "source_json": {
@@ -4096,7 +4096,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ADD:s32 (G_ZEXT:s32 x0) x1)",
    "source_json": {
@@ -4277,7 +4277,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ADD:s1 x0 x1)",
    "source_json": {
@@ -4628,7 +4628,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ADD:s32 x0 x1)",
    "source_json": {
@@ -4936,7 +4936,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ADD:s32 x0 x1)",
    "source_json": {
@@ -5124,7 +5124,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ADD:s1 x0 x1)",
    "source_json": {
@@ -5460,7 +5460,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ADD:s1 x0 x1)",
    "source_json": {
@@ -5721,7 +5721,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ADD:s32 x0 x0)",
    "source_json": {
@@ -5906,7 +5906,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ADD:s1 x0 x1)",
    "source_json": {
@@ -6204,7 +6204,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s32 (G_OR:s32 x0 x1) x2)",
    "source_json": {
@@ -6511,7 +6511,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s32 (G_SHL:s32 x0 x1) x2)",
    "source_json": {
@@ -6813,7 +6813,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s32 (G_OR:s32 x0 x1) x2)",
    "source_json": {
@@ -7133,7 +7133,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s32 (G_XOR:s32 x0 x1) (G_XOR:s32 x0 x2))",
    "source_json": {
@@ -7447,7 +7447,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s32 (G_ADD:s32 x0 x1) x2)",
    "source_json": {
@@ -7678,7 +7678,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s8 (G_XOR:s8 (G_ZEXT:s8 x0) x1) x2)",
    "source_json": {
@@ -8155,7 +8155,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s16 (G_TRUNC:s16 x0) (G_XOR:s16 (G_TRUNC:s16 x1) x2))",
    "source_json": {
@@ -8480,7 +8480,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s32 (G_ASHR:s32 x0 x1) x2)",
    "source_json": {
@@ -8804,7 +8804,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s8 (G_XOR:s8 x0 x1) x2)",
    "source_json": {
@@ -9089,7 +9089,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s32 x0 x1)",
    "source_json": {
@@ -9397,7 +9397,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s32 (G_XOR:s32 x0 x1) (G_XOR:s32 x0 x2))",
    "source_json": {
@@ -9733,7 +9733,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s32 (G_LSHR:s32 x0 x1) (G_OR:s32 x2 x3))",
    "source_json": {
@@ -10187,7 +10187,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s32 (G_SEXT:s32 x0) x1)",
    "source_json": {
@@ -10492,7 +10492,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s32 (G_XOR:s32 x0 x1) (G_XOR:s32 x0 x2))",
    "source_json": {
@@ -11108,7 +11108,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s64 (G_ASHR:s64 x0 x1) x2)",
    "source_json": {
@@ -11586,7 +11586,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s16 (G_TRUNC:s16 x0) (G_XOR:s16 (G_TRUNC:s16 x1) x2))",
    "source_json": {
@@ -11884,7 +11884,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s32 x0 x1)",
    "source_json": {
@@ -12167,7 +12167,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_AND:s32 (G_OR:s32 x0 x1) x0)",
    "source_json": {
@@ -12587,7 +12587,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ASHR:s32 (G_ZEXT:s32 x0) x1)",
    "source_json": {
@@ -12874,7 +12874,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ASHR:s32 x0 x1)",
    "source_json": {
@@ -13145,7 +13145,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ASHR:s32 x0 x1)",
    "source_json": {
@@ -13189,6 +13189,312 @@
    ],
    "widens_operation": false,
    "width_specific": false
+  },
+  {
+   "class": "reduces_cost",
+   "cost": {
+    "replacement": 0,
+    "source": 2
+   },
+   "coverage": {
+    "disjunct_occurrences": [
+     2
+    ],
+    "match_instances": 1,
+    "match_occurrences": 2,
+    "pass_instances": 1,
+    "pass_occurrences": 2
+   },
+   "disjuncts": [
+    {
+     "coverage_occurrences": 2,
+     "example": {
+      "facts": [
+       [
+        "0xffff0000",
+        "0x0"
+       ]
+      ],
+      "vw": [
+       32
+      ]
+     },
+     "pred": "exact_signed_to_f32(x0)",
+     "pred_json": [
+      [
+       "fitsfp",
+       0,
+       true,
+       32
+      ]
+     ],
+     "proofs": [
+      {
+       "result": "unsat",
+       "root_w": 32,
+       "smt2_sha256": "c44006c017d39b1f",
+       "vw": [
+        32
+       ],
+       "width_map": [
+        [
+         32,
+         32
+        ]
+       ]
+      }
+     ],
+     "support": {
+      "instances": 1,
+      "occurrences": 2
+     },
+     "width_maps": [
+      [
+       [
+        32,
+        32
+       ]
+      ]
+     ]
+    }
+   ],
+   "id": "synth_fptosi_d1815a75",
+   "needs_one_use": false,
+   "precondition": "exact_signed_to_f32(x0)",
+   "provenance": {
+    "discovery": "enumerative",
+    "generalization": "symbolic-known-bits",
+    "sources": [
+     "enumerative"
+    ]
+   },
+   "replacement": "x0",
+   "replacement_json": {
+    "var": 0
+   },
+   "search": {
+    "atoms": 3,
+    "counterexamples": 1,
+    "pruned_by_cex": 1,
+    "solver_calls": 3,
+    "tried": 4,
+    "unknown": 0
+   },
+   "semantic_status": {
+    "direction": "source -> replacement",
+    "dnf_proofs": [
+     {
+      "result": "unsat",
+      "root_w": 32,
+      "smt2_sha256": "c44006c017d39b1f",
+      "vw": [
+       32
+      ],
+      "width_map": [
+       [
+        32,
+        32
+       ]
+      ]
+     }
+    ],
+    "kind": "verified_refinement",
+    "model": "gmir-v3",
+    "solver": "z3 5.4.0"
+   },
+   "source": "(G_FPTOSI:s32 (G_SITOFP:s32 x0))",
+   "source_json": {
+    "args": [
+     {
+      "args": [
+       {
+        "var": 0
+       }
+      ],
+      "op": "G_SITOFP",
+      "w": 32
+     }
+    ],
+    "op": "G_FPTOSI",
+    "w": 32
+   },
+   "support": {
+    "examples": [
+     {
+      "file": "tools/gisel-rule-synth/corpus/fp-conversions.mir",
+      "fn": "train_1_0",
+      "root": "%4"
+     },
+     {
+      "file": "tools/gisel-rule-synth/corpus/fp-conversions.mir",
+      "fn": "train_1_1",
+      "root": "%4"
+     }
+    ],
+    "instances": 1,
+    "occurrences": 2,
+    "source_flags": [],
+    "training_constants": {}
+   },
+   "unselected_disjuncts": [],
+   "vw": [
+    32
+   ],
+   "widens_operation": false,
+   "width_specific": true
+  },
+  {
+   "class": "reduces_cost",
+   "cost": {
+    "replacement": 0,
+    "source": 2
+   },
+   "coverage": {
+    "disjunct_occurrences": [
+     2
+    ],
+    "match_instances": 1,
+    "match_occurrences": 2,
+    "pass_instances": 1,
+    "pass_occurrences": 2
+   },
+   "disjuncts": [
+    {
+     "coverage_occurrences": 2,
+     "example": {
+      "facts": [
+       [
+        "0xffff0000",
+        "0x0"
+       ]
+      ],
+      "vw": [
+       32
+      ]
+     },
+     "pred": "exact_unsigned_to_f32(x0)",
+     "pred_json": [
+      [
+       "fitsfp",
+       0,
+       false,
+       32
+      ]
+     ],
+     "proofs": [
+      {
+       "result": "unsat",
+       "root_w": 32,
+       "smt2_sha256": "9ee095d03399e1ab",
+       "vw": [
+        32
+       ],
+       "width_map": [
+        [
+         32,
+         32
+        ]
+       ]
+      }
+     ],
+     "support": {
+      "instances": 1,
+      "occurrences": 2
+     },
+     "width_maps": [
+      [
+       [
+        32,
+        32
+       ]
+      ]
+     ]
+    }
+   ],
+   "id": "synth_fptoui_8c41624c",
+   "needs_one_use": false,
+   "precondition": "exact_unsigned_to_f32(x0)",
+   "provenance": {
+    "discovery": "enumerative",
+    "generalization": "symbolic-known-bits",
+    "sources": [
+     "enumerative"
+    ]
+   },
+   "replacement": "x0",
+   "replacement_json": {
+    "var": 0
+   },
+   "search": {
+    "atoms": 3,
+    "counterexamples": 2,
+    "pruned_by_cex": 1,
+    "solver_calls": 4,
+    "tried": 5,
+    "unknown": 0
+   },
+   "semantic_status": {
+    "direction": "source -> replacement",
+    "dnf_proofs": [
+     {
+      "result": "unsat",
+      "root_w": 32,
+      "smt2_sha256": "9ee095d03399e1ab",
+      "vw": [
+       32
+      ],
+      "width_map": [
+       [
+        32,
+        32
+       ]
+      ]
+     }
+    ],
+    "kind": "verified_refinement",
+    "model": "gmir-v3",
+    "solver": "z3 5.4.0"
+   },
+   "source": "(G_FPTOUI:s32 (G_UITOFP:s32 x0))",
+   "source_json": {
+    "args": [
+     {
+      "args": [
+       {
+        "var": 0
+       }
+      ],
+      "op": "G_UITOFP",
+      "w": 32
+     }
+    ],
+    "op": "G_FPTOUI",
+    "w": 32
+   },
+   "support": {
+    "examples": [
+     {
+      "file": "tools/gisel-rule-synth/corpus/fp-conversions.mir",
+      "fn": "train_0_0",
+      "root": "%4"
+     },
+     {
+      "file": "tools/gisel-rule-synth/corpus/fp-conversions.mir",
+      "fn": "train_0_1",
+      "root": "%4"
+     }
+    ],
+    "instances": 1,
+    "occurrences": 2,
+    "source_flags": [],
+    "training_constants": {}
+   },
+   "unselected_disjuncts": [],
+   "vw": [
+    32
+   ],
+   "widens_operation": false,
+   "width_specific": true
   },
   {
    "class": "reduces_cost",
@@ -13498,7 +13804,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ICMP:ne:s1 (G_SELECT:s32 x0 x1 x2) x1)",
    "source_json": {
@@ -13981,7 +14287,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ICMP:sge:s1 (G_ADD:s8 (G_AND:s8 (G_TRUNC:s8 (G_TRUNC:s32 x0)) x1) x2) x3)",
    "source_json": {
@@ -14508,7 +14814,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ICMP:eq:s1 (G_ADD:s27 (G_MUL:s27 x0 x1) x2) x3)",
    "source_json": {
@@ -14975,7 +15281,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ICMP:ne:s1 (G_ADD:s4 (G_MUL:s4 x0 x1) x2) x3)",
    "source_json": {
@@ -15325,7 +15631,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ICMP:eq:s1 (G_SELECT:s32 x0 x1 x2) x2)",
    "source_json": {
@@ -15998,7 +16304,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ICMP:ne:s1 (G_XOR:s32 x0 x1) x2)",
    "source_json": {
@@ -16426,7 +16732,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_LSHR:s32 (G_ZEXT:s32 x0) x1)",
    "source_json": {
@@ -16703,7 +17009,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_LSHR:s32 x0 x1)",
    "source_json": {
@@ -17273,7 +17579,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_LSHR:s11 x0 x1)",
    "source_json": {
@@ -17808,7 +18114,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_LSHR:s64 x0 x1)",
    "source_json": {
@@ -18239,7 +18545,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_LSHR:s64 x0 x1)",
    "source_json": {
@@ -18755,7 +19061,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_LSHR:s32 (G_ASHR:s32 x0 x1) x2)",
    "source_json": {
@@ -19041,7 +19347,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_LSHR:s32 (G_SHL:s32 x0 x1) x1)",
    "source_json": {
@@ -19473,7 +19779,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_MUL:s16 (G_TRUNC:s16 x0) (G_TRUNC:s16 x1))",
    "source_json": {
@@ -19781,7 +20087,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s32 x0 x1)",
    "source_json": {
@@ -20069,7 +20375,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s32 (G_AND:s32 x0 x1) x0)",
    "source_json": {
@@ -20544,7 +20850,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s16 (G_TRUNC:s16 x0) (G_XOR:s16 (G_TRUNC:s16 x1) x2))",
    "source_json": {
@@ -20861,7 +21167,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s64 (G_ASHR:s64 x0 x1) (G_ASHR:s64 x2 x1))",
    "source_json": {
@@ -21156,7 +21462,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s32 x0 x1)",
    "source_json": {
@@ -21487,7 +21793,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s32 (G_AND:s32 x0 x1) (G_XOR:s32 x2 x3))",
    "source_json": {
@@ -21968,7 +22274,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s32 (G_AND:s32 x0 x1) (G_XOR:s32 x2 x3))",
    "source_json": {
@@ -22277,7 +22583,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s32 x0 x1)",
    "source_json": {
@@ -22599,7 +22905,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s32 (G_AND:s32 x0 x1) x2)",
    "source_json": {
@@ -22882,7 +23188,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s32 (G_XOR:s32 x0 x1) x0)",
    "source_json": {
@@ -23177,7 +23483,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s32 (G_ADD:s32 x0 x1) x0)",
    "source_json": {
@@ -23464,7 +23770,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s32 (G_AND:s32 (G_AND:s32 x0 x1) x2) x0)",
    "source_json": {
@@ -23788,7 +24094,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s32 (G_SUB:s32 x0 x1) (G_XOR:s32 x1 x2))",
    "source_json": {
@@ -24094,7 +24400,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s32 (G_ADD:s32 x0 x1) x0)",
    "source_json": {
@@ -24426,7 +24732,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s32 (G_AND:s32 x0 x1) (G_XOR:s32 x2 x3))",
    "source_json": {
@@ -24749,7 +25055,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s32 (G_AND:s32 x0 x1) (G_AND:s32 x0 x2))",
    "source_json": {
@@ -25232,7 +25538,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_OR:s16 (G_TRUNC:s16 x0) (G_XOR:s16 (G_TRUNC:s16 x1) x2))",
    "source_json": {
@@ -25617,7 +25923,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SELECT:s32 x0 (G_XOR:s32 x1 x2) (G_XOR:s32 x1 x3))",
    "source_json": {
@@ -26017,7 +26323,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SELECT:s32 (G_ICMP:ne:s1 (G_SELECT:s32 x0 x1 x2) x1) x3 x4)",
    "source_json": {
@@ -26439,7 +26745,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SELECT:s32 (G_SELECT:s1 x0 x1 x2) x3 x4)",
    "source_json": {
@@ -26792,7 +27098,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SELECT:s32 (G_ICMP:sgt:s1 x0 x1) x0 x1)",
    "source_json": {
@@ -27146,7 +27452,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SELECT:s32 (G_ICMP:eq:s1 (G_SELECT:s32 x0 x1 x2) x2) x3 x4)",
    "source_json": {
@@ -27845,7 +28151,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SELECT:s32 (G_ICMP:sgt:s1 x0 x1) x1 x0)",
    "source_json": {
@@ -28040,7 +28346,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SEXT:s32 (G_MUL:s8 (G_TRUNC:s8 x0) (G_TRUNC:s8 x1)))",
    "source_json": {
@@ -28240,7 +28546,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SEXT:s32 (G_TRUNC:s8 (G_TRUNC:s16 x0)))",
    "source_json": {
@@ -28649,7 +28955,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SEXT:s64 x0)",
    "source_json": {
@@ -28830,7 +29136,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SEXT:s32 (G_TRUNC:s1 x0))",
    "source_json": {
@@ -29002,7 +29308,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SEXT:s32 (G_TRUNC:s8 x0))",
    "source_json": {
@@ -29294,7 +29600,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SHL:s8 x0 x1)",
    "source_json": {
@@ -29583,7 +29889,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SHL:s8 x0 x1)",
    "source_json": {
@@ -29995,7 +30301,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SHL:s64 x0 (G_ZEXT:s64 x1))",
    "source_json": {
@@ -30297,7 +30603,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SHL:s32 (G_AND:s32 x0 x1) x2)",
    "source_json": {
@@ -30354,6 +30660,162 @@
    ],
    "widens_operation": false,
    "width_specific": false
+  },
+  {
+   "class": "reduces_cost",
+   "cost": {
+    "replacement": 0,
+    "source": 2
+   },
+   "coverage": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "disjuncts": [
+    {
+     "coverage_occurrences": 1,
+     "example": {
+      "facts": [
+       [
+        "0x0",
+        "0x0",
+        false,
+        320,
+        true,
+        0,
+        1199570688
+       ]
+      ],
+      "vw": [
+       32
+      ]
+     },
+     "pred": "fpclass(x0) subset 0x1d8 && finite_integral(x0)",
+     "pred_json": [
+      [
+       "fpclass",
+       0,
+       472
+      ],
+      [
+       "fpintegral",
+       0
+      ]
+     ],
+     "proofs": [
+      {
+       "result": "unsat",
+       "root_w": 32,
+       "smt2_sha256": "3cfe86b9bbabf267",
+       "vw": [
+        32
+       ],
+       "width_map": [
+        [
+         32,
+         32
+        ]
+       ]
+      }
+     ],
+     "support": {
+      "instances": 1,
+      "occurrences": 1
+     },
+     "width_maps": [
+      [
+       [
+        32,
+        32
+       ]
+      ]
+     ]
+    }
+   ],
+   "id": "synth_sitofp_85481d55",
+   "needs_one_use": false,
+   "precondition": "fpclass(x0) subset 0x1d8 && finite_integral(x0)",
+   "provenance": {
+    "discovery": "enumerative",
+    "generalization": "symbolic-known-bits",
+    "sources": [
+     "enumerative"
+    ]
+   },
+   "replacement": "x0",
+   "replacement_json": {
+    "var": 0
+   },
+   "search": {
+    "atoms": 18,
+    "counterexamples": 3,
+    "pruned_by_cex": 42,
+    "solver_calls": 5,
+    "tried": 47,
+    "unknown": 0
+   },
+   "semantic_status": {
+    "direction": "source -> replacement",
+    "dnf_proofs": [
+     {
+      "result": "unsat",
+      "root_w": 32,
+      "smt2_sha256": "3cfe86b9bbabf267",
+      "vw": [
+       32
+      ],
+      "width_map": [
+       [
+        32,
+        32
+       ]
+      ]
+     }
+    ],
+    "kind": "verified_refinement",
+    "model": "gmir-v3",
+    "solver": "z3 5.4.0"
+   },
+   "source": "(G_SITOFP:s32 (G_FPTOSI:s32 x0))",
+   "source_json": {
+    "args": [
+     {
+      "args": [
+       {
+        "var": 0
+       }
+      ],
+      "op": "G_FPTOSI",
+      "w": 32
+     }
+    ],
+    "op": "G_SITOFP",
+    "w": 32
+   },
+   "support": {
+    "examples": [
+     {
+      "file": "tools/gisel-rule-synth/corpus/fp-conversions.mir",
+      "fn": "train_1_1",
+      "root": "%5"
+     }
+    ],
+    "instances": 1,
+    "occurrences": 1,
+    "source_flags": [],
+    "training_constants": {}
+   },
+   "unselected_disjuncts": [],
+   "vw": [
+    32
+   ],
+   "widens_operation": false,
+   "width_specific": true
   },
   {
    "class": "reduces_cost",
@@ -30711,7 +31173,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SITOFP:s32 (G_SEXT:s32 x0))",
    "source_json": {
@@ -31007,7 +31469,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SMAX:s32 (G_SUB:s32 x0 x1) x1)",
    "source_json": {
@@ -31439,7 +31901,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SUB:s16 (G_TRUNC:s16 x0) (G_TRUNC:s16 x1))",
    "source_json": {
@@ -31732,7 +32194,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SUB:s32 x0 x1)",
    "source_json": {
@@ -32036,7 +32498,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SUB:s32 (G_ADD:s32 x0 x1) (G_ADD:s32 x0 x2))",
    "source_json": {
@@ -32338,7 +32800,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_SUB:s32 (G_OR:s32 x0 x1) (G_AND:s32 x0 x1))",
    "source_json": {
@@ -33296,7 +33758,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_TRUNC:s8 (G_TRUNC:s16 x0))",
    "source_json": {
@@ -33729,7 +34191,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_TRUNC:s16 (G_SHL:s64 x0 x1))",
    "source_json": {
@@ -34137,7 +34599,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_TRUNC:s16 x0)",
    "source_json": {
@@ -34552,7 +35014,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_TRUNC:s8 (G_AND:s32 x0 x1))",
    "source_json": {
@@ -35033,7 +35495,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_TRUNC:s1 (G_TRUNC:s8 (G_TRUNC:s16 x0)))",
    "source_json": {
@@ -35433,7 +35895,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_UITOFP:s32 (G_ZEXT:s32 x0))",
    "source_json": {
@@ -35485,6 +35947,162 @@
    ],
    "widens_operation": false,
    "width_specific": false
+  },
+  {
+   "class": "reduces_cost",
+   "cost": {
+    "replacement": 0,
+    "source": 2
+   },
+   "coverage": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "disjuncts": [
+    {
+     "coverage_occurrences": 1,
+     "example": {
+      "facts": [
+       [
+        "0x0",
+        "0x0",
+        false,
+        320,
+        true,
+        0,
+        1199570688
+       ]
+      ],
+      "vw": [
+       32
+      ]
+     },
+     "pred": "fpclass(x0) subset 0x1d8 && finite_integral(x0)",
+     "pred_json": [
+      [
+       "fpclass",
+       0,
+       472
+      ],
+      [
+       "fpintegral",
+       0
+      ]
+     ],
+     "proofs": [
+      {
+       "result": "unsat",
+       "root_w": 32,
+       "smt2_sha256": "6c5c92dd6d81136c",
+       "vw": [
+        32
+       ],
+       "width_map": [
+        [
+         32,
+         32
+        ]
+       ]
+      }
+     ],
+     "support": {
+      "instances": 1,
+      "occurrences": 1
+     },
+     "width_maps": [
+      [
+       [
+        32,
+        32
+       ]
+      ]
+     ]
+    }
+   ],
+   "id": "synth_uitofp_64edb584",
+   "needs_one_use": false,
+   "precondition": "fpclass(x0) subset 0x1d8 && finite_integral(x0)",
+   "provenance": {
+    "discovery": "enumerative",
+    "generalization": "symbolic-known-bits",
+    "sources": [
+     "enumerative"
+    ]
+   },
+   "replacement": "x0",
+   "replacement_json": {
+    "var": 0
+   },
+   "search": {
+    "atoms": 18,
+    "counterexamples": 3,
+    "pruned_by_cex": 42,
+    "solver_calls": 5,
+    "tried": 47,
+    "unknown": 0
+   },
+   "semantic_status": {
+    "direction": "source -> replacement",
+    "dnf_proofs": [
+     {
+      "result": "unsat",
+      "root_w": 32,
+      "smt2_sha256": "6c5c92dd6d81136c",
+      "vw": [
+       32
+      ],
+      "width_map": [
+       [
+        32,
+        32
+       ]
+      ]
+     }
+    ],
+    "kind": "verified_refinement",
+    "model": "gmir-v3",
+    "solver": "z3 5.4.0"
+   },
+   "source": "(G_UITOFP:s32 (G_FPTOUI:s32 x0))",
+   "source_json": {
+    "args": [
+     {
+      "args": [
+       {
+        "var": 0
+       }
+      ],
+      "op": "G_FPTOUI",
+      "w": 32
+     }
+    ],
+    "op": "G_UITOFP",
+    "w": 32
+   },
+   "support": {
+    "examples": [
+     {
+      "file": "tools/gisel-rule-synth/corpus/fp-conversions.mir",
+      "fn": "train_0_1",
+      "root": "%5"
+     }
+    ],
+    "instances": 1,
+    "occurrences": 1,
+    "source_flags": [],
+    "training_constants": {}
+   },
+   "unselected_disjuncts": [],
+   "vw": [
+    32
+   ],
+   "widens_operation": false,
+   "width_specific": true
   },
   {
    "class": "reduces_cost",
@@ -35975,7 +36593,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_UNMERGE_VALUES:s32 (G_ZEXT:s64 (G_TRUNC:s63 x0)))",
    "source_json": {
@@ -36404,7 +37022,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_UNMERGE_VALUES:s32 (G_AND:s64 x0 x1))",
    "source_json": {
@@ -36700,7 +37318,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_XOR:s32 (G_ASHR:s32 x0 x1) (G_ASHR:s32 x2 x1))",
    "source_json": {
@@ -37101,7 +37719,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_XOR:s1 x0 x1)",
    "source_json": {
@@ -37305,7 +37923,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_XOR:s8 (G_ZEXT:s8 x0) x1)",
    "source_json": {
@@ -37678,7 +38296,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_XOR:s1 x0 x1)",
    "source_json": {
@@ -38010,7 +38628,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_XOR:s32 (G_AND:s32 x0 x1) (G_AND:s32 x0 x2))",
    "source_json": {
@@ -38300,7 +38918,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_XOR:s32 (G_AND:s32 x0 x1) (G_OR:s32 x0 x1))",
    "source_json": {
@@ -38586,7 +39204,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_XOR:s8 x0 x1)",
    "source_json": {
@@ -38908,7 +39526,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_XOR:s1 (G_XOR:s1 x0 x1) x0)",
    "source_json": {
@@ -39092,7 +39710,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_XOR:s1 x0 x1)",
    "source_json": {
@@ -39387,7 +40005,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_XOR:s32 (G_AND:s32 x0 x1) (G_AND:s32 x0 x2))",
    "source_json": {
@@ -39708,7 +40326,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_XOR:s32 (G_AND:s32 x0 x1) (G_AND:s32 x0 x2))",
    "source_json": {
@@ -39905,7 +40523,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_XOR:s1 x0 x1)",
    "source_json": {
@@ -40224,7 +40842,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_XOR:s1 x0 x1)",
    "source_json": {
@@ -40437,7 +41055,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_XOR:s8 (G_ZEXT:s8 x0) x1)",
    "source_json": {
@@ -40613,7 +41231,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_XOR:s1 x0 x1)",
    "source_json": {
@@ -40899,7 +41517,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_XOR:s32 x0 x1)",
    "source_json": {
@@ -41390,7 +42008,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ZEXT:s32 (G_OR:s16 (G_TRUNC:s16 x0) (G_XOR:s16 (G_TRUNC:s16 x1) x2)))",
    "source_json": {
@@ -41960,7 +42578,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ZEXT:s32 (G_XOR:s1 (G_TRUNC:s1 x0) x1))",
    "source_json": {
@@ -42509,7 +43127,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ZEXT:s32 (G_XOR:s1 (G_TRUNC:s1 x0) x1))",
    "source_json": {
@@ -42982,7 +43600,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ZEXT:s32 (G_TRUNC:s16 x0))",
    "source_json": {
@@ -43541,7 +44159,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ZEXT:s32 (G_XOR:s1 (G_TRUNC:s1 x0) x1))",
    "source_json": {
@@ -44090,7 +44708,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ZEXT:s32 (G_XOR:s1 (G_TRUNC:s1 x0) x1))",
    "source_json": {
@@ -44273,7 +44891,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ZEXT:s32 (G_TRUNC:s1 x0))",
    "source_json": {
@@ -44462,7 +45080,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ZEXT:s32 (G_XOR:s1 x0 x1))",
    "source_json": {
@@ -44948,7 +45566,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ZEXT:s32 (G_AND:s16 (G_TRUNC:s16 x0) (G_XOR:s16 (G_TRUNC:s16 x1) x2)))",
    "source_json": {
@@ -45468,7 +46086,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ZEXT:s32 x0)",
    "source_json": {
@@ -45996,7 +46614,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ZEXT:s32 (G_XOR:s1 (G_TRUNC:s1 x0) x1))",
    "source_json": {
@@ -46377,7 +46995,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ZEXT:s32 (G_TRUNC:s8 (G_TRUNC:s16 x0)))",
    "source_json": {
@@ -46832,7 +47450,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ZEXT:s64 x0)",
    "source_json": {
@@ -47390,7 +48008,7 @@
     ],
     "kind": "verified_refinement",
     "model": "gmir-v3",
-    "solver": "z3 5.4.1"
+    "solver": "z3 5.4.0"
    },
    "source": "(G_ZEXT:s32 (G_XOR:s1 (G_TRUNC:s1 x0) x1))",
    "source_json": {

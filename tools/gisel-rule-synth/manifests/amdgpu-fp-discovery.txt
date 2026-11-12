@@ -1,0 +1,3 @@
+llvm/test/CodeGen/AMDGPU/fptoui_uitofp.ll
+llvm/test/CodeGen/AMDGPU/uitofp.f16.ll
+llvm/test/CodeGen/AMDGPU/fptosi.f16.ll

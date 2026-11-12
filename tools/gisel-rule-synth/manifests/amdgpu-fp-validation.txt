@@ -1,0 +1,3 @@
+llvm/test/CodeGen/AMDGPU/sitofp.f16.ll
+llvm/test/CodeGen/AMDGPU/fptoui.f16.ll
+llvm/test/CodeGen/AMDGPU/fp-to-int-to-fp.ll

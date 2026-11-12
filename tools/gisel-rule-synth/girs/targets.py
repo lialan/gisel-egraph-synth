@@ -115,6 +115,7 @@ class Capability:
         # Version 2: operator -> the types of its type indices (LLT text,
         # fixed vectors) -> action, and the MI operand of each type index.
         self.typed = table.get('typed', {})
+        self.typed_fp_casts = table.get('typed_fp_casts', False)
         self.type_operands = table.get('type_operands', {})
 
     @staticmethod
@@ -138,11 +139,15 @@ class Capability:
             widths.insert(1, None)
         if info.attr == 'imm?' and attr is not None:
             widths.append(idx_bits)
+        kinds = [None] * len(widths)
+        if self.typed_fp_casts and info.shape == 'cast' and (info.fp_operand or info.fp_result):
+            kinds = ['f' if info.fp_result else 'i', 'f' if info.fp_operand else 'i']
         out = []
         for k in where:
             if k < 0 or k >= len(widths) or widths[k] is None:
                 return None
-            out.append(self.llt(widths[k]))
+            t = self.llt(widths[k])
+            out.append(t.replace('s', kinds[k]) if kinds[k] else t)
         return out
 
     def action_of(self, n, vw, idx_bits=32):
@@ -186,6 +191,10 @@ class Capability:
     def action(self, name, widths):
         return self.ops.get(name, {}).get(
             ','.join(str(w) for w in widths), 'Unsupported')
+
+    def supports_width(self, width):
+        return any(str(width) in key.split(',') and a not in self.NO_RULE
+                   for rows in self.ops.values() for key, a in rows.items())
 
     def capable(self, name, types):
         """True if the target has the operator ``name`` for values of the

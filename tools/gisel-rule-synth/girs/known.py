@@ -34,11 +34,12 @@ def semantics_sha():
     # Include typing, vector/target semantics and matcher/emission contracts.
     # Enumeration order and quotas cannot invalidate a completed proof.
     model = _files(('gmir_ops.json', 'ops.py', 'ir.py', 'fp.py', 'smt.py',
-                   'vector.py', 'amdgcn.py', 'precond.py', 'synth.py',
+                   'vector.py', 'amdgcn.py', 'precond.py', 'valuefacts.py', 'synth.py',
                    'region.py', 'sibling.py', 'corpus.py', 'emit.py',
                    'match.py'))
     contracts = ('lib/GISynthCorpusExtractor.cpp', 'lib/SynthCombiner.inc',
-                 'include/GISelEGraphSynth/GISynthPredicates.h')
+                 'include/GISelEGraphSynth/GISynthPredicates.h',
+                 'include/GISelEGraphSynth/GISynthValueFacts.inc')
     return digest([model, [(p, hashlib.sha256((Path(paths.REPO) / p)
                     .read_bytes()).hexdigest()) for p in contracts]])
 

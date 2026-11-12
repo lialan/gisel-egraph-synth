@@ -144,7 +144,7 @@ def _trees(node, out=None):
 class DefaultArgsTest(unittest.TestCase):
     def test_defaults_of_the_parser(self):
         a = cli.default_args('synth', corpus=['x'])
-        self.assertEqual(a.grammar, 'source')
+        self.assertEqual(a.grammar, 'auto')
         self.assertEqual(a.egraph, [])
         self.assertEqual(a.egraph_max_cost, 8)
         # A list default is not shared between two callers.
@@ -305,7 +305,7 @@ class RealExtractionTest(unittest.TestCase):
         # constant; the instance has all of them.
         self.assertEqual(r['inputs'][0]['zero'], '0x0')
         # A constant is never undef or poison.
-        self.assertEqual(inst.facts, ((0xc03fffff, 0x3fc00000, True),))
+        self.assertEqual(inst.facts[0][:3], (0xc03fffff, 0x3fc00000, True))
         self.assertEqual(ir.evaluate(inst.expr, inst.vw, inst.consts),
                          0x3ff8000000000000)
 
@@ -320,7 +320,7 @@ class RealExtractionTest(unittest.TestCase):
         self.assertIs(roots['%2']['inputs'][0]['noundef'], False)
         inst = next(i for i in self.insts
                     if i.expr == ('G_AND', 32, ('var', 0), ('var', 0)))
-        self.assertEqual(inst.facts[0][2:], (True,))
+        self.assertEqual(inst.facts[0][2:3], (True,))
         inst = next(i for i in self.insts if i.expr == (
             'G_ICMP:ult', 1, ('var', 0), ('var', 1)))
         self.assertEqual(len(inst.facts[0]), 2)

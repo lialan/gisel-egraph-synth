@@ -45,6 +45,7 @@ from . import ops
 from . import precond
 from . import smt
 from . import vector
+from . import valuefacts
 
 WIDTHS = (8, 16, 32, 64)
 # v2: each input can be poison, G_FREEZE, the conversions between integers
@@ -164,6 +165,9 @@ def schedules(src, tgt, vw, limits, first=None):
         if out and list(combo) == head:
             continue
         wmap = dict(zip(ws, combo))
+        fresh = set(all_widths(src, tgt, vw)) - set(all_widths(src, src, vw))
+        if any(wmap[w] != w for w in fresh):
+            continue
         s = ir.map_widths(src, wmap)
         t = ir.map_widths(tgt, wmap)
         v = tuple(wmap[w] for w in vw)
@@ -201,12 +205,14 @@ def _vector_maps(ws, head):
 
 # ------------------------------------------------------------- CEGIS ---
 
-def _facts_from_model(vals, n):
-    _, kz, ko, xp = smt.split_model(vals, n)
+def _facts_from_model(vals, n, widths=None):
+    xs, kz, ko, xp = smt.split_model(vals, n)
     # A value that is not poison in the model counts as defined: the
     # counterexample then also excludes the preconditions with 'def'.
-    return tuple((z, o, True) if not p else (z, o)
+    base = tuple((z, o, True) if not p else (z, o)
                  for z, o, p in zip(kz, ko, xp))
+    return tuple(valuefacts.concrete(f, x, w) for f, x, w in
+                 zip(base, xs, widths)) if widths is not None else base
 
 
 def verify(sched, dnf, backend, const_vars=(), strong=False):
@@ -233,7 +239,7 @@ def verify(sched, dnf, backend, const_vars=(), strong=False):
         f = smt.refinement_violation(enc, s, t, precond.z3_dnf(dnf, enc))
         r = backend.check(f, want_model_of=enc.model_terms())
         if r.status == 'sat':
-            return 'invalid', (v, _facts_from_model(r.model, len(v)), s[1])
+            return 'invalid', (v, _facts_from_model(r.model, len(v), v), s[1])
         if r.status != 'unsat':
             if k:
                 continue
@@ -271,7 +277,11 @@ def synthesize_precondition(src, tgt, vw, facts, sched, backend, limits,
     # the atoms of such a value.
     fvars = [i for i, k in ir.var_kinds(src).items() if k == 'f']
     atoms = [a for a in precond.enumerate_atoms(fvw, frw,
-                                                ir.env_vars(src), fvars)
+                                                ir.env_vars(src), fvars,
+                                                fp_widths=tuple(fpw for fpw in valuefacts.fp.FORMATS)
+                                                if any(ops.parse(n[0])[0].fp_operand or
+                                                       ops.parse(n[0])[0].fp_result
+                                                       for n in ir.nodes(src)) else ())
              if precond.eval_atom(a, facts, fvw, frw) and
              not (edge & set(precond.atom_all_vars(a)))]
     if pool is None:

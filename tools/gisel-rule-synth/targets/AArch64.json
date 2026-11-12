@@ -30,13 +30,21 @@
    "synth_trunc_110bd23a_1u": "a655ecd372cabcee354b93a487ff252cc7fcd14d7389414961d5c3f6bf758d39",
    "synth_xor_66308b8b": "59b185ec6a5cb14846511c0c4683ca55bf50fce94bfe2890364ee34f27b0cfd7"
   },
-  "semantics_sha256": "bb46b0bc04bd9609c9c17a45437cd544c2ac082c213c7dae7348d413d0b0e3b3"
+  "semantics_sha256": "fb7eaaefc9069ca3673aa9bbae3a0d532c5329d51619090223dfca989b8973be"
  },
  "combiner": "aarch64-prelegalizer-combiner",
  "emitted_records": 33,
  "enable_flag": "-aarch64-gisel-synth-combines",
  "evidence": {
   "compare": "cand_a64.json",
+  "conversion_contract_validation": {
+   "base": "6b30621e4a6687615323a8ded4abfe3a7cfd917d",
+   "comparable": 24,
+   "compile_or_fallback_changes": 0,
+   "files": 26,
+   "instruction_delta": 0,
+   "per_file_regressions": 0
+  },
   "corpus_coverage": true,
   "corpus_files": 2079,
   "keep_unmeasured": false,

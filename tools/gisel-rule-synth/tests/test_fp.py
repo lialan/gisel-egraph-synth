@@ -276,8 +276,9 @@ class EmitTest(unittest.TestCase):
                                     op('G_SITOFP', 16, V(0))))
         tgt = op('G_FPTOSI', 32, op('G_SITOFP', 32, V(0)))
         r = self.rule(src, tgt, (32,))
-        self.assertEqual(emit.why_not_emittable(r),
-                         'no floating-point operand with width 32')
+        self.assertIsNone(emit.why_not_emittable(r))
+        self.assertIn("'f'", emit._cpp_apply(r))
+        self.assertIn('makeSynthType', emit._cpp_apply(r))
 
     def test_float_constant_is_built_by_the_builder(self):
         # An apply pattern has G_CONSTANT with an integer type only: the

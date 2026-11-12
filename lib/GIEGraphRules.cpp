@@ -36,6 +36,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "GISelEGraphSynth/GIEGraph.h"
+#include "GISelEGraphSynth/GISynthPredicates.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/CodeGen/LowLevelTypeUtils.h"
@@ -182,6 +183,14 @@ APInt boolean(bool V) { return APInt(1, V); }
 unsigned varWidth(const EGraph &G, const RuleMatch &M, unsigned V) {
   assert(!M.isSumBound(V) && "variable bound to an AC term");
   return G.getType(M.Vars[V]).getScalarSizeInBits();
+}
+
+bool exactIntClass(const EGraph &G, EClassId Id, bool Signed, LLT FPTy) {
+  if (isExactIntToFP(Signed, G.getType(Id).getScalarSizeInBits(), FPTy))
+    return true;
+  const auto &K = G.getClass(Id).Known;
+  return K && (FPTy.isAnyScalar() || FPTy.isFloatIEEE()) &&
+         gisynth::knownIntFitsFP(*K, Signed, FPTy.getScalarSizeInBits());
 }
 
 /// Fold two constants (#a, #b) each with a third (#d) through a select:
@@ -418,7 +427,7 @@ void llvm::egraph::addUnaryRulesFromProperties(
     RewriteRule::ApplyFn Exact = [=](const EGraph &G, const RuleMatch &M,
                                      Computed &) {
       return !M.isSumBound(0) &&
-             isExactIntToFP(ISigned, varWidth(G, M, 0), InnerType(G, M));
+             exactIntClass(G, M.Vars[0], ISigned, InnerType(G, M));
     };
     for (const OpProperties &C : Props)
       if (C.Cast == CastKind::FPExtend || C.Cast == CastKind::FPTruncate)
@@ -448,7 +457,7 @@ void llvm::egraph::addUnaryRulesFromProperties(
           if (M.isSumBound(0))
             return false;
           LLT FPTy = InnerType(G, M);
-          return isExactIntToFP(ISigned, varWidth(G, M, 0), FPTy) ||
+          return exactIntClass(G, M.Vars[0], ISigned, FPTy) ||
                  rootWidth(G, M) <=
                      APFloat::semanticsPrecision(getFltSemanticForLLT(FPTy));
         };

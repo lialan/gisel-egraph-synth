@@ -532,6 +532,8 @@ def cmd_synth(args):
                            cost_slack=args.cost_slack,
                            max_rhs_cost=args.max_rhs_cost,
                            semantic_variants=args.semantic_variants,
+                           legalizer_stage=getattr(args, "legalizer_stage", "pre-legalizer"),
+                           expand_types=getattr(args, "expand_types", False),
                            max_terms=args.max_terms,
                            max_evals=args.max_evals,
                            max_proofs=args.max_proofs,
@@ -1244,7 +1246,7 @@ def build_parser():
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--grammar',
                    choices=('base', 'source', 'all', 'registry', 'auto'),
-                   default='source',
+                   default='auto',
                    help='operators of the replacement terms of the '
                         'enumerative search: the base grammar; that and '
                         'the operators of the source (default); the 44 '
@@ -1273,6 +1275,8 @@ def build_parser():
                         '(equal cost only for one-operation sources)')
     p.add_argument('--max-rhs-cost', type=int, default=0,
                    help='absolute RHS cost budget (0: no additional cap)')
+    p.add_argument('--legalizer-stage', choices=('pre-legalizer', 'post-legalizer'), default='pre-legalizer')
+    p.add_argument('--expand-types', action='store_true', help='search a bounded palette of additional integer/FP types')
     p.add_argument('--semantic-variants', type=int, default=1,
                    help='bounded instruction forms per sampled function; '
                         'use more than 1 to preserve different lowerings '

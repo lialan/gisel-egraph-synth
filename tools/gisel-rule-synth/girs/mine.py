@@ -78,12 +78,13 @@ DEFAULTS = {
     'pipelines': ['direct', 'opt-O2'],
     'discovery_pipelines': ['direct'],
     'extract': {'depth': None, 'max_trees': None},
-    'search': {'grammar': 'source', 'seed': 0, 'max_instances': 0,
+    'search': {'grammar': 'auto', 'seed': 0, 'max_instances': 0,
                'timeout_ms': 10000, 'max_atoms': 2, 'max_terms': 50000,
                'max_evals': 40000000, 'max_proofs': 48,
                'max_candidates': 6, 'time_budget_s': 0,
                'cost_slack': None, 'max_rhs_cost': 0,
-               'semantic_variants': 1,
+               'semantic_variants': 1, 'expand_types': False,
+               'legalizer_stage': 'pre-legalizer',
                'explore_share': 0.2, 'regions': False,
                'siblings': False, 'max_pairs': 0,
                # Search only the sources that the corpus read from vectors
@@ -660,7 +661,7 @@ class Run:
                                  'max_evals', 'max_proofs',
                                  'max_candidates', 'time_budget_s',
                                  'cost_slack', 'max_rhs_cost',
-                                 'semantic_variants',
+                                 'semantic_variants', 'expand_types', 'legalizer_stage',
                                  'explore_share', 'regions', 'siblings',
                                  'max_pairs', 'only_vectors')})
         if c['mode'] == 'hybrid':

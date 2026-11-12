@@ -1187,3 +1187,58 @@ This step proves that two products with equal operands are equal, which
 the circuits of two 24-bit or 32-bit products do not show in the time
 limit. Each other result of the step is ignored, and the formula is then
 checked as it is.
+
+## Integer / floating-point conversion conditions
+
+The extractor and generated guards share `GISynthValueFacts.inc`: integer
+exact-representability from KnownBits (magnitude, trailing zeros, precision
+and finite exponent range), LLVM FPClass masks, finite-integral facts and
+inclusive finite FP bounds. These are facts about non-poison values and do
+not imply `noundef`. The Python sampler, concrete proof, CEGIS grammar and
+runtime guards use the same contracts. Old KnownBits-only corpora remain
+valid; unavailable facts are unknown. Bounds are transferred through integer
+conversions, constants, copies, selects, fixed-vector builds, sign operations,
+FP casts and modeled rounding operations. This is conservative analysis,
+not a complete general FP interval analysis.
+
+The default CLI grammar is `auto`; `--expand-types` adds a bounded palette
+of integer and IEEE half/single/double types. Newly required types can be
+constructed by the emitter, preserving fixed-vector shape and the target's
+legacy/extended LLT convention. Fresh widths not bound by a matched register
+remain fixed in the proof schedule. bfloat16, arbitrary FP formats and
+scalable-vector conversion discovery are not added by this change.
+
+When a capability table is supplied, scalar candidates as well as vector
+candidates must have a supported legalization action. Version 3 tables
+query conversion type indices with actual integer/FP kinds. At every match,
+generated guards query the current MachineFunction's LegalizerInfo for new
+RHS operations and implicit literal/splat construction. Before legalization,
+a supported legalization action is sufficient; afterwards the operation must
+be Legal. Intrinsic providers retain their separate contracts. Legality is
+not evidence of profitability.
+
+A bounded conversion search preset (three discovery files, three selection
+files, six held-out files) is `configs/fp-conversions.json`. It enables equal
+Generic-cost alternatives for subsequent target measurement. For a compiled
+end-to-end check independent of that preset:
+
+```sh
+python3 tools/gisel-rule-synth/eval_fp_conversions.py \
+  --llc build/plugin/bin/llc --build-dir build/plugin \
+  --output build/validation/conversions \
+  --heldout-manifest /absolute/path/to/independent-files.txt
+```
+
+The manifest contains absolute `.ll` paths. The driver discovers from actual
+extracted MIR without supplied replacements, freezes the rule set, builds
+once, tests guards on different masks, then compares the same compiler with
+only the new rules enabled/disabled. Shared baseline compile failures are
+reported and excluded; changed failures/fallbacks or a per-file instruction
+regression fail validation. It saves proofs, input hashes, generated files,
+compiler identity and per-file static instruction counts. It restores the
+generated source files after building; run `ninja -C build/plugin` to restore
+the default compiler binary afterwards.
+
+See [the analysis and Legalizer follow-up register](../../docs/IntegerFP-Conversion-Coverage.md)
+for implemented coverage, missing judgments worth adding and the validation
+results. Generated rules are not promoted based on synthetic MIR savings.

@@ -2651,6 +2651,8 @@ bool EGraph::merge(EClassId A, EClassId B) {
     W.Const = L.Const;
   if (!W.SplatConst)
     W.SplatConst = L.SplatConst;
+  if (!W.Known)
+    W.Known = L.Known;
   W.NotUndef |= L.NotUndef;
   W.NotPoison |= L.NotPoison;
   for (ENode &N : L.Nodes)

@@ -46,6 +46,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/CodeGenTypes/LowLevelType.h"
+#include "llvm/Support/KnownBits.h"
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -130,6 +131,7 @@ struct EClass {
   /// Analysis: known scalar constant value of the class. Vector constants
   /// remain G_BUILD_VECTOR nodes; see EGraph::getScalarOrSplatConstant.
   std::optional<APInt> Const;
+  std::optional<KnownBits> Known;
   /// Analysis: for a fixed vector, the constant of each lane if the class
   /// has a G_BUILD_VECTOR of one constant class (a splat). A pattern literal
   /// matches it in the width of a lane; the class has no Const, so no fold
@@ -215,6 +217,9 @@ public:
   std::optional<APInt> getScalarOrSplatConstant(EClassId Id) const;
   const InputInfo &getInputInfo(unsigned Idx) const { return Inputs[Idx]; }
   unsigned getNumInputs() const { return Inputs.size(); }
+  void setKnownBits(EClassId Id, KnownBits K) {
+    Classes[find(Id)].Known = std::move(K);
+  }
 
   /// Canonical class ids in increasing order.
   SmallVector<EClassId, 32> getClassIds() const;

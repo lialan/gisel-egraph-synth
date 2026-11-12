@@ -1,0 +1,394 @@
+{
+  "base_commit": "6b30621e4a6687615323a8ded4abfe3a7cfd917d",
+  "cpp": {
+    "passed": 169
+  },
+  "discovered_rules": [
+    "synth_fptosi_d1815a75",
+    "synth_fptoui_8c41624c",
+    "synth_sitofp_85481d55",
+    "synth_uitofp_64edb584"
+  ],
+  "independent_benefit": {
+    "baseline_failures": 0,
+    "better": 0,
+    "candidate_sha256": "c42dc45762cc5cc1478bc5b5506da38b10f9806b4d6663352ed2b2949b14bc9a",
+    "comparable": 14,
+    "compile_or_fallback_changes": 0,
+    "delta": 0,
+    "freeze_sha256": "1e656ec48ec7372f5ed1e077c565eaf3fbfeeb3751e4cf841b4d9e7b05d65a5b",
+    "metric": "static target instructions",
+    "new_rule_applications": 0,
+    "total": 14,
+    "worse": 0
+  },
+  "independent_files": [
+    {
+      "base": {
+        "bytes": 60252,
+        "fallback": [],
+        "insns": 280,
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.09922099999999999,
+        "vgpr": 0
+      },
+      "candidate": {
+        "bytes": 60252,
+        "fallback": [],
+        "insns": 280,
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.10115799999999998,
+        "vgpr": 0
+      },
+      "file": "llvm/test/CodeGen/AMDGPU/GlobalISel/fptosi.bf16.ll",
+      "sha256": "40a3aa7ee14ccddcc4995718dc3f881f8ac68dd859501c763764757b1e23b2b6"
+    },
+    {
+      "base": {
+        "bytes": 58102,
+        "fallback": [],
+        "insns": 218,
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.099921,
+        "vgpr": 0
+      },
+      "candidate": {
+        "bytes": 58102,
+        "fallback": [],
+        "insns": 218,
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.099203,
+        "vgpr": 0
+      },
+      "file": "llvm/test/CodeGen/AMDGPU/GlobalISel/fptoui.bf16.ll",
+      "sha256": "67b4a41686671d95a136ed6324d609b09194895abd8a42b286ff294cd47247a3"
+    },
+    {
+      "base": {
+        "bytes": 11675,
+        "fallback": [],
+        "insns": 22,
+        "rc": 0,
+        "sgpr": 12,
+        "user": 0.022916,
+        "vgpr": 10
+      },
+      "candidate": {
+        "bytes": 11675,
+        "fallback": [],
+        "insns": 22,
+        "rc": 0,
+        "sgpr": 12,
+        "user": 0.023211999999999997,
+        "vgpr": 10
+      },
+      "file": "llvm/test/CodeGen/AMDGPU/dagcombiner-bug-illegal-vec4-int-to-fp.ll",
+      "sha256": "6b24eeda07f5cc81d38ae8f50ca4a1465def37975c06a563b386e91c04b5f56e"
+    },
+    {
+      "base": {
+        "bytes": 6308,
+        "fallback": [],
+        "insns": 26,
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.038442,
+        "vgpr": 0
+      },
+      "candidate": {
+        "bytes": 6308,
+        "fallback": [],
+        "insns": 26,
+        "matched": {
+          "synth_sitofp_85481d55": 2,
+          "synth_uitofp_64edb584": 2
+        },
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.038260999999999996,
+        "vgpr": 0
+      },
+      "file": "llvm/test/CodeGen/AMDGPU/fp-to-int-to-fp.ll",
+      "sha256": "0e034033ff75ba4765c16215a378e7230e6b200647afb3b685f2f9f164f13cc6"
+    },
+    {
+      "base": {
+        "bytes": 38216,
+        "fallback": [],
+        "insns": 265,
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.170626,
+        "vgpr": 0
+      },
+      "candidate": {
+        "bytes": 38216,
+        "fallback": [],
+        "insns": 265,
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.171128,
+        "vgpr": 0
+      },
+      "file": "llvm/test/CodeGen/AMDGPU/fptosi-sat-scalar.ll",
+      "sha256": "e2d893415d7b90febb9f1dc3c79f35586a8e4b19afcecbf116dde65cacc4698c"
+    },
+    {
+      "base": {
+        "bytes": 84720,
+        "fallback": [],
+        "insns": 772,
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.339613,
+        "vgpr": 0
+      },
+      "candidate": {
+        "bytes": 84720,
+        "fallback": [],
+        "insns": 772,
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.327972,
+        "vgpr": 0
+      },
+      "file": "llvm/test/CodeGen/AMDGPU/fptosi-sat-vector.ll",
+      "sha256": "e0d350789cca71fcfbe3d5602b15aeb8671f05292acd4384542213d7bab7f97a"
+    },
+    {
+      "base": {
+        "bytes": 13221,
+        "fallback": [],
+        "insns": 48,
+        "rc": 0,
+        "sgpr": 6,
+        "user": 0.048916,
+        "vgpr": 2
+      },
+      "candidate": {
+        "bytes": 13221,
+        "fallback": [],
+        "insns": 48,
+        "rc": 0,
+        "sgpr": 6,
+        "user": 0.051349,
+        "vgpr": 2
+      },
+      "file": "llvm/test/CodeGen/AMDGPU/fptosi.f16.ll",
+      "sha256": "3b513d4c4bb8da26ca127fea3d1a9100b8a2915f709846917228d5fabe74bcd8"
+    },
+    {
+      "base": {
+        "bytes": 37471,
+        "fallback": [],
+        "insns": 215,
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.16905699999999999,
+        "vgpr": 0
+      },
+      "candidate": {
+        "bytes": 37471,
+        "fallback": [],
+        "insns": 215,
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.167682,
+        "vgpr": 0
+      },
+      "file": "llvm/test/CodeGen/AMDGPU/fptoui-sat-scalar.ll",
+      "sha256": "275abb4ef97786e06cb2761162009d958541d45bf318eab3983d134bea2a854a"
+    },
+    {
+      "base": {
+        "bytes": 84768,
+        "fallback": [],
+        "insns": 718,
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.336927,
+        "vgpr": 0
+      },
+      "candidate": {
+        "bytes": 84768,
+        "fallback": [],
+        "insns": 718,
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.325194,
+        "vgpr": 0
+      },
+      "file": "llvm/test/CodeGen/AMDGPU/fptoui-sat-vector.ll",
+      "sha256": "3df85c949022b01b101a7f5c64a86d738b404f5eb1516b3fc2211bd4da87eaf7"
+    },
+    {
+      "base": {
+        "bytes": 13083,
+        "fallback": [],
+        "insns": 47,
+        "rc": 0,
+        "sgpr": 6,
+        "user": 0.048468,
+        "vgpr": 2
+      },
+      "candidate": {
+        "bytes": 13083,
+        "fallback": [],
+        "insns": 47,
+        "rc": 0,
+        "sgpr": 6,
+        "user": 0.047961,
+        "vgpr": 2
+      },
+      "file": "llvm/test/CodeGen/AMDGPU/fptoui.f16.ll",
+      "sha256": "f80bed8071b76dfe9a5ccc389677d9f1910fb7362658921ff604ec26617aed70"
+    },
+    {
+      "base": {
+        "bytes": 55402,
+        "fallback": [],
+        "insns": 126,
+        "rc": 0,
+        "sgpr": 56,
+        "user": 0.059024999999999994,
+        "vgpr": 22
+      },
+      "candidate": {
+        "bytes": 55402,
+        "fallback": [],
+        "insns": 126,
+        "matched": {
+          "synth_uitofp_64edb584": 9
+        },
+        "rc": 0,
+        "sgpr": 56,
+        "user": 0.058908999999999996,
+        "vgpr": 22
+      },
+      "file": "llvm/test/CodeGen/AMDGPU/fptoui_uitofp.ll",
+      "sha256": "b1245181fc4adc1c1bfaa695861a7b2d5ab0cd75f807131e83185e49326b7aa2"
+    },
+    {
+      "base": {
+        "bytes": 6083,
+        "fallback": [],
+        "insns": 26,
+        "matched": {
+          "synth_xor_535a60d9": 2
+        },
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.038673,
+        "vgpr": 0
+      },
+      "candidate": {
+        "bytes": 6083,
+        "fallback": [],
+        "insns": 26,
+        "matched": {
+          "synth_xor_535a60d9": 2
+        },
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.037846,
+        "vgpr": 0
+      },
+      "file": "llvm/test/CodeGen/AMDGPU/sitofp.f16.ll",
+      "sha256": "f6b3f7d636a3488fa3715698e99dfa88337ef35d31e334837a3e5abad97f8a30"
+    },
+    {
+      "base": {
+        "bytes": 18667,
+        "fallback": [
+          "sitofp_i12_to_bfloat"
+        ],
+        "insns": 284,
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.067296,
+        "vgpr": 0
+      },
+      "candidate": {
+        "bytes": 18667,
+        "fallback": [
+          "sitofp_i12_to_bfloat"
+        ],
+        "insns": 284,
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.064418,
+        "vgpr": 0
+      },
+      "file": "llvm/test/CodeGen/AMDGPU/slp-int-to-fp.ll",
+      "sha256": "12ef1ae8628b06b2e801ac33fd65e9f1da4e2c4e9ac74b4be899368558446e83"
+    },
+    {
+      "base": {
+        "bytes": 6083,
+        "fallback": [],
+        "insns": 26,
+        "matched": {
+          "synth_xor_535a60d9": 2
+        },
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.037582,
+        "vgpr": 0
+      },
+      "candidate": {
+        "bytes": 6083,
+        "fallback": [],
+        "insns": 26,
+        "matched": {
+          "synth_xor_535a60d9": 2
+        },
+        "rc": 0,
+        "sgpr": 0,
+        "user": 0.038156,
+        "vgpr": 0
+      },
+      "file": "llvm/test/CodeGen/AMDGPU/uitofp.f16.ll",
+      "sha256": "601c6ab54c5ee17f0041b881051caf6ea9ed3bb562d1b5d6805749267d80c29b"
+    }
+  ],
+  "lit": {
+    "known_main_failure": "AMDGPU/egraph-combiner-vector.mir",
+    "passed": 11,
+    "same_failure_on_exact_main": true
+  },
+  "llvm_commit": "37a1706d0eac1774701a0a44d9fb4fa542f56fde",
+  "profile_validation": {
+    "AArch64": {
+      "changes": 0,
+      "comparable": 24,
+      "delta": 0,
+      "target": "AArch64",
+      "worse": 0
+    },
+    "AMDGPU": {
+      "changes": 0,
+      "comparable": 14,
+      "delta": 0,
+      "target": "AMDGPU",
+      "worse": 0
+    }
+  },
+  "python": {
+    "final_targeted_errors": 0,
+    "final_targeted_failures": 0,
+    "final_targeted_tests": 68,
+    "generated_files_check": "emit --check and in-tree emission test passed",
+    "interpreter": "Python 3.10; TestCase.enterContext backport for existing Python 3.11 test API",
+    "remaining_profile_state_error": "resolved after measured profile repinning; all-command passed in targeted rerun",
+    "suite_seconds": 166.959,
+    "suite_tests": 613
+  },
+  "rule_catalog": {
+    "new_rules_selected_by_default": 0,
+    "verified": 128
+  }
+}

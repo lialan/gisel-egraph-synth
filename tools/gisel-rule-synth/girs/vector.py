@@ -275,6 +275,7 @@ class LaneFacts:
         self.kz = [enc.kz[ks[0]] for ks in L.var_lanes]
         self.ko = [enc.ko[ks[0]] for ks in L.var_lanes]
         self.xp = [z3.Or([enc.xp[k] for k in ks]) for ks in L.var_lanes]
+        self.fp_values = [[(enc.x[k], enc.xp[k]) for k in ks] for ks in L.var_lanes]
 
 
 def precond_widths(vw, rw=None):
@@ -301,7 +302,7 @@ def violation(src, tgt, vw, const_vars=(), dnf=None, facts=None):
     for the instructions. It is not a proof "for each value of these
     bits": a rule with such a value below the root applies only if that
     value has no other user (interior_choice)."""
-    from . import precond
+    from . import precond, valuefacts
     L = Lanes(vw)
     S, T = L.of(src), L.of(tgt)
     assert len(S) == len(T), 'the replacement has another type'
@@ -321,6 +322,8 @@ def violation(src, tgt, vw, const_vars=(), dnf=None, facts=None):
                      lf.ko[i] == z3.BitVecVal(f[1], w)]
             if len(f) > 2 and f[2]:
                 same.append(z3.Not(lf.xp[i]))
+            for x, poison in lf.fp_values[i]:
+                same.append(valuefacts.constraints(f, x, poison))
     guard = z3.And(same) if same else z3.BoolVal(True)
     return smt.joint_violation(enc, list(zip(S, T)), guard), enc, L
 

@@ -1,0 +1,39 @@
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-mode=rewrite -verify-machineinstrs %s -o - | FileCheck %s
+
+# The same i32/f32 widths need different decisions at different sites.
+---
+name: exact_mask
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0
+    ; CHECK-LABEL: name: exact_mask
+    ; CHECK: G_AND
+    ; CHECK-NOT: G_SITOFP
+    ; CHECK-NOT: G_FPTOSI
+    ; CHECK: SI_RETURN
+    %0:_(i32) = COPY $vgpr0
+    %1:_(i32) = G_CONSTANT i32 16777215
+    %2:_(i32) = G_AND %0, %1
+    %3:_(f32) = G_SITOFP %2
+    %4:_(i32) = G_FPTOSI %3
+    $vgpr0 = COPY %4
+    SI_RETURN implicit $vgpr0
+...
+---
+name: sign_only_not_exact
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0
+    ; CHECK-LABEL: name: sign_only_not_exact
+    ; CHECK: G_SITOFP
+    ; CHECK: G_FPTOSI
+    %0:_(i32) = COPY $vgpr0
+    %1:_(i32) = G_CONSTANT i32 2147483647
+    %2:_(i32) = G_AND %0, %1
+    %3:_(f32) = G_SITOFP %2
+    %4:_(i32) = G_FPTOSI %3
+    $vgpr0 = COPY %4
+    SI_RETURN implicit $vgpr0
+...

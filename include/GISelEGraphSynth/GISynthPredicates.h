@@ -23,6 +23,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
 #include "llvm/CodeGen/GlobalISel/GenericMachineInstrs.h"
+#include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
@@ -30,6 +31,7 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Register.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/DataLayout.h"
@@ -133,10 +135,11 @@ inline bool getScalarWidths(const MachineRegisterInfo &MRI,
 /// MachineIRBuilder::buildExtractVectorElementConstant does for an
 /// extraction. A rule creates the instruction only with an index inside the
 /// vector (the proof has no value for another index).
-inline MachineInstrBuilder
-buildInsertVectorElementConstant(MachineIRBuilder &B, const DstOp &Res,
-                                 const SrcOp &Vec, const SrcOp &Elt,
-                                 unsigned Idx) {
+inline MachineInstrBuilder buildInsertVectorElementConstant(MachineIRBuilder &B,
+                                                            const DstOp &Res,
+                                                            const SrcOp &Vec,
+                                                            const SrcOp &Elt,
+                                                            unsigned Idx) {
   const TargetLowering *TLI = B.getMF().getSubtarget().getTargetLowering();
   LLT IdxTy = TLI->getVectorIdxLLT(B.getDataLayout());
   return B.buildInsertVectorElement(Res, Vec, Elt, B.buildConstant(IdxTy, Idx));
@@ -887,6 +890,8 @@ inline void eraseDeadSourceOp(MachineRegisterInfo &MRI, Register Reg) {
       return;
   Def->eraseFromParent();
 }
+
+#include "GISelEGraphSynth/GISynthValueFacts.inc"
 
 #include "GISelEGraphSynth/GISynthGeneratedPredicates.inc"
 

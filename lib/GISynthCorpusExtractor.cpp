@@ -391,6 +391,22 @@ public:
     write(OS, MF, T);
   }
 
+  void writeFPFacts(json::OStream &J, Register R) const {
+    LLT Ty = MRI.getType(R).getScalarType();
+    unsigned W = Ty.getSizeInBits();
+    if (Ty.isPointer() || Ty.isInteger() || (W != 16 && W != 32 && W != 64))
+      return;
+    auto F = gisynth::getFPValueFacts(VT, MRI, R);
+    J.attributeObject("fp_facts", [&] {
+      J.attribute("classes", unsigned(F.Classes));
+      J.attribute("integral", F.Integral);
+      if (F.Lower) {
+        J.attribute("lower", hex(F.Lower->bitcastToAPInt()));
+        J.attribute("upper", hex(F.Upper->bitcastToAPInt()));
+      }
+    });
+  }
+
   void write(raw_ostream &OS, const MachineFunction &MF, const Tree &T) const {
     // The constrained operations of a tree have one floating-point
     // environment, which is the one of the root: a rule checks the same
@@ -437,6 +453,7 @@ public:
             J.attribute("type", typeName(Ty));
             J.attribute("zero", hex(KB.Zero));
             J.attribute("one", hex(KB.One));
+            writeFPFacts(J, R);
             // A fact like the known bits: a rule that needs it checks it
             // again where it matches.
             J.attribute("noundef", gisynth::isDefinedValue(R, MRI));
@@ -529,6 +546,7 @@ private:
       KnownBits KB = VT.getKnownBits(N.Reg);
       J.attribute("zero", hex(KB.Zero));
       J.attribute("one", hex(KB.One));
+      writeFPFacts(J, N.Reg);
       J.attribute("noundef", isGuaranteedNotToBeUndefOrPoison(N.Reg, MRI));
       J.attribute("uses",
                   static_cast<int64_t>(std::distance(MRI.use_nodbg_begin(N.Reg),
@@ -681,6 +699,31 @@ void forEachVectorTypes(unsigned Opc, const egraph::OpProperties &P,
   }
 }
 
+/// A conversion's type indices distinguish integer and FP even at equal
+/// widths. Legacy targets deliberately collapse these back to scalar LLTs.
+bool setConversionTypes(const egraph::OpProperties &P,
+                        SmallVectorImpl<LLT> &Ts) {
+  using egraph::CastKind;
+  if (!egraph::isFPCast(P.Cast))
+    return true;
+  if (Ts.size() != 2)
+    return false;
+  bool FloatResult =
+      P.Cast == CastKind::FPExtend || P.Cast == CastKind::FPTruncate ||
+      P.Cast == CastKind::SIntToFP || P.Cast == CastKind::UIntToFP;
+  bool FloatInput =
+      P.Cast != CastKind::SIntToFP && P.Cast != CastKind::UIntToFP;
+  for (unsigned I = 0; I < 2; ++I) {
+    unsigned W = Ts[I].getScalarSizeInBits();
+    bool IsFP = I == 0 ? FloatResult : FloatInput;
+    if (IsFP && W != 16 && W != 32 && W != 64)
+      return false;
+    LLT T = IsFP ? LLT::floatIEEE(W) : LLT::integer(W);
+    Ts[I] = Ts[I].isVector() ? LLT::fixed_vector(Ts[I].getNumElements(), T) : T;
+  }
+  return true;
+}
+
 /// Writes what the legalizer of the target does with each operator of the
 /// table: operator -> widths of its type indices -> action, and operator ->
 /// the types of its type indices (fixed vectors) -> action. The synthesizer
@@ -705,7 +748,8 @@ void writeLegality(const MachineFunction &MF) {
   const DataLayout &DL = MF.getDataLayout();
   json::OStream J(OS, 1);
   J.object([&] {
-    J.attribute("version", 2);
+    J.attribute("version", 3);
+    J.attribute("typed_fp_casts", LLT::getUseExtended());
     J.attribute("target", MF.getTarget().getTargetTriple().str());
     J.attribute("cpu", STI.getCPU());
     J.attribute("features", STI.getFeatureString());
@@ -749,7 +793,7 @@ void writeLegality(const MachineFunction &MF) {
                 HasTypes = false;
             }
             std::string Action = "Unsupported";
-            if (HasTypes) {
+            if (HasTypes && setConversionTypes(*P, Types)) {
               Action.clear();
               raw_string_ostream AS(Action);
               AS << LI->getAction({Opc, Types}).Action;
@@ -767,12 +811,10 @@ void writeLegality(const MachineFunction &MF) {
         });
       }
     });
-    SmallVector<unsigned, 8> Lanes(LegalityLanes.begin(),
-                                   LegalityLanes.end());
+    SmallVector<unsigned, 8> Lanes(LegalityLanes.begin(), LegalityLanes.end());
     if (Lanes.empty())
       Lanes = {2, 3, 4, 8};
-    SmallVector<unsigned, 8> Elems(LegalityElems.begin(),
-                                   LegalityElems.end());
+    SmallVector<unsigned, 8> Elems(LegalityElems.begin(), LegalityElems.end());
     if (Elems.empty())
       Elems = {1, 8, 16, 32, 64};
     // The MI operand of each type index, so that a node of the synthesizer
@@ -818,6 +860,10 @@ void writeLegality(const MachineFunction &MF) {
                              [&](ArrayRef<LLT> Types) {
                                if (Types.size() != NumIdx)
                                  return;
+                               SmallVector<LLT, 4> Typed(Types);
+                               if (!setConversionTypes(*P, Typed))
+                                 return;
+                               Types = Typed;
                                std::string Key;
                                for (LLT T : Types)
                                  Key += (Key.empty() ? "" : ",") + lltText(T);

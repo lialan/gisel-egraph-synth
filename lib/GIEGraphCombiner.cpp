@@ -618,7 +618,7 @@ private:
       MDT.emplace(MF);
     return *MDT;
   }
-  /// Known bits for -gisel-egraph-export, computed on first use.
+  /// Value facts for rewrite guards and export, computed on first use.
   GISelValueTracking &getValueTracking() {
     if (!VT)
       VT.emplace(MF);
@@ -841,6 +841,8 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       InputIsCarried.push_back(Carried);
       InputIsPhiOnly.push_back(IsPhiOperand);
     }
+    if (Ty.isScalar() || Ty.isFixedVector())
+      G.setKnownBits(Id, getValueTracking().getKnownBits(Reg));
     Map[Reg] = Id;
     return Id;
   };
@@ -952,6 +954,8 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
         EClassId Id = G.add(N);
         if (Exporting)
           ExportNodes.push_back({Id, std::move(N), MI, I});
+        if (Ty.isScalar() || Ty.isFixedVector())
+          G.setKnownBits(Id, getValueTracking().getKnownBits(Def));
         RegClass[Def] = Id;
         if (P->Shape != OpShape::Phi)
           OrigDefs.push_back({Id, MI, I});
@@ -1600,7 +1604,10 @@ bool EGraphCombinerImpl::run() {
           MI->getOpcode() == TargetOpcode::G_BR)
         continue;
       Region R = formRegion(*MI);
-      Changed |= processRegion(MBB, R);
+      if (processRegion(MBB, R)) {
+        Changed = true;
+        VT.reset();
+      }
     }
   }
   return Changed;

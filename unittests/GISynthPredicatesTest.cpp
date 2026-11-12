@@ -893,3 +893,56 @@ TEST_F(AArch64GISelMITest, EraseDeadSourceOp) {
 }
 
 } // namespace
+
+TEST(GISynthValueFactsTest, PrecisionAgainstAPFloat) {
+  for (unsigned FPWidth : {16u, 32u, 64u})
+    for (bool Signed : {false, true})
+      for (uint32_t Z :
+           {0xff000000u, 0xffff0000u, 0xffffff00u, 0x7fu, 0x80000000u}) {
+        KnownBits K(32);
+        K.Zero = APInt(32, Z);
+        if (!knownIntFitsFP(K, Signed, FPWidth))
+          continue;
+        for (uint32_t X : {0u, 1u, 0x7fffffffu, 0xffffffffu, 0x80000000u,
+                           0x01000001u, 0x0000ffffu}) {
+          APFloat F(getIEEEFormat(FPWidth));
+          auto Status = F.convertFromAPInt(APInt(32, X & ~Z), Signed,
+                                           APFloat::rmNearestTiesToEven);
+          EXPECT_FALSE(Status & APFloat::opInexact);
+          EXPECT_TRUE(F.isFinite());
+        }
+      }
+  KnownBits NonNegative(32);
+  NonNegative.Zero.setSignBit();
+  EXPECT_FALSE(knownIntFitsFP(NonNegative, true, 32));
+  KnownBits Low24(32);
+  Low24.Zero = APInt(32, 0xff000000);
+  EXPECT_TRUE(knownIntFitsFP(Low24, true, 32));
+}
+
+TEST(GISynthValueFactsTest, InwardRangeRounding) {
+  FPValueFacts F;
+  APFloat TooBig(APFloat::IEEEsingle());
+  TooBig.convertFromAPInt(APInt(32, 0x80000000), false,
+                          APFloat::rmNearestTiesToEven);
+  setFiniteBounds(F, TooBig, TooBig);
+  EXPECT_FALSE(knownFPInIntRange(F, true, 32));
+  EXPECT_TRUE(knownFPInIntRange(F, false, 32));
+  EXPECT_FALSE(knownFPInIntRange(FPValueFacts(), true, 32));
+}
+
+TEST_F(AArch64GISelMITest, SynthesizedLegalityAndTypes) {
+  setUp("  %3:_(s64) = G_ADD %0, %1\n");
+  if (!TM)
+    GTEST_SKIP();
+  Register R = findOpcode(*MF, TargetOpcode::G_ADD)->getOperand(0).getReg();
+  LLT S32 = LLT::scalar(32), S64 = LLT::scalar(64), S8 = LLT::scalar(8);
+  EXPECT_TRUE(isLegalSynthOp(*MRI, R, TargetOpcode::G_ADD, {S64, S64, S64}));
+  EXPECT_FALSE(isLegalSynthOp(*MRI, R, TargetOpcode::G_ADD, {S64, S32, S64}));
+  EXPECT_TRUE(isLegalSynthOp(*MRI, R, TargetOpcode::G_SITOFP, {S32, S8}));
+  MF->getProperties().set(MachineFunctionProperties::Property::Legalized);
+  EXPECT_FALSE(isLegalSynthOp(*MRI, R, TargetOpcode::G_SITOFP, {S32, S8}));
+  EXPECT_EQ(makeSynthType(32, 'f', 0, true), S32);
+  EXPECT_EQ(makeSynthType(32, 'f', 2), LLT::fixed_vector(2, LLT::float32()));
+  EXPECT_NE(makeSynthType(32, 'f'), makeSynthType(32, 'i'));
+}
