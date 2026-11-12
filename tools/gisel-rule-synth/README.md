@@ -53,8 +53,13 @@ remaining MIR. Before concrete SMT checks and generalization, a known-rule
 index skips an identical source/replacement pair only when its proved widths,
 constant requirements, vector applicability, guard, and one-use requirements
 cover the instance.
-It does not blacklist a source opcode, root, or rule family. Multi-output
-and sibling searches retain their single-root seeds, even if already known.
+It does not blacklist a source opcode, root, or rule family. A covered
+candidate is still a result of the search, without a proof: it bounds the
+other candidates like a proved one, so the result of a search does not
+depend on what is known. Multi-output and sibling searches take it from
+the catalog as their single-root seed. A known rule that needs one use is
+a seed too, because a multi-output rule gives the inner value to its other
+users.
 
 ```sh
 # Normal run: use committed K/B and shared local progress.
@@ -97,20 +102,70 @@ machine measurements and local caches do not belong in Git.
 
 Local progress defaults to `.cache/girs/` (ignored by Git). Set `cache_dir`
 in a mine configuration or `synth --cache DIR` to share it across run
-directories. It contains atomic instance checkpoints, newly verified local
-rules and their proofs, a SQLite proof-obligation cache, and compiler builds.
+directories. It contains the search queue, newly verified local rules and
+their proofs, a SQLite proof-obligation cache, and compiler builds.
 Proof keys include complete SMT declarations, requested model values and
 semantic identity, independent of execution quotas. Increasing time, term
 or proof budgets reuses decided SAT/UNSAT obligations; UNKNOWN is retried.
-Completed instances are reused only for the same search domain and knowledge.
-Truncated searches are never marked exhausted. Measurement checkpoints also
-bind compiler bytes, input bytes, target, flags and disabled rule records.
+Measurement checkpoints also bind compiler bytes, input bytes, target,
+flags and disabled rule records.
+
+### The search queue
+
+`agenda.sqlite3` in the cache directory has one row for each search task:
+an instance (`single`), the extra root forms of an instance with an inner
+output (`alts`), the multi-output search on the seeds of an instance
+(`region`), and a group of roots (`sibling`). A row records whether the
+search is complete, the limits that ended it, the budgets it had, and how
+many runs searched it.
+
+```
+  run N                               agenda.sqlite3
+  -----                               --------------
+  1. multi-output tasks on rules      task        state     ended by   runs
+     of earlier runs (multi_share)    single a1   complete  -          1
+  2. single-output tasks:             single b7   partial   terms      2
+       new tasks, by value            single c3   partial   time       1
+       then open tasks, least         region d9   complete  -          1
+       searched first                 sibling e2  (no row: not searched)
+  3. multi-output tasks on the
+     rules of this run
+```
+
+* A complete task is not searched again, and it does not use
+  `max_instances` or `max_pairs`. These limits count the tasks that a run
+  searches.
+* A task that the deadline ended is open: the next run with the same
+  budgets continues it. A task that the proof budget ended is open while
+  each search decides more candidates (decided proofs are in the proof
+  cache).
+* A task that a term, evaluation, candidate or solver limit ended opens
+  only when that limit is higher than before. Until then it is
+  `closed_at_this_depth`, not complete.
+* A row belongs to one search domain (semantic model, search method,
+  grammar and synthesis limits). Budgets are the depth inside a domain.
+  `--refresh-search` searches every task once more.
+* `multi_share` (default 0.3) is the part of `time_budget_s` that the
+  multi-output tasks on rules of earlier runs have before the single-output
+  search. What they do not use goes to that search.
+
+`rules.stats.json` reports the state of the queue (`queue`, with `left` =
+the tasks that a run with the same budgets still searches), the time by
+kind (`cost_seconds`: enumeration, proof, files, other) and the outcome of
+the candidates (`candidate_fate`). The discovery stage of `mine` stays
+pending while `left` is not zero, so the same command continues the search.
+
+`eval/budget_rounds.py --config C --run-dir D --rounds N` runs N discovery
+rounds with the time budget of the configuration and records the queue,
+the new rules and the cost after each round. With one cache directory for
+each arm it compares one long run with several short runs of the same
+total budget.
 
 No new verified rules means no candidate rebuild, selection, or held-out
 evaluation. The report records `no_new_rules`, not an exhaustive-search claim.
 Increasing a budget does not invalidate the baseline build or corpus
-extraction. Search-method changes invalidate instance checkpoints but not
-valid proof obligations; semantic changes require explicit revalidation.
+extraction. Search-method changes start a new search domain in the queue
+but keep valid proof obligations; semantic changes require explicit revalidation.
 
 The current checkpoint boundary is a candidate/proof or completed instance.
 Partially built term banks are regenerated; this is not a serialized bank
@@ -394,9 +449,9 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
 
    Instances are visited by corpus frequency times instructions at stake,
    with a share (`--explore-share`) for the rarest root operators. Refuting
-   SMT models become samples for the rest of the run. The proved candidates
-   of an instance are kept in `--cache` by the instance, the limits and the
-   model hash; an UNKNOWN answer is not kept.
+   SMT models become samples for the rest of the run. With `--cache`, the
+   result of each instance is a row of the search queue (see "The search
+   queue"): later runs search the instances that have no complete row.
 2. **Generalization** (`synth.py`, `precond.py`). One rule per (source,
    replacement), widths abstracted. CEGIS over a known-bits grammar finds
    *every* minimal sufficient conjunction, not just the first; strictly

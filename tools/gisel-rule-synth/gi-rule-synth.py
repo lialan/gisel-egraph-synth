@@ -18,6 +18,8 @@ commands do not.
 """
 
 import argparse
+import collections
+import contextlib
 import copy
 import concurrent.futures
 import hashlib
@@ -401,49 +403,27 @@ def _model_sha():
         if f.endswith('.py')))
 
 
-class _DiscoveryCache:
-    """The proved concrete candidates of an instance, by a key of the
-    instance, the limits of the search and the model. A change of the
-    model or of a budget is a different key, so the search runs again. A
-    search with a solver answer that is not a proof and not a refutation is
-    not stored: the next run tries again."""
+def _backend(timeout_ms):
+    """The solver, with a count of the checks without a decision: a task
+    with such a check is not complete."""
+    from girs import smt
 
-    def __init__(self, path, limits, timeout_ms, knowledge=None):
-        self.path = path
-        self.ident = repr((sorted(limits.identity().items()), timeout_ms,
-                           _model_sha(), knowledge))
-        self.hits = self.stored = 0
-        if path:
-            os.makedirs(path, exist_ok=True)
+    class Backend(smt.Z3Backend):
+        unknowns = 0
 
-    def _file(self, inst):
-        h = hashlib.sha256(repr((self.ident, inst.key(), inst.vk,
-                                 getattr(inst, 'lifted', False),
-                                 inst.interior_uses, inst.const_vars,
-                                 inst.flags)).encode())
-        return os.path.join(self.path, h.hexdigest()[:24] + '.json')
+        def _check(self, formula, want_model_of=None):
+            r = super()._check(formula, want_model_of)
+            self.unknowns += r.status not in ('sat', 'unsat')
+            return r
+    return Backend(timeout_ms=timeout_ms)
 
-    def get(self, inst):
-        from girs import ir
-        if not self.path or not os.path.exists(self._file(inst)):
-            return None
-        with open(self._file(inst)) as f:
-            rec = json.load(f)
-        self.hits += 1
-        return ([{'tgt': ir.from_json(t), 'const_vars': tuple(cv)}
-                 for t, cv in zip(rec['candidates'], rec['const_vars'])],
-                rec['stats'], rec['log'])
 
-    def put(self, inst, cands, st, log):
-        from girs import ir, known
-        if not self.path or st['smt_unknown'] or st['stop'] not in (
-                'complete', 'no_signature', 'source_always_poison'):
-            return
-        known.write({'candidates': [ir.to_json(c['tgt']) for c in cands],
-                       'const_vars': [list(c.get('const_vars', ()))
-                                      for c in cands],
-                       'stats': st, 'log': log}, self._file(inst))
-        self.stored += 1
+def _instance_task(inst):
+    """The key of the search of an instance in the agenda (every value of
+    the instance that a search reads)."""
+    from girs import agenda
+    return agenda.task_key(inst.key(), getattr(inst, 'lifted', False),
+                           inst.interior_uses, inst.const_vars, inst.flags)
 
 
 def _schedule(insts, share):
@@ -483,8 +463,8 @@ def _schedule(insts, share):
 
 
 def cmd_synth(args):
-    from girs import compose, corpus, discover, egraph, ir, region, \
-        sibling, smt, synth, vector, known, history
+    from girs import agenda, compose, corpus, discover, egraph, ir, \
+        region, sibling, smt, synth, vector, known, history
 
     if args.mode == 'semantics-only' and (args.egraph or args.compose_corpus
                                           or args.compose_axioms):
@@ -503,15 +483,24 @@ def cmd_synth(args):
             local = empty  # Old semantic model: keep the file for inspection.
         knowledge, _ = known.merge(baseline, local['rules'])
     known_index = known.Index(knowledge)
+    seconds = {}
+    clock = collections.Counter()
+
+    @contextlib.contextmanager
+    def timed(name):
+        t = time.monotonic()
+        try:
+            yield
+        finally:
+            clock[name] += time.monotonic() - t
+
     files = _corpus_files(args.corpus)
-    insts, cstats = corpus.load(files)
+    with timed('corpus_load'):
+        insts, cstats = corpus.load(files)
     # Most valuable first: occurrences times the instructions at stake.
     insts.sort(key=lambda i: (-len(i.prov) * ir.cost(i.expr),
                               ir.to_sexpr(i.expr), i.vw, i.facts))
-    insts = _schedule(insts, args.explore_share)
-    if args.max_instances:
-        insts = insts[:args.max_instances]
-    backend = smt.Z3Backend(timeout_ms=args.timeout_ms)
+    backend = _backend(args.timeout_ms)
     if args.cache:
         backend.history = history.Proofs(args.cache, known.semantics_sha())
     if args.time_budget_s:
@@ -529,111 +518,330 @@ def cmd_synth(args):
                            capability=cap)
     slim = synth.SynthLimits(max_atoms=args.max_atoms)
     ctx = discover.Context(dlim)
-    dlim.deadline = backend.deadline
-    # A known single-output rewrite may seed a new multi-output rule.
-    ctx.known = None if (args.refresh_search or args.regions or
-                         args.siblings) else known_index
+    deadline = backend.deadline
+
+    def set_deadline(d):
+        backend.deadline = dlim.deadline = d
+
+    def late():
+        return backend.deadline is not None and \
+            time.monotonic() >= backend.deadline
+    set_deadline(deadline)
+    # A known rule is not found again: a candidate that it covers is a
+    # result of the search without a proof, and the seed of a rule with
+    # several outputs.
+    ctx.known = None if args.refresh_search else known_index
     sy = synth.Synthesizer(backend, slim, proof_dir=args.proofs)
     sy.known = ctx.known
+    # The rules with several outputs on known rules, made before the
+    # rules of this run have their final disjuncts (sy.finalize).
+    sy_multi = synth.Synthesizer(backend, slim, proof_dir=args.proofs)
+    # The tasks of the search and their state from the earlier runs.
+    ag = agenda.Agenda(args.cache or None,
+                       agenda.domain(dlim.identity(), vars(slim)),
+                       agenda.depth(dlim.identity(), args.timeout_ms),
+                       reopen=args.refresh_search)
     dstats = {'instances': 0, 'with_candidates': 0, 'candidates': 0,
               'not_searched_time_budget': 0}
     dstats.update(discover.new_stats())
     stops = {}
-    # Discoveries whose source has a value below the root with a user
-    # outside the tree: candidates for a rule with several outputs.
-    joint = []
-    # Instance -> the replacements of its root that became rules: a rule
-    # for two roots must be cheaper than they are.
-    found = {}
-    cache = _DiscoveryCache(os.path.join(args.cache, 'instances')
-                            if args.cache and not args.refresh_search else None,
-                            dlim, args.timeout_ms,
-                            known.digest(knowledge['rules']))
+    tkey = {id(i): _instance_task(i) for i in insts}
+    by_ikey = {i.key(): i for i in insts}
+    # (task, replacement of the root) -> the rule of this run.
+    new_rule = {}
+    stored = {}
     slog = open(args.search_log, 'w') if args.search_log else None
-    seconds = {}
-    t = time.monotonic()
-    t_synth = 0.0
-    for inst in insts:
-        if backend.deadline is not None and time.monotonic() >= backend.deadline:
-            # The budget ended the search: these instances have no result.
-            dstats['not_searched_time_budget'] += 1
-            continue
+
+    def targets_of(inst):
+        """The replacements of the root of an instance that a search
+        found: [(replacement, inputs of its computed constants)]."""
+        k = tkey[id(inst)]
+        if k not in stored:
+            stored[k] = [
+                (ir.from_json(t), tuple(cv)) for stage in ('single', 'alts')
+                for t, cv in (ag.result(stage, k) or {}).get('targets', ())]
+        return stored[k]
+
+    def seeds(inst):
+        """The replacements of the root that are rules: [(replacement,
+        rule id, the rule is of this run)]. A rule of this run has its
+        final form after sy.finalize."""
+        k, out = tkey[id(inst)], []
+        for tgt, cv in targets_of(inst):
+            rid = new_rule.get((k, tgt))
+            if rid is None:
+                rid = known_index.covers(inst, tgt, cv or None, count=False,
+                                         seed=True)
+                if rid is not None:
+                    out.append((tgt, rid, False))
+            elif rid in sy.rules:
+                out.append((tgt, rid, True))
+        return out
+
+    def undecided(reasons, unknowns):
+        """Adds, to the reasons of a task, a check without a decision
+        since ``unknowns``. After the deadline it is the deadline that
+        ended the check."""
+        if 'unknown' in reasons or backend.unknowns != unknowns:
+            reasons.discard('unknown')
+            reasons.add('time' if late() else 'unknown')
+        return reasons
+
+    def search_alternatives(inst):
+        """A result of an instruction with several results that also
+        computes a value below the root: a replacement of the root that
+        the term bank hides behind a term with the same samples. It is a
+        seed of a rule with several outputs."""
+        k = tkey[id(inst)]
+        if not args.regions or not region.interior_outputs(inst) or \
+                not ag.pending('alts', k):
+            return
+        unknowns = backend.unknowns
+        have = {t for t, _ in targets_of(inst)}
+        out = []
+        for alt in region.root_alternatives(inst, dlim, ctx):
+            if alt in have:
+                continue
+            dstats['region_alternatives'] = dstats.get(
+                'region_alternatives', 0) + 1
+            if ctx.known is not None and \
+                    known_index.covers(inst, alt, count=False):
+                out.append(alt)
+                continue
+            if discover.prove_concrete(inst, alt, backend).status != 'unsat':
+                continue
+            out.append(alt)
+            rid = sy.add(inst, alt, provenance={
+                'discovery': 'joint-region-alternative+smt'})
+            if rid:
+                new_rule[k, alt] = rid
+        ag.record('alts', k, undecided(set(), unknowns), result={
+            'targets': [[ir.to_json(a), []] for a in out]})
+        stored.pop(k, None)
+
+    def search_one(inst):
+        k = tkey[id(inst)]
         dstats['instances'] += 1
+        unknowns = backend.unknowns
+        log = {}
         if vector.has_vector(inst.vw, inst.expr):
             # The lanes of the source give the replacement.
             dstats['vector_instances'] = dstats.get('vector_instances',
                                                     0) + 1
-            for tgt in vector.candidates(inst.expr, inst.vw):
-                dstats['candidates'] += 1
-                sy.add(inst, tgt)
-            continue
-        hit = cache.get(inst)
-        if hit:
-            cands, st, log = hit
+            cands = [{'tgt': t} for t in vector.candidates(inst.expr,
+                                                          inst.vw)]
+            st, stop = {}, None
         else:
-            log = {}
-            cands, st = discover.discover(inst, backend, dlim, ctx, log)
-            cache.put(inst, cands, st, log)
-        stop = st.pop('stop')
-        stops[stop] = stops.get(stop, 0) + 1
-        st['stop'] = stop
-        for k in st:
-            if k != 'stop':
-                dstats[k] = dstats.get(k, 0) + st[k]
-        if cands:
-            dstats['with_candidates'] += 1
-        ts = time.monotonic()
+            with timed('discovery'):
+                cands, st = discover.discover(inst, backend, dlim, ctx, log)
+            stop = st.pop('stop')
+            stops[stop] = stops.get(stop, 0) + 1
+            if cands:
+                dstats['with_candidates'] += 1
+        reasons = set(st.pop('limits', ()))
+        for name in st:
+            dstats[name] = dstats.get(name, 0) + st[name]
         rids = []
-        for c in cands:
-            dstats['candidates'] += 1
-            cinst = inst
-            if c.get('const_vars'):
-                # The replacement computes with constants of the source:
-                # the rule matches these inputs as constants.
-                cinst = copy.copy(inst)
-                cinst.const_vars = tuple(c['const_vars'])
-                dstats['computed_constants'] = dstats.get(
-                    'computed_constants', 0) + 1
-            rids.append(sy.add(cinst, c['tgt']))
-            if rids[-1]:
-                found.setdefault(inst.key(), []).append(c['tgt'])
-            if args.regions and rids[-1] and region.interior_outputs(inst):
-                joint.append((inst, c['tgt'], rids[-1]))
-        if args.regions:
-            # A result of an instruction with several results that also
-            # computes a value below the root: a candidate that the term
-            # bank hides behind a term with the same samples.
-            have = {c['tgt'] for c in cands}
-            for alt in region.root_alternatives(inst, dlim, ctx):
-                if alt in have:
+        with timed('generalization'):
+            for c in cands:
+                if c.get('known'):
+                    rids.append(c['known'])
                     continue
-                dstats['region_alternatives'] = dstats.get(
-                    'region_alternatives', 0) + 1
-                if discover.prove_concrete(inst, alt,
-                                           backend).status != 'unsat':
-                    continue
-                rid = sy.add(inst, alt, provenance={
-                    'discovery': 'joint-region-alternative+smt'})
-                if rid:
-                    joint.append((inst, alt, rid))
-        t_synth += time.monotonic() - ts
-        if slog and (log.get('candidates') or stop != 'complete'):
+                dstats['candidates'] += 1
+                cinst = inst
+                if c.get('const_vars'):
+                    # The replacement computes with constants of the
+                    # source: the rule matches these inputs as constants.
+                    cinst = copy.copy(inst)
+                    cinst.const_vars = tuple(c['const_vars'])
+                    dstats['computed_constants'] = dstats.get(
+                        'computed_constants', 0) + 1
+                rids.append(sy.add(cinst, c['tgt']))
+                if rids[-1]:
+                    new_rule[k, c['tgt']] = rids[-1]
+        ag.record('single', k, undecided(reasons, unknowns),
+                  st.get('fingerprint_matches', 0) - st.get('not_tried', 0),
+                  {'targets': [[ir.to_json(c['tgt']),
+                                list(c.get('const_vars', ()))]
+                               for c in cands]})
+        stored.pop(k, None)
+        with timed('generalization'):
+            search_alternatives(inst)
+        if slog and stop and (log.get('candidates') or stop != 'complete'):
             p0 = inst.prov[0]
-            # The rule of each proved candidate, in order (null: no
-            # precondition was found for the generalized rule).
+            # The rule of each candidate, in order (null: no precondition
+            # was found for the generalized rule).
             slog.write(json.dumps(dict(
                 log, source=ir.to_sexpr(inst.expr), vw=list(inst.vw),
                 facts=inst.to_json()['facts'], occurrences=len(inst.prov),
                 example={'file': os.path.basename(p0[0]), 'fn': p0[1],
-                         'root': p0[2]}, cached=bool(hit),
+                         'root': p0[2]},
                 proved=[ir.to_sexpr(c['tgt']) for c in cands],
                 rules=rids), sort_keys=True) + '\n')
-    if slog:
-        slog.close()
+
+    # Rules with several outputs: the same term bank and the same proofs,
+    # for the root and for the values below it that have other users
+    # (regions), and for the root of a tree and other instructions of the
+    # block that read values of the region (siblings).
+    rstats, pair_stats = {}, {}
+    sstats = dict.fromkeys((
+        'pairs', 'pairs_with_candidates', 'candidates', 'smt_checks',
+        'refuted_concrete', 'counterexamples', 'unknown', 'no_precondition',
+        'bank_full', 'rules', 'rules_with_two_siblings', 'reused'), 0)
+    pairs, sib_keys = [], {}
+    multi = {'pairs_left': args.max_pairs, 'loaded': False}
+
+    def total(into, st):
+        for name, v in st.items():
+            if isinstance(v, bool):
+                into[name] = into.get(name, False) or v
+            elif isinstance(v, (int, float)):
+                into[name] = into.get(name, 0) + v
+
+    def region_task(inst, sd):
+        return agenda.task_key('region', tkey[id(inst)],
+                               sorted(ir.to_sexpr(t) for t, _, _ in sd))
+
+    def region_stage(synthesizer, final):
+        """The region tasks of the instances that were searched: one task
+        is the seeds of one instance. Not ``final``: only the tasks on
+        known rules (a rule of this run has its final form after
+        sy.finalize)."""
+        tasks = []
+        for inst in insts:
+            if late():
+                break
+            if not region.interior_outputs(inst) or \
+                    ag.row('single', tkey[id(inst)]) is None:
+                continue
+            if not final:
+                search_alternatives(inst)
+            sd = seeds(inst)
+            if not sd or (not final and any(new for _, _, new in sd)):
+                continue
+            key = region_task(inst, sd)
+            if ag.pending('region', key):
+                tasks.append((key, [(inst, tgt, rid) for tgt, rid, _ in sd]))
+        for key, group in tasks:
+            if late():
+                break
+            # region.extend reads the rule of a root in the rules of the
+            # synthesizer: a known rule is there for this call.
+            lent = {rid for _, _, rid in group
+                    if rid not in synthesizer.rules and
+                    rid in known_index.rules}
+            for rid in lent:
+                synthesizer.rules[rid] = known_index.rules[rid]
+            unknowns = backend.unknowns
+            st = region.extend(synthesizer, group, backend, dlim, ctx)
+            for rid in lent:
+                del synthesizer.rules[rid]
+            reasons = undecided(set(), unknowns)
+            if st.pop('deadline_reached', False):
+                reasons.add('time')
+            ag.record('region', key, reasons)
+            total(rstats, st)
+
+    def load_groups():
+        if multi['loaded']:
+            return
+        with timed('pair_load'):
+            for p in sibling.load_pairs(files, pair_stats):
+                # The search and the proof of a group are for scalar
+                # values (vector.py has the model of a vector operator,
+                # by lanes).
+                if vector.has_vector(p.inst.vw, p.inst.expr, *p.sibs):
+                    pair_stats['with_a_vector'] = pair_stats.get(
+                        'with_a_vector', 0) + 1
+                else:
+                    pairs.append(p)
+        multi['loaded'] = True
+
+    def sibling_stage(synthesizer):
+        """The sibling tasks: the loop of sibling.extend, with the record
+        of each group."""
+        load_groups()
+        todo = []
+        for p in pairs:
+            base = by_ikey.get(p.base_key)
+            # A group is cheaper than the rules of its root: the root is
+            # searched first.
+            if base is None or ag.row('single', tkey[id(base)]) is not None:
+                todo.append(p)
+        new, retry = ag.order('sibling', todo, pair_task)
+        for p in new + retry:
+            if late() or (args.max_pairs and multi['pairs_left'] <= 0):
+                break
+            multi['pairs_left'] -= 1
+            sstats['pairs'] += 1
+            inst, sibs = p.inst, list(p.sibs)
+            base = by_ikey.get(p.base_key)
+            found = [t for t, _, _ in seeds(base)] if base is not None \
+                else []
+            best = min([region.joint_cost([inst.expr] + sibs)] + [
+                region.joint_cost([t] + sibs + sibling.kept_nodes(inst))
+                for t in found])
+            unknowns = backend.unknowns
+            try:
+                cands = sibling.search(p, dlim, ctx, best)
+            except discover._Full as full:
+                sstats['bank_full'] += 1
+                ag.record('sibling', pair_task(p), [
+                    'time' if full.args[1] == 'time' else 'terms'])
+                continue
+            if cands:
+                sstats['pairs_with_candidates'] += 1
+            for _, ra, rb in cands[:sibling.MAX_TRIES]:
+                sstats['candidates'] += 1
+                if sibling.add(synthesizer, sib_keys, p, ra, rb, sstats):
+                    break
+            ag.record('sibling', pair_task(p), undecided(set(), unknowns))
+        for rid in sib_keys.values():
+            r = synthesizer.rules.get(rid)
+            if r is not None:
+                r['precondition'] = synth.precondition_text(r)
+                r['width_specific'] = all(len(d['width_maps']) == 1
+                                          for d in r['disjuncts'])
+
+    def pair_task(p):
+        return agenda.task_key('sibling', p.key())
+
+    start = time.monotonic()
+    if (args.regions or args.siblings) and ag.rows:
+        # First the tasks on the rules of the earlier runs, with a part
+        # of the time of this run: a search for one output that takes all
+        # of the time does not leave them out. What they do not use goes
+        # to the search for one output.
+        share = None if deadline is None else \
+            (deadline - start) * args.multi_share
+        if args.regions:
+            set_deadline(None if share is None else start + share / (
+                2 if args.siblings else 1))
+            with timed('regions'):
+                region_stage(sy_multi, False)
+        if args.siblings:
+            set_deadline(None if share is None else start + share)
+            with timed('siblings'):
+                sibling_stage(sy_multi)
+        set_deadline(deadline)
+
+    # The search for one output: the instances that were not searched, by
+    # value and with a share for the rare operators, then the instances
+    # that this run can take further, least searched first.
+    new, retry = ag.order('single', insts, lambda i: tkey[id(i)])
+    queue = _schedule(new, args.explore_share) + retry
+    if args.max_instances:
+        queue = queue[:args.max_instances]
+    for inst in queue:
+        if late():
+            # The budget ended the search: these instances have no result.
+            dstats['not_searched_time_budget'] += 1
+            continue
+        if ag.pending('single', tkey[id(inst)]):
+            search_one(inst)
     dstats['stop'] = dict(sorted(stops.items()))
-    dstats['cache'] = {'hits': cache.hits, 'stored': cache.stored}
-    seconds['discovery'] = round(time.monotonic() - t - t_synth, 2)
-    seconds['generalization'] = round(t_synth, 2)
+    seconds['discovery'] = round(clock['discovery'], 2)
+    seconds['generalization'] = round(clock['generalization'], 2)
 
     # The second candidate source: the rewrites of the e-graph combiner.
     # A candidate goes through the same generalization and proofs.
@@ -712,6 +920,8 @@ def cmd_synth(args):
             for k in st:
                 pstats[k] += st[k]
             for c in proved:
+                if c.get('known'):
+                    continue
                 pstats['proved'] += 1
                 rid = sy.add(inst, c['tgt'], provenance={
                     'discovery': 'composition',
@@ -733,25 +943,45 @@ def cmd_synth(args):
         target_cost_search or args.semantic_variants > 1))
     seconds['selection_of_disjuncts'] = round(time.monotonic() - t, 2)
 
-    # Rules with several outputs: the same term bank and the same proofs,
-    # for the root and for the values below it that have other users.
-    rstats = {}
-    if args.regions and (backend.deadline is None or time.monotonic() < backend.deadline):
-        t = time.monotonic()
-        rstats = region.extend(sy, joint, backend, dlim, ctx)
-        seconds['regions'] = round(time.monotonic() - t, 2)
-    # Rules for several roots: the root of a tree and other instructions
-    # of the block that read values of the region.
-    sstats = {}
-    if args.siblings and (backend.deadline is None or time.monotonic() < backend.deadline):
-        t = time.monotonic()
-        pair_stats = {}
-        pairs = sibling.load_pairs(files, pair_stats)
-        sstats = sibling.extend(sy, pairs, found, backend, dlim, ctx,
-                                args.max_pairs)
+    # The other tasks with several outputs: on the rules of this run, and
+    # on what the first part of the time did not reach.
+    for rid, r in sy_multi.rules.items():
+        sy.rules.setdefault(rid, r)
+    if args.regions and not late():
+        with timed('regions'):
+            region_stage(sy, True)
+    if args.siblings and not late():
+        with timed('siblings'):
+            sibling_stage(sy)
+    if slog:
+        slog.close()
+    if args.siblings:
         sstats['corpus'] = pair_stats
-        seconds['siblings'] = round(time.monotonic() - t, 2)
+    else:
+        sstats = {}
+    # The state of the tasks after this run: what a later run searches.
+    queue_stats = {'single': ag.summary('single', tkey.values())}
+    if args.regions:
+        with_outputs = [i for i in insts if region.interior_outputs(i)]
+        queue_stats['alts'] = ag.summary(
+            'alts', [tkey[id(i)] for i in with_outputs])
+        queue_stats['region'] = ag.summary('region', [
+            region_task(i, sd) for i in with_outputs
+            for sd in [seeds(i)] if sd])
+    if args.siblings:
+        # A run that ended before the search of the groups: they are
+        # tasks that are left, like the instances.
+        load_groups()
+        queue_stats['sibling'] = ag.summary(
+            'sibling', [pair_task(p) for p in pairs])
+    queue_stats['left'] = sum(q['not_searched'] + q['open']
+                              for q in queue_stats.values())
+    ag.close()
+    for name in ('regions', 'siblings', 'pair_load', 'corpus_load'):
+        if clock[name]:
+            seconds[name] = round(clock[name], 2)
 
+    t_write = time.monotonic()
     rules = [synth.strip_private(sy.rules[rid]) for rid in sorted(sy.rules)]
     for r in rules:
         if target_cost_search:
@@ -828,7 +1058,34 @@ def cmd_synth(args):
     by_class = {}
     for r in rules:
         by_class[r['class']] = by_class.get(r['class'], 0) + 1
+    seconds['write'] = round(time.monotonic() - t_write, 2)
     seconds['total'] = round(time.monotonic() - t0, 2)
+    # Where the time of the run went. The parts do not overlap: the
+    # solver time of the search is not in 'enumeration'.
+    es = ctx.stats()['seconds']
+    cost = {'enumeration': round(es.get('bank_build', 0) +
+                                 es.get('bank_eval', 0), 2),
+            'proof': round(backend.seconds, 2),
+            'files': round(seconds.get('corpus_load', 0) +
+                           seconds.get('pair_load', 0) + seconds['write'],
+                           2)}
+    cost['other'] = round(seconds['total'] - sum(cost.values()), 2)
+    # What became of the candidates of the search for one output.
+    fate = {'matched_samples': dstats['fingerprint_matches'],
+            'known_rule': dstats['known_candidates'],
+            'refuted_by_counterexample': dstats['cex_filtered'],
+            'worse_than_a_proved_one': dstats['dominated'],
+            'refuted_by_solver': dstats['smt_refuted'],
+            'solver_unknown': dstats['smt_unknown'],
+            'not_tried': dstats['not_tried'],
+            'proved': dstats['candidates'],
+            'new_rule': sy.stats['generalized'],
+            'added_to_a_rule': sy.stats['reused'],
+            'not_generalized': sy.stats['rejected'],
+            'new_rule_emittable': sum(
+                1 for r in rules
+                if r['id'] in set(db['incremental']['delta']) and
+                r.get('emission') == 'yes')}
     import resource
     stats = {'provenance': _provenance(), 'seconds': seconds,
              'peak_rss_mb': resource.getrusage(
@@ -837,7 +1094,8 @@ def cmd_synth(args):
              'solver_calls': backend.calls,
              'solver_seconds': round(backend.seconds, 2),
              'discovery': dstats, 'enumeration': ctx.stats(),
-             'incremental': db['incremental'],
+             'incremental': db['incremental'], 'queue': queue_stats,
+             'cost_seconds': cost, 'candidate_fate': fate,
              'proof_cache': {'hits': backend.history.hits,
                              'stored': backend.history.stored}
                             if backend.history else {},
@@ -1266,6 +1524,12 @@ def build_parser():
     p.add_argument('--max-pairs', type=int, default=0,
                    help='budget: groups of roots that --siblings searches '
                         '(0: all)')
+    p.add_argument('--multi-share', type=float, default=0.3,
+                   help='the part of --time-budget-s that the tasks with '
+                        'several outputs (--regions, --siblings) on the '
+                        'rules of earlier runs have before the search for '
+                        'one output; what they do not use goes to that '
+                        'search')
     p.add_argument('--explore-share', type=float, default=0.2,
                    help='the part of the search order that goes to the '
                         'root operators with the fewest instances so far '

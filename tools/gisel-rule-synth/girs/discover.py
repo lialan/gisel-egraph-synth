@@ -943,7 +943,8 @@ def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
     concrete facts. A refuting model becomes a sample: it filters the
     remaining candidates and is kept for later instances. ``const_vars``
     gives, for a candidate with computed constants, the inputs that they
-    read."""
+    read. A candidate that a known rule of ``ctx.known`` covers is in the
+    result with the id of that rule ('known') and without a proof."""
     out = []
     const_vars = const_vars or {}
     cex = []
@@ -981,6 +982,15 @@ def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
         if log is not None:
             log.append({'tgt': ir.to_sexpr(tgt), 'status': status})
 
+    def full(n):
+        """The limit of candidates, after candidate ``n``."""
+        if len(out) < limits.max_candidates:
+            return False
+        if n + 1 < len(cands):
+            stats['stop'] = 'candidate_limit'
+            stats['not_tried'] = len(cands) - n - 1
+        return True
+
     stats['stop'] = 'complete'
     for n, tgt in enumerate(cands):
         if limits.deadline is not None and time.monotonic() >= limits.deadline:
@@ -989,9 +999,22 @@ def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
             break
         ctx.count_ops(tgt, 'fingerprint_matches')
         known = getattr(ctx, 'known', None)
-        if known is not None and known.covers(inst, tgt, const_vars.get(tgt)):
+        rid = None if known is None else \
+            known.covers(inst, tgt, const_vars.get(tgt))
+        if rid is not None:
+            # A known rule applies to the instance: a result without a
+            # proof and without a new rule ('known' is the id of the
+            # rule). Like a proved candidate it makes a worse candidate
+            # pointless and it counts for the limit of candidates, so the
+            # result of a search does not depend on what is known. It is
+            # also the seed of a rule with several outputs.
             stats['known_candidates'] = stats.get('known_candidates', 0) + 1
             note(tgt, 'known_rule')
+            out.append({'tgt': tgt, 'known': rid,
+                        'cost': ir.rule_cost(tgt, const_vars.get(tgt, ())),
+                        'const_vars': tuple(const_vars.get(tgt, ()))})
+            if full(n):
+                break
             continue
         if any(not refines_on(inst, tgt, e) for e in cex):
             stats['cex_filtered'] += 1
@@ -1026,10 +1049,7 @@ def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
         out.append({'tgt': tgt, 'proof': r,
                     'cost': ir.rule_cost(tgt, const_vars.get(tgt, ())),
                     'const_vars': tuple(const_vars.get(tgt, ()))})
-        if len(out) >= limits.max_candidates:
-            if n + 1 < len(cands):
-                stats['stop'] = 'candidate_limit'
-                stats['not_tried'] = len(cands) - n - 1
+        if full(n):
             break
     return out
 
@@ -1193,6 +1213,17 @@ def discover(inst, backend, limits=None, ctx=None, log=None):
     out = prove_candidates(orig, [e for _, _, e in cands], backend, limits,
                            ctx, stats, [env[:nreal] for env in envs], clog,
                            {e: cv for e, cv in cvs.items() if cv})
+    # Every limit that ended a part of the search, in the words of
+    # agenda.REASONS: what a later search needs to go further.
+    ended = {'time_budget': ['time'], 'proof_budget': ['proofs'],
+             'candidate_limit': ['candidates']}.get(stats['stop'], [])
+    for st in stages:
+        if st['stop'] != 'complete':
+            ended.append('time' if st['stop'].startswith(
+                'bank_truncated: time') else 'terms')
+    if stats['smt_unknown']:
+        ended.append('unknown')
+    stats['limits'] = sorted(set(ended))
     # The first limit that was reached, in the order of the search.
     if truncated is not None:
         stats['stop'] = 'bank_truncated'

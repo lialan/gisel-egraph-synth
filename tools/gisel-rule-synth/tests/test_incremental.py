@@ -50,7 +50,10 @@ class KnowledgeTest(unittest.TestCase):
             st = discover.new_stats()
             result = discover.prove_candidates(i, [('var', 0)], backend,
                                                 limits, ctx, st)
-            self.assertEqual(result, [])
+            # The known rule is a result of the search, without a proof.
+            self.assertEqual([(c['tgt'], c['known']) for c in result],
+                             [(('var', 0), db['rules'][0]['id'])])
+            self.assertNotIn('proof', result[0])
             self.assertEqual(st['known_candidates'], 1)
             self.assertEqual(st['smt_checks'], 0)
             sy = synth.Synthesizer(backend)
@@ -224,27 +227,35 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(b.deadline, old)
 
     def test_truncated_search_is_not_an_exhausted_checkpoint(self):
+        from girs import agenda
+        key = cli._instance_task(instance())
         with tempfile.TemporaryDirectory() as d:
-            c = cli._DiscoveryCache(d, discover.Limits(), 1000)
-            st = discover.new_stats()
-            for stop in ('candidate_limit', 'proof_budget', 'bank_truncated',
-                         'smt_unknown', 'time_budget'):
-                st['stop'] = stop
-                c.put(instance(), [], st, {})
-                self.assertIsNone(c.get(instance()))
-            st['stop'] = 'complete'
-            c.put(instance(), [], st, {})
-            self.assertIsNotNone(c.get(instance()))
+            lim = discover.Limits().identity()
+            dom = agenda.domain(lim, vars(synth.SynthLimits()))
+            for reason in agenda.REASONS:
+                a = agenda.Agenda(d, dom, agenda.depth(lim, 1000))
+                a.record('single', key, [reason])
+                a.close()
+                # More of the budget that ended the search opens it.
+                deeper = {k: v * 2 for k, v in
+                          agenda.depth(lim, 1000).items()}
+                b = agenda.Agenda(d, dom, deeper)
+                self.assertEqual(b.pending('single', key), agenda.RETRY,
+                                 reason)
+                self.assertEqual(b.row('single', key)['state'], 'partial')
+                b.close()
+            a = agenda.Agenda(d, dom, agenda.depth(lim, 1000))
+            a.record('single', key)
+            a.close()
+            b = agenda.Agenda(d, dom, agenda.depth(lim, 1000))
+            self.assertIsNone(b.pending('single', key))
+            b.close()
 
     def test_scalar_checkpoint_cannot_exhaust_a_new_vector_instance(self):
-        with tempfile.TemporaryDirectory() as d:
-            cache = cli._DiscoveryCache(d, discover.Limits(), 1000)
-            stats = discover.new_stats()
-            stats['stop'] = 'complete'
-            cache.put(instance(), [], stats, {})
-            vector_inst = instance()
-            vector_inst.lifted = True
-            self.assertIsNone(cache.get(vector_inst))
+        vector_inst = instance()
+        vector_inst.lifted = True
+        self.assertNotEqual(cli._instance_task(instance()),
+                            cli._instance_task(vector_inst))
 
 
 class PipelineTest(unittest.TestCase):
@@ -380,8 +391,13 @@ class PipelineTest(unittest.TestCase):
 
 class ExportTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = self.enterContext(tempfile.TemporaryDirectory())
-        self.enterContext(mock.patch.object(targets, 'PROFILE_DIR', self.tmp))
+        # (TestCase.enterContext needs Python 3.11.)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        patch = mock.patch.object(targets, 'PROFILE_DIR', self.tmp)
+        patch.start()
+        self.addCleanup(patch.stop)
         self.run = mine.Run.__new__(mine.Run)
         r = self.run
         r.dir = str(Path(self.tmp) / 'run')

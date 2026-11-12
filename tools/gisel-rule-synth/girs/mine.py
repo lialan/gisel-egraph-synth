@@ -85,7 +85,7 @@ DEFAULTS = {
                'cost_slack': None, 'max_rhs_cost': 0,
                'semantic_variants': 1,
                'explore_share': 0.2, 'regions': False,
-               'siblings': False, 'max_pairs': 0},
+               'siblings': False, 'max_pairs': 0, 'multi_share': 0.3},
     'hybrid': {'egraph_stages': 'pre-legalizer', 'egraph_max_cost': 8,
                'compose_depth': 3, 'compose_steps': 3,
                'compose_axioms': False},
@@ -658,7 +658,7 @@ class Run:
                                  'cost_slack', 'max_rhs_cost',
                                  'semantic_variants',
                                  'explore_share', 'regions', 'siblings',
-                                 'max_pairs')})
+                                 'max_pairs', 'multi_share')})
         if c['mode'] == 'hybrid':
             h = c['hybrid']
             over.update(egraph=[self.p('egraph')],
@@ -673,13 +673,13 @@ class Run:
                      and r['provenance']['sources'] != ['enumerative']]
             assert not other, 'semantics-only run with other sources'
         st = _load(self.p('library', 'rules.stats.json'))
-        incomplete = bool(st['incremental']['deadline_reached'] or
-            st['discovery']['not_searched_time_budget'] or
-            st['disjuncts'].get('final_guard_unknown') or
-            any(n for stop, n in st['discovery']['stop'].items()
-                if stop not in ('complete', 'no_signature', 'source_always_poison')))
+        # Tasks that a later run with the same budgets searches: the
+        # stage runs again when the run continues. A task that needs a
+        # higher budget is not one of them.
+        incomplete = bool(st['queue']['left'] or
+                          st['disjuncts'].get('final_guard_unknown'))
         return {'rules': len(db['rules']), 'delta': len(self.delta()),
-                'incomplete': incomplete,
+                'incomplete': incomplete, 'queue': st['queue'],
                 'by_class': st['rules_by_class'],
                 'instances': st['discovery']['instances'],
                 'stop': st['discovery']['stop'],
