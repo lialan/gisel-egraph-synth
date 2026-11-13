@@ -150,6 +150,14 @@ inline bool isStableValue(Register Reg, const MachineRegisterInfo &MRI,
   case TargetOpcode::G_ASSERT_SEXT:
   case TargetOpcode::G_ASSERT_ALIGN:
     return isStableValue(Def->getOperand(1).getReg(), MRI, Depth + 1);
+  case TargetOpcode::G_MERGE_VALUES:
+  case TargetOpcode::G_UNMERGE_VALUES:
+    // The bits of the parts (a wide argument in several registers): defined
+    // if every part is. canCreateUndefOrPoison does not list them.
+    for (const MachineOperand &MO : Def->uses())
+      if (!MO.isReg() || !isStableValue(MO.getReg(), MRI, Depth + 1))
+        return false;
+    return true;
   default:
     break;
   }
