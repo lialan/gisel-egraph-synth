@@ -53,6 +53,7 @@
 #include <deque>
 #include <map>
 #include <set>
+#include <unordered_set>
 
 #define DEBUG_TYPE "gisel-egraph"
 
@@ -91,6 +92,8 @@ STATISTIC(NumCoversOld, "Number of target pattern covers in original regions");
 STATISTIC(NumCoversNew, "Number of target pattern covers in candidates");
 STATISTIC(NumDagImprovements,
           "Number of choices improved by the DAG cost in extraction");
+STATISTIC(NumRestored, "Number of classes whose original node extraction "
+                       "restored at no cost");
 STATISTIC(NumUniformRoots, "Number of roots that must stay uniform");
 
 namespace {
@@ -143,6 +146,10 @@ static cl::opt<unsigned>
 static cl::opt<unsigned> MulCost("gisel-egraph-mul-cost", cl::Hidden,
                                  cl::init(2),
                                  cl::desc("Extraction cost of a 32-bit G_MUL"));
+static cl::opt<bool> PreferOriginal(
+    "gisel-egraph-prefer-original", cl::Hidden, cl::init(true),
+    cl::desc("On a tie of the cost, let extraction keep the instructions of "
+             "the region (CostModel::isPreferred)"));
 static cl::opt<unsigned> MaxDagEvaluations(
     "gisel-egraph-max-dag-evaluations", cl::Hidden, cl::init(512),
     cl::desc("Maximum number of DAG cost evaluations of the sharing-aware "
@@ -765,6 +772,17 @@ public:
       TC->findCovers(G, D, Covers);
   }
   bool hasBankStates() const override { return Banks; }
+  bool isPreferred(const EGraph &G, const ENode &N) const override {
+    return Preferred.count(N);
+  }
+  /// Before extraction: the instructions of the region as nodes of the
+  /// saturated e-graph, which extraction keeps on a tie of the cost.
+  void prepareExtraction(const EGraph &G) {
+    Preferred.clear();
+    if (PreferOriginal)
+      for (const ENode &N : OriginalNodes)
+        Preferred.insert(G.canonicalize(N));
+  }
   bool canBeUniform(const EGraph &G, const ENode &N) const override {
     if (N.isInput())
       return N.InputIdx < UniformInputs.size() && UniformInputs[N.InputIdx];
@@ -776,15 +794,21 @@ public:
 
   /// Start a new region: the nodes of the previous region's e-graph are
   /// gone.
-  void beginRegion() { OriginalNodes.clear(); }
+  void beginRegion() {
+    OriginalNodes.clear();
+    Preferred.clear();
+  }
 
   /// Record the operation \p N of the region; it is always allowed.
   void addOriginal(const EGraph &G, const ENode &N) {
+    if (N.isOperation())
+      OriginalNodes.push_back(N);
+    // An operation without a result (a terminator) is always allowed.
+    if (N.isOperation() && !getOpProperties(N.Opcode)->hasResult())
+      return;
     SmallVector<LLT, 4> Types;
     unsigned Opc = getQuery(G, N, Types);
     Original.insert(getKey(Opc, Types));
-    if (N.isOperation())
-      OriginalNodes.push_back(N);
   }
 
   bool isAllowed(const EGraph &G, const ENode &N) const override {
@@ -885,6 +909,13 @@ private:
   /// The operations of the region (their operands are classes at the time
   /// they were added).
   std::vector<ENode> OriginalNodes;
+  struct NodeHash {
+    size_t operator()(const ENode &N) const { return hash_value(N); }
+  };
+
+public:
+  /// prepareExtraction: OriginalNodes, canonical in the saturated graph.
+  std::unordered_set<ENode, NodeHash> Preferred;
 };
 
 class EGraphCombinerImpl {
@@ -1312,6 +1343,7 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       uint32_t Flags = (MI->getFlags() & SemanticFlags) | ImpliedFlags;
       if (!P->hasResult()) {
         ENode N = ENode::makeOp(P->Opcode, LLT(), Ops, Flags, Attr);
+        CM.addOriginal(G, N);
         EClassId Id = G.add(N);
         InstrClass[MI] = Id;
         InstrItem[MI] = AddOldItem(N, Id, OpItems);
@@ -1435,15 +1467,18 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       }
     }
   }
+  CM.prepareExtraction(G);
   Extractor E(G, CM);
   ExtractionOptions ExtractOpts;
   ExtractOpts.ImproveDag = Features.DagExtraction;
   ExtractOpts.MaxEvaluations = MaxDagEvaluations;
   ExtractOpts.SizeTieBreak = DagSizeTieBreak;
   ExtractOpts.ImproveVectors = DagVectors;
+  ExtractOpts.RestoreOriginal = PreferOriginal;
   unsigned DagImprovements =
       E.extract(RootClasses, RootStates, CM, ExtractOpts);
   NumDagImprovements += DagImprovements;
+  NumRestored += E.getNumRestored();
   // The cost of the original region and of the candidate, by the same
   // function (evaluateDag): target patterns that the selector forms in the
   // original code are not counted as a gain of the candidate.
@@ -1564,6 +1599,21 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       OS << " uniform-roots=" << count(RootStates, BankState::Uniform);
     if (DagImprovements)
       OS << " dag-improved=" << DagImprovements;
+    // The instructions of the region that are nodes of the saturated graph,
+    // and the operations of the candidate that are such an instruction.
+    if (!CM.Preferred.empty()) {
+      unsigned Kept = count_if(NewDag.Items, [&](const CostDag::Item &It) {
+        return It.N->isOperation() && CM.isPreferred(G, *It.N);
+      });
+      unsigned Ops = count_if(NewDag.Items, [](const CostDag::Item &It) {
+        return It.N->isOperation();
+      });
+      unsigned Present = count_if(CM.Preferred, [&](const ENode &N) {
+        return G.lookup(N).has_value();
+      });
+      OS << " original=" << Present << "/" << CM.Preferred.size()
+         << " kept=" << Kept << "/" << Ops;
+    }
     OS << "\n";
     if (Profitable) {
       auto PrintInput = [&](raw_ostream &OS, unsigned Idx) {

@@ -5099,18 +5099,27 @@ Extractor::Extractor(const EGraph &G, const CostModel &CM) : G(G) {
     // Bellman-Ford style fixpoint. Costs only decrease, so this terminates.
     // Refinement edges are only taken when strictly cheaper, which (together
     // with operation costs >= 1) guarantees that choices are acyclic.
+    // On a tie a preferred node (CostModel::isPreferred) replaces another
+    // node or a refinement edge, never the other way: the choices stay
+    // acyclic (a chosen node costs as much as its class, so its operands
+    // cost less), and the fixpoint terminates.
     bool Changed = true;
     while (Changed) {
       Changed = false;
       for (EClassId Id : Ids) {
         const EClass &C = G.getClass(Id);
         Choice &Cur = Table[Id];
+        bool CurPreferred = Cur.NodeIdx >= 0 &&
+                            CM.isPreferred(G, C.Nodes[Cur.NodeIdx]);
         for (unsigned NI = 0, NE = C.Nodes.size(); NI != NE; ++NI) {
           uint64_t Cost = NodeCost(C.Nodes[NI]);
-          if (Cost < Cur.Cost) {
+          if (Cost < Cur.Cost ||
+              (Cost == Cur.Cost && Cost != Infinite && !CurPreferred &&
+               int(NI) != Cur.NodeIdx && CM.isPreferred(G, C.Nodes[NI]))) {
             Cur.Cost = Cost;
             Cur.LocalCost = LocalCost(C.Nodes[NI]);
             Cur.NodeIdx = NI;
+            CurPreferred = CM.isPreferred(G, C.Nodes[NI]);
             Changed = true;
           }
         }
@@ -5121,6 +5130,7 @@ Extractor::Extractor(const EGraph &G, const CostModel &CM) : G(G) {
             Cur.LocalCost = 0;
             Cur.NodeIdx = -1;
             Cur.RefTarget = G.find(R);
+            CurPreferred = false;
             Changed = true;
           }
         }
@@ -5334,13 +5344,31 @@ unsigned Extractor::extract(ArrayRef<EClassId> Roots,
       States[I] = RootStates[I];
 
   unsigned Improvements = 0;
+  Restored = 0;
+  // The cost of the DAG of the current choices, and its number of operations
+  // that are not preferred (the last key of the comparison).
+  unsigned NotPreferred = 0;
+  auto Evaluate = [&]() -> CostVector {
+    CostDag D;
+    NotPreferred = 0;
+    if (!buildDag(Roots, States, D, nullptr, nullptr))
+      return CostVector::infinite();
+    for (const CostDag::Item &It : D.Items)
+      if (It.N->isOperation() && !CM.isPreferred(G, *It.N))
+        ++NotPreferred;
+    return evaluateDag(G, CM, D);
+  };
+  // The choice of the node \p NI of a class.
+  auto NodeChoice = [&](const ENode &N, unsigned NI) {
+    Choice Ch;
+    Ch.Cost = 0;
+    Ch.LocalCost = CM.getNodeCost(N);
+    if (N.isOperation())
+      Ch.LocalCost = std::max<uint64_t>(Ch.LocalCost, 1);
+    Ch.NodeIdx = NI;
+    return Ch;
+  };
   if (Opts.ImproveDag) {
-    auto Evaluate = [&]() -> CostVector {
-      CostDag D;
-      if (!buildDag(Roots, States, D, nullptr, nullptr))
-        return CostVector::infinite();
-      return evaluateDag(G, CM, D);
-    };
     // The alternatives of a class: its allowed nodes whose operands have a
     // choice, then its refinement targets that have one.
     auto Alternatives = [&](EClassId C, SmallVectorImpl<Choice> &Alts) {
@@ -5355,13 +5383,7 @@ unsigned Extractor::extract(ArrayRef<EClassId> Roots,
                       UniformChoices[G.find(Op)].Cost == Infinite);
             }))
           continue;
-        Choice Ch;
-        Ch.Cost = 0;
-        Ch.LocalCost = CM.getNodeCost(N);
-        if (N.isOperation())
-          Ch.LocalCost = std::max<uint64_t>(Ch.LocalCost, 1);
-        Ch.NodeIdx = NI;
-        Alts.push_back(Ch);
+        Alts.push_back(NodeChoice(N, NI));
       }
       for (EClassId R : Cls.RefinesTo) {
         EClassId Rc = G.find(R);
@@ -5374,6 +5396,7 @@ unsigned Extractor::extract(ArrayRef<EClassId> Roots,
       }
     };
     CostVector Best = Evaluate();
+    unsigned BestNotPreferred = NotPreferred;
     unsigned Evaluations = 1;
     for (unsigned Round = 0; Round < Opts.MaxRounds && !Best.isInfinite() &&
                              Evaluations < Opts.MaxEvaluations;
@@ -5413,9 +5436,16 @@ unsigned Extractor::extract(ArrayRef<EClassId> Roots,
           Final[C] = Alt;
           ++Evaluations;
           CostVector Cost = Evaluate();
-          if (Opts.SizeTieBreak ? Cost < Best : Cost.Instrs < Best.Instrs) {
+          bool Cheaper =
+              Opts.SizeTieBreak ? Cost < Best : Cost.Instrs < Best.Instrs;
+          bool KeepsMore = !Cost.isInfinite() && Cost.Instrs == Best.Instrs &&
+                           Cost.Bytes == Best.Bytes &&
+                           NotPreferred < BestNotPreferred;
+          if (Cheaper || KeepsMore) {
             Best = Cost;
-            ++Improvements;
+            BestNotPreferred = NotPreferred;
+            if (Cheaper)
+              ++Improvements;
             Changed = true;
             // The classes of the new DAG and their choices.
             Classes.clear();
@@ -5429,6 +5459,119 @@ unsigned Extractor::extract(ArrayRef<EClassId> Roots,
             Final[C] = *Saved;
           else
             Final.erase(C);
+        }
+      }
+      if (!Changed)
+        break;
+    }
+  }
+
+  // Restore the original form where it costs no more. For a class of the
+  // DAG whose choice is not preferred (CostModel::isPreferred) but that has
+  // a preferred node, one move chooses that node and, below it, the
+  // preferred node of each operand class whose choice is not preferred. The
+  // local search above changes one class at a time; it cannot reach an
+  // original form whose operand classes are outside of the DAG (e.g. after
+  // the tree cost chose a multiplication for an or of shifts). The move is
+  // kept if the DAG then costs less, or the same with fewer operations that
+  // are not preferred, so an equal-cost rewrite of a value that the
+  // candidate does not need to change is undone.
+  if (Opts.RestoreOriginal) {
+    CostVector Best = Evaluate();
+    unsigned BestNotPreferred = NotPreferred;
+    unsigned Evaluations = 1;
+    // The preferred node of a class (that extraction may choose), or -1.
+    auto PreferredNode = [&](EClassId C) -> int {
+      const EClass &Cls = G.getClass(C);
+      for (unsigned NI = 0, NE = Cls.Nodes.size(); NI != NE; ++NI) {
+        const ENode &N = Cls.Nodes[NI];
+        if (CM.isPreferred(G, N) && (N.isInput() || CM.isAllowed(G, N)))
+          return NI;
+      }
+      return -1;
+    };
+    for (unsigned Round = 0; Round < Opts.MaxRounds && !Best.isInfinite() &&
+                             BestNotPreferred &&
+                             Evaluations < Opts.MaxEvaluations;
+         ++Round) {
+      SmallVector<EClassId, 32> Classes;
+      DenseMap<EClassId, Choice> Used;
+      CostDag D;
+      if (!buildDag(Roots, States, D, &Classes, &Used))
+        break;
+      // The node that a class takes now, or null (a refinement edge, or no
+      // choice).
+      auto Current = [&](EClassId C) -> const ENode * {
+        auto UIt = Used.find(C);
+        const Choice *Ch = nullptr;
+        if (UIt != Used.end())
+          Ch = &UIt->second;
+        else if (auto FIt = Final.find(C); FIt != Final.end())
+          Ch = &FIt->second;
+        else
+          Ch = &Choices[C];
+        return Ch->NodeIdx >= 0 && Ch->Cost != Infinite
+                   ? &G.getClass(C).Nodes[Ch->NodeIdx]
+                   : nullptr;
+      };
+      DenseSet<EClassId> InDag(Classes.begin(), Classes.end());
+      const SmallVector<EClassId, 32> RoundClasses = Classes;
+      bool Changed = false;
+      for (EClassId C : RoundClasses) {
+        if (Evaluations >= Opts.MaxEvaluations || !BestNotPreferred)
+          break;
+        if (!InDag.contains(C))
+          continue;
+        const ENode *Cur = Current(C);
+        if ((Cur && CM.isPreferred(G, *Cur)) || PreferredNode(C) < 0)
+          continue;
+        // The move, and how to undo it.
+        SmallVector<std::pair<EClassId, std::optional<Choice>>, 8> Undo;
+        SmallVector<EClassId, 8> Work = {C};
+        DenseSet<EClassId> Done;
+        while (!Work.empty()) {
+          EClassId X = G.find(Work.pop_back_val());
+          if (!Done.insert(X).second)
+            continue;
+          const ENode *XCur = Current(X);
+          if (X != C && XCur && CM.isPreferred(G, *XCur))
+            continue;
+          int NI = PreferredNode(X);
+          if (NI < 0)
+            continue;
+          auto FIt = Final.find(X);
+          Undo.push_back({X, FIt != Final.end()
+                                 ? std::optional<Choice>(FIt->second)
+                                 : std::nullopt});
+          const ENode &N = G.getClass(X).Nodes[NI];
+          Final[X] = NodeChoice(N, NI);
+          for (EClassId Op : N.Ops)
+            Work.push_back(Op);
+        }
+        ++Evaluations;
+        CostVector Cost = Evaluate();
+        bool Cheaper = Cost < Best;
+        if (Cheaper || (!Cost.isInfinite() && Cost.Instrs == Best.Instrs &&
+                        Cost.Bytes == Best.Bytes &&
+                        NotPreferred < BestNotPreferred)) {
+          Best = Cost;
+          BestNotPreferred = NotPreferred;
+          Restored += Undo.size();
+          if (Cheaper)
+            ++Improvements;
+          Changed = true;
+          Classes.clear();
+          Used.clear();
+          CostDag NewDag;
+          buildDag(Roots, States, NewDag, &Classes, &Used);
+          InDag = DenseSet<EClassId>(Classes.begin(), Classes.end());
+          continue;
+        }
+        for (auto &[X, Saved] : reverse(Undo)) {
+          if (Saved)
+            Final[X] = *Saved;
+          else
+            Final.erase(X);
         }
       }
       if (!Changed)

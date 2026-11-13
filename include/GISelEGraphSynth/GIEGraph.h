@@ -1395,6 +1395,17 @@ public:
   /// (see there). None by default.
   virtual void findCovers(const EGraph &G, const CostDag &D,
                           SmallVectorImpl<PatternCover> &Covers) const {}
+  /// True if extraction should keep \p N, a node of a class (canonical),
+  /// rather than another implementation of the same cost: a node of the
+  /// original program. Then a value that a rewrite does not need to change
+  /// keeps its form, and stays common with the code outside of the region
+  /// (another region that computes it, or reads its parts, can still share
+  /// it after instruction selection). The extractor prefers such a node on a
+  /// tie of the tree cost, and a DAG with fewer other operations on a tie of
+  /// the DAG cost. None by default.
+  virtual bool isPreferred(const EGraph &G, const ENode &N) const {
+    return false;
+  }
   /// True if the model distinguishes the bank state Uniform; then extraction
   /// keeps a choice per class for each state.
   virtual bool hasBankStates() const { return false; }
@@ -1459,6 +1470,9 @@ struct ExtractionOptions {
   /// becomes strictly smaller and the choices stay acyclic. Off: the
   /// tree-cost choices.
   bool ImproveDag = true;
+  /// The search takes a change that keeps the cost (Instrs and Bytes) if
+  /// the DAG then has fewer operations that are not preferred
+  /// (CostModel::isPreferred).
   /// Rounds over the classes of the DAG, and DAG evaluations in total.
   unsigned MaxRounds = 4;
   unsigned MaxEvaluations = 512;
@@ -1467,6 +1481,11 @@ struct ExtractionOptions {
   bool SizeTieBreak = true;
   /// Also change the choice of a class of a vector type.
   bool ImproveVectors = true;
+  /// After the search: restore the preferred nodes (CostModel::isPreferred)
+  /// of a class and the classes below it where the DAG costs no more (see
+  /// Extractor::extract). With a cost model without preferred nodes it
+  /// changes nothing.
+  bool RestoreOriginal = true;
 };
 
 /// Tree-cost extractor with refinement-aware choices. Shared subexpressions
@@ -1505,6 +1524,9 @@ public:
   /// choices. Returns the number of accepted improvements.
   unsigned extract(ArrayRef<EClassId> Roots, ArrayRef<BankState> RootStates,
                    const CostModel &CM, const ExtractionOptions &Opts);
+  /// The number of classes whose preferred node the last extract() restored
+  /// (ExtractionOptions::RestoreOriginal).
+  unsigned getNumRestored() const { return Restored; }
   /// Set \p D to the DAG of the chosen nodes of \p Roots (each root an item
   /// with IsRoot and its state in \p RootStates as Required). False if a
   /// root has no choice.
@@ -1543,6 +1565,7 @@ private:
   std::vector<Choice> UniformChoices; // BankState::Uniform, if any
   /// The choices of extract(), which take precedence.
   DenseMap<EClassId, Choice> Final;
+  unsigned Restored = 0;
 };
 
 } // namespace egraph

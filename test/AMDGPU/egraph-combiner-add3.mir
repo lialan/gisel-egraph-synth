@@ -52,7 +52,10 @@
 # FLAT: add_reassociate_banks: %bb.0: {{.*}} cost=4->4 not-profitable
 # FLAT: shl_add: %bb.0: {{.*}} cost=2->2 not-profitable
 
-# MUL1: shl_add: %bb.0: {{.*}} cost=1->1 not-profitable {{.*}} covers=1->0
+# On a tie of the cost extraction keeps the instructions of the region
+# (CostModel::isPreferred): with a multiplication as cheap as a shift, a * 9
+# costs as much as the v_lshl_add_u32, so the candidate is the original.
+# MUL1: shl_add: %bb.0: {{.*}} cost=1->1 not-profitable {{.*}} covers=1->1 {{.*}} kept=2/2
 # MUL1-FLAT: shl_add: %bb.0: {{.*}} cost=2->1 profitable (refinement) shadow
 # MUL1-FLAT-NEXT: root {{%[0-9]+}} = (G_MUL %0 9)
 

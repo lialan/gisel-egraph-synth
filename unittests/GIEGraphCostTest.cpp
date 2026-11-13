@@ -310,6 +310,132 @@ TEST_F(GIEGraphCostTest, RefinementTargetIsAnAlternative) {
 }
 
 //===----------------------------------------------------------------------===//
+// Preferred (original) nodes
+//===----------------------------------------------------------------------===//
+
+/// FusedAddCostModel with preferred nodes (CostModel::isPreferred), given
+/// as canonical nodes of the graph.
+class PreferringCostModel : public FusedAddCostModel {
+public:
+  std::vector<ENode> Preferred;
+  bool isPreferred(const EGraph &G, const ENode &N) const override {
+    return is_contained(Preferred, N);
+  }
+};
+
+TEST_F(GIEGraphCostTest, PreferredNodeWinsATieOfTheTreeCost) {
+  // a + b and a ^ b cost the same; the preferred one is chosen, whichever
+  // the class lists first.
+  EClassId A = in(), B = in();
+  EClassId Sum = add(A, B);
+  EClassId Xor = op(G_XOR, A, B);
+  G.merge(Sum, Xor);
+  G.rebuild();
+  for (unsigned Opc : {G_ADD, G_XOR}) {
+    PreferringCostModel CM;
+    CM.Fuse = false;
+    CM.Preferred.push_back(G.canonicalize(ENode::makeOp(Opc, S32, {A, B})));
+    Extractor E(G, CM);
+    EXPECT_EQ(E.getTreeCost(Sum), 1u);
+    EXPECT_EQ(E.getChosenNode(Sum)->Opcode, Opc);
+    extract(E, CM, {Sum});
+    EXPECT_EQ(E.getChosenNode(Sum)->Opcode, Opc);
+  }
+}
+
+/// A model in which the tree cost and the DAG cost disagree: an or costs 2
+/// in the tree and 1 in the DAG, a multiplication 1 in the tree and 2 in the
+/// DAG, and an or of an or is one instruction (OR3).
+class DisagreeingCostModel : public PreferringCostModel {
+public:
+  unsigned getNodeCost(const ENode &N) const override {
+    if (N.isOperation() && N.Opcode == G_OR)
+      return 2;
+    return DefaultCostModel::getNodeCost(N) ? 1 : 0;
+  }
+  CostVector getItemCost(const EGraph &G, const CostDag &D,
+                         unsigned I) const override {
+    const ENode &N = *D.Items[I].N;
+    if (N.isOperation() && N.Opcode == G_MUL)
+      return {2, 8, 4};
+    if (N.isOperation())
+      return {1, 4, 1};
+    return {0, 0, 0};
+  }
+  void findCovers(const EGraph &G, const CostDag &D,
+                  SmallVectorImpl<PatternCover> &Covers) const override {
+    for (unsigned I = 0, E = D.Items.size(); I != E; ++I) {
+      const ENode &N = *D.Items[I].N;
+      if (!N.isOperation() || N.Opcode != G_OR)
+        continue;
+      for (unsigned Op : D.Items[I].Ops)
+        if (D.Items[Op].N->isOperation() && D.Items[Op].N->Opcode == G_OR) {
+          PatternCover C;
+          C.Root = I;
+          C.Inner.push_back(Op);
+          C.Cost = {1, 8, 1};
+          C.Name = "OR3";
+          Covers.push_back(C);
+        }
+    }
+  }
+};
+
+TEST_F(GIEGraphCostTest, ExtractionRestoresTheOriginalFormWithItsOperands) {
+  // The original r = (a | b) | c, one OR3. By tree cost r is d * e and
+  // a | b is a ^ b; the original form of r with a ^ b below it costs two
+  // instructions, as much as the multiplication. Only the move that
+  // restores r and the class below it together finds the one instruction.
+  EClassId A = in(), B = in(), C = in(), D = in(), Ein = in();
+  EClassId T = op(G_OR, A, B);
+  EClassId R = op(G_OR, T, C);
+  G.merge(T, op(G_XOR, A, B));
+  G.merge(R, op(G_MUL, D, Ein));
+  G.rebuild();
+  DisagreeingCostModel CM;
+  CM.Preferred = {G.canonicalize(ENode::makeOp(G_OR, S32, {A, B})),
+                  G.canonicalize(ENode::makeOp(G_OR, S32, {T, C}))};
+  for (bool Improve : {false, true}) {
+    Extractor E(G, CM);
+    EXPECT_EQ(E.getChosenNode(R)->Opcode, unsigned(G_MUL));
+    EXPECT_EQ(E.getChosenNode(T)->Opcode, unsigned(G_XOR));
+    DagEvaluation Ev = extract(E, CM, {R}, Improve);
+    EXPECT_EQ(Ev.Cost.Instrs, 1u);
+    EXPECT_EQ(E.getExprString(R), "(G_OR %in2 (G_OR %in0 %in1))");
+    // The local search cannot reach it either: a ^ b below the or of r
+    // costs as much as the multiplication.
+    EXPECT_EQ(E.getNumRestored(), 2u);
+  }
+  // Without the restoring move (and without the local search) the tree
+  // choice stays.
+  Extractor E(G, CM);
+  ExtractionOptions Opts;
+  Opts.ImproveDag = false;
+  Opts.RestoreOriginal = false;
+  E.extract({R}, {}, CM, Opts);
+  EXPECT_EQ(E.getChosenNode(R)->Opcode, unsigned(G_MUL));
+}
+
+TEST_F(GIEGraphCostTest, PreferenceNeverCostsMore) {
+  // The original (a | b) + c is two instructions; (a + b) + c, which the
+  // rules would add, is one ADD3. The cheaper form is chosen even though the
+  // other is preferred.
+  EClassId A = in(), B = in(), C = in();
+  EClassId Or = op(G_OR, A, B);
+  EClassId R = add(Or, C);
+  G.merge(Or, add(A, B));
+  G.rebuild();
+  PreferringCostModel CM;
+  CM.Preferred = {G.canonicalize(ENode::makeOp(G_OR, S32, {A, B})),
+                  G.canonicalize(ENode::makeOp(G_ADD, S32, {Or, C}))};
+  Extractor E(G, CM);
+  DagEvaluation Ev = extract(E, CM, {R});
+  EXPECT_EQ(Ev.Cost.Instrs, 1u);
+  EXPECT_EQ(E.getExprString(R), "(G_ADD %in2 (G_ADD %in0 %in1))");
+  EXPECT_EQ(E.getNumRestored(), 0u);
+}
+
+//===----------------------------------------------------------------------===//
 // Bank states
 //===----------------------------------------------------------------------===//
 
