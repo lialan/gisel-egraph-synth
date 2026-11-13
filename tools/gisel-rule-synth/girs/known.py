@@ -47,10 +47,10 @@ def semantics_sha():
 
 def search_sha():
     # The search proposes candidates and proves nothing: a change of a
-    # search strategy (vector_search.py) invalidates the instance
+    # search strategy (vector_search.py, views.py) invalidates the instance
     # checkpoints, not the catalog or a completed proof obligation.
     return _files(('discover.py', 'kernels.py', 'compose.py', 'egraph.py',
-                   'vector_search.py', 'parallel.py', 'agenda.py'))
+                   'vector_search.py', 'parallel.py', 'agenda.py', 'views.py'))
 
 
 def stamp(db):

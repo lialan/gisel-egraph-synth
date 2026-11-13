@@ -12,6 +12,7 @@
 
 #include "GISelEGraphSynth/GIEGraphCombiner.h"
 #include "GISelEGraphSynth/GIEGraph.h"
+#include "GISelEGraphSynth/GIEGraphTargetCosts.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -21,14 +22,18 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
 #include "llvm/CodeGen/LowLevelTypeUtils.h"
+#include "llvm/CodeGen/MachineCycleAnalysis.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/MachineUniformityAnalysis.h"
+#include "llvm/CodeGen/RegisterBank.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
@@ -45,6 +50,7 @@
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
+#include <deque>
 #include <map>
 #include <set>
 
@@ -73,6 +79,19 @@ STATISTIC(NumDominanceRejected,
           "Number of profitable candidates rejected for dominance");
 STATISTIC(CostSaved, "Estimated cost saved by rewritten regions");
 STATISTIC(ShadowCostSaved, "Estimated cost saved by profitable candidates");
+STATISTIC(NumFactRewrites, "Number of rewrites justified by known bits");
+STATISTIC(NumContextFactRewrites,
+          "Number of rewrites that needed known bits of region inputs");
+STATISTIC(NumLinearRewrites, "Number of rewrites of the linear view");
+STATISTIC(NumSliceRewrites, "Number of rewrites of the bit-slice view");
+STATISTIC(NumTupleRewrites, "Number of rewrites of the tuple rules");
+STATISTIC(NumViewBudgetStops, "Number of views abandoned at a budget");
+STATISTIC(NumViewUnsafe, "Number of view rewrites rejected as unsound");
+STATISTIC(NumCoversOld, "Number of target pattern covers in original regions");
+STATISTIC(NumCoversNew, "Number of target pattern covers in candidates");
+STATISTIC(NumDagImprovements,
+          "Number of choices improved by the DAG cost in extraction");
+STATISTIC(NumUniformRoots, "Number of roots that must stay uniform");
 
 namespace {
 enum class EGraphMode { Shadow, Rewrite };
@@ -124,6 +143,75 @@ static cl::opt<unsigned>
 static cl::opt<unsigned> MulCost("gisel-egraph-mul-cost", cl::Hidden,
                                  cl::init(2),
                                  cl::desc("Extraction cost of a 32-bit G_MUL"));
+static cl::opt<unsigned> MaxDagEvaluations(
+    "gisel-egraph-max-dag-evaluations", cl::Hidden, cl::init(512),
+    cl::desc("Maximum number of DAG cost evaluations of the sharing-aware "
+             "extraction per region"));
+static cl::opt<bool> DagSizeTieBreak(
+    "gisel-egraph-dag-size-tiebreak", cl::Hidden, cl::init(true),
+    cl::desc("Let the sharing-aware extraction accept a choice that only "
+             "saves code size"));
+// Off by default: the costs of vector operations are rough (the legalizer
+// splits or scalarizes most of them), and on the AMDGPU corpus the search
+// over them gained nothing (docs/TargetAwareViews.md).
+static cl::opt<bool> DagVectors(
+    "gisel-egraph-dag-vectors", cl::Hidden, cl::init(false),
+    cl::desc("Let the sharing-aware extraction change the choice of a class "
+             "of a vector type"));
+namespace {
+/// The features added on top of the table rules and the node-count cost
+/// model; -gisel-egraph-features selects them (all by default; "none" is
+/// the engine without them, for comparisons).
+struct EGraphFeatures {
+  /// Known bits of the inputs and of the classes, and the rules with a
+  /// precondition on them (SaturationLimits::EnableFacts).
+  bool Facts = true;
+  /// The linear, bit-slice and tuple views (SaturationLimits).
+  bool Linear = true;
+  bool Slice = true;
+  bool Tuples = true;
+  /// Costs of multi-node target patterns, register banks and sharing in
+  /// extraction (TargetCostModel).
+  bool Patterns = true;
+  bool Banks = true;
+  bool DagExtraction = true;
+};
+} // namespace
+
+static cl::list<std::string> FeatureList(
+    "gisel-egraph-features", cl::Hidden, cl::CommaSeparated,
+    cl::desc("Features of the e-graph combiner beyond the table rules: "
+             "facts, linear, slice, tuples, patterns, banks, dag, or all "
+             "(default) or none; a name with the prefix no- removes it"));
+
+static EGraphFeatures getFeatures() {
+  EGraphFeatures F;
+  for (const std::string &Name : FeatureList) {
+    StringRef N = Name;
+    bool On = !N.consume_front("no-");
+    if (N == "all" || N == "none") {
+      bool V = On && N == "all";
+      F.Facts = F.Linear = F.Slice = F.Tuples = V;
+      F.Patterns = F.Banks = F.DagExtraction = V;
+      continue;
+    }
+    bool *Flag = StringSwitch<bool *>(N)
+                     .Case("facts", &F.Facts)
+                     .Case("linear", &F.Linear)
+                     .Case("slice", &F.Slice)
+                     .Case("tuples", &F.Tuples)
+                     .Case("patterns", &F.Patterns)
+                     .Case("banks", &F.Banks)
+                     .Case("dag", &F.DagExtraction)
+                     .Default(nullptr);
+    if (!Flag)
+      report_fatal_error("-gisel-egraph-features: unknown feature '" + N +
+                         "'");
+    *Flag = On;
+  }
+  return F;
+}
+
 static cl::opt<bool>
     Report("gisel-egraph-report", cl::Hidden, cl::init(false),
            cl::desc("Print a per-region report of the e-graph combiner"));
@@ -162,7 +250,10 @@ static cl::opt<bool> ExportAll(
 /// The version of the record format of -gisel-egraph-export.
 // Version 2: fixed vectors (an index of a lane is "imm", a shuffle mask is
 // "mask"; the known bits of a vector are those of each lane).
-static constexpr unsigned ExportVersion = 2;
+// Version 3: "features", "views" (statistics of the analysis views) and
+// "context_facts" (the rules whose precondition needed known bits of the
+// inputs, which a rule made from the record must test).
+static constexpr unsigned ExportVersion = 3;
 
 static const char *TimerGroupName = "gisel-egraph";
 static const char *TimerGroupDesc = "GlobalISel e-graph combiner";
@@ -476,6 +567,151 @@ SmallVector<LLT, 2> getInstrResultTypes(const EGraph &G, const ENode &N) {
   return Tys;
 }
 
+/// True if LegalizerHelper::narrowScalar implements \p Opc, an operator of
+/// the e-graph (LegalizerHelper.cpp at the pinned revision).
+static bool canNarrowScalar(unsigned Opc) {
+  switch (Opc) {
+  case TargetOpcode::G_ADD:
+  case TargetOpcode::G_SUB:
+  case TargetOpcode::G_MUL:
+  case TargetOpcode::G_UMULH:
+  case TargetOpcode::G_SMULH:
+  case TargetOpcode::G_AND:
+  case TargetOpcode::G_OR:
+  case TargetOpcode::G_XOR:
+  case TargetOpcode::G_SHL:
+  case TargetOpcode::G_LSHR:
+  case TargetOpcode::G_ASHR:
+  case TargetOpcode::G_ICMP:
+  case TargetOpcode::G_SELECT:
+  case TargetOpcode::G_SEXT:
+  case TargetOpcode::G_ZEXT:
+  case TargetOpcode::G_ANYEXT:
+  case TargetOpcode::G_TRUNC:
+  case TargetOpcode::G_SEXT_INREG:
+  case TargetOpcode::G_EXTRACT:
+  case TargetOpcode::G_INSERT:
+  case TargetOpcode::G_BSWAP:
+  case TargetOpcode::G_BITREVERSE:
+  case TargetOpcode::G_CTLZ:
+  case TargetOpcode::G_CTLZ_ZERO_POISON:
+  case TargetOpcode::G_CTTZ:
+  case TargetOpcode::G_CTTZ_ZERO_POISON:
+  case TargetOpcode::G_CTPOP:
+  case TargetOpcode::G_CTLS:
+  case TargetOpcode::G_PTR_ADD:
+  case TargetOpcode::G_PTRMASK:
+  case TargetOpcode::G_PTRTOINT:
+  case TargetOpcode::G_INTTOPTR:
+  case TargetOpcode::G_UADDO:
+  case TargetOpcode::G_SADDO:
+  case TargetOpcode::G_USUBO:
+  case TargetOpcode::G_SSUBO:
+  case TargetOpcode::G_UADDE:
+  case TargetOpcode::G_SADDE:
+  case TargetOpcode::G_USUBE:
+  case TargetOpcode::G_SSUBE:
+  case TargetOpcode::G_FREEZE:
+  case TargetOpcode::G_PHI:
+  case TargetOpcode::G_CONSTANT:
+  case TargetOpcode::G_EXTRACT_VECTOR_ELT:
+  case TargetOpcode::G_INSERT_VECTOR_ELT:
+  case TargetOpcode::G_FPTOSI:
+  case TargetOpcode::G_FPTOUI:
+  case TargetOpcode::G_FPTOSI_SAT:
+  case TargetOpcode::G_FPTOUI_SAT:
+  case TargetOpcode::G_FPEXT:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/// True if LegalizerHelper::widenScalar implements \p Opc, an operator of
+/// the e-graph (LegalizerHelper.cpp at the pinned revision).
+static bool canWidenScalar(unsigned Opc) {
+  switch (Opc) {
+  case TargetOpcode::G_ABS:
+  case TargetOpcode::G_ABDS:
+  case TargetOpcode::G_ABDU:
+  case TargetOpcode::G_ADD:
+  case TargetOpcode::G_SUB:
+  case TargetOpcode::G_MUL:
+  case TargetOpcode::G_AND:
+  case TargetOpcode::G_OR:
+  case TargetOpcode::G_XOR:
+  case TargetOpcode::G_SHL:
+  case TargetOpcode::G_LSHR:
+  case TargetOpcode::G_ASHR:
+  case TargetOpcode::G_ROTL:
+  case TargetOpcode::G_ROTR:
+  case TargetOpcode::G_SMIN:
+  case TargetOpcode::G_SMAX:
+  case TargetOpcode::G_UMIN:
+  case TargetOpcode::G_UMAX:
+  case TargetOpcode::G_SDIV:
+  case TargetOpcode::G_UDIV:
+  case TargetOpcode::G_SREM:
+  case TargetOpcode::G_UREM:
+  case TargetOpcode::G_SDIVREM:
+  case TargetOpcode::G_UDIVREM:
+  case TargetOpcode::G_SADDSAT:
+  case TargetOpcode::G_UADDSAT:
+  case TargetOpcode::G_SSUBSAT:
+  case TargetOpcode::G_USUBSAT:
+  case TargetOpcode::G_SSHLSAT:
+  case TargetOpcode::G_USHLSAT:
+  case TargetOpcode::G_UADDO:
+  case TargetOpcode::G_SADDO:
+  case TargetOpcode::G_USUBO:
+  case TargetOpcode::G_SSUBO:
+  case TargetOpcode::G_UADDE:
+  case TargetOpcode::G_SADDE:
+  case TargetOpcode::G_USUBE:
+  case TargetOpcode::G_SSUBE:
+  case TargetOpcode::G_UMULO:
+  case TargetOpcode::G_SMULO:
+  case TargetOpcode::G_SBFX:
+  case TargetOpcode::G_UBFX:
+  case TargetOpcode::G_SEXT_INREG:
+  case TargetOpcode::G_BSWAP:
+  case TargetOpcode::G_BITREVERSE:
+  case TargetOpcode::G_CTLZ:
+  case TargetOpcode::G_CTLZ_ZERO_POISON:
+  case TargetOpcode::G_CTTZ:
+  case TargetOpcode::G_CTTZ_ZERO_POISON:
+  case TargetOpcode::G_CTPOP:
+  case TargetOpcode::G_CTLS:
+  case TargetOpcode::G_ICMP:
+  case TargetOpcode::G_SELECT:
+  case TargetOpcode::G_FREEZE:
+  case TargetOpcode::G_PHI:
+  case TargetOpcode::G_CONSTANT:
+  case TargetOpcode::G_EXTRACT:
+  case TargetOpcode::G_INSERT:
+  case TargetOpcode::G_MERGE_VALUES:
+  case TargetOpcode::G_UNMERGE_VALUES:
+  case TargetOpcode::G_PTR_ADD:
+  case TargetOpcode::G_PTRMASK:
+  case TargetOpcode::G_PTRTOINT:
+  case TargetOpcode::G_INTTOPTR:
+  case TargetOpcode::G_BUILD_VECTOR:
+  case TargetOpcode::G_SHUFFLE_VECTOR:
+  case TargetOpcode::G_EXTRACT_VECTOR_ELT:
+  case TargetOpcode::G_INSERT_VECTOR_ELT:
+  case TargetOpcode::G_FPTOSI:
+  case TargetOpcode::G_FPTOUI:
+  case TargetOpcode::G_FPTOSI_SAT:
+  case TargetOpcode::G_FPTOUI_SAT:
+  case TargetOpcode::G_SITOFP:
+  case TargetOpcode::G_UITOFP:
+  case TargetOpcode::G_FPEXT:
+    return true;
+  default:
+    return false;
+  }
+}
+
 /// The cost model of the pass: the default costs, and only the operations
 /// that the target accepts at the position of the pass.
 ///
@@ -488,6 +724,12 @@ SmallVector<LLT, 2> getInstrResultTypes(const EGraph &G, const ENode &N) {
 /// After the legalizer, every instruction and constant that the pass
 /// creates must be legal. The search then works on the operations that the
 /// legalizer made for this target, and its result is specific to the target.
+///
+/// With a target model (TargetCosts, e.g. AMDGPU), the costs of multi-node
+/// patterns that the instruction selection of the target forms (feature
+/// "patterns") and the bank states of values (feature "banks": a value that
+/// is uniform in the original function must stay computable in the uniform
+/// bank) are added; see docs/TargetAwareViews.md.
 class TargetCostModel : public DefaultCostModel {
 public:
   const LegalizerInfo *LI = nullptr;
@@ -497,12 +739,46 @@ public:
   /// The type of the index of a lane (TargetLowering::getVectorIdxLLT): the
   /// constant index of a G_EXTRACT_VECTOR_ELT or G_INSERT_VECTOR_ELT node.
   LLT IdxTy = LLT::scalar(32);
+  /// The model of the target (null if it has none), and which of its parts
+  /// are used.
+  const TargetCosts *TC = nullptr;
+  bool Patterns = false;
+  bool Banks = false;
+  /// With Banks: per input index and per site of a PHI (ENode::Attr), true
+  /// if the value is uniform.
+  SmallVector<bool, 8> UniformInputs, UniformSites;
+
+  CostVector getItemCost(const EGraph &G, const CostDag &D,
+                         unsigned I) const override {
+    CostVector C = DefaultCostModel::getItemCost(G, D, I);
+    return TC && Patterns ? TC->getItemCost(G, D, I, C) : C;
+  }
+  void findCovers(const EGraph &G, const CostDag &D,
+                  SmallVectorImpl<PatternCover> &Covers) const override {
+    if (TC && Patterns)
+      TC->findCovers(G, D, Covers);
+  }
+  bool hasBankStates() const override { return Banks; }
+  bool canBeUniform(const EGraph &G, const ENode &N) const override {
+    if (N.isInput())
+      return N.InputIdx < UniformInputs.size() && UniformInputs[N.InputIdx];
+    if (N.isOperation() && getOpProperties(N.Opcode)->Shape == OpShape::Phi)
+      return N.Attr < UniformSites.size() && UniformSites[N.Attr];
+    // A constant, or an operation: uniform if its operands are.
+    return true;
+  }
+
+  /// Start a new region: the nodes of the previous region's e-graph are
+  /// gone.
+  void beginRegion() { OriginalNodes.clear(); }
 
   /// Record the operation \p N of the region; it is always allowed.
   void addOriginal(const EGraph &G, const ENode &N) {
     SmallVector<LLT, 4> Types;
     unsigned Opc = getQuery(G, N, Types);
     Original.insert(getKey(Opc, Types));
+    if (N.isOperation())
+      OriginalNodes.push_back(N);
   }
 
   bool isAllowed(const EGraph &G, const ENode &N) const override {
@@ -511,6 +787,12 @@ public:
       if (!P->hasResult() || P->Shape == OpShape::Phi)
         return true;
     }
+    // A node that the target cannot take at this position, unless it is an
+    // instruction of the region (TargetCosts::restrictsNewNode).
+    if (TC && N.isOperation() && TC->restrictsNewNode(G, N) &&
+        none_of(OriginalNodes,
+                [&](const ENode &O) { return G.canonicalize(O) == N; }))
+      return false;
     if (!LI)
       return true;
     // A constant is an instruction of its own after the legalizer only.
@@ -524,9 +806,14 @@ public:
     case LegalizeActions::Legal:
       return true;
     case LegalizeActions::Custom:
-    case LegalizeActions::NarrowScalar:
-    case LegalizeActions::WidenScalar:
       return !RequireLegal;
+    case LegalizeActions::NarrowScalar:
+      // LegalizerHelper implements narrowing and widening only for some
+      // operators (e.g. not narrowing G_SBFX and G_UBFX): the legalizer
+      // would fail on a new node of another one.
+      return !RequireLegal && canNarrowScalar(Opc);
+    case LegalizeActions::WidenScalar:
+      return !RequireLegal && canWidenScalar(Opc);
     case LegalizeActions::FewerElements:
     case LegalizeActions::MoreElements:
     case LegalizeActions::Bitcast:
@@ -589,13 +876,17 @@ private:
   }
 
   std::set<std::vector<uint64_t>> Original;
+  /// The operations of the region (their operands are classes at the time
+  /// they were added).
+  std::vector<ENode> OriginalNodes;
 };
 
 class EGraphCombinerImpl {
 public:
-  EGraphCombinerImpl(MachineFunction &MF, bool CanRewrite, bool IsLegalized)
+  EGraphCombinerImpl(MachineFunction &MF, bool CanRewrite, bool IsLegalized,
+                     bool IsRegBankSelected)
       : MF(MF), MRI(MF.getRegInfo()), CanRewrite(CanRewrite),
-        IsLegalized(IsLegalized) {
+        IsLegalized(IsLegalized), IsRegBankSelected(IsRegBankSelected) {
     CM.ConstantCost = ConstantCost;
     CM.MulCost = MulCost;
     CM.LI = MF.getSubtarget().getLegalizerInfo();
@@ -603,6 +894,13 @@ public:
     if (const TargetLowering *TLI = MF.getSubtarget().getTargetLowering())
       CM.IdxTy = TLI->getVectorIdxLLT(MF.getDataLayout());
     CM.RequireLegal = IsLegalized;
+    // The target model, if the target has one (AMDGPU only so far; on
+    // other targets the patterns and bank states are not used). Its
+    // restrictions of new nodes apply with or without these features.
+    TC = createAMDGPUTargetCosts(MF, IsLegalized, IsRegBankSelected);
+    CM.TC = TC.get();
+    CM.Patterns = TC && Features.Patterns;
+    CM.Banks = TC && Features.Banks && TC->hasUniformBank();
   }
 
   bool run();
@@ -624,15 +922,38 @@ private:
       VT.emplace(MF);
     return *VT;
   }
+  /// True if \p Reg holds a uniform value: after register bank selection,
+  /// if its bank is the uniform bank of the target; before, if the
+  /// uniformity analysis finds it uniform (the analysis is computed on first
+  /// use and again after a rewrite).
+  bool isUniform(Register Reg) {
+    if (IsRegBankSelected)
+      if (const RegisterBank *RB = MRI.getRegBankOrNull(Reg))
+        return TC->isUniformBank(*RB);
+    if (!MUI) {
+      if (!MCI) {
+        MCI.emplace();
+        MCI->compute(MF);
+      }
+      MUI.emplace(computeMachineUniformityInfo(MF, *MCI, getDomTree(),
+                                               /*HasBranchDivergence=*/true));
+    }
+    return MUI->isUniformAtDef(Reg);
+  }
   void exportNode(json::OStream &J, const EGraph &G, const ENode &N) const;
 
   MachineFunction &MF;
   MachineRegisterInfo &MRI;
   bool CanRewrite;
   bool IsLegalized;
+  bool IsRegBankSelected;
+  EGraphFeatures Features = getFeatures();
+  std::unique_ptr<TargetCosts> TC;
   TargetCostModel CM;
   std::optional<MachineDominatorTree> MDT;
   std::optional<GISelValueTracking> VT;
+  std::optional<MachineCycleInfo> MCI;
+  std::optional<MachineUniformityInfo> MUI;
   DenseMap<const MachineInstr *, unsigned> Order;
   SmallPtrSet<const MachineInstr *, 32> Visited;
   SmallPtrSet<const MachineInstr *, 32> Erased;
@@ -757,6 +1078,7 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
 
   // 1. Translate the region into an e-graph.
   EGraph G;
+  CM.beginRegion();
   // The class of a register's value in this block and, for a register that
   // is defined in this block and used by a PHI of this block, the class of
   // its value in the previous iteration.
@@ -798,6 +1120,38 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
   std::vector<ExportNode> ExportNodes;
   SmallVector<EClassId, 8> InputClasses;
   SmallVector<std::pair<EClassId, APInt>, 8> ExportConsts;
+  // The original region as a DAG (CostDag): one item per result of each
+  // instruction and per leaf, so that its cost is computed by the same
+  // function as the cost of the candidate (evaluateDag). The nodes are
+  // copies (the classes change during the saturation).
+  CostDag OldDag;
+  std::deque<ENode> OldNodes;
+  DenseMap<Register, unsigned> RegItem;
+  DenseMap<EClassId, unsigned> LeafItem;
+  DenseMap<const MachineInstr *, unsigned> InstrItem;
+  auto AddOldItem = [&](const ENode &N, EClassId Class,
+                        ArrayRef<unsigned> Ops) {
+    OldNodes.push_back(N);
+    CostDag::Item Item;
+    Item.N = &OldNodes.back();
+    Item.Class = Class;
+    Item.Ops.assign(Ops.begin(), Ops.end());
+    OldDag.Items.push_back(std::move(Item));
+    return unsigned(OldDag.Items.size() - 1);
+  };
+  // The item of the operand \p Reg, of class \p Class: the result of an
+  // earlier instruction of the region, or a leaf (an input or a constant).
+  auto OperandItem = [&](Register Reg, EClassId Class) {
+    auto It = RegItem.find(Reg);
+    if (It != RegItem.end())
+      return It->second;
+    auto LIt = LeafItem.find(Class);
+    if (LIt != LeafItem.end())
+      return LIt->second;
+    unsigned Idx = AddOldItem(G.getClass(Class).Nodes.front(), Class, {});
+    LeafItem[Class] = Idx;
+    return Idx;
+  };
   uint64_t OldCost = 0;
 
   auto GetOperandClass = [&](Register Reg, bool IsPhiOperand) {
@@ -833,6 +1187,8 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
         OrigDefs.push_back({Id, Def, 0});
       CM.addOriginal(G, ENode::makeConstant(Ty, *C));
     } else {
+      // The known bits of the input are recorded below (setKnownBits) as
+      // context facts of its class.
       Id = G.addInput(getInputInfo(Reg, MRI));
       if (!Carried)
         InputIndex[Reg] = InputRegs.size();
@@ -855,18 +1211,30 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       const OpProperties *P =
           getOpPropertiesForInstr(MI->getOpcode(), ImpliedFlags);
       SmallVector<EClassId, 3> Ops;
+      SmallVector<unsigned, 3> OpItems;
+      auto AddOperand = [&](Register Reg) {
+        EClassId C = GetOperandClass(Reg, false);
+        Ops.push_back(C);
+        OpItems.push_back(OperandItem(Reg, C));
+      };
       uint64_t Attr = 0;
       switch (P->Shape) {
       case OpShape::Phi: {
         // One operand per predecessor, ordered by block number.
-        SmallVector<std::pair<int, EClassId>, 4> Incoming;
-        for (unsigned I = 1, E = MI->getNumOperands(); I < E; I += 2)
-          Incoming.push_back({MI->getOperand(I + 1).getMBB()->getNumber(),
-                              GetOperandClass(MI->getOperand(I).getReg(),
-                                              /*IsPhiOperand=*/true)});
-        llvm::stable_sort(Incoming, llvm::less_first());
-        for (auto [Pred, Class] : Incoming)
+        SmallVector<std::tuple<int, EClassId, unsigned>, 4> Incoming;
+        for (unsigned I = 1, E = MI->getNumOperands(); I < E; I += 2) {
+          Register Reg = MI->getOperand(I).getReg();
+          EClassId C = GetOperandClass(Reg, /*IsPhiOperand=*/true);
+          Incoming.push_back({MI->getOperand(I + 1).getMBB()->getNumber(), C,
+                              OperandItem(Reg, C)});
+        }
+        llvm::stable_sort(Incoming, [](const auto &A, const auto &B) {
+          return std::get<0>(A) < std::get<0>(B);
+        });
+        for (auto [Pred, Class, Item] : Incoming) {
           Ops.push_back(Class);
+          OpItems.push_back(Item);
+        }
         auto [It, Inserted] = PhiSites.try_emplace(
             std::vector<EClassId>(Ops.begin(), Ops.end()), Sites.size());
         if (Inserted)
@@ -877,7 +1245,7 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       case OpShape::Effect: {
         for (const MachineOperand &MO : MI->operands())
           if (MO.isReg())
-            Ops.push_back(GetOperandClass(MO.getReg(), false));
+            AddOperand(MO.getReg());
         // See OpShape::Effect: bit 1 is set if the two targets can be
         // exchanged.
         MachineInstr *Next = MI->getNextNode();
@@ -894,32 +1262,32 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
         // is the mask of a shuffle.
         switch (MI->getOpcode()) {
         case TargetOpcode::G_EXTRACT_VECTOR_ELT:
-          Ops.push_back(GetOperandClass(MI->getOperand(1).getReg(), false));
+          AddOperand(MI->getOperand(1).getReg());
           Attr = getIConstantVRegVal(MI->getOperand(2).getReg(), MRI)
                      ->getZExtValue();
           break;
         case TargetOpcode::G_INSERT_VECTOR_ELT:
-          Ops.push_back(GetOperandClass(MI->getOperand(1).getReg(), false));
-          Ops.push_back(GetOperandClass(MI->getOperand(2).getReg(), false));
+          AddOperand(MI->getOperand(1).getReg());
+          AddOperand(MI->getOperand(2).getReg());
           Attr = getIConstantVRegVal(MI->getOperand(3).getReg(), MRI)
                      ->getZExtValue();
           break;
         case TargetOpcode::G_SHUFFLE_VECTOR:
-          Ops.push_back(GetOperandClass(MI->getOperand(1).getReg(), false));
-          Ops.push_back(GetOperandClass(MI->getOperand(2).getReg(), false));
+          AddOperand(MI->getOperand(1).getReg());
+          AddOperand(MI->getOperand(2).getReg());
           Attr = G.internMask(MI->getOperand(3).getShuffleMask());
           break;
         default:
           for (const MachineOperand &MO : MI->uses())
             if (MO.isReg())
-              Ops.push_back(GetOperandClass(MO.getReg(), false));
+              AddOperand(MO.getReg());
           break;
         }
         break;
       default:
         for (const MachineOperand &MO : MI->operands()) {
           if (MO.isReg() && MO.isUse())
-            Ops.push_back(GetOperandClass(MO.getReg(), false));
+            AddOperand(MO.getReg());
           else if (MO.isPredicate())
             Attr = MO.getPredicate();
           else if (MO.isImm())
@@ -935,23 +1303,29 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       uint32_t Flags = (MI->getFlags() & SemanticFlags) | ImpliedFlags;
       if (!P->hasResult()) {
         ENode N = ENode::makeOp(P->Opcode, LLT(), Ops, Flags, Attr);
-        OldCost += std::max(1u, CM.getNodeCost(N));
         EClassId Id = G.add(N);
         InstrClass[MI] = Id;
+        InstrItem[MI] = AddOldItem(N, Id, OpItems);
         if (Exporting)
           ExportNodes.push_back({Id, std::move(N), MI, 0});
         continue;
       }
-      // One node per result; the instruction is counted once.
+      // One node per result; the instruction is counted once (the item of
+      // its first result).
+      int FirstItem = -1;
       for (unsigned I = 0, E = MI->getNumExplicitDefs(); I != E; ++I) {
         Register Def = MI->getOperand(I).getReg();
         LLT Ty = MRI.getType(Def);
         ENode N = ENode::makeOp(P->Opcode, Ty, Ops, Flags,
                                 P->hasProjections() ? I : Attr);
-        if (I == 0)
-          OldCost += std::max(1u, CM.getNodeCost(N));
         CM.addOriginal(G, N);
         EClassId Id = G.add(N);
+        unsigned Item = AddOldItem(N, Id, OpItems);
+        if (FirstItem < 0)
+          FirstItem = Item;
+        else
+          OldDag.Items[Item].SameInstr = FirstItem;
+        RegItem[Def] = Item;
         if (Exporting)
           ExportNodes.push_back({Id, std::move(N), MI, I});
         if (Ty.isScalar() || Ty.isFixedVector())
@@ -962,6 +1336,11 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       }
       OrigFlags[MI] = Flags;
     }
+    for (const RootRef &Root : R.Roots)
+      OldDag
+          .Items[Root.isValue() ? RegItem.lookup(Root.getReg())
+                                : InstrItem.lookup(Root.MI)]
+          .IsRoot = true;
   }
   unsigned OrigNodes = G.getNumNodes();
   NumOrigNodes += OrigNodes;
@@ -973,6 +1352,10 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
   Limits.MaxMatchesPerIteration = MaxMatches;
   Limits.MaxACLeaves = MaxACLeaves;
   Limits.MaxACViews = MaxACViews;
+  Limits.EnableFacts = Features.Facts;
+  Limits.EnableLinear = Features.Linear;
+  Limits.EnableSlice = Features.Slice;
+  Limits.EnableTuples = Features.Tuples;
   SaturationStats S;
   {
     NamedRegionTimer T("saturate", "Saturate e-graph", TimerGroupName,
@@ -992,18 +1375,81 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
     ++NumSaturated;
   else
     ++NumBudgetLimited;
+  for (const auto &[Name, V] : S.Views) {
+    unsigned Applied = V.Merges + V.Refinements;
+    if (Name == "facts" || Name == "known-constants") {
+      NumFactRewrites += Applied;
+      NumContextFactRewrites += V.ContextFacts;
+    } else if (Name == "linear") {
+      NumLinearRewrites += Applied;
+    } else if (Name == "slice") {
+      NumSliceRewrites += Applied;
+    } else if (Name == "tuples") {
+      NumTupleRewrites += Applied;
+    }
+    NumViewBudgetStops += V.Budget;
+    NumViewUnsafe += V.Unsafe;
+  }
 
   // 3. Extraction.
   NamedRegionTimer ExtractTimer("extract", "Extract and rewrite",
                                 TimerGroupName, TimerGroupDesc,
                                 TimePassesIsEnabled);
-  Extractor E(G, CM);
   SmallVector<EClassId, 4> RootClasses;
   for (const RootRef &Root : R.Roots)
     RootClasses.push_back(Root.isValue() ? RegClass.lookup(Root.getReg())
                                          : InstrClass.lookup(Root.MI));
-  uint64_t NewCost = E.getDagCost(RootClasses);
-  bool Profitable = NewCost < OldCost;
+  // Bank states: which inputs and PHIs are uniform, and which roots must
+  // stay uniform (a value that is uniform in the original function is never
+  // computed from a divergent one: that would need a copy from a VGPR to an
+  // SGPR on AMDGPU). For a terminator, its operands.
+  SmallVector<BankState, 4> RootStates(R.Roots.size(), BankState::Any);
+  CM.UniformInputs.clear();
+  CM.UniformSites.clear();
+  if (CM.Banks) {
+    for (Register Reg : InputRegs)
+      CM.UniformInputs.push_back(isUniform(Reg));
+    for (MachineInstr *Site : Sites)
+      CM.UniformSites.push_back(Site->isPHI() &&
+                                isUniform(Site->getOperand(0).getReg()));
+    for (unsigned I = 0, End = R.Roots.size(); I != End; ++I) {
+      const RootRef &Root = R.Roots[I];
+      bool Uniform =
+          Root.isValue()
+              ? isUniform(Root.getReg())
+              : all_of(Root.MI->operands(), [&](const MachineOperand &MO) {
+                  return !MO.isReg() || isUniform(MO.getReg());
+                });
+      if (Uniform) {
+        RootStates[I] = BankState::Uniform;
+        ++NumUniformRoots;
+      }
+    }
+  }
+  Extractor E(G, CM);
+  ExtractionOptions ExtractOpts;
+  ExtractOpts.ImproveDag = Features.DagExtraction;
+  ExtractOpts.MaxEvaluations = MaxDagEvaluations;
+  ExtractOpts.SizeTieBreak = DagSizeTieBreak;
+  ExtractOpts.ImproveVectors = DagVectors;
+  unsigned DagImprovements =
+      E.extract(RootClasses, RootStates, CM, ExtractOpts);
+  NumDagImprovements += DagImprovements;
+  // The cost of the original region and of the candidate, by the same
+  // function (evaluateDag): target patterns that the selector forms in the
+  // original code are not counted as a gain of the candidate.
+  DagEvaluation OldEval, NewEval;
+  evaluateDag(G, CM, OldDag, &OldEval);
+  CostDag NewDag;
+  if (E.getDag(RootClasses, RootStates, NewDag))
+    evaluateDag(G, CM, NewDag, &NewEval);
+  else
+    NewEval.Cost = CostVector::infinite();
+  NumCoversOld += OldEval.Covers.size();
+  NumCoversNew += NewEval.Covers.size();
+  OldCost = OldEval.Cost.Instrs;
+  uint64_t NewCost = NewEval.Cost.Instrs;
+  bool Profitable = NewEval.Cost < OldEval.Cost;
   if (Profitable) {
     ++NumProfitable;
     ShadowCostSaved += OldCost - NewCost;
@@ -1095,6 +1541,20 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       OS << (DoRewrite     ? " rewritten"
              : !CanRewrite ? " shadow"
                            : (" blocked:" + Blocker).str().c_str());
+    // The proxies (code size and critical path) and the target model.
+    auto Num = [](uint64_t V) {
+      return V == CostVector::Infinite ? std::string("inf") : utostr(V);
+    };
+    OS << " bytes=" << Num(OldEval.Cost.Bytes) << "->"
+       << Num(NewEval.Cost.Bytes) << " depth=" << Num(OldEval.Cost.Depth)
+       << "->" << Num(NewEval.Cost.Depth);
+    if (CM.Patterns)
+      OS << " covers=" << OldEval.Covers.size() << "->"
+         << NewEval.Covers.size();
+    if (CM.Banks)
+      OS << " uniform-roots=" << count(RootStates, BankState::Uniform);
+    if (DagImprovements)
+      OS << " dag-improved=" << DagImprovements;
     OS << "\n";
     if (Profitable) {
       auto PrintInput = [&](raw_ostream &OS, unsigned Idx) {
@@ -1110,9 +1570,29 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       OS << "  rules:";
       ArrayRef<RewriteRule> Rules = getRules();
       for (unsigned RI = 0, RE = Rules.size(); RI != RE; ++RI)
-        if (S.RuleApplications[RI])
+        if (S.RuleApplications[RI]) {
           OS << " " << Rules[RI].getName() << "=" << S.RuleApplications[RI];
+          if (S.ContextFactApplications[RI])
+            OS << "(context:" << S.ContextFactApplications[RI] << ")";
+        }
       OS << "\n";
+      if (!S.Views.empty()) {
+        OS << "  views:";
+        for (const auto &[Name, V] : S.Views)
+          OS << " " << Name << "=" << V.Merges << "/" << V.Refinements << "/"
+             << V.Unsafe << "/" << V.Budget;
+        OS << " (merges/refinements/unsafe/budget)\n";
+      }
+    }
+    if (!OldEval.Covers.empty() || !NewEval.Covers.empty()) {
+      auto Names = [&](const DagEvaluation &Ev) {
+        std::string L;
+        for (const PatternCover &C : Ev.Covers)
+          L += (L.empty() ? "" : ",") + std::string(C.Name);
+        return L;
+      };
+      OS << "  covers: original=[" << Names(OldEval) << "] new=["
+         << Names(NewEval) << "]\n";
     }
   }
 
@@ -1159,6 +1639,32 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       J.attribute("refinement", UsesRefinement);
       J.attribute("blocker", Blocker);
       J.attribute("saturated", S.Saturated);
+      J.attributeArray("features", [&] {
+        for (auto [Name, On] :
+             {std::pair<const char *, bool>{"facts", Features.Facts},
+              {"linear", Features.Linear},
+              {"slice", Features.Slice},
+              {"tuples", Features.Tuples},
+              {"patterns", Features.Patterns},
+              {"banks", Features.Banks},
+              {"dag", Features.DagExtraction}})
+          if (On)
+            J.value(Name);
+      });
+      J.attributeObject("views", [&] {
+        for (const auto &NV : S.Views)
+          J.attributeObject(NV.first, [&] {
+            const ViewStats &V = NV.second;
+            J.attribute("views", V.Views);
+            J.attribute("candidates", V.Candidates);
+            J.attribute("merges", V.Merges);
+            J.attribute("refinements", V.Refinements);
+            J.attribute("unsafe", V.Unsafe);
+            J.attribute("budget", V.Budget);
+            J.attribute("unsupported", V.Unsupported);
+            J.attribute("context_facts", V.ContextFacts);
+          });
+      });
       J.attributeObject("cost", [&] {
         J.attribute("original", OldCost);
         J.attribute("optimized", NewCost);
@@ -1275,6 +1781,18 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
         // The lane rules of fixed vectors (applyLaneRules).
         for (const auto &[Name, N] : S.LaneRuleApplications)
           J.attribute(Name, N);
+      });
+      // The rules whose precondition needed the known bits of the inputs
+      // (the "zero"/"one" of "inputs"): a rule made from this record must
+      // test them.
+      J.attributeObject("context_facts", [&] {
+        ArrayRef<RewriteRule> Rules = getRules();
+        for (unsigned RI = 0, RE = Rules.size(); RI != RE; ++RI)
+          if (S.ContextFactApplications[RI])
+            J.attribute(Rules[RI].getName(), S.ContextFactApplications[RI]);
+        if (auto It = S.Views.find("known-constants");
+            It != S.Views.end() && It->second.ContextFacts)
+          J.attribute("known-constant", It->second.ContextFacts);
       });
     });
     *Out << "\n";
@@ -1587,10 +2105,20 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
   ++NumApplied;
   CostSaved += OldCost - NewCost;
   numberBlock(MBB);
+  // The uniformity of the new registers is not known: compute the analysis
+  // again when it is needed next.
+  MUI.reset();
   return true;
 }
 
 bool EGraphCombinerImpl::run() {
+  if (Report && TC) {
+    errs() << "GIEGraph: " << MF.getName() << ": target-costs: ";
+    TC->describe(errs());
+    errs() << " patterns=" << (CM.Patterns ? "on" : "off")
+           << " banks=" << (CM.Banks ? "on" : "off")
+           << " dag=" << (Features.DagExtraction ? "on" : "off") << "\n";
+  }
   bool Changed = false;
   for (MachineBasicBlock &MBB : MF) {
     numberBlock(MBB);
@@ -1644,6 +2172,11 @@ bool GIEGraphCombiner::runOnMachineFunction(MachineFunction &MF) {
         R.print(errs());
         errs() << "\n";
       }
+      // Applied by the tuple view (applyTupleRules), not by the saturation.
+      for (const RewriteRule &R : getTupleRules()) {
+        R.print(errs());
+        errs() << "\n";
+      }
       errs() << "# Enforced by canonicalization, not applied as rules:\n";
       for (const RewriteRule &R :
            getImplicitPropertyRules(getAllOpProperties())) {
@@ -1664,8 +2197,9 @@ bool GIEGraphCombiner::runOnMachineFunction(MachineFunction &MF) {
   if (Stages ==
       (IsLegalized ? EGraphStages::PreLegalizer : EGraphStages::PostLegalizer))
     return false;
-  bool CanRewrite =
-      Mode == EGraphMode::Rewrite &&
-      !Props.hasProperty(MachineFunctionProperties::Property::RegBankSelected);
-  return EGraphCombinerImpl(MF, CanRewrite, IsLegalized).run();
+  bool IsRegBankSelected =
+      Props.hasProperty(MachineFunctionProperties::Property::RegBankSelected);
+  bool CanRewrite = Mode == EGraphMode::Rewrite && !IsRegBankSelected;
+  return EGraphCombinerImpl(MF, CanRewrite, IsLegalized, IsRegBankSelected)
+      .run();
 }

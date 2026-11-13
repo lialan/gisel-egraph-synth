@@ -12,7 +12,7 @@
 # MIR-LABEL: name: umin_of_masks
 # MIR: G_SELECT
 
-# CHECK: {"version":2,"fn":"umin_of_masks","bb":0,"stage":"pre-legalizer","triple":"amdgcn-amd-amdhsa","profitable":true,"refinement":true
+# CHECK: {"version":3,"fn":"umin_of_masks","bb":0,"stage":"pre-legalizer","triple":"amdgcn-amd-amdhsa","profitable":true,"refinement":true
 # CHECK-SAME: "cost":{"original":6,"optimized":2}
 # CHECK-SAME: "inputs":[{"id":0,"in":0,"reg":"%0","type":"s32","zero":"0x0","one":"0x0","def":"COPY"
 # CHECK-SAME: "constants":[{"id":1,"type":"s32","value":"0xFF"},{"id":3,"type":"s32","value":"0xF"}]

@@ -216,6 +216,26 @@ one-way undef/poison refinement cannot be used to merge interchangeable
 e-classes. [GIEGraphCombiner-Design.md](docs/GIEGraphCombiner-Design.md) has
 the full design.
 
+On top of the binary operators, the pass has bounded analysis views and a
+target cost layer ([TargetAwareViews.md](docs/TargetAwareViews.md)); each
+can be turned off with `-gisel-egraph-features=` for comparisons:
+
+* known bits of classes (with the source of each fact: the matched
+  expression, or the context of the inputs, which a rule must then test)
+  and rules with a precondition on them;
+* AC terms, linear forms modulo 2^W and bit slices of a value, whose
+  results are ordinary binary nodes related to the class by a merge or a
+  refinement edge, under one definedness policy;
+* multi-node target patterns (the AMDGPU `ThreeOp` instructions such as
+  `v_add3_u32`), predicted register banks and a sharing-aware extraction,
+  costed on the DAG that remains; and the results of `G_UADDO` as one
+  instruction.
+
+On 1405 LLVM AMDGPU tests for gfx1100 the pass with these features gives
+891 fewer instructions than the stock GlobalISel pipeline, against 493 for
+the pass without them (static instruction count; 93 files smaller, 32
+larger).
+
 ## Target-aware search and selection
 
 GIEGraph uses configurable operation weights and `LegalizerInfo` checks.

@@ -462,6 +462,42 @@ def _schedule(insts, share):
     return out
 
 
+def precondition_source(rule):
+    """'lhs' if the emitted precondition of the rule is true (no guard),
+    'guard' if each emitted disjunct tests facts of the inputs, 'mixed'
+    if some do."""
+    ds = rule.get('disjuncts') or []
+    empty = [not d.get('pred_json') for d in ds]
+    if all(empty):
+        return 'lhs'
+    return 'guard' if not any(empty) else 'mixed'
+
+
+def _merge_view_stats(st, vst):
+    from girs import views
+    views.merge_stats(st, vst)
+
+
+def _count_view_stats(out, k, v, cached):
+    """Adds the counter ``k`` of views.search of one instance; the time of
+    a search that the cache gave is not spent again."""
+    if k == 'seconds':
+        out['instances'] += 1
+        out['cached'] = out.get('cached', 0) + cached
+        if not cached:
+            out['seconds'] += v
+    elif k in ('smt_checks', 'smt_unknown'):
+        out[k] += v
+    elif k.startswith('proposed_') or k.startswith('proved_'):
+        what, kind = k.split('_', 1)
+        out['proposals' if what == 'proposed' else 'proved'] += v
+        b = out['by_kind'].setdefault(kind, {'proposed': 0, 'proved': 0})
+        b[what] += v
+    elif k != 'smt_refuted':
+        out.setdefault('filtered', {})
+        out['filtered'][k] = out['filtered'].get(k, 0) + v
+
+
 def cmd_synth(args):
     from girs import parallel
     if args.search_jobs < 0 or args.slow_jobs < 1 or args.search_batch < 1:
@@ -482,7 +518,7 @@ def cmd_synth(args):
 
 def _cmd_synth(args, session=None, resources=None):
     from girs import agenda, compose, corpus, discover, egraph, ir, ops, parallel, \
-        region, sibling, smt, synth, vector, vector_search, known, history
+        region, sibling, smt, synth, vector, vector_search, views, known, history
 
     if args.mode == 'semantics-only' and (args.egraph or args.compose_corpus
                                           or args.compose_axioms):
@@ -564,11 +600,18 @@ def _cmd_synth(args, session=None, resources=None):
     # The rules with several outputs on known rules, made before the
     # rules of this run have their final disjuncts (sy.finalize).
     sy_multi = synth.Synthesizer(backend, slim, proof_dir=args.proofs)
+    view_lim = views.Limits(max_proposals=args.views_max_proposals) \
+        if args.views else None
+    vwstats = {'instances': 0, 'proposals': 0, 'proved': 0, 'rules': 0,
+               'smt_checks': 0, 'smt_unknown': 0, 'seconds': 0.0,
+               'by_kind': {}}
+    joint = []  # Additional multi-output seeds from e-graph imports.
     # The tasks of the search and their state from the earlier runs.
     ag = agenda.Agenda(args.cache or None,
                        agenda.domain(dlim.identity(), vars(slim),
                                      {'process_tasks': bool(session),
-                                      'batch': args.search_batch if session else None}),
+                                      'batch': args.search_batch if session else None,
+                                      'views': view_lim.identity() if view_lim else None}),
                        agenda.depth(dlim.identity(), args.timeout_ms),
                        reopen=args.refresh_search)
     resources.callback(ag.close)
@@ -689,6 +732,11 @@ def _cmd_synth(args, session=None, resources=None):
         else:
             with timed('discovery'):
                 cands, st = discover.discover(inst, backend, dlim, ctx, log)
+                if view_lim is not None:
+                    vc, vst = views.search(inst, backend, view_lim, dlim,
+                                           ctx, log, have=[c['tgt'] for c in cands])
+                    cands += vc
+                    _merge_view_stats(st, vst)
         if vector.has_vector(inst.vw, inst.expr):
             dstats['vector_instances'] = dstats.get('vector_instances', 0) + 1
         stop = st.pop('stop')
@@ -700,7 +748,9 @@ def _cmd_synth(args, session=None, resources=None):
             reasons.add({'time_budget': 'time', 'proof_budget': 'proofs',
                          'candidate_limit': 'candidates', 'smt_unknown': 'unknown'}.get(stop, 'terms'))
         for name, value in st.items():
-            if isinstance(value, (int, float)):
+            if name.startswith('views_'):
+                _count_view_stats(vwstats, name[len('views_'):], value, False)
+            elif isinstance(value, (int, float)):
                 dstats[name] = dstats.get(name, 0) + value
         if session and row['pending']:
             reasons.add('time' if late() else 'unknown')
@@ -719,8 +769,11 @@ def _cmd_synth(args, session=None, resources=None):
                     cinst.const_vars = tuple(c['const_vars'])
                     dstats['computed_constants'] = dstats.get(
                         'computed_constants', 0) + 1
-                prov = {'discovery': 'vector-search-%s+smt' % c['family']} if c.get('family') else None
+                fam = c.get('family')
+                prov = views.provenance(fam)
                 rids.append(row['rids'][j] if session else sy.add(cinst, c['tgt'], prov))
+                if fam and fam.startswith('views-') and rids[-1]:
+                    vwstats['rules'] += 1
                 if rids[-1]:
                     new_rule[k, c['tgt']] = rids[-1]
                     rule_tasks.setdefault(rids[-1], set()).add(('single', k))
@@ -975,14 +1028,22 @@ def _cmd_synth(args, session=None, resources=None):
             gkey = (ir.to_sexpr(c.inst.expr), c.group) if c.group else None
             if gkey in done:
                 continue
-            rid = sy.add(c.inst, c.tgt, provenance={
-                'discovery': 'egraph', 'egraph_rules': c.rules,
-                'egraph_refinement': c.refinement})
+            rid = imp.synthesize(c, sy)
             if rid:
                 hit.add(rid)
                 generalized += 1
                 if gkey:
                     done.add(gkey)
+                if c.joint and args.regions and \
+                        region.interior_outputs(c.inst):
+                    # The roots are results of one instruction with
+                    # several results: the region step searches the
+                    # other outputs.
+                    joint.append((c.inst, c.tgt, rid))
+                    imp.stats['multi_root']['region_seeds_searched'] = \
+                        imp.stats['multi_root'].get(
+                            'region_seeds_searched', 0) + 1
+        imp.cross_check()
         einsts = [c.inst for c in cands]
         estats = dict(imp.stats)
         estats.update({
@@ -1083,6 +1144,12 @@ def _cmd_synth(args, session=None, resources=None):
     if args.regions and not late():
         with timed('regions'):
             region_stage(sy, True)
+            # Imported tuple candidates are not corpus queue tasks. Retain
+            # their established joint-proof path on every hybrid invocation.
+            if joint:
+                st = session.regions(sy, joint) if session else \
+                    region.extend(sy, joint, backend, dlim, ctx)
+                total(rstats, st)
     if args.siblings and not late():
         with timed('siblings'):
             sibling_stage(sy)
@@ -1116,6 +1183,10 @@ def _cmd_synth(args, session=None, resources=None):
     t_write = time.monotonic()
     rules = [synth.strip_private(sy.rules[rid]) for rid in sorted(sy.rules)]
     for r in rules:
+        # Where the precondition of the rule comes from: 'lhs' (the rule
+        # has no guard: the condition follows from the matched source) or
+        # 'guard' (known bits of the inputs, tested by the emitted guard).
+        r['precondition_source'] = precondition_source(r)
         if target_cost_search:
             # Opt-in eligibility for measurement, not profitability.
             # Emission and selection must not discard these candidates
@@ -1233,6 +1304,11 @@ def _cmd_synth(args, session=None, resources=None):
                              'stored': backend.history.stored}
                             if backend.history else {},
              'composition': pstats, 'egraph': estats,
+             'views': dict(vwstats, enabled=view_lim is not None,
+                           limits=view_lim.identity() if view_lim else None,
+                           seconds=round(vwstats['seconds'], 2),
+                           signatures=views.group_stats(insts)
+                           if view_lim is not None else {}),
              'synthesis': sy.stats, 'emission': emission,
              'disjuncts': fstats, 'regions': rstats, 'siblings': sstats,
              'rules_by_class': by_class,
@@ -1723,6 +1799,14 @@ def build_parser():
     p.add_argument('--compose-axioms', action='store_true',
                    help='also use equal-cost reassociation identities as '
                    'composition steps')
+    p.add_argument('--no-views', dest='views', action='store_false',
+                   help='do not propose the candidates of the analysis '
+                   'views (girs/views.py: folded AC terms, canonical '
+                   'linear forms, direct bit slices) next to the terms of '
+                   'the enumerative search')
+    p.add_argument('--views-max-proposals', type=int, default=8,
+                   help='budget: proposals of the views of one instance '
+                   'that are proved')
     p.set_defaults(fn=cmd_synth)
 
     p = sub.add_parser('egraph-export', help='write the candidates of the '

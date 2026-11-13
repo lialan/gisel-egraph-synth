@@ -40,6 +40,7 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/FloatingPointMode.h"
 #include "llvm/ADT/FunctionExtras.h"
 #include "llvm/ADT/Hashing.h"
@@ -119,6 +120,38 @@ struct InputInfo {
   LLT Ty;
   bool NotUndef = false;
   bool NotPoison = false;
+  /// Known bits of the input (of each lane of a fixed vector) that hold
+  /// outside of the region, e.g. from GISelValueTracking. They are *context
+  /// facts*: a property of the SSA value, so they hold at every use of it,
+  /// but not a consequence of the expression that a rule matches. A rule
+  /// derived from a rewrite that needs them must test them (a guard). An
+  /// empty KnownBits (width 0) means nothing is known.
+  KnownBits Known;
+};
+
+/// Where a fact used by a rewrite comes from.
+enum class FactSource : uint8_t {
+  /// The structure of the classes alone (constants and operators), with
+  /// nothing known about the inputs: the fact follows from the left-hand
+  /// side that the rewrite matched.
+  Structure,
+  /// Also the context facts of the inputs (InputInfo::Known): a rule made
+  /// from the rewrite needs a guard.
+  Context,
+};
+
+/// The constant of one lane of a class (EGraph::getLaneConstant).
+struct LaneConstant {
+  enum KindTy : uint8_t {
+    /// The lane is the exact constant Value.
+    Constant,
+    /// The lane has no value: it may be undef or poison (a shuffle lane with
+    /// the mask entry -1).
+    NoValue,
+    /// Nothing is known.
+    Unknown,
+  } Kind = Unknown;
+  APInt Value;
 };
 
 /// An equivalence class of e-nodes plus analysis data. All nodes in a class
@@ -131,7 +164,10 @@ struct EClass {
   /// Analysis: known scalar constant value of the class. Vector constants
   /// remain G_BUILD_VECTOR nodes; see EGraph::getScalarOrSplatConstant.
   std::optional<APInt> Const;
-  std::optional<KnownBits> Known;
+  /// Known bits of the value from outside of the e-graph, e.g.
+  /// GISelValueTracking for a register of the region (setKnownBits). They
+  /// are context facts: the analysis starts Known from them.
+  std::optional<KnownBits> Seed;
   /// Analysis: for a fixed vector, the constant of each lane if the class
   /// has a G_BUILD_VECTOR of one constant class (a splat). A pattern literal
   /// matches it in the width of a lane; the class has no Const, so no fold
@@ -142,6 +178,13 @@ struct EClass {
   bool NotUndef = false;
   /// Analysis: the value is never poison.
   bool NotPoison = false;
+  /// Analysis: known bits of the value (of each lane of a fixed integer
+  /// vector), from all nodes of the class (see EGraph::getKnownBits). Known
+  /// uses the context facts of the inputs, KnownLocal does not. Width 0 for
+  /// a class without an integer type (pointers, floating point, effects).
+  /// The facts of a class hold for each value it can have that is not
+  /// poison; they say nothing about the classes it refines to.
+  KnownBits Known, KnownLocal;
 };
 
 /// A term of an associative and commutative (AC) operator, represented by
@@ -168,6 +211,8 @@ struct ACView {
 /// rewritten by associativity/commutativity rules; the graph keeps their
 /// terms in a canonical form and the matcher works modulo AC.
 bool isACOperator(unsigned Opcode);
+
+struct ViewStats;
 
 /// A typed e-graph over gMIR operators.
 class EGraph {
@@ -215,10 +260,47 @@ public:
   /// vector whose lanes are all the same exact constant. Does not follow
   /// refinement edges or treat undef/poison lanes as constant lanes.
   std::optional<APInt> getScalarOrSplatConstant(EClassId Id) const;
+
+  //===--- Typed constants and facts --------------------------------------===//
+  //
+  // One set of queries for a constant of any supported type: a scalar, a
+  // splat or the lanes of a fixed integer vector. A vector is never one wide
+  // integer: a constant of a lane has the width of the element. None of
+  // these follows refinement edges, and a lane that may be undef or poison
+  // is never a constant.
+
+  /// The scalar constant or the element of a constant splat (an alias of
+  /// getScalarOrSplatConstant).
+  std::optional<APInt> getSplatConstant(EClassId Id) const {
+    return getScalarOrSplatConstant(Id);
+  }
+  /// The constant of lane \p Lane (lane 0 of a scalar is the scalar).
+  LaneConstant getLaneConstant(EClassId Id, unsigned Lane) const;
+  /// True if the scalar, or every lane, is the exact constant 0 (all ones).
+  bool isAllZero(EClassId Id) const;
+  bool isAllOnes(EClassId Id) const;
+  /// The known bits of the class (of each lane of a fixed vector), with or
+  /// without the context facts of the inputs (EClass::Known, KnownLocal).
+  /// Width 0 if the class has no integer type.
+  const KnownBits &getKnownBits(EClassId Id,
+                                FactSource Src = FactSource::Context) const {
+    const EClass &C = getClass(Id);
+    return Src == FactSource::Context ? C.Known : C.KnownLocal;
+  }
+
   const InputInfo &getInputInfo(unsigned Idx) const { return Inputs[Idx]; }
   unsigned getNumInputs() const { return Inputs.size(); }
+  /// Record known bits of the value of \p Id from outside of the e-graph
+  /// (EClass::Seed, context facts). They take effect at the next rebuild.
   void setKnownBits(EClassId Id, KnownBits K) {
-    Classes[find(Id)].Known = std::move(K);
+    EClass &C = Classes[find(Id)];
+    if (C.Seed && C.Seed->getBitWidth() == K.getBitWidth()) {
+      KnownBits U = C.Seed->unionWith(K);
+      if (!U.hasConflict())
+        C.Seed = std::move(U);
+    } else {
+      C.Seed = std::move(K);
+    }
   }
 
   /// Canonical class ids in increasing order.
@@ -256,7 +338,13 @@ public:
   /// node's flattening (see addACTerm), so that terms that are equal modulo
   /// AC end up in the same class. Requires a clean graph; returns the number
   /// of merges. Stops adding nodes once the graph has \p MaxNodes nodes.
-  unsigned canonicalizeAC(unsigned MaxLeaves, unsigned MaxNodes);
+  /// If \p Stats is not null, it counts the flattenings with three or more
+  /// leaves (Views), the canonical forms that added nodes (Candidates), the
+  /// merges, the flattenings abandoned at \p MaxLeaves and the stop at
+  /// \p MaxNodes (Budget), and the flagged AC nodes, which stay leaves
+  /// (Unsupported).
+  unsigned canonicalizeAC(unsigned MaxLeaves, unsigned MaxNodes,
+                          ViewStats *Stats = nullptr);
 
   /// N-ary idempotence, op(a, ..., a) == a, as canonicalization: merge every
   /// class containing a node of an idempotent OpShape::Phi operator whose
@@ -289,9 +377,11 @@ private:
     size_t operator()(const ENode &N) const { return hash_value(N); }
   };
   void recomputeAnalyses();
+  void recomputeKnownBits(ArrayRef<EClassId> Ids);
   void pruneConstantClasses();
   bool computeNodeNotUndef(const ENode &N) const;
   bool computeNodeNotPoison(const ENode &N) const;
+  KnownBits computeNodeKnownBits(const ENode &N, FactSource Src) const;
 
   std::vector<EClass> Classes;
   mutable std::vector<EClassId> Parent;
@@ -429,6 +519,23 @@ public:
   unsigned getLHSOccurrences(unsigned Var) const { return OccL[Var]; }
   unsigned getRHSOccurrences(unsigned Var) const { return OccR[Var]; }
   const ApplyFn &getApplyFn() const { return Fn; }
+
+  /// Optional precondition on facts of the binding (EGraph::getKnownBits).
+  /// Returns the source of the facts that it needed: FactSource::Structure
+  /// if the facts without the context of the inputs suffice (the condition
+  /// follows from the matched left-hand side), FactSource::Context if it
+  /// also needs the context facts (a rule made from the rewrite needs a
+  /// guard), or std::nullopt to reject the match. Checked before ApplyFn.
+  /// Facts hold for each value of a class that is not poison, so a
+  /// rewrite justified by them is classified like any other (isExactFor).
+  using FactFn = std::function<std::optional<FactSource>(const EGraph &,
+                                                         const RuleMatch &)>;
+  RewriteRule &setFactFn(FactFn F) {
+    Facts = std::move(F);
+    return *this;
+  }
+  const FactFn &getFactFn() const { return Facts; }
+
   /// True if the rule asserts that its sides are poison under exactly the
   /// same conditions. Only such a rule creates a node of an operator with
   /// OpProperties::MayBePoison.
@@ -464,6 +571,7 @@ private:
   uint32_t MentionL = 0, StrictL = 0, MentionR = 0, StrictR = 0;
   bool PoisonExact = false;
   ApplyFn Fn;
+  FactFn Facts;
 };
 
 //===----------------------------------------------------------------------===//
@@ -937,8 +1045,54 @@ void matchRule(const EGraph &G, const RewriteRule &Rule,
 enum class ApplyResult { NoChange, Merged, Refined, Rejected, Unsafe };
 
 /// Apply one match: merges if exact, adds a refinement edge if only a
-/// refinement, and does nothing if neither can be justified.
-ApplyResult applyMatch(EGraph &G, const RewriteRule &Rule, const RuleMatch &M);
+/// refinement, and does nothing if neither can be justified. If the rule
+/// has a fact precondition (RewriteRule::FactFn) and \p UsedFacts is not
+/// null, it is set to the source of the facts that the match needed.
+ApplyResult applyMatch(EGraph &G, const RewriteRule &Rule, const RuleMatch &M,
+                       std::optional<FactSource> *UsedFacts = nullptr);
+
+//===----------------------------------------------------------------------===//
+// The definedness policy of rewrites that are not table rules
+//===----------------------------------------------------------------------===//
+
+/// What a rewrite justifies: a merge (both directions), a refinement edge
+/// (LHS ~> RHS), or nothing.
+enum class RewriteKind : uint8_t { Exact, Refinement, Unsafe };
+
+/// A leaf of a rewrite and how many times each side reads it.
+struct LeafReads {
+  EClassId Class = 0;
+  unsigned LHS = 0, RHS = 0;
+};
+
+/// The policy of the table rules (RewriteRule::isExactFor and
+/// isRefinementFor), for rewrites that a view computes instead of a pattern:
+/// the analysis views (AC multiplicities, linear forms, bit slices) and the
+/// tuple rules. \p Leaves lists every leaf class that either side reads.
+///
+/// Preconditions, which the caller must establish: when each read of each
+/// leaf is the same value that is neither undef nor poison, both sides have
+/// the same value; and each side is poison iff a leaf that it reads is
+/// poison, without undefined behaviour of its own (operators without
+/// poison-generating flags, without division, without select arms).
+///
+/// Each read of an undef leaf can see a different value, so:
+///  * Refinement: every leaf is read at most once by the right-hand side,
+///    or is not undef; a right-hand side then chooses one point of the
+///    "all reads equal" diagonal of the left-hand side's values. A leaf
+///    that only the right-hand side reads must be neither undef nor poison.
+///  * Exact: additionally, a leaf read a different number of times, or more
+///    than once, is not undef, and a leaf that the right-hand side drops is
+///    not poison (the left-hand side is poison when it is).
+/// E.g. `x ^ x -> 0` and `x + x -> x << 1` are refinements unless x is not
+/// undef; `x - x -> 0` is exact only if x is neither undef nor poison.
+RewriteKind classifyLeafReads(const EGraph &G, ArrayRef<LeafReads> Leaves);
+
+/// Relate \p From to \p To as \p K allows: merge (Exact), add the
+/// refinement edge From ~> To (Refinement), or nothing (Unsafe, the result
+/// is ApplyResult::Unsafe).
+ApplyResult relateClasses(EGraph &G, EClassId From, EClassId To,
+                          RewriteKind K);
 
 struct SaturationLimits {
   unsigned MaxIterations = 10;
@@ -956,6 +1110,63 @@ struct SaturationLimits {
   /// number of views per class and operator.
   unsigned MaxACLeaves = 8;
   unsigned MaxACViews = 8;
+
+  /// The analysis views and rule families added on top of the table rules.
+  /// All are on by default; turning them off gives the engine without them
+  /// (for comparisons, -gisel-egraph-features).
+  ///   Facts:  rules with a precondition on known bits (RewriteRule::FactFn).
+  ///   Linear: linear forms modulo 2^W (applyLinearViews).
+  ///   Slice:  bit slices, extensions and concatenations (applySliceViews).
+  ///   Tuples: results of operators with several results (applyTupleRules).
+  bool EnableFacts = true;
+  bool EnableLinear = true;
+  bool EnableSlice = true;
+  bool EnableTuples = true;
+  /// Budgets of one view of one class: the number of terms (leaves) of the
+  /// view, the number of nodes that computing it may visit, and the number
+  /// of implementations it may add. A view over budget is abandoned (the
+  /// class keeps its node-by-node form) and counted in ViewStats::Budget.
+  unsigned MaxViewTerms = 8;
+  unsigned MaxViewVisits = 64;
+  unsigned MaxViewCandidates = 3;
+};
+
+/// Statistics of one analysis view or rule family (SaturationStats::Views).
+struct ViewStats {
+  /// Classes for which a view was computed.
+  unsigned Views = 0;
+  /// Implementations added (new nodes or classes) by the view.
+  unsigned Candidates = 0;
+  unsigned Merges = 0;
+  unsigned Refinements = 0;
+  /// Rewrites that classifyLeafReads (or a fact precondition) rejected.
+  unsigned Unsafe = 0;
+  /// Views abandoned at a budget (MaxViewTerms, MaxViewVisits,
+  /// MaxViewCandidates or the node limit).
+  unsigned Budget = 0;
+  /// Views outside the supported subset (a type, a flag, a width).
+  unsigned Unsupported = 0;
+  /// Applications that needed context facts (FactSource::Context).
+  unsigned ContextFacts = 0;
+  void add(const ViewStats &O) {
+    Views += O.Views;
+    Candidates += O.Candidates;
+    Merges += O.Merges;
+    Refinements += O.Refinements;
+    Unsafe += O.Unsafe;
+    Budget += O.Budget;
+    Unsupported += O.Unsupported;
+    ContextFacts += O.ContextFacts;
+  }
+  /// Count the result of relateClasses.
+  void count(ApplyResult R) {
+    if (R == ApplyResult::Merged)
+      ++Merges;
+    else if (R == ApplyResult::Refined)
+      ++Refinements;
+    else if (R == ApplyResult::Unsafe)
+      ++Unsafe;
+  }
 };
 
 /// Memoized AC views of a clean graph (valid until the graph changes).
@@ -1000,6 +1211,14 @@ struct SaturationStats {
   /// rule name.
   unsigned LaneMerges = 0;
   std::map<std::string, unsigned> LaneRuleApplications;
+  /// Per table rule (in rule order): the applications that needed context
+  /// facts (RewriteRule::FactFn returned FactSource::Context).
+  SmallVector<unsigned, 32> ContextFactApplications;
+  /// Per analysis view or rule family: "facts" (the rules with a fact
+  /// precondition), "known-constants" (classes whose bits are all known),
+  /// "linear", "slice", "tuples" (see SaturationLimits), and "ac" (the AC
+  /// canonical forms, see EGraph::canonicalizeAC).
+  std::map<std::string, ViewStats> Views;
 };
 
 /// True if the e-graph has nodes of the vector operator \p Opc
@@ -1021,6 +1240,47 @@ bool isLaneWiseOperator(const OpProperties &P);
 unsigned applyLaneRules(EGraph &G, unsigned MaxNodes,
                         std::map<std::string, unsigned> &Applications);
 
+//===----------------------------------------------------------------------===//
+// Analysis views and rule families beyond the table rules
+//===----------------------------------------------------------------------===//
+//
+// Each one requires a clean graph, works in a read phase (collect what to
+// add on the unchanged graph) and a write phase (add nodes, then relate
+// classes through classifyLeafReads/relateClasses), stops adding once the
+// graph has SaturationLimits::MaxNodes nodes, and returns the number of
+// changes (new nodes, merges and refinement edges); saturate() rebuilds the
+// graph if it is not zero. A view is an analysis of a class, never a node:
+// what it finds is added as ordinary binary gMIR nodes, so extraction and
+// emission see nothing new.
+
+/// Linear forms modulo 2^W (lib/GIEGraphLinear.cpp): a class of integers
+/// as `c + sum(k_i * t_i)` through G_ADD, G_SUB, negation, G_MUL and G_SHL
+/// by constants; adds implementations of the form and relates the class to
+/// them.
+unsigned applyLinearViews(EGraph &G, const SaturationLimits &Limits,
+                          ViewStats &Stats);
+
+/// Bit slices (lib/GIEGraphSlice.cpp): a class as an extension of the bits
+/// [Lo, Lo + Width) of a value, through shifts by constants, masks of low
+/// bits, truncations, extensions and bit-field extracts; adds the direct
+/// forms of the slice and relates the class to them.
+unsigned applySliceViews(EGraph &G, const SaturationLimits &Limits,
+                         ViewStats &Stats);
+
+/// Tuples (lib/GIEGraphTuples.cpp): for an operator with several results,
+/// the nodes of the results that the graph lacks, so that extraction can
+/// compute every result with one instruction, and the relations between a
+/// result and single-result operators that the table rules cannot write
+/// (getTupleRules).
+unsigned applyTupleRules(EGraph &G, const SaturationLimits &Limits,
+                         ViewStats &Stats);
+
+/// The rules that applyTupleRules applies (only there, behind
+/// SaturationLimits::EnableTuples): the carry of G_UADDO as a comparison of
+/// the sum with an operand. They are table rules so that they are printed
+/// and proved like the others.
+std::vector<RewriteRule> getTupleRules();
+
 /// Bounded equality saturation. Deterministic for a given graph and rule set.
 SaturationStats saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
                          const SaturationLimits &Limits);
@@ -1029,17 +1289,120 @@ SaturationStats saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
 // Extraction
 //===----------------------------------------------------------------------===//
 
+/// The cost of an instruction, or of a DAG of instructions, in three metrics
+/// that are kept apart:
+///  * Instrs: the estimated number of instructions, the node costs of the
+///    cost model (DefaultCostModel weighs a multiplication, a division and a
+///    value wider than 32 bits as the instructions it is estimated to take);
+///  * Bytes: the estimated code size in bytes (a proxy);
+///  * Depth: the estimated critical path, the longest path through the DAG
+///    in the latency estimates of the cost model, in units of a simple ALU
+///    operation (a proxy). For one instruction it is its latency. It is not
+///    derived from the instruction count.
+/// Extraction and profitability compare Instrs, then Bytes; Depth is only
+/// reported.
+struct CostVector {
+  static constexpr uint64_t Infinite = ~uint64_t(0);
+  uint64_t Instrs = 0;
+  uint64_t Bytes = 0;
+  uint64_t Depth = 0;
+
+  static CostVector infinite() { return {Infinite, Infinite, Infinite}; }
+  bool isInfinite() const { return Instrs == Infinite; }
+  /// Instrs, then Bytes.
+  bool operator<(const CostVector &O) const {
+    return Instrs != O.Instrs ? Instrs < O.Instrs : Bytes < O.Bytes;
+  }
+};
+
+/// The bank state of a value in extraction: a bounded set of two states.
+/// The generic core only knows that a value in the state Uniform is computed
+/// from nodes that the cost model accepts in that state (CostModel::
+/// canBeUniform), all of whose operands are in that state too. What it means
+/// is the target's: on AMDGPU a uniform value is kept in an SGPR (before
+/// register bank selection, a prediction from the uniformity analysis), and
+/// a value with a divergent operand is computed in VGPRs.
+enum class BankState : uint8_t { Any = 0, Uniform = 1 };
+
+/// A DAG of e-nodes whose cost evaluateDag computes: the nodes that the
+/// extractor chose for a set of roots (Extractor::getDag), or the
+/// instructions of the original program.
+struct CostDag {
+  struct Item {
+    const ENode *N = nullptr;
+    /// The class of the node (for facts and constants).
+    EClassId Class = 0;
+    /// The items of the operands, in the order of N->Ops.
+    SmallVector<unsigned, 3> Ops;
+    /// Set by evaluateDag: the number of reads of the value by items of the
+    /// DAG (operand slots; the results of one instruction read their
+    /// operands once).
+    unsigned Uses = 0;
+    /// The value is used outside of the DAG (a root of a region).
+    bool IsRoot = false;
+    /// For a root: the bank state that its value must have.
+    BankState Required = BankState::Any;
+    /// Another result of the instruction of the item with this index: the
+    /// instruction is counted with that item. -1 if none.
+    int SameInstr = -1;
+    /// Set by evaluateDag: the bank state of the value (Uniform if the cost
+    /// model has bank states, accepts the node in that state, and every
+    /// operand is in it).
+    BankState Bank = BankState::Any;
+  };
+  /// Operands before users.
+  std::vector<Item> Items;
+};
+
+/// A target instruction that implements an item of a CostDag (Root) together
+/// with items of its operands (Inner) that only it reads, e.g. v_add3_u32 for
+/// an add of an add on AMDGPU. Cost is the cost of the instruction including
+/// the copies that it needs; it replaces the costs of Root and of Inner. A
+/// cover without inner items is a cheaper implementation of one node.
+struct PatternCover {
+  unsigned Root = 0;
+  SmallVector<unsigned, 2> Inner;
+  CostVector Cost;
+  /// The name of the instruction, for reports.
+  const char *Name = "";
+};
+
 /// Cost model for extraction. Targets may subclass this.
 class CostModel {
 public:
   virtual ~CostModel();
-  /// Cost of a single node, not including operands. Operations must cost at
-  /// least 1 so that extraction is cycle-free.
+  /// Cost of a single node in instructions (CostVector::Instrs), not
+  /// including operands. Operations must cost at least 1 so that extraction
+  /// is cycle-free.
   virtual unsigned getNodeCost(const ENode &N) const;
   /// False if the operation or constant \p N must not be extracted, e.g.
   /// because it is not legal for the target. The nodes of the original
   /// program must be allowed.
   virtual bool isAllowed(const EGraph &G, const ENode &N) const { return true; }
+  /// The latency estimate of \p N in units of a simple ALU operation, for
+  /// the critical path (a proxy): 1 per instruction by default.
+  virtual unsigned getNodeLatency(const ENode &N) const;
+  /// The cost of item \p I of \p D on its own (the instruction of an item
+  /// that is not covered by a pattern). By default getNodeCost (at least 1
+  /// for an operation), 4 bytes per instruction and getNodeLatency. A target
+  /// can use the bank state and the operands of the item (an encoding with
+  /// a literal constant, an instruction that it selects for one node).
+  virtual CostVector getItemCost(const EGraph &G, const CostDag &D,
+                                 unsigned I) const;
+  /// Target patterns: append the covers of \p D that the instruction
+  /// selection of the target forms (the bank states of \p D are set). They
+  /// are candidates: evaluateDag applies them with the rules of sharing
+  /// (see there). None by default.
+  virtual void findCovers(const EGraph &G, const CostDag &D,
+                          SmallVectorImpl<PatternCover> &Covers) const {}
+  /// True if the model distinguishes the bank state Uniform; then extraction
+  /// keeps a choice per class for each state.
+  virtual bool hasBankStates() const { return false; }
+  /// True if \p N may be in the state Uniform when its operands are (a leaf:
+  /// if its value is uniform).
+  virtual bool canBeUniform(const EGraph &G, const ENode &N) const {
+    return true;
+  }
 };
 
 /// Simple configurable cost model (see the design document for rationale).
@@ -1050,14 +1413,66 @@ public:
   unsigned SimpleOpCost = 1; // add/sub/and/or/xor/shifts, casts, compares...
   unsigned MulCost = 2;
   unsigned DivCost = 16; // division and remainder
+  /// Latency estimates (CostModel::getNodeLatency, a proxy).
+  unsigned SimpleOpLatency = 1;
+  unsigned MulLatency = 4;
+  unsigned DivLatency = 32;
   /// Multiply operation cost by ceil(width / 32) when set.
   bool ScaleByWidth = true;
   unsigned getNodeCost(const ENode &N) const override;
+  unsigned getNodeLatency(const ENode &N) const override;
+};
+
+/// The result of evaluateDag.
+struct DagEvaluation {
+  CostVector Cost;
+  /// The covers that were applied, users first.
+  SmallVector<PatternCover, 4> Covers;
+  /// Roots whose required bank state was not met (the cost is infinite).
+  unsigned BankViolations = 0;
+};
+
+/// The cost of \p D under \p CM, the same function for the original program
+/// and for a candidate:
+///  1. the bank state of each item, operands first (CostModel::canBeUniform);
+///     a root whose state is not its required state makes the cost
+///     infinite (no value moves from a divergent to a uniform register);
+///  2. the cost of each item on its own (CostModel::getItemCost), an
+///     instruction with several results counted once;
+///  3. the covers of the target (CostModel::findCovers), applied greedily,
+///     users first (the order of instruction selection): a cover is applied
+///     only if its root is not covered yet and every inner item is read
+///     exactly once, by the root or by another inner item of the cover, is
+///     not a root, and is not covered yet. An inner item that has another
+///     user stays, so a cover never subtracts the cost of a value that is
+///     still computed, and no item is covered twice;
+///  4. the sums of Instrs and Bytes, and the longest path of latencies
+///     (Depth).
+CostVector evaluateDag(const EGraph &G, const CostModel &CM, CostDag &D,
+                       DagEvaluation *Out = nullptr);
+
+/// Options of Extractor::extract.
+struct ExtractionOptions {
+  /// Sharing-aware improvement of the tree-cost choices: a bounded local
+  /// search over the classes of the DAG that accepts a different node or
+  /// refinement target of one class only if the DAG cost (evaluateDag)
+  /// becomes strictly smaller and the choices stay acyclic. Off: the
+  /// tree-cost choices.
+  bool ImproveDag = true;
+  /// Rounds over the classes of the DAG, and DAG evaluations in total.
+  unsigned MaxRounds = 4;
+  unsigned MaxEvaluations = 512;
+  /// Accept a change that only makes the DAG smaller in bytes (same
+  /// instruction count). Off: only fewer instructions count.
+  bool SizeTieBreak = true;
+  /// Also change the choice of a class of a vector type.
+  bool ImproveVectors = true;
 };
 
 /// Tree-cost extractor with refinement-aware choices. Shared subexpressions
 /// are counted once per use when choosing (tree cost) but getDagCost() counts
-/// each class once.
+/// each class once. extract() improves the choices for a set of roots by
+/// DAG cost.
 class Extractor {
 public:
   static constexpr uint64_t Infinite = ~uint64_t(0);
@@ -1079,6 +1494,23 @@ public:
   /// in more than one way. The DAG cost and the emission use this key, so
   /// the cost counts the instructions that the emission builds.
   std::vector<uint64_t> getMultiResultKey(const ENode &N) const;
+
+  /// Choose the implementation of \p Roots. A root whose state in
+  /// \p RootStates (empty: all BankState::Any) is Uniform takes the
+  /// tree-cost choice among implementations in that state, and so does
+  /// every class that it reads; the other classes take the tree-cost
+  /// choice. With Opts.ImproveDag the choices of the classes of the DAG are
+  /// then improved by DAG cost (see ExtractionOptions); deterministic.
+  /// Afterwards resolve, getChosenNode, getDagCost and getDag reflect the
+  /// choices. Returns the number of accepted improvements.
+  unsigned extract(ArrayRef<EClassId> Roots, ArrayRef<BankState> RootStates,
+                   const CostModel &CM, const ExtractionOptions &Opts);
+  /// Set \p D to the DAG of the chosen nodes of \p Roots (each root an item
+  /// with IsRoot and its state in \p RootStates as Required). False if a
+  /// root has no choice.
+  bool getDag(ArrayRef<EClassId> Roots, ArrayRef<BankState> RootStates,
+              CostDag &D) const;
+
   /// Print the chosen expression as an S-expression.
   void printExpr(
       raw_ostream &OS, EClassId Id,
@@ -1086,17 +1518,31 @@ public:
   std::string getExprString(EClassId Id) const;
 
 private:
-  const EGraph &G;
-  // The cost model is only used during construction; the local cost of each
-  // chosen node is cached so that the extractor does not keep a reference to
-  // the (possibly temporary) cost model.
+  // The cost model is only used during construction and by extract(); the
+  // local cost of each chosen node is cached so that the extractor does not
+  // keep a reference to the (possibly temporary) cost model.
   struct Choice {
     uint64_t Cost = Infinite;
     uint64_t LocalCost = 0; // cost of the chosen node without operands
     int NodeIdx = -1;       // index into class nodes
     EClassId RefTarget = 0; // valid if NodeIdx == -1 and Cost finite
   };
-  std::vector<Choice> Choices; // indexed by canonical class id
+  /// The choice that implements the canonical class \p Id now.
+  const Choice &getChoice(EClassId Id) const;
+  /// Build the DAG of \p Roots from the current choices; a class that a
+  /// Uniform root reads takes its Uniform choice unless it has a Final one.
+  /// \p Visited, if not null, receives the classes that the DAG reads
+  /// (including the classes of chosen refinement edges), in visit order.
+  /// Returns false on a cycle or on a class without a choice.
+  bool buildDag(ArrayRef<EClassId> Roots, ArrayRef<BankState> RootStates,
+                CostDag &D, SmallVectorImpl<EClassId> *Visited,
+                DenseMap<EClassId, Choice> *Used) const;
+
+  const EGraph &G;
+  std::vector<Choice> Choices;        // indexed by canonical class id
+  std::vector<Choice> UniformChoices; // BankState::Uniform, if any
+  /// The choices of extract(), which take precedence.
+  DenseMap<EClassId, Choice> Final;
 };
 
 } // namespace egraph

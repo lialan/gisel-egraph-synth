@@ -1,0 +1,159 @@
+# RUN: llc -mtriple=amdgpu9.00-amd-amdhsa -run-pass=gisel-egraph-combiner,machineverifier -gisel-egraph-mode=rewrite %s -o - | FileCheck %s
+# RUN: llc -mtriple=amdgpu9.00-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-report %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=REPORT
+# RUN: llc -mtriple=amdgpu9.00-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-report -gisel-egraph-features=no-dag %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=NODAG
+# RUN: llc -mtriple=amdgpu9.00-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-report -gisel-egraph-features=no-tuples %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=NOTUPLES
+
+# The carry of an addition as a comparison: (a + b) <u a (or <u b, or
+# a >u (a + b)) is the carry of G_UADDO a, b. When the sum and the carry
+# are both used, the extraction takes one G_UADDO for both (counted once);
+# when only the sum is used, a plain G_ADD. The machine verifier runs after
+# the pass. a may be undef here, so the comparison is only refined to the
+# carry (it reads a twice); that is enough to replace it.
+
+# REPORT: add_cmp_both: %bb.0: {{.*}} cost=3->2 profitable (refinement) shadow {{.*}} dag-improved=1
+# REPORT-NEXT: root {{%[0-9]+}} = (G_UADDO:0 %0 %1)
+# REPORT-NEXT: root {{%[0-9]+}} = (G_ZEXT (G_UADDO:1 %0 %1))
+# REPORT: add_cmp_ugt_b: %bb.0: {{.*}} cost=3->2 profitable (refinement) shadow
+# REPORT: carry_only: %bb.0: {{.*}} cost=3->2 profitable (refinement) shadow
+# REPORT-NEXT: root {{%[0-9]+}} = (G_ZEXT (G_UADDO:1 %0 %1))
+# REPORT: sum_only: %bb.0: {{.*}} cost=2->1 profitable (equivalence) shadow
+# REPORT-NEXT: root {{%[0-9]+}} = (G_ADD %0 %1)
+# REPORT: uniform: %bb.0: {{.*}} cost=3->2 profitable (refinement) shadow {{.*}} uniform-roots=2
+# REPORT: legalized: %bb.0: legalized {{.*}} cost=3->2 profitable (refinement) shadow
+
+# Without the sharing-aware extraction the add and the carry are two
+# instructions, as many as the add and the comparison.
+# NODAG: add_cmp_both: %bb.0: {{.*}} cost=3->3 not-profitable
+# NODAG: carry_only: %bb.0: {{.*}} cost=3->2 profitable
+
+# NOTUPLES: add_cmp_both: %bb.0: {{.*}} cost=3->3 not-profitable
+# NOTUPLES: carry_only: %bb.0: {{.*}} cost=3->3 not-profitable
+
+# CHECK-LABEL: name: add_cmp_both
+# CHECK: %a:_(s32) = COPY $vgpr0
+# CHECK-NEXT: %b:_(s32) = COPY $vgpr1
+# CHECK-NEXT: [[SUM:%[0-9]+]]:_(s32), [[CARRY:%[0-9]+]]:_(s1) = G_UADDO %a, %b
+# CHECK-NEXT: [[EXT:%[0-9]+]]:_(s32) = G_ZEXT [[CARRY]](s1)
+# CHECK-NEXT: $vgpr0 = COPY [[SUM]](s32)
+# CHECK-NEXT: $vgpr1 = COPY [[EXT]](s32)
+# CHECK-NEXT: SI_RETURN implicit $vgpr0, implicit $vgpr1
+---
+name: add_cmp_both
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %s:_(s32) = G_ADD %a, %b
+    %c:_(s1) = G_ICMP intpred(ult), %s(s32), %a
+    %z:_(s32) = G_ZEXT %c(s1)
+    $vgpr0 = COPY %s(s32)
+    $vgpr1 = COPY %z(s32)
+    SI_RETURN implicit $vgpr0, implicit $vgpr1
+...
+
+# The swapped comparison with the other operand: b >u (a + b).
+# CHECK-LABEL: name: add_cmp_ugt_b
+# CHECK: [[SUM:%[0-9]+]]:_(s32), [[CARRY:%[0-9]+]]:_(s1) = G_UADDO %a, %b
+# CHECK-NEXT: [[EXT:%[0-9]+]]:_(s32) = G_ZEXT [[CARRY]](s1)
+# CHECK-NEXT: $vgpr0 = COPY [[SUM]](s32)
+# CHECK-NEXT: $vgpr1 = COPY [[EXT]](s32)
+---
+name: add_cmp_ugt_b
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %s:_(s32) = G_ADD %a, %b
+    %c:_(s1) = G_ICMP intpred(ugt), %b(s32), %s
+    %z:_(s32) = G_ZEXT %c(s1)
+    $vgpr0 = COPY %s(s32)
+    $vgpr1 = COPY %z(s32)
+    SI_RETURN implicit $vgpr0, implicit $vgpr1
+...
+
+# Only the carry is used: one G_UADDO whose sum is unused.
+# CHECK-LABEL: name: carry_only
+# CHECK: {{%[0-9]+}}:_(s32), [[CARRY:%[0-9]+]]:_(s1) = G_UADDO %a, %b
+# CHECK-NEXT: [[EXT:%[0-9]+]]:_(s32) = G_ZEXT [[CARRY]](s1)
+# CHECK-NEXT: $vgpr0 = COPY [[EXT]](s32)
+---
+name: carry_only
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %s:_(s32) = G_ADD %a, %b
+    %c:_(s1) = G_ICMP intpred(ult), %s(s32), %a
+    %z:_(s32) = G_ZEXT %c(s1)
+    $vgpr0 = COPY %z(s32)
+    SI_RETURN implicit $vgpr0
+...
+
+# Only the sum is used (the comparison is dead): a plain G_ADD.
+# CHECK-LABEL: name: sum_only
+# CHECK: %b:_(s32) = COPY $vgpr1
+# CHECK-NEXT: %s:_(s32) = G_ADD %a, %b
+# CHECK-NEXT: $vgpr0 = COPY %s(s32)
+---
+name: sum_only
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %s:_(s32) = G_ADD %a, %b
+    %c:_(s1) = G_ICMP intpred(ult), %s(s32), %a
+    $vgpr0 = COPY %s(s32)
+    SI_RETURN implicit $vgpr0
+...
+
+# Uniform values: the G_UADDO is uniform too, so the uniform roots stay
+# uniform.
+# CHECK-LABEL: name: uniform
+# CHECK: [[SUM:%[0-9]+]]:_(s32), [[CARRY:%[0-9]+]]:_(s1) = G_UADDO %a, %b
+# CHECK-NEXT: [[EXT:%[0-9]+]]:_(s32) = G_ZEXT [[CARRY]](s1)
+# CHECK-NEXT: $sgpr0 = COPY [[SUM]](s32)
+# CHECK-NEXT: $sgpr1 = COPY [[EXT]](s32)
+---
+name: uniform
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $sgpr0, $sgpr1
+    %a:_(s32) = COPY $sgpr0
+    %b:_(s32) = COPY $sgpr1
+    %s:_(s32) = G_ADD %a, %b
+    %c:_(s1) = G_ICMP intpred(ult), %s(s32), %a
+    %z:_(s32) = G_ZEXT %c(s1)
+    $sgpr0 = COPY %s(s32)
+    $sgpr1 = COPY %z(s32)
+    SI_RETURN implicit $sgpr0, implicit $sgpr1
+...
+
+# After the legalizer: G_UADDO of s32 is legal.
+# CHECK-LABEL: name: legalized
+# CHECK: [[SUM:%[0-9]+]]:_(s32), [[CARRY:%[0-9]+]]:_(s1) = G_UADDO %a, %b
+# CHECK-NEXT: [[EXT:%[0-9]+]]:_(s32) = G_ZEXT [[CARRY]](s1)
+---
+name: legalized
+legalized: true
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %s:_(s32) = G_ADD %a, %b
+    %c:_(s1) = G_ICMP intpred(ult), %s(s32), %a
+    %z:_(s32) = G_ZEXT %c(s1)
+    $vgpr0 = COPY %s(s32)
+    $vgpr1 = COPY %z(s32)
+    SI_RETURN implicit $vgpr0, implicit $vgpr1
+...

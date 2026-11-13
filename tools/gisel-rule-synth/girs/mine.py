@@ -90,6 +90,7 @@ DEFAULTS = {
                'legalizer_stage': 'pre-legalizer',
                'explore_share': 0.2, 'regions': False,
                'siblings': False, 'max_pairs': 0, 'multi_share': 0.3,
+               'views': True, 'views_max_proposals': 8,
                # Search only the sources that the corpus read from vectors
                # (lifted lane by lane, or with vector operators), and only
                # the e-graph candidates with vectors.
@@ -668,7 +669,8 @@ class Run:
                                  'cost_slack', 'max_rhs_cost',
                                  'semantic_variants', 'expand_types', 'legalizer_stage',
                                  'explore_share', 'regions', 'siblings',
-                                 'max_pairs', 'only_vectors', 'multi_share')})
+                                 'max_pairs', 'only_vectors', 'multi_share', 'views',
+                                 'views_max_proposals')})
         if c['mode'] == 'hybrid':
             h = c['hybrid']
             over.update(egraph=[self.p('egraph')],

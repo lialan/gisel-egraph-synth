@@ -50,7 +50,11 @@ set(GISELEGRAPHSYNTH_SOURCES
   lib/GIEGraph.cpp
   lib/GIEGraphCombiner.cpp
   lib/GIEGraphLanes.cpp
+  lib/GIEGraphLinear.cpp
   lib/GIEGraphRules.cpp
+  lib/GIEGraphSlice.cpp
+  lib/GIEGraphTargetAMDGPU.cpp
+  lib/GIEGraphTuples.cpp
   lib/GISynthCorpusExtractor.cpp
   lib/SynthCombinerAMDGPU.cpp
   lib/SynthCombinerAArch64.cpp

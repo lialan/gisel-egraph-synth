@@ -241,6 +241,31 @@ class RecoveryTest(unittest.TestCase):
         self.assertEqual(len(recovered['rules']), 1)
         self.assertEqual(st['queue']['single']['complete'], 1)
 
+    def test_views_enablement_reopens_completed_roots(self):
+        from test_views import _input, _node
+        record = {'fn': 'fold', 'bb': 0, 'root': '%5',
+                  'expr': _node('G_ADD', 32, '%5', [
+                      _node('G_ADD', 32, '%4', [{'in': 0}, {'in': 1}]),
+                      {'in': 2}]),
+                  'inputs': [_input('%0'), _input('%1', const=3),
+                             _input('%2', const=5)]}
+        source = self.source([record])
+        self.run_search(source, 'resume', '--no-views')
+        resumed, st = self.run_search(source, 'resume')
+        self.assertEqual(st['discovery']['instances'], 1)
+        self.assertTrue(any(r['provenance']['discovery'] == 'views-linear+smt'
+                            for r in resumed['rules']))
+        full, _ = self.run_search(source, 'one', '--search-jobs', '1')
+        self.same_rules(full, resumed)
+        # Expanding the view domain recognizes its known candidate without
+        # generalizing it again, and retains that candidate as a seed.
+        replay, st = self.run_search(source, 'resume', '--views-max-proposals', '9')
+        self.same_rules(resumed, replay)
+        self.assertEqual(st['synthesis']['generalized'], 0)
+        again, st = self.run_search(source, 'resume', '--views-max-proposals', '9')
+        self.same_rules(resumed, again)
+        self.assertEqual((st['solver_calls'], st['queue']['left']), (0, 0))
+
 
 class TransactionTest(unittest.TestCase):
     def test_close_discards_unpublished_tasks(self):

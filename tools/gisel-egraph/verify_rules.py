@@ -883,6 +883,16 @@ def computed_constants(name, t, lhs, left, lhs_value):
             raise IllTyped("the split has more results")
         return true, []
 
+    # Rules with a precondition on known bits (RewriteRule::FactFn): the
+    # facts hold for each value that is not poison, so the precondition is
+    # the property of the values that the facts establish.
+    if name in ("add-disjoint-to-or", "xor-disjoint-to-or"):
+        a, b = var("?a"), var("?b")
+        return (a & b) == 0, []
+    if name == "and-mask-of-known-zeros":
+        return (var("?a") & ~var("#c")) == 0, []
+    if name == "or-mask-of-known-ones":
+        return (var("#c") & ~var("?a")) == 0, []
     if name in ("mul-negconst", "add-negconst"):
         c = var("#c")
         return z3.And(c < 0, c != smin(c.size())), [-c]

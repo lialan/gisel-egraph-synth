@@ -188,9 +188,9 @@ unsigned varWidth(const EGraph &G, const RuleMatch &M, unsigned V) {
 bool exactIntClass(const EGraph &G, EClassId Id, bool Signed, LLT FPTy) {
   if (isExactIntToFP(Signed, G.getType(Id).getScalarSizeInBits(), FPTy))
     return true;
-  const auto &K = G.getClass(Id).Known;
-  return K && (FPTy.isAnyScalar() || FPTy.isFloatIEEE()) &&
-         gisynth::knownIntFitsFP(*K, Signed, FPTy.getScalarSizeInBits());
+  const KnownBits &K = G.getKnownBits(Id);
+  return K.getBitWidth() && (FPTy.isAnyScalar() || FPTy.isFloatIEEE()) &&
+         gisynth::knownIntFitsFP(K, Signed, FPTy.getScalarSizeInBits());
 }
 
 /// Fold two constants (#a, #b) each with a third (#d) through a select:
@@ -1060,5 +1060,66 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
       if (R[I].getName() == R[J].getName())
         report_fatal_error(Twine("GIEGraph: duplicate rule name '") +
                            R[I].getName() + "'");
+
+  // Rules with a precondition on known bits (RewriteRule::FactFn). Each
+  // checks the facts of the structure first, so that a rewrite records
+  // whether it needed the context facts of the inputs.
+  auto FactsHold = [](function_ref<bool(FactSource)> Holds)
+      -> std::optional<FactSource> {
+    if (Holds(FactSource::Structure))
+      return FactSource::Structure;
+    if (Holds(FactSource::Context))
+      return FactSource::Context;
+    return std::nullopt;
+  };
+  auto AddFact = [&](StringRef Name, StringRef L, StringRef Rhs,
+                     RewriteRule::FactFn F) {
+    R.emplace_back(Name, L, Rhs);
+    R.back().setFactFn(std::move(F));
+  };
+  // No bit is one in both operands: a + b == a | b == a ^ b. One read of
+  // each operand on each side.
+  auto Disjoint = [FactsHold](const EGraph &G, const RuleMatch &M) {
+    // An operand 0 is left to the identity rules.
+    if (M.isSumBound(0) || M.isSumBound(1) || G.isAllZero(M.Vars[0]) ||
+        G.isAllZero(M.Vars[1]))
+      return std::optional<FactSource>();
+    return FactsHold([&](FactSource S) {
+      const KnownBits &A = G.getKnownBits(M.Vars[0], S);
+      const KnownBits &B = G.getKnownBits(M.Vars[1], S);
+      return A.getBitWidth() && A.getBitWidth() == B.getBitWidth() &&
+             (A.Zero | B.Zero).isAllOnes();
+    });
+  };
+  // Only towards G_OR: the opposite direction feeds bit operations into the
+  // arithmetic rules, which then trade shifts and ors that the selector
+  // fuses (v_lshl_or_b32, v_or3_b32 on AMDGPU) for a multiplication
+  // (measured on memset of a variable byte: + 14 instructions).
+  AddFact("add-disjoint-to-or", "(G_ADD ?a ?b)", "(G_OR ?a ?b)", Disjoint);
+  AddFact("xor-disjoint-to-or", "(G_XOR ?a ?b)", "(G_OR ?a ?b)", Disjoint);
+  // A mask that keeps every bit that can be one, or sets only bits that
+  // are one. #c is the element of a splat for a vector.
+  AddFact("and-mask-of-known-zeros", "(G_AND ?a #c)", "?a",
+          [FactsHold](const EGraph &G, const RuleMatch &M) {
+            if (M.isSumBound(0))
+              return std::optional<FactSource>();
+            const APInt &C = *M.Consts[0];
+            return FactsHold([&](FactSource S) {
+              const KnownBits &K = G.getKnownBits(M.Vars[0], S);
+              return K.getBitWidth() == C.getBitWidth() &&
+                     (C | K.Zero).isAllOnes();
+            });
+          });
+  AddFact("or-mask-of-known-ones", "(G_OR ?a #c)", "?a",
+          [FactsHold](const EGraph &G, const RuleMatch &M) {
+            if (M.isSumBound(0))
+              return std::optional<FactSource>();
+            const APInt &C = *M.Consts[0];
+            return FactsHold([&](FactSource S) {
+              const KnownBits &K = G.getKnownBits(M.Vars[0], S);
+              return K.getBitWidth() == C.getBitWidth() &&
+                     C.isSubsetOf(K.One);
+            });
+          });
   return R;
 }

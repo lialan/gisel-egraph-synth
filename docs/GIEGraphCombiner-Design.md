@@ -431,9 +431,10 @@ operator. Two pieces make the graph and the matcher work modulo AC:
   right, `((l0 op l1) op l2) op ...` (`addACTerm()`). Terms that are equal
   modulo AC therefore end up in the same class without any rule, and the
   canonical form of any multiset can be looked up (`lookupACTerm()`).
-  Flattening goes through the first unflagged node of each operand class.
-  Flagged nodes are leaves, because regrouping `add nsw` does not preserve
-  `nsw`.
+  Flattening goes through the first unflagged node of each operand class,
+  unless that would reach the class again (a cycle after a merge, see
+  "AC views" in `TargetAwareViews.md`). Flagged nodes are leaves, because
+  regrouping `add nsw` does not preserve `nsw`.
 * **AC matching.** A binary pattern of an AC operator, `(op P1 P2)`, matches
   a class against its *views* (`getACViews()`). Each AC node of the class
   gives up to four views: its operands; its full flattening; its flattening
@@ -510,10 +511,17 @@ the chosen solution is acyclic (proof sketch in the source).
 
 Profitability uses the *DAG* cost of the chosen solution for all roots of the
 region (each class counted once) against the cost of the original
-instructions. Choosing by tree cost and judging by DAG cost is a known
-approximation: shared subexpressions may be double counted when choosing.
-For multi-root regions the roots are extracted with the same choice table,
-which shares classes but is not a global optimum.
+instructions, both computed by one function, `evaluateDag`: the node costs
+(an instruction with several results counted once), the multi-node patterns
+of the target (`CostModel::findCovers`, e.g. `v_add3_u32` on AMDGPU), and the
+bank states of the roots. The cost has three metrics (instructions, code
+size and critical path; the latter two are proxies), and both extraction and
+profitability compare instructions, then size. After the tree-cost choice, a
+bounded local search over the classes of the DAG accepts a different node or
+refinement target of a class when the DAG cost becomes strictly smaller
+(`Extractor::extract`; `-gisel-egraph-features=no-dag` keeps the tree-cost
+choice). It is not a global optimum. See docs/TargetAwareViews.md
+("Target pattern costs", "Register banks", "Sharing-aware extraction").
 
 `DefaultCostModel` (configurable, virtual `CostModel` base for targets):
 
@@ -548,8 +556,15 @@ instruction and constant that the pass creates must be legal.
 These are crude instruction-count proxies, not AMDGPU latencies. On AMDGPU a
 32-bit `v_mul_lo_u32` is a quarter-rate instruction and a 64-bit multiply
 expands to several instructions; constants are free if they are inline
-constants. A target cost model would consider these as well as register
-banks, VOP2/VOP3 encodings and legalization expansion.
+constants. The AMDGPU model (`lib/GIEGraphTargetAMDGPU.cpp`) adds the
+three-operand VALU instructions that the selector forms, the predicted
+register banks, VOP2/VOP3 sizes and the 64-bit logic and shifts that are one
+instruction; it does not model legalization expansion.
+
+Before the legalizer, a node whose action is `NarrowScalar` or `WidenScalar`
+is allowed only if `LegalizerHelper` implements that action for its
+operator (it cannot narrow `G_SBFX`, for example), so the legalizer never
+fails on a node that the pass creates.
 
 ## Fixed vectors
 
@@ -705,13 +720,18 @@ applied rewrites and estimated cost saved. `-time-passes` adds
 * Congruence closure rebuilds from scratch each iteration, and every rule is
   matched against every class in every iteration (no incremental matching).
   Saturation is 98-99% of the pass time.
-* Tree-cost extraction, DAG-cost profitability; no ILP or global sharing
-  optimization, no critical-path or register-pressure awareness.
-* The cost model counts nodes. Legality is consulted (see
-  [Legality](#legality)), but not the cost of a legal operation: on AMDGPU a
-  64-bit `G_AND` is two instructions, so a rewrite that saves a node can add
-  an instruction. With both positions, 11 of 1402 held-out files and 12 of
-  1370 training files get more instructions for this reason.
+* Tree-cost extraction improved by a bounded local search on the DAG cost;
+  no ILP or global sharing optimization. The critical path is reported, not
+  optimized; no register-pressure awareness.
+* The cost model counts nodes, with target patterns and a few target costs
+  on AMDGPU (see docs/TargetAwareViews.md). Legality is consulted (see
+  [Legality](#legality)), but not the cost of most legal operations: on
+  AMDGPU a divergent 64-bit `G_ADD` is two instructions, so a rewrite that
+  saves a node can add an instruction. With both positions, 11 of 1402
+  held-out files and 12 of 1370 training files got more instructions for this
+  reason (measured before the target model).
+* The bank of a value is predicted from the uniformity analysis before
+  register bank selection; the pass does not rewrite after it.
 * Rules for compositions of the newer operators are incomplete. Found so
   far: `G_SEXT_INREG` of `G_SEXT_INREG`, and `G_UNMERGE_VALUES` of
   `G_UNMERGE_VALUES` as one unmerge into smaller parts.
