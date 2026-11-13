@@ -1,0 +1,528 @@
+{
+ "config": {
+  "llc": "/home/xunli/gisel-egraph-synth-joint/build/eval/llc-final",
+  "llc_sha256": "68721243a8f665bc4655a3603ed939d6f05331262aaca9c78264061b7c7c8149",
+  "target": "AMDGPU",
+  "llc_flags": [
+   "-mtriple=amdgcn-amd-amdhsa",
+   "-mcpu=gfx1100",
+   "-O2",
+   "-global-isel",
+   "-global-isel-abort=2",
+   "-verify-machineinstrs"
+  ],
+  "subtarget": [
+   "-mcpu=gfx1100"
+  ],
+  "joint_flag": "-gisel-synth-joint-combines",
+  "pass_position": "after the pre-legalizer combiner (-gisel-synth-joint-combines)",
+  "baseline_ids": [
+   "joint_b421acca3c",
+   "joint_f5cef5f7f4",
+   "joint_743e08a976",
+   "joint_a27cbc14a2",
+   "joint_66f36e5034",
+   "joint_315c4a0ef9"
+  ],
+  "metric_version": 1,
+  "primary_metric": "insns (static machine instructions)",
+  "evaluated_ids": [
+   "joint_48f67f7f94",
+   "joint_78a00c1e4d",
+   "joint_4b248d5eeb",
+   "joint_feb01698b2",
+   "joint_5036715b7d",
+   "joint_ed65a6dab8",
+   "joint_cf2658e7d2",
+   "joint_029b669601",
+   "joint_955cab1a71",
+   "joint_c8335930ca",
+   "joint_4d2c586607",
+   "joint_ab7683f9d9",
+   "joint_611f45a21c",
+   "joint_58f8d40d5c",
+   "joint_9e28056d92"
+  ]
+ },
+ "files": {
+  "measured": 1469
+ },
+ "baseline_vs_control": {
+  "files": 1469,
+  "compiled_both": 1469,
+  "a": {
+   "insns": 319662,
+   "code_bytes": 2000408,
+   "sgpr": 63735,
+   "vgpr": 49776,
+   "spills": 249,
+   "scratch": 945156,
+   "cpu": 224.84
+  },
+  "b": {
+   "insns": 319643,
+   "code_bytes": 2000344,
+   "sgpr": 63735,
+   "vgpr": 49773,
+   "spills": 249,
+   "scratch": 945156,
+   "cpu": 228.05
+  },
+  "cpu_a": 224.84,
+  "cpu_b": 228.05,
+  "smaller": [
+   [
+    "llvm.amdgcn.ballot.i32.ll",
+    143,
+    140
+   ],
+   [
+    "llvm.amdgcn.ballot.i32.ll",
+    149,
+    146
+   ],
+   [
+    "llvm.amdgcn.ballot.i64.ll",
+    171,
+    168
+   ],
+   [
+    "local-atomics64.ll",
+    982,
+    974
+   ],
+   [
+    "sext-divergence-driven-isel.ll",
+    64,
+    63
+   ],
+   [
+    "udiv.i64.ll",
+    1321,
+    1320
+   ]
+  ],
+  "larger": [],
+  "new_failures": [],
+  "fallback_changes": [],
+  "insns_delta": -19,
+  "code_bytes_delta": -64
+ },
+ "set_vs_baseline": {
+  "files": 1469,
+  "compiled_both": 1469,
+  "a": {
+   "insns": 319643,
+   "code_bytes": 2000344,
+   "sgpr": 63735,
+   "vgpr": 49773,
+   "spills": 249,
+   "scratch": 945156,
+   "cpu": 228.05
+  },
+  "b": {
+   "insns": 319453,
+   "code_bytes": 1999832,
+   "sgpr": 63753,
+   "vgpr": 49779,
+   "spills": 249,
+   "scratch": 945156,
+   "cpu": 227.37
+  },
+  "cpu_a": 228.05,
+  "cpu_b": 227.37,
+  "smaller": [
+   [
+    "amdgpu-codegenprepare-idiv.ll",
+    5052,
+    5001
+   ],
+   [
+    "combine_andor_with_cmps.ll",
+    1476,
+    1475
+   ],
+   [
+    "ds-sub-offset.ll",
+    81,
+    79
+   ],
+   [
+    "extractelement.i8.ll",
+    216,
+    198
+   ],
+   [
+    "fneg-modifier-casting.ll",
+    378,
+    377
+   ],
+   [
+    "frem.ll",
+    1973,
+    1956
+   ],
+   [
+    "insert_waitcnt_for_precise_memory.ll",
+    155,
+    153
+   ],
+   [
+    "llvm.amdgcn.s.barrier.ll",
+    18,
+    16
+   ],
+   [
+    "lshr.ll",
+    282,
+    278
+   ],
+   [
+    "mad-mix-hi-bf16.ll",
+    212,
+    210
+   ],
+   [
+    "memcpy_const_compare.ll",
+    69,
+    68
+   ],
+   [
+    "permute_i8.ll",
+    1533,
+    1529
+   ],
+   [
+    "pr155452.ll",
+    67,
+    64
+   ],
+   [
+    "sdiv.i64.ll",
+    1945,
+    1942
+   ],
+   [
+    "sdiv.ll",
+    538,
+    528
+   ],
+   [
+    "sdivrem.ll",
+    1217,
+    1202
+   ],
+   [
+    "sdivrem64.r600.ll",
+    528,
+    525
+   ],
+   [
+    "srem64.ll",
+    1749,
+    1745
+   ],
+   [
+    "udiv.i32.ll",
+    294,
+    283
+   ],
+   [
+    "udiv.i64.ll",
+    1320,
+    1319
+   ],
+   [
+    "udiv.ll",
+    471,
+    456
+   ],
+   [
+    "udivrem.ll",
+    225,
+    223
+   ],
+   [
+    "udivrem.ll",
+    1050,
+    1032
+   ]
+  ],
+  "larger": [],
+  "new_failures": [],
+  "fallback_changes": [],
+  "insns_delta": -190,
+  "code_bytes_delta": -512
+ },
+ "set_vs_control": {
+  "files": 1469,
+  "compiled_both": 1469,
+  "a": {
+   "insns": 319662,
+   "code_bytes": 2000408,
+   "sgpr": 63735,
+   "vgpr": 49776,
+   "spills": 249,
+   "scratch": 945156,
+   "cpu": 224.84
+  },
+  "b": {
+   "insns": 319453,
+   "code_bytes": 1999832,
+   "sgpr": 63753,
+   "vgpr": 49779,
+   "spills": 249,
+   "scratch": 945156,
+   "cpu": 227.37
+  },
+  "cpu_a": 224.84,
+  "cpu_b": 227.37,
+  "smaller": [
+   [
+    "amdgpu-codegenprepare-idiv.ll",
+    5052,
+    5001
+   ],
+   [
+    "combine_andor_with_cmps.ll",
+    1476,
+    1475
+   ],
+   [
+    "ds-sub-offset.ll",
+    81,
+    79
+   ],
+   [
+    "extractelement.i8.ll",
+    216,
+    198
+   ],
+   [
+    "fneg-modifier-casting.ll",
+    378,
+    377
+   ],
+   [
+    "frem.ll",
+    1973,
+    1956
+   ],
+   [
+    "insert_waitcnt_for_precise_memory.ll",
+    155,
+    153
+   ],
+   [
+    "llvm.amdgcn.ballot.i32.ll",
+    143,
+    140
+   ],
+   [
+    "llvm.amdgcn.ballot.i32.ll",
+    149,
+    146
+   ],
+   [
+    "llvm.amdgcn.ballot.i64.ll",
+    171,
+    168
+   ],
+   [
+    "llvm.amdgcn.s.barrier.ll",
+    18,
+    16
+   ],
+   [
+    "local-atomics64.ll",
+    982,
+    974
+   ],
+   [
+    "lshr.ll",
+    282,
+    278
+   ],
+   [
+    "mad-mix-hi-bf16.ll",
+    212,
+    210
+   ],
+   [
+    "memcpy_const_compare.ll",
+    69,
+    68
+   ],
+   [
+    "permute_i8.ll",
+    1533,
+    1529
+   ],
+   [
+    "pr155452.ll",
+    67,
+    64
+   ],
+   [
+    "sdiv.i64.ll",
+    1945,
+    1942
+   ],
+   [
+    "sdiv.ll",
+    538,
+    528
+   ],
+   [
+    "sdivrem.ll",
+    1217,
+    1202
+   ],
+   [
+    "sdivrem64.r600.ll",
+    528,
+    525
+   ],
+   [
+    "sext-divergence-driven-isel.ll",
+    64,
+    63
+   ],
+   [
+    "srem64.ll",
+    1749,
+    1745
+   ],
+   [
+    "udiv.i32.ll",
+    294,
+    283
+   ],
+   [
+    "udiv.i64.ll",
+    1321,
+    1319
+   ],
+   [
+    "udiv.ll",
+    471,
+    456
+   ],
+   [
+    "udivrem.ll",
+    225,
+    223
+   ],
+   [
+    "udivrem.ll",
+    1050,
+    1032
+   ]
+  ],
+  "larger": [],
+  "new_failures": [],
+  "fallback_changes": [],
+  "insns_delta": -209,
+  "code_bytes_delta": -576
+ },
+ "applied": {
+  "joint_48f67f7f94": 146,
+  "joint_ed65a6dab8": 3,
+  "joint_ab7683f9d9": 26,
+  "joint_c8335930ca": 2,
+  "joint_955cab1a71": 19,
+  "joint_58f8d40d5c": 1,
+  "joint_a27cbc14a2": 8,
+  "joint_4b248d5eeb": 5,
+  "joint_feb01698b2": 4,
+  "joint_78a00c1e4d": 18,
+  "joint_66f36e5034": 3,
+  "joint_5036715b7d": 2,
+  "joint_f5cef5f7f4": 3,
+  "joint_315c4a0ef9": 5,
+  "joint_029b669601": 1,
+  "joint_9e28056d92": 1,
+  "joint_4d2c586607": 8,
+  "joint_611f45a21c": 3,
+  "joint_cf2658e7d2": 2
+ },
+ "per_rule": {
+  "joint_48f67f7f94": {
+   "files": 15,
+   "applied": 146,
+   "insns_saved_in_files": 134
+  },
+  "joint_78a00c1e4d": {
+   "files": 2,
+   "applied": 18,
+   "insns_saved_in_files": 19
+  },
+  "joint_4b248d5eeb": {
+   "files": 2,
+   "applied": 5,
+   "insns_saved_in_files": 22
+  },
+  "joint_feb01698b2": {
+   "files": 1,
+   "applied": 4,
+   "insns_saved_in_files": 18
+  },
+  "joint_5036715b7d": {
+   "files": 1,
+   "applied": 2,
+   "insns_saved_in_files": 4
+  },
+  "joint_ed65a6dab8": {
+   "files": 2,
+   "applied": 3,
+   "insns_saved_in_files": 51
+  },
+  "joint_cf2658e7d2": {
+   "files": 1,
+   "applied": 2,
+   "insns_saved_in_files": 4
+  },
+  "joint_029b669601": {
+   "files": 1,
+   "applied": 1,
+   "insns_saved_in_files": 2
+  },
+  "joint_955cab1a71": {
+   "files": 3,
+   "applied": 19,
+   "insns_saved_in_files": 4
+  },
+  "joint_c8335930ca": {
+   "files": 1,
+   "applied": 2,
+   "insns_saved_in_files": 2
+  },
+  "joint_4d2c586607": {
+   "files": 1,
+   "applied": 8,
+   "insns_saved_in_files": 4
+  },
+  "joint_ab7683f9d9": {
+   "files": 5,
+   "applied": 26,
+   "insns_saved_in_files": 1
+  },
+  "joint_611f45a21c": {
+   "files": 1,
+   "applied": 3,
+   "insns_saved_in_files": 4
+  },
+  "joint_58f8d40d5c": {
+   "files": 1,
+   "applied": 1,
+   "insns_saved_in_files": 1
+  },
+  "joint_9e28056d92": {
+   "files": 1,
+   "applied": 1,
+   "insns_saved_in_files": 1
+  }
+ },
+ "compiles": 4407,
+ "cache_hits": 0
+}

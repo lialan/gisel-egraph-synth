@@ -2356,6 +2356,5331 @@
      ]
     ]
    }
+  },
+  {
+   "candidate": {
+    "estimated_cost": {
+     "after": 2,
+     "before": 2,
+     "gain": 0,
+     "independent_after": 2
+    },
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_ZEXT",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_ADD",
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "relax_flags": [],
+    "required_guards": {
+     "constant": [
+      2
+     ],
+     "defined": [],
+     "distinct": [
+      0,
+      1
+     ]
+    },
+    "reused_source_instructions": [],
+    "text": "keep ; t0 = G_ZEXT x0; t1 = G_ADD x1, t0; n1 -> t1"
+   },
+   "cost_policy": {
+    "cost_slack": 0,
+    "max_after": 2,
+    "semantic_variants": 6
+   },
+   "id": "joint_48f67f7f94",
+   "kind": "joint_region",
+   "not_proved": [],
+   "plan": {
+    "anchor": 1,
+    "erase_candidates": [
+     0,
+     1
+    ],
+    "guards": {
+     "constant": [
+      [
+       2,
+       "0x1"
+      ]
+     ],
+     "defined": [],
+     "distinct": [
+      0,
+      1
+     ],
+     "same_block": true,
+     "width_maps": [
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        32
+       ]
+      ],
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        8
+       ]
+      ],
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        16
+       ]
+      ],
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        64
+       ]
+      ]
+     ]
+    },
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "match_order": [
+     {
+      "how": "anchor",
+      "node": 1,
+      "via": null
+     },
+     {
+      "how": "def",
+      "node": 0,
+      "via": [
+       1,
+       1
+      ]
+     }
+    ],
+    "matched_instructions": [
+     {
+      "action": "erase",
+      "node": 0
+     },
+     {
+      "action": "replace",
+      "node": 1
+     }
+    ],
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 0,
+      "op": "G_ZEXT",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 1,
+      "op": "G_ADD",
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "original_only": true,
+    "output_replacements": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": []
+   },
+   "profitability_status": "unmeasured",
+   "proofs": [
+    {
+     "result": "unsat",
+     "seconds": 0.0,
+     "smt2_file": "proofs/67d0d0523a12a289.smt2",
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       32
+      ]
+     ]
+    },
+    {
+     "result": "unsat",
+     "seconds": 0.0,
+     "smt2_file": "proofs/0113e28f3a5fbfb2.smt2",
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       8
+      ]
+     ]
+    },
+    {
+     "result": "unsat",
+     "seconds": 0.0,
+     "smt2_file": "proofs/901ed527c3816605.smt2",
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       16
+      ]
+     ]
+    },
+    {
+     "result": "unsat",
+     "seconds": 0.0,
+     "smt2_file": "proofs/6280a4ce07a54453.smt2",
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       64
+      ]
+     ]
+    }
+   ],
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "examples": [
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/bypass-div.ll.b1f4ae7353.regions.jsonl",
+      "udiv32",
+      "1",
+      "0",
+      "(31, 32)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/idiv-licm.ll.f14a04dc67.regions.jsonl",
+      "udiv32_invariant_denom",
+      "3",
+      "0",
+      "(13, 14)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/idiv-licm.ll.f14a04dc67.regions.jsonl",
+      "sdiv32_invariant_denom",
+      "3",
+      "0",
+      "(14, 15)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/sdiv.i32.ll.7248502451.regions.jsonl",
+      "v_sdiv_i32_24bit",
+      "1",
+      "0",
+      "(34, 35)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/sdiv64.ll.0a3cfe64d7.regions.jsonl",
+      "s_test_sdiv24_k_den_i64",
+      "1",
+      "0",
+      "(42, 43)"
+     ]
+    ],
+    "occurrences": 14
+   },
+   "rank": 1,
+   "schema": "gisel-joint-region/1",
+   "search": {
+    "status": "complete"
+   },
+   "semantic_status": {
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs",
+    "joint_outputs": 1,
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1"
+   },
+   "shape": "b6a7cd6aa3d8",
+   "source": {
+    "inputs": [
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 1,
+      "zero": "0x0"
+     },
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0x0"
+     },
+     {
+      "const": "0x1",
+      "defined": true,
+      "one": "0x1",
+      "w": 32,
+      "zero": "0xfffffffe"
+     }
+    ],
+    "instrs": [
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "in",
+        2
+       ]
+      ],
+      "flags": [],
+      "op": "G_ADD",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "n",
+        0,
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "flags": [],
+      "op": "G_SELECT",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      1,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_ADD x1, x2; n1 = G_SELECT x0, n0, x1; outputs n1",
+   "window": "dbad63f6a3fecc29"
+  },
+  {
+   "candidate": {
+    "estimated_cost": {
+     "after": 2,
+     "before": 2,
+     "gain": 0,
+     "independent_after": 2
+    },
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "lit",
+        "-1",
+        32
+       ],
+       [
+        "in",
+        2
+       ]
+      ],
+      "attr": null,
+      "op": "G_SUB",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_ADD",
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "relax_flags": [],
+    "required_guards": {
+     "constant": [
+      1
+     ],
+     "defined": [],
+     "distinct": [
+      0,
+      2
+     ]
+    },
+    "reused_source_instructions": [],
+    "text": "keep ; t0 = G_SUB -1:lit, x2; t1 = G_ADD x0, t0; n1 -> t1"
+   },
+   "cost_policy": {
+    "cost_slack": 0,
+    "max_after": 2,
+    "semantic_variants": 6
+   },
+   "id": "joint_78a00c1e4d",
+   "kind": "joint_region",
+   "not_proved": [],
+   "plan": {
+    "anchor": 1,
+    "erase_candidates": [
+     0,
+     1
+    ],
+    "guards": {
+     "constant": [
+      [
+       1,
+       "0xffffffff"
+      ]
+     ],
+     "defined": [],
+     "distinct": [
+      0,
+      2
+     ],
+     "same_block": true,
+     "width_maps": [
+      [
+       [
+        32,
+        32
+       ]
+      ],
+      [
+       [
+        32,
+        8
+       ]
+      ],
+      [
+       [
+        32,
+        16
+       ]
+      ],
+      [
+       [
+        32,
+        64
+       ]
+      ]
+     ]
+    },
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "match_order": [
+     {
+      "how": "anchor",
+      "node": 1,
+      "via": null
+     },
+     {
+      "how": "def",
+      "node": 0,
+      "via": [
+       1,
+       0
+      ]
+     }
+    ],
+    "matched_instructions": [
+     {
+      "action": "erase",
+      "node": 0
+     },
+     {
+      "action": "replace",
+      "node": 1
+     }
+    ],
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "lit",
+        "-1",
+        32
+       ],
+       [
+        "in",
+        2
+       ]
+      ],
+      "attr": null,
+      "id": 0,
+      "op": "G_SUB",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 1,
+      "op": "G_ADD",
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "original_only": true,
+    "output_replacements": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": []
+   },
+   "profitability_status": "unmeasured",
+   "proofs": [
+    {
+     "result": "unsat",
+     "seconds": 0.0492,
+     "smt2_file": "proofs/df80c3867f200cc7.smt2",
+     "width_map": [
+      [
+       32,
+       32
+      ]
+     ]
+    },
+    {
+     "result": "unsat",
+     "seconds": 0.0051,
+     "smt2_file": "proofs/97ab5334310ce32b.smt2",
+     "width_map": [
+      [
+       32,
+       8
+      ]
+     ]
+    },
+    {
+     "result": "unsat",
+     "seconds": 0.0071,
+     "smt2_file": "proofs/d310ad058f9a22d4.smt2",
+     "width_map": [
+      [
+       32,
+       16
+      ]
+     ]
+    },
+    {
+     "result": "unsat",
+     "seconds": 0.0229,
+     "smt2_file": "proofs/5d712c105f066186.smt2",
+     "width_map": [
+      [
+       32,
+       64
+      ]
+     ]
+    }
+   ],
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "examples": [
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/frem.ll.840e0c2c82.regions.jsonl",
+      "frem_f16",
+      "4",
+      "0",
+      "(2, 7)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/frem.ll.840e0c2c82.regions.jsonl",
+      "frem_f32",
+      "4",
+      "0",
+      "(3, 9)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/frem.ll.840e0c2c82.regions.jsonl",
+      "frem_f64",
+      "4",
+      "0",
+      "(3, 9)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/frem.ll.840e0c2c82.regions.jsonl",
+      "frem_v2f16",
+      "5",
+      "0",
+      "(2, 7)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/frem.ll.840e0c2c82.regions.jsonl",
+      "frem_v2f16",
+      "14",
+      "0",
+      "(2, 7)"
+     ]
+    ],
+    "occurrences": 34
+   },
+   "rank": 0,
+   "schema": "gisel-joint-region/1",
+   "search": {
+    "status": "complete"
+   },
+   "semantic_status": {
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs",
+    "joint_outputs": 1,
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1"
+   },
+   "shape": "75c70988386e",
+   "source": {
+    "inputs": [
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0x0"
+     },
+     {
+      "const": "0xffffffff",
+      "defined": true,
+      "one": "0xffffffff",
+      "w": 32,
+      "zero": "0x0"
+     },
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0x0"
+     }
+    ],
+    "instrs": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "flags": [],
+      "op": "G_ADD",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "n",
+        0,
+        0
+       ],
+       [
+        "in",
+        2
+       ]
+      ],
+      "flags": [],
+      "op": "G_SUB",
+      "uses": [
+       2
+      ],
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      1,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_ADD x0, x1; n1 = G_SUB n0, x2; outputs n1",
+   "window": "1b79c6476ca6fac5"
+  },
+  {
+   "candidate": {
+    "estimated_cost": {
+     "after": 2,
+     "before": 2,
+     "gain": 0,
+     "independent_after": 2
+    },
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "attr": null,
+      "op": "G_AND",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_ZEXT",
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "relax_flags": [],
+    "required_guards": {
+     "constant": [
+      1
+     ],
+     "defined": [],
+     "distinct": [
+      0
+     ]
+    },
+    "reused_source_instructions": [],
+    "text": "keep ; t0 = G_AND x0, x1; t1 = G_ZEXT t0; n1 -> t1"
+   },
+   "cost_policy": {
+    "cost_slack": 0,
+    "max_after": 2,
+    "semantic_variants": 6
+   },
+   "id": "joint_4b248d5eeb",
+   "kind": "joint_region",
+   "not_proved": [],
+   "plan": {
+    "anchor": 1,
+    "erase_candidates": [
+     0,
+     1
+    ],
+    "guards": {
+     "constant": [
+      [
+       1,
+       "0x3"
+      ]
+     ],
+     "defined": [],
+     "distinct": [
+      0
+     ],
+     "same_block": true,
+     "width_maps": [
+      [
+       [
+        32,
+        32
+       ],
+       [
+        64,
+        64
+       ]
+      ]
+     ]
+    },
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "match_order": [
+     {
+      "how": "anchor",
+      "node": 1,
+      "via": null
+     },
+     {
+      "how": "def",
+      "node": 0,
+      "via": [
+       1,
+       0
+      ]
+     }
+    ],
+    "matched_instructions": [
+     {
+      "action": "erase",
+      "node": 0
+     },
+     {
+      "action": "replace",
+      "node": 1
+     }
+    ],
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "attr": null,
+      "id": 0,
+      "op": "G_AND",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 1,
+      "op": "G_ZEXT",
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "original_only": true,
+    "output_replacements": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": []
+   },
+   "profitability_status": "unmeasured",
+   "proofs": [
+    {
+     "result": "unsat",
+     "seconds": 0.004,
+     "smt2_file": "proofs/4c3500827ce63918.smt2",
+     "width_map": [
+      [
+       32,
+       32
+      ],
+      [
+       64,
+       64
+      ]
+     ]
+    }
+   ],
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "examples": [
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/extract_vector_elt-i8.ll.aab166806c.regions.jsonl",
+      "dynamic_extract_vector_elt_v4i8",
+      "1",
+      "0",
+      "(12, 13)"
+     ]
+    ],
+    "occurrences": 1
+   },
+   "rank": 0,
+   "schema": "gisel-joint-region/1",
+   "search": {
+    "identity": 1,
+    "status": "complete"
+   },
+   "semantic_status": {
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs",
+    "joint_outputs": 1,
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1"
+   },
+   "shape": "518d9a868769",
+   "source": {
+    "inputs": [
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0x0"
+     },
+     {
+      "const": "0x3",
+      "defined": true,
+      "one": "0x3",
+      "w": 32,
+      "zero": "0xfffffffc"
+     }
+    ],
+    "instrs": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "flags": [],
+      "op": "G_AND",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "n",
+        0,
+        0
+       ]
+      ],
+      "flags": [],
+      "op": "G_SEXT",
+      "uses": [
+       1
+      ],
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      1,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_AND x0, x1; n1 = G_SEXT n0; outputs n1",
+   "window": "1a82d59cc4b1ec73"
+  },
+  {
+   "candidate": {
+    "estimated_cost": {
+     "after": 2,
+     "before": 2,
+     "gain": 0,
+     "independent_after": 2
+    },
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "attr": null,
+      "op": "G_AND",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_ZEXT",
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "relax_flags": [],
+    "required_guards": {
+     "constant": [
+      1
+     ],
+     "defined": [],
+     "distinct": [
+      0
+     ]
+    },
+    "reused_source_instructions": [],
+    "text": "keep ; t0 = G_AND x0, x1; t1 = G_ZEXT t0; n1 -> t1"
+   },
+   "cost_policy": {
+    "cost_slack": 0,
+    "max_after": 2,
+    "semantic_variants": 6
+   },
+   "id": "joint_feb01698b2",
+   "kind": "joint_region",
+   "not_proved": [],
+   "plan": {
+    "anchor": 1,
+    "erase_candidates": [
+     0,
+     1
+    ],
+    "guards": {
+     "constant": [
+      [
+       1,
+       "0x7"
+      ]
+     ],
+     "defined": [],
+     "distinct": [
+      0
+     ],
+     "same_block": true,
+     "width_maps": [
+      [
+       [
+        32,
+        32
+       ],
+       [
+        64,
+        64
+       ]
+      ]
+     ]
+    },
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "match_order": [
+     {
+      "how": "anchor",
+      "node": 1,
+      "via": null
+     },
+     {
+      "how": "def",
+      "node": 0,
+      "via": [
+       1,
+       0
+      ]
+     }
+    ],
+    "matched_instructions": [
+     {
+      "action": "erase",
+      "node": 0
+     },
+     {
+      "action": "replace",
+      "node": 1
+     }
+    ],
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "attr": null,
+      "id": 0,
+      "op": "G_AND",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 1,
+      "op": "G_ZEXT",
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "original_only": true,
+    "output_replacements": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": []
+   },
+   "profitability_status": "unmeasured",
+   "proofs": [
+    {
+     "result": "unsat",
+     "seconds": 0.0042,
+     "smt2_file": "proofs/283ff40ed77a5712.smt2",
+     "width_map": [
+      [
+       32,
+       32
+      ],
+      [
+       64,
+       64
+      ]
+     ]
+    }
+   ],
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "examples": [
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/extract_vector_elt-i8.ll.aab166806c.regions.jsonl",
+      "dynamic_extract_vector_elt_v8i8",
+      "1",
+      "0",
+      "(12, 13)"
+     ]
+    ],
+    "occurrences": 1
+   },
+   "rank": 0,
+   "schema": "gisel-joint-region/1",
+   "search": {
+    "identity": 1,
+    "status": "complete"
+   },
+   "semantic_status": {
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs",
+    "joint_outputs": 1,
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1"
+   },
+   "shape": "518d9a868769",
+   "source": {
+    "inputs": [
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0x0"
+     },
+     {
+      "const": "0x7",
+      "defined": true,
+      "one": "0x7",
+      "w": 32,
+      "zero": "0xfffffff8"
+     }
+    ],
+    "instrs": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "flags": [],
+      "op": "G_AND",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "n",
+        0,
+        0
+       ]
+      ],
+      "flags": [],
+      "op": "G_SEXT",
+      "uses": [
+       1
+      ],
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      1,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_AND x0, x1; n1 = G_SEXT n0; outputs n1",
+   "window": "9f8fbd0abbdaacc6"
+  },
+  {
+   "candidate": {
+    "estimated_cost": {
+     "after": 3,
+     "before": 3,
+     "gain": 0,
+     "independent_after": 2
+    },
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "attr": null,
+      "op": "G_LSHR",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "lit",
+        "1",
+        32
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_AND",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "t",
+        1,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_TRUNC",
+      "ws": [
+       8
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       2,
+       0
+      ],
+      "value": [
+       "t",
+       2,
+       0
+      ]
+     }
+    ],
+    "relax_flags": [],
+    "required_guards": {
+     "constant": [
+      1
+     ],
+     "defined": [],
+     "distinct": [
+      0
+     ]
+    },
+    "reused_source_instructions": [],
+    "text": "keep ; t0 = G_LSHR x0, x1; t1 = G_AND 1:lit, t0; t2 = G_TRUNC t1; n2 -> t2"
+   },
+   "cost_policy": {
+    "cost_slack": 0,
+    "max_after": 3,
+    "semantic_variants": 6
+   },
+   "id": "joint_5036715b7d",
+   "kind": "joint_region",
+   "not_proved": [],
+   "plan": {
+    "anchor": 2,
+    "erase_candidates": [
+     0,
+     1,
+     2
+    ],
+    "guards": {
+     "constant": [
+      [
+       1,
+       "0x7"
+      ]
+     ],
+     "defined": [],
+     "distinct": [
+      0
+     ],
+     "same_block": true,
+     "width_maps": [
+      [
+       [
+        8,
+        8
+       ],
+       [
+        16,
+        16
+       ],
+       [
+        32,
+        32
+       ]
+      ]
+     ]
+    },
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "match_order": [
+     {
+      "how": "anchor",
+      "node": 2,
+      "via": null
+     },
+     {
+      "how": "def",
+      "node": 1,
+      "via": [
+       2,
+       0
+      ]
+     },
+     {
+      "how": "def",
+      "node": 0,
+      "via": [
+       1,
+       0
+      ]
+     }
+    ],
+    "matched_instructions": [
+     {
+      "action": "erase",
+      "node": 0
+     },
+     {
+      "action": "erase",
+      "node": 1
+     },
+     {
+      "action": "replace",
+      "node": 2
+     }
+    ],
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "attr": null,
+      "id": 0,
+      "op": "G_LSHR",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "lit",
+        "1",
+        32
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 1,
+      "op": "G_AND",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "t",
+        1,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 2,
+      "op": "G_TRUNC",
+      "ws": [
+       8
+      ]
+     }
+    ],
+    "original_only": true,
+    "output_replacements": [
+     {
+      "output": [
+       2,
+       0
+      ],
+      "value": [
+       "t",
+       2,
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": []
+   },
+   "profitability_status": "unmeasured",
+   "proofs": [
+    {
+     "result": "unsat",
+     "seconds": 0.0051,
+     "smt2_file": "proofs/e011ea5a56536201.smt2",
+     "width_map": [
+      [
+       8,
+       8
+      ],
+      [
+       16,
+       16
+      ],
+      [
+       32,
+       32
+      ]
+     ]
+    }
+   ],
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "examples": [
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/bitinsert-bitextract-common-offsets.ll.2ee07da418.regions.jsonl",
+      "test_bitextract_b8_off_top",
+      "1",
+      "0",
+      "(1, 2, 4)"
+     ]
+    ],
+    "occurrences": 1
+   },
+   "rank": 1,
+   "schema": "gisel-joint-region/1",
+   "search": {
+    "status": "complete"
+   },
+   "semantic_status": {
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs",
+    "joint_outputs": 1,
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1"
+   },
+   "shape": "8b7e03b8a2f6",
+   "source": {
+    "inputs": [
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0x0"
+     },
+     {
+      "const": "0x7",
+      "defined": true,
+      "one": "0x7",
+      "w": 16,
+      "zero": "0xfff8"
+     }
+    ],
+    "instrs": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ]
+      ],
+      "flags": [],
+      "op": "G_TRUNC",
+      "uses": [
+       1
+      ],
+      "ws": [
+       16
+      ]
+     },
+     {
+      "args": [
+       [
+        "n",
+        0,
+        0
+       ]
+      ],
+      "flags": [],
+      "op": "G_TRUNC",
+      "uses": [
+       1
+      ],
+      "ws": [
+       8
+      ]
+     },
+     {
+      "args": [
+       [
+        "n",
+        1,
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "flags": [],
+      "op": "G_LSHR",
+      "uses": [
+       1
+      ],
+      "ws": [
+       8
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      2,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_TRUNC x0; n1 = G_TRUNC n0; n2 = G_LSHR n1, x1; outputs n2",
+   "window": "1a7d2a6817f82517"
+  },
+  {
+   "candidate": {
+    "estimated_cost": {
+     "after": 3,
+     "before": 4,
+     "gain": 1,
+     "independent_after": 3
+    },
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        2
+       ]
+      ],
+      "attr": null,
+      "op": "G_ZEXT",
+      "ws": [
+       64
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "lit",
+        "-1",
+        64
+       ]
+      ],
+      "attr": null,
+      "op": "G_ADD",
+      "ws": [
+       64
+      ]
+     },
+     {
+      "args": [
+       [
+        "t",
+        0,
+        0
+       ],
+       [
+        "t",
+        1,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_AND",
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       3,
+       0
+      ],
+      "value": [
+       "t",
+       2,
+       0
+      ]
+     }
+    ],
+    "relax_flags": [],
+    "required_guards": {
+     "constant": [
+      1
+     ],
+     "defined": [],
+     "distinct": [
+      0,
+      2
+     ]
+    },
+    "reused_source_instructions": [],
+    "text": "keep ; t0 = G_ZEXT x2; t1 = G_ADD x0, -1:lit; t2 = G_AND t0, t1; n3 -> t2"
+   },
+   "cost_policy": {
+    "cost_slack": 0,
+    "max_after": 4,
+    "semantic_variants": 6
+   },
+   "id": "joint_ed65a6dab8",
+   "kind": "joint_region",
+   "not_proved": [],
+   "plan": {
+    "anchor": 3,
+    "erase_candidates": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "guards": {
+     "constant": [
+      [
+       1,
+       "0xffffffff"
+      ]
+     ],
+     "defined": [],
+     "distinct": [
+      0,
+      2
+     ],
+     "same_block": true,
+     "width_maps": [
+      [
+       [
+        32,
+        32
+       ],
+       [
+        64,
+        64
+       ]
+      ]
+     ]
+    },
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "match_order": [
+     {
+      "how": "anchor",
+      "node": 3,
+      "via": null
+     },
+     {
+      "how": "def",
+      "node": 2,
+      "via": [
+       3,
+       0
+      ]
+     },
+     {
+      "how": "def",
+      "node": 1,
+      "via": [
+       2,
+       1
+      ]
+     },
+     {
+      "how": "def",
+      "node": 0,
+      "via": [
+       1,
+       1
+      ]
+     }
+    ],
+    "matched_instructions": [
+     {
+      "action": "erase",
+      "node": 0
+     },
+     {
+      "action": "erase",
+      "node": 1
+     },
+     {
+      "action": "erase",
+      "node": 2
+     },
+     {
+      "action": "replace",
+      "node": 3
+     }
+    ],
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        2
+       ]
+      ],
+      "attr": null,
+      "id": 0,
+      "op": "G_ZEXT",
+      "ws": [
+       64
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "lit",
+        "-1",
+        64
+       ]
+      ],
+      "attr": null,
+      "id": 1,
+      "op": "G_ADD",
+      "ws": [
+       64
+      ]
+     },
+     {
+      "args": [
+       [
+        "t",
+        0,
+        0
+       ],
+       [
+        "t",
+        1,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 2,
+      "op": "G_AND",
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "original_only": false,
+    "output_replacements": [
+     {
+      "output": [
+       3,
+       0
+      ],
+      "value": [
+       "t",
+       2,
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": []
+   },
+   "profitability_status": "unmeasured",
+   "proofs": [
+    {
+     "result": "unsat",
+     "seconds": 0.0247,
+     "smt2_file": "proofs/c2f75f2bf24f3710.smt2",
+     "width_map": [
+      [
+       32,
+       32
+      ],
+      [
+       64,
+       64
+      ]
+     ]
+    }
+   ],
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "examples": [
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/srem.i64.ll.db7be0e07b.regions.jsonl",
+      "v_srem_i64_pow2_shl_denom",
+      "3",
+      "0",
+      "(0, 3, 4, 5)"
+     ]
+    ],
+    "occurrences": 1
+   },
+   "rank": 0,
+   "schema": "gisel-joint-region/1",
+   "search": {
+    "status": "complete"
+   },
+   "semantic_status": {
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs",
+    "joint_outputs": 1,
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1"
+   },
+   "shape": "ee68cfda7793",
+   "source": {
+    "inputs": [
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 64,
+      "zero": "0xfff"
+     },
+     {
+      "const": "0xffffffff",
+      "defined": true,
+      "one": "0xffffffff",
+      "w": 32,
+      "zero": "0x0"
+     },
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0x0"
+     }
+    ],
+    "instrs": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ]
+      ],
+      "flags": [],
+      "op": "G_TRUNC",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "n",
+        0,
+        0
+       ]
+      ],
+      "flags": [],
+      "op": "G_ADD",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        2
+       ],
+       [
+        "n",
+        1,
+        0
+       ]
+      ],
+      "flags": [],
+      "op": "G_AND",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "n",
+        2,
+        0
+       ]
+      ],
+      "flags": [],
+      "op": "G_ZEXT",
+      "uses": [
+       1
+      ],
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      3,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_TRUNC x0; n1 = G_ADD x1, n0; n2 = G_AND x2, n1; n3 = G_ZEXT n2; outputs n3",
+   "window": "4aa5dde2c88535a0"
+  },
+  {
+   "candidate": {
+    "estimated_cost": {
+     "after": 2,
+     "before": 2,
+     "gain": 0,
+     "independent_after": 2
+    },
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        2
+       ],
+       [
+        "lit",
+        "0",
+        32
+       ]
+      ],
+      "attr": null,
+      "op": "G_SELECT",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_ADD",
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "relax_flags": [],
+    "required_guards": {
+     "constant": [
+      2
+     ],
+     "defined": [],
+     "distinct": [
+      0,
+      1
+     ]
+    },
+    "reused_source_instructions": [],
+    "text": "keep ; t0 = G_SELECT x0, x2, 0:lit; t1 = G_ADD x1, t0; n1 -> t1"
+   },
+   "cost_policy": {
+    "cost_slack": 0,
+    "max_after": 2,
+    "semantic_variants": 6
+   },
+   "id": "joint_cf2658e7d2",
+   "kind": "joint_region",
+   "not_proved": [],
+   "plan": {
+    "anchor": 1,
+    "erase_candidates": [
+     0,
+     1
+    ],
+    "guards": {
+     "constant": [
+      [
+       2,
+       "0xffffa481"
+      ]
+     ],
+     "defined": [],
+     "distinct": [
+      0,
+      1
+     ],
+     "same_block": true,
+     "width_maps": [
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        32
+       ]
+      ]
+     ]
+    },
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "match_order": [
+     {
+      "how": "anchor",
+      "node": 1,
+      "via": null
+     },
+     {
+      "how": "def",
+      "node": 0,
+      "via": [
+       1,
+       1
+      ]
+     }
+    ],
+    "matched_instructions": [
+     {
+      "action": "erase",
+      "node": 0
+     },
+     {
+      "action": "replace",
+      "node": 1
+     }
+    ],
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        2
+       ],
+       [
+        "lit",
+        "0",
+        32
+       ]
+      ],
+      "attr": null,
+      "id": 0,
+      "op": "G_SELECT",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 1,
+      "op": "G_ADD",
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "original_only": true,
+    "output_replacements": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": []
+   },
+   "profitability_status": "unmeasured",
+   "proofs": [
+    {
+     "result": "unsat",
+     "seconds": 0.0,
+     "smt2_file": "proofs/29401a1d18b9da60.smt2",
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       32
+      ]
+     ]
+    }
+   ],
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "examples": [
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/urem64.ll.e0a2b9d0c8.regions.jsonl",
+      "s_test_urem24_k_den_i64",
+      "1",
+      "0",
+      "(32, 33)"
+     ]
+    ],
+    "occurrences": 1
+   },
+   "rank": 0,
+   "schema": "gisel-joint-region/1",
+   "search": {
+    "status": "complete"
+   },
+   "semantic_status": {
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs",
+    "joint_outputs": 1,
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1"
+   },
+   "shape": "062cda33bf36",
+   "source": {
+    "inputs": [
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 1,
+      "zero": "0x0"
+     },
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0x0"
+     },
+     {
+      "const": "0xffffa481",
+      "defined": true,
+      "one": "0xffffa481",
+      "w": 32,
+      "zero": "0x5b7e"
+     }
+    ],
+    "instrs": [
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "in",
+        2
+       ]
+      ],
+      "flags": [],
+      "op": "G_ADD",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "n",
+        0,
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "flags": [],
+      "op": "G_SELECT",
+      "uses": [
+       3
+      ],
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      1,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_ADD x1, x2; n1 = G_SELECT x0, n0, x1; outputs n1",
+   "window": "e437fd8c315f1f6d"
+  },
+  {
+   "candidate": {
+    "estimated_cost": {
+     "after": 2,
+     "before": 2,
+     "gain": 0,
+     "independent_after": 2
+    },
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_ZEXT",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "t",
+        0,
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "attr": null,
+      "op": "G_SHL",
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "relax_flags": [],
+    "required_guards": {
+     "constant": [
+      1
+     ],
+     "defined": [],
+     "distinct": [
+      0
+     ]
+    },
+    "reused_source_instructions": [],
+    "text": "keep ; t0 = G_ZEXT x0; t1 = G_SHL t0, x1; n1 -> t1"
+   },
+   "cost_policy": {
+    "cost_slack": 0,
+    "max_after": 2,
+    "semantic_variants": 6
+   },
+   "id": "joint_029b669601",
+   "kind": "joint_region",
+   "not_proved": [],
+   "plan": {
+    "anchor": 1,
+    "erase_candidates": [
+     0,
+     1
+    ],
+    "guards": {
+     "constant": [
+      [
+       1,
+       "0x10"
+      ]
+     ],
+     "defined": [],
+     "distinct": [
+      0
+     ],
+     "same_block": true,
+     "width_maps": [
+      [
+       [
+        16,
+        16
+       ],
+       [
+        32,
+        32
+       ]
+      ]
+     ]
+    },
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "match_order": [
+     {
+      "how": "anchor",
+      "node": 1,
+      "via": null
+     },
+     {
+      "how": "def",
+      "node": 0,
+      "via": [
+       1,
+       0
+      ]
+     }
+    ],
+    "matched_instructions": [
+     {
+      "action": "erase",
+      "node": 0
+     },
+     {
+      "action": "replace",
+      "node": 1
+     }
+    ],
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 0,
+      "op": "G_ZEXT",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "t",
+        0,
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "attr": null,
+      "id": 1,
+      "op": "G_SHL",
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "original_only": true,
+    "output_replacements": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": []
+   },
+   "profitability_status": "unmeasured",
+   "proofs": [
+    {
+     "result": "unsat",
+     "seconds": 0.0109,
+     "smt2_file": "proofs/12151ff789278be5.smt2",
+     "width_map": [
+      [
+       16,
+       16
+      ],
+      [
+       32,
+       32
+      ]
+     ]
+    }
+   ],
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "examples": [
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/mad-mix-hi.ll.350a0d7291.regions.jsonl",
+      "v_mad_mixhi_f16_f16lo_f16lo_f16lo_intpack_sext",
+      "1",
+      "0",
+      "(16, 17)"
+     ]
+    ],
+    "occurrences": 1
+   },
+   "rank": 0,
+   "schema": "gisel-joint-region/1",
+   "search": {
+    "identity": 1,
+    "status": "complete"
+   },
+   "semantic_status": {
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs",
+    "joint_outputs": 1,
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1"
+   },
+   "shape": "26c0571d9c1c",
+   "source": {
+    "inputs": [
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 16,
+      "zero": "0x0"
+     },
+     {
+      "const": "0x10",
+      "defined": true,
+      "one": "0x10",
+      "w": 32,
+      "zero": "0xffffffef"
+     }
+    ],
+    "instrs": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ]
+      ],
+      "flags": [],
+      "op": "G_SEXT",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "n",
+        0,
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "flags": [],
+      "op": "G_SHL",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      1,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_SEXT x0; n1 = G_SHL n0, x1; outputs n1",
+   "window": "19cf7a3480cb318c"
+  },
+  {
+   "candidate": {
+    "estimated_cost": {
+     "after": 3,
+     "before": 3,
+     "gain": 0,
+     "independent_after": 3
+    },
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        2
+       ]
+      ],
+      "attr": null,
+      "op": "G_ZEXT",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "attr": null,
+      "op": "G_SHL",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "t",
+        0,
+        0
+       ],
+       [
+        "t",
+        1,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_ADD",
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       2,
+       0
+      ],
+      "value": [
+       "t",
+       2,
+       0
+      ]
+     }
+    ],
+    "relax_flags": [],
+    "required_guards": {
+     "constant": [
+      1
+     ],
+     "defined": [],
+     "distinct": [
+      0,
+      2
+     ]
+    },
+    "reused_source_instructions": [],
+    "text": "keep ; t0 = G_ZEXT x2; t1 = G_SHL x0, x1; t2 = G_ADD t0, t1; n2 -> t2"
+   },
+   "cost_policy": {
+    "cost_slack": 0,
+    "max_after": 3,
+    "semantic_variants": 6
+   },
+   "id": "joint_955cab1a71",
+   "kind": "joint_region",
+   "not_proved": [],
+   "plan": {
+    "anchor": 2,
+    "erase_candidates": [
+     0,
+     1,
+     2
+    ],
+    "guards": {
+     "constant": [
+      [
+       1,
+       "0x10"
+      ]
+     ],
+     "defined": [],
+     "distinct": [
+      0,
+      2
+     ],
+     "same_block": true,
+     "width_maps": [
+      [
+       [
+        16,
+        16
+       ],
+       [
+        32,
+        32
+       ]
+      ]
+     ]
+    },
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "match_order": [
+     {
+      "how": "anchor",
+      "node": 2,
+      "via": null
+     },
+     {
+      "how": "def",
+      "node": 0,
+      "via": [
+       2,
+       0
+      ]
+     },
+     {
+      "how": "def",
+      "node": 1,
+      "via": [
+       2,
+       1
+      ]
+     }
+    ],
+    "matched_instructions": [
+     {
+      "action": "erase",
+      "node": 0
+     },
+     {
+      "action": "erase",
+      "node": 1
+     },
+     {
+      "action": "replace",
+      "node": 2
+     }
+    ],
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        2
+       ]
+      ],
+      "attr": null,
+      "id": 0,
+      "op": "G_ZEXT",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "attr": null,
+      "id": 1,
+      "op": "G_SHL",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "t",
+        0,
+        0
+       ],
+       [
+        "t",
+        1,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 2,
+      "op": "G_ADD",
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "original_only": true,
+    "output_replacements": [
+     {
+      "output": [
+       2,
+       0
+      ],
+      "value": [
+       "t",
+       2,
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": []
+   },
+   "profitability_status": "unmeasured",
+   "proofs": [
+    {
+     "result": "unsat",
+     "seconds": 0.0053,
+     "smt2_file": "proofs/012c8593d2934581.smt2",
+     "width_map": [
+      [
+       16,
+       16
+      ],
+      [
+       32,
+       32
+      ]
+     ]
+    }
+   ],
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "examples": [
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/atomic_load_global.ll.583b9999b9.regions.jsonl",
+      "atomic_load_global_monotonic_i16_d16_lo_or",
+      "1",
+      "0",
+      "(7, 9, 10)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/atomic_load_local_2.ll.69a919bbe4.regions.jsonl",
+      "atomic_load_local_monotonic_i16_d16_lo_or",
+      "1",
+      "0",
+      "(5, 7, 8)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/combine-vload-extract.ll.70c353ee18.regions.jsonl",
+      "load_2xi16_combine",
+      "1",
+      "0",
+      "(9, 11, 12)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/fast-unaligned-load-store.private.ll.7df2af66a2.regions.jsonl",
+      "private_load_2xi16_align2",
+      "1",
+      "0",
+      "(7, 9, 10)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/fast-unaligned-load-store.private.ll.7df2af66a2.regions.jsonl",
+      "private_load_2xi16_align1",
+      "1",
+      "0",
+      "(7, 9, 10)"
+     ]
+    ],
+    "occurrences": 7
+   },
+   "rank": 0,
+   "schema": "gisel-joint-region/1",
+   "search": {
+    "identity": 1,
+    "status": "complete"
+   },
+   "semantic_status": {
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs",
+    "joint_outputs": 1,
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1"
+   },
+   "shape": "c0d935f075fd",
+   "source": {
+    "inputs": [
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0x0"
+     },
+     {
+      "const": "0x10",
+      "defined": true,
+      "one": "0x10",
+      "w": 32,
+      "zero": "0xffffffef"
+     },
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 16,
+      "zero": "0x0"
+     }
+    ],
+    "instrs": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "flags": [],
+      "op": "G_SHL",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        2
+       ]
+      ],
+      "flags": [],
+      "op": "G_ZEXT",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "n",
+        0,
+        0
+       ],
+       [
+        "n",
+        1,
+        0
+       ]
+      ],
+      "flags": [],
+      "op": "G_OR",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      2,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_SHL x0, x1; n1 = G_ZEXT x2; n2 = G_OR n0, n1; outputs n2",
+   "window": "39dd8c0fd58483cd"
+  },
+  {
+   "candidate": {
+    "estimated_cost": {
+     "after": 2,
+     "before": 2,
+     "gain": 0,
+     "independent_after": 2
+    },
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "in",
+        2
+       ]
+      ],
+      "attr": null,
+      "op": "G_SHL",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "lit",
+        "0",
+        32
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_SUB",
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "relax_flags": [],
+    "required_guards": {
+     "constant": [
+      0,
+      2
+     ],
+     "defined": [],
+     "distinct": [
+      1
+     ]
+    },
+    "reused_source_instructions": [],
+    "text": "keep ; t0 = G_SHL x1, x2; t1 = G_SUB 0:lit, t0; n1 -> t1"
+   },
+   "cost_policy": {
+    "cost_slack": 0,
+    "max_after": 2,
+    "semantic_variants": 6
+   },
+   "id": "joint_c8335930ca",
+   "kind": "joint_region",
+   "not_proved": [],
+   "plan": {
+    "anchor": 1,
+    "erase_candidates": [
+     0,
+     1
+    ],
+    "guards": {
+     "constant": [
+      [
+       0,
+       "0x0"
+      ],
+      [
+       2,
+       "0x2"
+      ]
+     ],
+     "defined": [],
+     "distinct": [
+      1
+     ],
+     "same_block": true,
+     "width_maps": [
+      [
+       [
+        32,
+        32
+       ]
+      ]
+     ]
+    },
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "match_order": [
+     {
+      "how": "anchor",
+      "node": 1,
+      "via": null
+     },
+     {
+      "how": "def",
+      "node": 0,
+      "via": [
+       1,
+       0
+      ]
+     }
+    ],
+    "matched_instructions": [
+     {
+      "action": "erase",
+      "node": 0
+     },
+     {
+      "action": "replace",
+      "node": 1
+     }
+    ],
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "in",
+        2
+       ]
+      ],
+      "attr": null,
+      "id": 0,
+      "op": "G_SHL",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "lit",
+        "0",
+        32
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 1,
+      "op": "G_SUB",
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "original_only": true,
+    "output_replacements": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": []
+   },
+   "profitability_status": "unmeasured",
+   "proofs": [
+    {
+     "result": "unsat",
+     "seconds": 0.0095,
+     "smt2_file": "proofs/4c7e49ccbefd13ec.smt2",
+     "width_map": [
+      [
+       32,
+       32
+      ]
+     ]
+    }
+   ],
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "examples": [
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/flat-scratch.ll.893f0c8160.regions.jsonl",
+      "store_load_vindex_kernel",
+      "1",
+      "0",
+      "(13, 15)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/flat-scratch.ll.893f0c8160.regions.jsonl",
+      "store_load_vindex_small_offset_kernel",
+      "1",
+      "0",
+      "(17, 19)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/flat-scratch.ll.893f0c8160.regions.jsonl",
+      "store_load_vindex_large_offset_kernel",
+      "1",
+      "0",
+      "(17, 19)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/flat-scratch.ll.e576253ea6.regions.jsonl",
+      "store_load_vindex_kernel",
+      "1",
+      "0",
+      "(13, 15)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/flat-scratch.ll.e576253ea6.regions.jsonl",
+      "store_load_vindex_small_offset_kernel",
+      "1",
+      "0",
+      "(17, 19)"
+     ]
+    ],
+    "occurrences": 6
+   },
+   "rank": 0,
+   "schema": "gisel-joint-region/1",
+   "search": {
+    "identity": 1,
+    "status": "complete"
+   },
+   "semantic_status": {
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs",
+    "joint_outputs": 1,
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1"
+   },
+   "shape": "e536c9a5e063",
+   "source": {
+    "inputs": [
+     {
+      "const": "0x0",
+      "defined": true,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0xffffffff"
+     },
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0xfffffc00"
+     },
+     {
+      "const": "0x2",
+      "defined": true,
+      "one": "0x2",
+      "w": 32,
+      "zero": "0xfffffffd"
+     }
+    ],
+    "instrs": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "flags": [
+       "nsw"
+      ],
+      "op": "G_SUB",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "n",
+        0,
+        0
+       ],
+       [
+        "in",
+        2
+       ]
+      ],
+      "flags": [],
+      "op": "G_SHL",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      1,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_SUB nsw x0, x1; n1 = G_SHL n0, x2; outputs n1",
+   "window": "5325b8d28fd13233"
+  },
+  {
+   "candidate": {
+    "estimated_cost": {
+     "after": 3,
+     "before": 3,
+     "gain": 0,
+     "independent_after": 3
+    },
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        2
+       ],
+       [
+        "in",
+        3
+       ]
+      ],
+      "attr": null,
+      "op": "G_SHL",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_OR",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "t",
+        1,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_OR",
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       2,
+       0
+      ],
+      "value": [
+       "t",
+       2,
+       0
+      ]
+     }
+    ],
+    "relax_flags": [],
+    "required_guards": {
+     "constant": [
+      3
+     ],
+     "defined": [],
+     "distinct": [
+      0,
+      1,
+      2
+     ]
+    },
+    "reused_source_instructions": [],
+    "text": "keep ; t0 = G_SHL x2, x3; t1 = G_OR x0, t0; t2 = G_OR x1, t1; n2 -> t2"
+   },
+   "cost_policy": {
+    "cost_slack": 0,
+    "max_after": 3,
+    "semantic_variants": 6
+   },
+   "id": "joint_4d2c586607",
+   "kind": "joint_region",
+   "not_proved": [],
+   "plan": {
+    "anchor": 2,
+    "erase_candidates": [
+     0,
+     1,
+     2
+    ],
+    "guards": {
+     "constant": [
+      [
+       3,
+       "0x18"
+      ]
+     ],
+     "defined": [],
+     "distinct": [
+      0,
+      1,
+      2
+     ],
+     "same_block": true,
+     "width_maps": [
+      [
+       [
+        32,
+        32
+       ]
+      ]
+     ]
+    },
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "match_order": [
+     {
+      "how": "anchor",
+      "node": 2,
+      "via": null
+     },
+     {
+      "how": "def",
+      "node": 0,
+      "via": [
+       2,
+       0
+      ]
+     },
+     {
+      "how": "def",
+      "node": 1,
+      "via": [
+       2,
+       1
+      ]
+     }
+    ],
+    "matched_instructions": [
+     {
+      "action": "erase",
+      "node": 0
+     },
+     {
+      "action": "erase",
+      "node": 1
+     },
+     {
+      "action": "replace",
+      "node": 2
+     }
+    ],
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        2
+       ],
+       [
+        "in",
+        3
+       ]
+      ],
+      "attr": null,
+      "id": 0,
+      "op": "G_SHL",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 1,
+      "op": "G_OR",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "t",
+        1,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 2,
+      "op": "G_OR",
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "original_only": true,
+    "output_replacements": [
+     {
+      "output": [
+       2,
+       0
+      ],
+      "value": [
+       "t",
+       2,
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": []
+   },
+   "profitability_status": "unmeasured",
+   "proofs": [
+    {
+     "result": "unsat",
+     "seconds": 0.0037,
+     "smt2_file": "proofs/c1d955559b5deca2.smt2",
+     "width_map": [
+      [
+       32,
+       32
+      ]
+     ]
+    }
+   ],
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "examples": [
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/combine-vload-extract.ll.70c353ee18.regions.jsonl",
+      "vectorLoadCombine",
+      "1",
+      "0",
+      "(24, 26, 27)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/combine-vload-extract.ll.70c353ee18.regions.jsonl",
+      "vectorLoadShuffle",
+      "1",
+      "0",
+      "(24, 26, 27)"
+     ]
+    ],
+    "occurrences": 2
+   },
+   "rank": 0,
+   "schema": "gisel-joint-region/1",
+   "search": {
+    "bank_truncated": true,
+    "incomplete": true,
+    "status": "budget: bank_truncated"
+   },
+   "semantic_status": {
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs",
+    "joint_outputs": 1,
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1"
+   },
+   "shape": "75b9dd430b72",
+   "source": {
+    "inputs": [
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0x0"
+     },
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0x0"
+     },
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0x0"
+     },
+     {
+      "const": "0x18",
+      "defined": true,
+      "one": "0x18",
+      "w": 32,
+      "zero": "0xffffffe7"
+     }
+    ],
+    "instrs": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "flags": [],
+      "op": "G_OR",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        2
+       ],
+       [
+        "in",
+        3
+       ]
+      ],
+      "flags": [
+       "nuw"
+      ],
+      "op": "G_SHL",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "n",
+        0,
+        0
+       ],
+       [
+        "n",
+        1,
+        0
+       ]
+      ],
+      "flags": [],
+      "op": "G_OR",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      2,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_OR x0, x1; n1 = G_SHL nuw x2, x3; n2 = G_OR n0, n1; outputs n2",
+   "window": "5db6cb38ecaca238"
+  },
+  {
+   "candidate": {
+    "estimated_cost": {
+     "after": 2,
+     "before": 2,
+     "gain": 0,
+     "independent_after": 2
+    },
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "in",
+        0
+       ]
+      ],
+      "attr": "ugt",
+      "op": "G_ICMP",
+      "ws": [
+       1
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        2
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_AND",
+      "ws": [
+       1
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "relax_flags": [],
+    "required_guards": {
+     "constant": [],
+     "defined": [],
+     "distinct": [
+      0,
+      1,
+      2
+     ]
+    },
+    "reused_source_instructions": [],
+    "text": "keep ; t0 = G_ICMP:ugt x1, x0; t1 = G_AND x2, t0; n1 -> t1"
+   },
+   "cost_policy": {
+    "cost_slack": 0,
+    "max_after": 2,
+    "semantic_variants": 6
+   },
+   "id": "joint_ab7683f9d9",
+   "kind": "joint_region",
+   "not_proved": [],
+   "plan": {
+    "anchor": 1,
+    "erase_candidates": [
+     0,
+     1
+    ],
+    "guards": {
+     "constant": [],
+     "defined": [],
+     "distinct": [
+      0,
+      1,
+      2
+     ],
+     "same_block": true,
+     "width_maps": [
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        32
+       ]
+      ],
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        8
+       ]
+      ],
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        16
+       ]
+      ],
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        64
+       ]
+      ]
+     ]
+    },
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "match_order": [
+     {
+      "how": "anchor",
+      "node": 1,
+      "via": null
+     },
+     {
+      "how": "def",
+      "node": 0,
+      "via": [
+       1,
+       1
+      ]
+     }
+    ],
+    "matched_instructions": [
+     {
+      "action": "erase",
+      "node": 0
+     },
+     {
+      "action": "replace",
+      "node": 1
+     }
+    ],
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "in",
+        0
+       ]
+      ],
+      "attr": "ugt",
+      "id": 0,
+      "op": "G_ICMP",
+      "ws": [
+       1
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        2
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 1,
+      "op": "G_AND",
+      "ws": [
+       1
+      ]
+     }
+    ],
+    "original_only": true,
+    "output_replacements": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": []
+   },
+   "profitability_status": "unmeasured",
+   "proofs": [
+    {
+     "result": "unsat",
+     "seconds": 0.0037,
+     "smt2_file": "proofs/dc07b4899b5bb1b3.smt2",
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       32
+      ]
+     ]
+    },
+    {
+     "result": "unsat",
+     "seconds": 0.0038,
+     "smt2_file": "proofs/09ac02465145a732.smt2",
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       8
+      ]
+     ]
+    },
+    {
+     "result": "unsat",
+     "seconds": 0.0034,
+     "smt2_file": "proofs/f2cc568b714c5b77.smt2",
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       16
+      ]
+     ]
+    },
+    {
+     "result": "unsat",
+     "seconds": 0.0035,
+     "smt2_file": "proofs/1f8994ec260f4c9e.smt2",
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       64
+      ]
+     ]
+    }
+   ],
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "examples": [
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/mul24-pass-ordering.ll.4d5dc4d39a.regions.jsonl",
+      "lsr_order_mul24_1",
+      "6",
+      "0",
+      "(15, 17)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/mul24-pass-ordering.ll.4d5dc4d39a.regions.jsonl",
+      "lsr_order_mul24_1",
+      "6",
+      "0",
+      "(16, 17)"
+     ]
+    ],
+    "occurrences": 2
+   },
+   "rank": 0,
+   "schema": "gisel-joint-region/1",
+   "search": {
+    "status": "complete"
+   },
+   "semantic_status": {
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs",
+    "joint_outputs": 1,
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1"
+   },
+   "shape": "b45a8173cb72",
+   "source": {
+    "inputs": [
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0x0"
+     },
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0x0"
+     },
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 1,
+      "zero": "0x0"
+     }
+    ],
+    "instrs": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "attr": "ult",
+      "flags": [],
+      "op": "G_ICMP",
+      "uses": [
+       1
+      ],
+      "ws": [
+       1
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        2
+       ],
+       [
+        "n",
+        0,
+        0
+       ]
+      ],
+      "flags": [],
+      "op": "G_AND",
+      "uses": [
+       1
+      ],
+      "ws": [
+       1
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      1,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_ICMP:ult x0, x1; n1 = G_AND x2, n0; outputs n1",
+   "window": "2bd1ae48dedaf557"
+  },
+  {
+   "candidate": {
+    "estimated_cost": {
+     "after": 3,
+     "before": 3,
+     "gain": 0,
+     "independent_after": 3
+    },
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        2
+       ],
+       [
+        "lit",
+        "0",
+        32
+       ]
+      ],
+      "attr": null,
+      "op": "G_SELECT",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_SUB",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "t",
+        1,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_SEXT",
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       2,
+       0
+      ],
+      "value": [
+       "t",
+       2,
+       0
+      ]
+     }
+    ],
+    "relax_flags": [],
+    "required_guards": {
+     "constant": [],
+     "defined": [],
+     "distinct": [
+      0,
+      1,
+      2
+     ]
+    },
+    "reused_source_instructions": [],
+    "text": "keep ; t0 = G_SELECT x0, x2, 0:lit; t1 = G_SUB x1, t0; t2 = G_SEXT t1; n2 -> t2"
+   },
+   "cost_policy": {
+    "cost_slack": 0,
+    "max_after": 3,
+    "semantic_variants": 6
+   },
+   "id": "joint_611f45a21c",
+   "kind": "joint_region",
+   "not_proved": [],
+   "plan": {
+    "anchor": 2,
+    "erase_candidates": [
+     0,
+     1,
+     2
+    ],
+    "guards": {
+     "constant": [],
+     "defined": [],
+     "distinct": [
+      0,
+      1,
+      2
+     ],
+     "same_block": true,
+     "width_maps": [
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        32
+       ],
+       [
+        64,
+        64
+       ]
+      ]
+     ]
+    },
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "match_order": [
+     {
+      "how": "anchor",
+      "node": 2,
+      "via": null
+     },
+     {
+      "how": "def",
+      "node": 1,
+      "via": [
+       2,
+       0
+      ]
+     },
+     {
+      "how": "def",
+      "node": 0,
+      "via": [
+       1,
+       1
+      ]
+     }
+    ],
+    "matched_instructions": [
+     {
+      "action": "erase",
+      "node": 0
+     },
+     {
+      "action": "erase",
+      "node": 1
+     },
+     {
+      "action": "replace",
+      "node": 2
+     }
+    ],
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        2
+       ],
+       [
+        "lit",
+        "0",
+        32
+       ]
+      ],
+      "attr": null,
+      "id": 0,
+      "op": "G_SELECT",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 1,
+      "op": "G_SUB",
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "t",
+        1,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 2,
+      "op": "G_SEXT",
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "original_only": true,
+    "output_replacements": [
+     {
+      "output": [
+       2,
+       0
+      ],
+      "value": [
+       "t",
+       2,
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": []
+   },
+   "profitability_status": "unmeasured",
+   "proofs": [
+    {
+     "result": "unsat",
+     "seconds": 0.0481,
+     "smt2_file": "proofs/302d781c929bf54e.smt2",
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       32
+      ],
+      [
+       64,
+       64
+      ]
+     ]
+    }
+   ],
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "examples": [
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/global_smrd_cfg.ll.e5e43cbd14.regions.jsonl",
+      "cfg",
+      "4",
+      "0",
+      "(14, 15, 16)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/global_smrd_cfg.ll.e5e43cbd14.regions.jsonl",
+      "cfg_selfloop",
+      "3",
+      "0",
+      "(12, 13, 14)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/srem.i64.ll.db7be0e07b.regions.jsonl",
+      "v_srem_i64_24bit",
+      "1",
+      "0",
+      "(37, 38, 39)"
+     ]
+    ],
+    "occurrences": 3
+   },
+   "rank": 0,
+   "schema": "gisel-joint-region/1",
+   "search": {
+    "bank_truncated": true,
+    "incomplete": true,
+    "status": "budget: bank_truncated"
+   },
+   "semantic_status": {
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs",
+    "joint_outputs": 1,
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1"
+   },
+   "shape": "fd5f1cecd4f8",
+   "source": {
+    "inputs": [
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 1,
+      "zero": "0x0"
+     },
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0x0"
+     },
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 32,
+      "zero": "0x0"
+     }
+    ],
+    "instrs": [
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "in",
+        2
+       ]
+      ],
+      "flags": [],
+      "op": "G_SUB",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "n",
+        0,
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "flags": [],
+      "op": "G_SELECT",
+      "uses": [
+       1
+      ],
+      "ws": [
+       32
+      ]
+     },
+     {
+      "args": [
+       [
+        "n",
+        1,
+        0
+       ]
+      ],
+      "flags": [],
+      "op": "G_SEXT",
+      "uses": [
+       1
+      ],
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      2,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_SUB x1, x2; n1 = G_SELECT x0, n0, x1; n2 = G_SEXT n1; outputs n2",
+   "window": "0a12e772d2fd91a7"
+  },
+  {
+   "candidate": {
+    "estimated_cost": {
+     "after": 2,
+     "before": 2,
+     "gain": 0,
+     "independent_after": 2
+    },
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        2
+       ],
+       [
+        "in",
+        3
+       ]
+      ],
+      "attr": null,
+      "op": "G_ADD",
+      "ws": [
+       64
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_SELECT",
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "relax_flags": [],
+    "required_guards": {
+     "constant": [
+      3
+     ],
+     "defined": [],
+     "distinct": [
+      0,
+      1,
+      2
+     ]
+    },
+    "reused_source_instructions": [],
+    "text": "keep ; t0 = G_ADD x2, x3; t1 = G_SELECT x0, x1, t0; n1 -> t1"
+   },
+   "cost_policy": {
+    "cost_slack": 0,
+    "max_after": 2,
+    "semantic_variants": 6
+   },
+   "id": "joint_58f8d40d5c",
+   "kind": "joint_region",
+   "not_proved": [],
+   "plan": {
+    "anchor": 1,
+    "erase_candidates": [
+     0,
+     1
+    ],
+    "guards": {
+     "constant": [
+      [
+       3,
+       "0x8000000000000000"
+      ]
+     ],
+     "defined": [],
+     "distinct": [
+      0,
+      1,
+      2
+     ],
+     "same_block": true,
+     "width_maps": [
+      [
+       [
+        1,
+        1
+       ],
+       [
+        64,
+        64
+       ]
+      ]
+     ]
+    },
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "match_order": [
+     {
+      "how": "anchor",
+      "node": 1,
+      "via": null
+     },
+     {
+      "how": "def",
+      "node": 0,
+      "via": [
+       1,
+       2
+      ]
+     }
+    ],
+    "matched_instructions": [
+     {
+      "action": "erase",
+      "node": 0
+     },
+     {
+      "action": "replace",
+      "node": 1
+     }
+    ],
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        2
+       ],
+       [
+        "in",
+        3
+       ]
+      ],
+      "attr": null,
+      "id": 0,
+      "op": "G_ADD",
+      "ws": [
+       64
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 1,
+      "op": "G_SELECT",
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "original_only": true,
+    "output_replacements": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": []
+   },
+   "profitability_status": "unmeasured",
+   "proofs": [
+    {
+     "result": "unsat",
+     "seconds": 0.0055,
+     "smt2_file": "proofs/6f96ee01e85b8b2f.smt2",
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       64,
+       64
+      ]
+     ]
+    }
+   ],
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "examples": [
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/integer-select-src-modifiers.ll.6e350c9084.regions.jsonl",
+      "fneg_select_i64_2",
+      "1",
+      "0",
+      "(11, 13)"
+     ],
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/integer-select-src-modifiers.ll.6e350c9084.regions.jsonl",
+      "s_fneg_select_i64_2",
+      "1",
+      "0",
+      "(11, 13)"
+     ]
+    ],
+    "occurrences": 2
+   },
+   "rank": 0,
+   "schema": "gisel-joint-region/1",
+   "search": {
+    "identity": 1,
+    "status": "complete"
+   },
+   "semantic_status": {
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs",
+    "joint_outputs": 1,
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1"
+   },
+   "shape": "c4e39f268a5e",
+   "source": {
+    "inputs": [
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 1,
+      "zero": "0x0"
+     },
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 64,
+      "zero": "0x0"
+     },
+     {
+      "defined": false,
+      "one": "0x0",
+      "w": 64,
+      "zero": "0x0"
+     },
+     {
+      "const": "0x8000000000000000",
+      "defined": true,
+      "one": "0x8000000000000000",
+      "w": 64,
+      "zero": "0x7fffffffffffffff"
+     }
+    ],
+    "instrs": [
+     {
+      "args": [
+       [
+        "in",
+        2
+       ],
+       [
+        "in",
+        3
+       ]
+      ],
+      "flags": [],
+      "op": "G_XOR",
+      "uses": [
+       1
+      ],
+      "ws": [
+       64
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ],
+       [
+        "n",
+        0,
+        0
+       ]
+      ],
+      "flags": [],
+      "op": "G_SELECT",
+      "uses": [
+       1
+      ],
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      1,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_XOR x2, x3; n1 = G_SELECT x0, x1, n0; outputs n1",
+   "window": "74fdebd90499960e"
+  },
+  {
+   "candidate": {
+    "estimated_cost": {
+     "after": 2,
+     "before": 2,
+     "gain": 0,
+     "independent_after": 2
+    },
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "n",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "op": "G_XOR",
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       0,
+       0
+      ],
+      "value": [
+       "n",
+       0,
+       0
+      ]
+     },
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       0,
+       0
+      ]
+     }
+    ],
+    "relax_flags": [
+     0
+    ],
+    "required_guards": {
+     "constant": [
+      0
+     ],
+     "defined": [
+      1
+     ],
+     "distinct": []
+    },
+    "reused_source_instructions": [
+     0
+    ],
+    "text": "keep n0; t0 = G_XOR x1, n0; n0 -> n0; n1 -> t0"
+   },
+   "cost_policy": {
+    "cost_slack": 0,
+    "max_after": 2,
+    "semantic_variants": 6
+   },
+   "id": "joint_9e28056d92",
+   "kind": "joint_region",
+   "not_proved": [],
+   "plan": {
+    "anchor": 1,
+    "erase_candidates": [
+     1
+    ],
+    "guards": {
+     "constant": [
+      [
+       0,
+       "0xf"
+      ]
+     ],
+     "defined": [
+      1
+     ],
+     "distinct": [],
+     "same_block": true,
+     "width_maps": [
+      [
+       [
+        64,
+        64
+       ]
+      ]
+     ]
+    },
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "match_order": [
+     {
+      "how": "anchor",
+      "node": 1,
+      "via": null
+     },
+     {
+      "how": "def",
+      "node": 0,
+      "via": [
+       1,
+       1
+      ]
+     }
+    ],
+    "matched_instructions": [
+     {
+      "action": "relax",
+      "node": 0
+     },
+     {
+      "action": "replace",
+      "node": 1
+     }
+    ],
+    "new_instruction_dag": [
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "n",
+        0,
+        0
+       ]
+      ],
+      "attr": null,
+      "id": 0,
+      "op": "G_XOR",
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "original_only": true,
+    "output_replacements": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       0,
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": [
+     {
+      "action": "relax",
+      "node": 0
+     }
+    ]
+   },
+   "profitability_status": "unmeasured",
+   "proofs": [
+    {
+     "result": "unsat",
+     "seconds": 0.0336,
+     "smt2_file": "proofs/f6b26bfcadb0cfea.smt2",
+     "width_map": [
+      [
+       64,
+       64
+      ]
+     ]
+    }
+   ],
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "examples": [
+     [
+      "/home/xunli/gisel-egraph-synth-joint/build/eval/train-regions/memcpy-crash-issue63986.ll.d52aadf33f.regions.jsonl",
+      "issue63986",
+      "1",
+      "0",
+      "(30, 31)"
+     ]
+    ],
+    "occurrences": 1
+   },
+   "rank": 0,
+   "schema": "gisel-joint-region/1",
+   "search": {
+    "identity": 2,
+    "status": "complete"
+   },
+   "semantic_status": {
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs",
+    "joint_outputs": 2,
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1"
+   },
+   "shape": "f14686be5fb9",
+   "source": {
+    "inputs": [
+     {
+      "const": "0xf",
+      "defined": true,
+      "one": "0xf",
+      "w": 64,
+      "zero": "0xfffffffffffffff0"
+     },
+     {
+      "defined": true,
+      "one": "0x0",
+      "w": 64,
+      "zero": "0x0"
+     }
+    ],
+    "instrs": [
+     {
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "flags": [],
+      "op": "G_AND",
+      "uses": [
+       3
+      ],
+      "ws": [
+       64
+      ]
+     },
+     {
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "n",
+        0,
+        0
+       ]
+      ],
+      "flags": [],
+      "op": "G_SUB",
+      "uses": [
+       2
+      ],
+      "ws": [
+       64
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      0,
+      0
+     ],
+     [
+      1,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_AND x0, x1; n1 = G_SUB x1, n0; outputs n0, n1",
+   "window": "6bc6f4032884d18d"
   }
  ]
 }

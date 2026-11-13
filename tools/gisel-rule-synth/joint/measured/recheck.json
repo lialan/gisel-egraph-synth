@@ -1,0 +1,275 @@
+[
+ {
+  "id": "joint_b421acca3c",
+  "check": [],
+  "replayed": [
+   "unsat",
+   "unsat",
+   "unsat",
+   "unsat"
+  ],
+  "reproved": [
+   "valid",
+   "valid",
+   "valid",
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_f5cef5f7f4",
+  "check": [],
+  "replayed": [
+   "unsat"
+  ],
+  "reproved": [
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_743e08a976",
+  "check": [],
+  "replayed": [
+   "unsat",
+   "unsat",
+   "unsat",
+   "unsat"
+  ],
+  "reproved": [
+   "valid",
+   "valid",
+   "valid",
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_a27cbc14a2",
+  "check": [],
+  "replayed": [
+   "unsat"
+  ],
+  "reproved": [
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_66f36e5034",
+  "check": [],
+  "replayed": [
+   "unsat",
+   "unsat",
+   "unsat",
+   "unsat"
+  ],
+  "reproved": [
+   "valid",
+   "valid",
+   "valid",
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_315c4a0ef9",
+  "check": [],
+  "replayed": [
+   "unsat",
+   "unsat",
+   "unsat",
+   "unsat"
+  ],
+  "reproved": [
+   "valid",
+   "valid",
+   "valid",
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_48f67f7f94",
+  "check": [],
+  "replayed": [
+   "unsat",
+   "unsat",
+   "unsat",
+   "unsat"
+  ],
+  "reproved": [
+   "valid",
+   "valid",
+   "valid",
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_78a00c1e4d",
+  "check": [],
+  "replayed": [
+   "unsat",
+   "unsat",
+   "unsat",
+   "unsat"
+  ],
+  "reproved": [
+   "valid",
+   "valid",
+   "valid",
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_4b248d5eeb",
+  "check": [],
+  "replayed": [
+   "unsat"
+  ],
+  "reproved": [
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_feb01698b2",
+  "check": [],
+  "replayed": [
+   "unsat"
+  ],
+  "reproved": [
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_5036715b7d",
+  "check": [],
+  "replayed": [
+   "unsat"
+  ],
+  "reproved": [
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_ed65a6dab8",
+  "check": [],
+  "replayed": [
+   "unsat"
+  ],
+  "reproved": [
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_cf2658e7d2",
+  "check": [],
+  "replayed": [
+   "unsat"
+  ],
+  "reproved": [
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_029b669601",
+  "check": [],
+  "replayed": [
+   "unsat"
+  ],
+  "reproved": [
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_955cab1a71",
+  "check": [],
+  "replayed": [
+   "unsat"
+  ],
+  "reproved": [
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_c8335930ca",
+  "check": [],
+  "replayed": [
+   "unsat"
+  ],
+  "reproved": [
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_4d2c586607",
+  "check": [],
+  "replayed": [
+   "unsat"
+  ],
+  "reproved": [
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_ab7683f9d9",
+  "check": [],
+  "replayed": [
+   "unsat",
+   "unsat",
+   "unsat",
+   "unsat"
+  ],
+  "reproved": [
+   "valid",
+   "valid",
+   "valid",
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_611f45a21c",
+  "check": [],
+  "replayed": [
+   "unsat"
+  ],
+  "reproved": [
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_58f8d40d5c",
+  "check": [],
+  "replayed": [
+   "unsat"
+  ],
+  "reproved": [
+   "valid"
+  ],
+  "ok": true
+ },
+ {
+  "id": "joint_9e28056d92",
+  "check": [],
+  "replayed": [
+   "unsat"
+  ],
+  "reproved": [
+   "valid"
+  ],
+  "ok": true
+ }
+]

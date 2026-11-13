@@ -1,0 +1,19 @@
+{
+ "host": "mi350-bg",
+ "date": "2026-11-13",
+ "llvm_submodule": "37a1706d0eac1774701a0a44d9fb4fa542f56fde",
+ "llc_measure_sha256 (baseline + 1187 candidates)": "9ba3bdc6988becef52236cc22191967721b8c6bc48641146c4e24b5c3e2b6b25",
+ "llc_final_sha256 (21 selected rules)": "68721243a8f665bc4655a3603ed939d6f05331262aaca9c78264061b7c7c8149",
+ "search_command": "gi-rule-synth.py joint-search --regions train-regions examples/regions --out new-full --cache new-cache --jobs 96 --time-s 30 --cost-slack 0 --semantic-variants 6",
+ "measure_command": "eval/joint_measure.py --llc llc-measure --td measure-all.td --rules new-full/rules.json --baseline joint/rules.json(6 rules of 2026-11-12) --manifest manifests/amdgpu-validation.txt --exclude manifests/amdgpu-discovery.txt -j 96",
+ "final_validation_command": "eval/joint_measure.py --llc llc-final --evaluate <15 ids> --manifest manifests/amdgpu-validation.txt --exclude manifests/amdgpu-discovery.txt",
+ "heldout_command": "eval/joint_measure.py --llc llc-final --evaluate <15 ids> --manifest manifests/amdgpu-heldout-codegen.txt --exclude manifests/amdgpu-discovery.txt --exclude manifests/amdgpu-validation.txt (run once, after the selection was frozen)",
+ "flags": [
+  "-mtriple=amdgcn-amd-amdhsa",
+  "-mcpu=gfx1100",
+  "-O2",
+  "-global-isel",
+  "-global-isel-abort=2",
+  "-verify-machineinstrs"
+ ]
+}
