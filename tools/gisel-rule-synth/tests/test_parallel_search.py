@@ -17,7 +17,7 @@ from girs import corpus, discover, emit, known, parallel, smt, synth
 from test_sibling import IN, SUB, ULT, inp, node, rec
 
 
-def queue_probe(task, slow=False, budget=0):
+def queue_probe(task, slow=False, budget=0, deadline=None):
     _, idx = task
     start = time.monotonic()
     if idx == 'failure':
@@ -83,6 +83,32 @@ class QueueTest(unittest.TestCase):
 
 
 class AttemptTest(unittest.TestCase):
+    def test_only_previous_run_proofs_are_free(self):
+        with tempfile.TemporaryDirectory() as d:
+            args = options(d)
+            args.cache = d + '/cache'
+            f = z3.BoolVal(False)
+            with parallel.Session(args) as session:
+                session.configure(discover.Limits(), synth.SynthLimits(),
+                                  known.stamp({'rules': []}), False, None)
+                b = parallel.TaskBackend(session.config, False, 0)
+                try:
+                    self.assertEqual(b.check(f).status, 'unsat')
+                    self.assertEqual(b.check(f).status, 'unsat')
+                    self.assertEqual(b.calls, 2)
+                    self.assertEqual(b.actual_calls, 1)
+                finally:
+                    b.close()
+            with parallel.Session(args) as session:
+                session.configure(discover.Limits(), synth.SynthLimits(),
+                                  known.stamp({'rules': []}), False, None)
+                b = parallel.TaskBackend(session.config, False, 0)
+                try:
+                    self.assertEqual(b.check(f).status, 'unsat')
+                    self.assertEqual((b.calls, b.actual_calls), (0, 0))
+                finally:
+                    b.close()
+
     def test_unknown_is_an_attempt_and_larger_budget_retries(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = {'timeout_ms': 100, 'deadline': None, 'cache': d + '/proofs',

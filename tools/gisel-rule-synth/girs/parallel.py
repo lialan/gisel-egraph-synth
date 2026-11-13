@@ -56,6 +56,9 @@ def sibling_key(pair):
 
 def merge_state(sy, state):
     """Families are owned by one task; never silently overwrite a collision."""
+    for attr, keys in state.get('replaces', {}).items():
+        for key in keys:
+            getattr(sy, attr).pop(key, None)
     for attr in ('rules', 'by_key', 'rejected'):
         dest = getattr(sy, attr)
         for k, v in state.get(attr, {}).items():
@@ -93,6 +96,8 @@ class TaskBackend(smt.Z3Backend):
         self.attempts.db.execute(
             'CREATE TABLE IF NOT EXISTS unknown_attempts '
             '(key TEXT PRIMARY KEY, timeout_ms INTEGER NOT NULL)')
+        self.attempts.db.execute(
+            'CREATE TABLE IF NOT EXISTS prior_proofs (key TEXT PRIMARY KEY)')
 
     @contextlib.contextmanager
     def limit(self, timeout_ms, budget_s):
@@ -109,6 +114,11 @@ class TaskBackend(smt.Z3Backend):
         key = self.history.key(formula, want_model_of)
         hit = self.history.get(key)
         if hit is not None:
+            # Only proofs from BEFORE this run are free. Same-run cache races
+            # still consume a logical query, independently of worker count.
+            if self.attempts.db.execute(
+                    'SELECT 1 FROM prior_proofs WHERE key=?', (key,)).fetchone():
+                self.calls -= 1
             self.pending.discard(key)
             return hit
         row = self.attempts.db.execute(
@@ -153,11 +163,13 @@ class FastSynthesizer(synth.Synthesizer):
 
 def _discover(data, config, backend, ctx):
     rows = []
-    for idx, inst in data:
+    for idx, inst, single, alts in data:
         if backend.deadline and time.monotonic() >= backend.deadline:
             break
         log = {}
-        if vector.has_vector(inst.vw, inst.expr):
+        if not single:
+            cands, st = [], dict(discover.new_stats(), stop='complete')
+        elif vector.has_vector(inst.vw, inst.expr):
             cands, st = vector_search.search(
                 inst, backend, vector_search.Limits.of(ctx.limits),
                 ctx.limits, ctx, log)
@@ -174,22 +186,25 @@ def _discover(data, config, backend, ctx):
         # Only plain expressions and records cross the process boundary.
         cands = [{k: v for k, v in c.items() if k != 'proof'} for c in cands]
         alternatives = []
-        if config['regions'] and not vector.has_vector(inst.vw, inst.expr):
+        if alts and not vector.has_vector(inst.vw, inst.expr):
             have = {c['tgt'] for c in cands}
             for alt in region.root_alternatives(inst, ctx.limits, ctx):
-                if alt not in have and discover.prove_concrete(
-                        inst, alt, backend).status == 'unsat':
+                if alt not in have and ((ctx.known is not None and
+                        ctx.known.covers(inst, alt, count=False)) or
+                        discover.prove_concrete(inst, alt, backend).status == 'unsat'):
                     alternatives.append(alt)
         rows.append((idx, {'cands': cands, 'stats': st, 'log': log,
                            'alternatives': alternatives}))
     return {'rows': rows}
 
 
-def _execute(task, slow=False, budget=0):
+def _execute(task, slow=False, budget=0, deadline=None):
     kind, data = task
     c = _CONFIG
     start = time.monotonic()
     backend = TaskBackend(c, slow, budget)
+    if deadline is not None:
+        backend.deadline = min(backend.deadline, deadline) if backend.deadline else deadline
     if slow:
         # Later widths can be UNKNOWN even when the first width is valid;
         # that does not trigger Synthesizer._slow. Retry every query here.
@@ -207,10 +222,14 @@ def _execute(task, slow=False, budget=0):
         if kind == 'discover':
             out = _discover(data, c, backend, ctx)
         elif kind == 'generalize':
+            initial = data.get('initial', {}) if isinstance(data, dict) else {}
+            entries = data['entries'] if isinstance(data, dict) else data
+            for attr, values in initial.items():
+                getattr(sy, attr).update(values)
             ids = []
-            for token, inst, tgt, provenance in data:
+            for token, inst, tgt, provenance in entries:
                 ids.append((token, sy.add(inst, tgt, provenance)))
-            out = {'ids': ids}
+            out = {'ids': ids, 'replaces': {k: list(v) for k, v in initial.items()}}
         elif kind == 'finalize':
             rules, insts, preserve = data
             sy.rules = {r['id']: r for r in rules}
@@ -274,6 +293,12 @@ class Session:
         for path in (cache, attempts):
             h = history.Proofs(path, semantics)
             h.close()
+        h = history.Proofs(attempts, semantics)
+        h.db.execute('CREATE TABLE prior_proofs (key TEXT PRIMARY KEY)')
+        h.db.execute('ATTACH DATABASE ? AS previous', (os.path.join(cache, 'proofs.sqlite3'),))
+        with h.db:
+            h.db.execute('INSERT INTO prior_proofs SELECT key FROM previous.proofs')
+        h.close()
         slim = copy.copy(slim)
         slim.slow_timeout_ms = a.slow_timeout_ms
         slim.slow_budget_s = a.slow_budget_s
@@ -285,6 +310,7 @@ class Session:
                            regions=a.regions, views=getattr(a, 'views', True),
                            views_max_proposals=getattr(
                                a, 'views_max_proposals', 8))
+        self.deadline = deadline
         # spawn never inherits a live solver or SQLite connection.
         mp = multiprocessing.get_context('spawn')
         self.fast = futures.ProcessPoolExecutor(
@@ -302,7 +328,7 @@ class Session:
         out, pending, ready = {}, {}, {}
         submitted = release = 0
         metrics = self.metrics['stages'].setdefault(kind, {})
-        deadline = self.config['deadline']
+        deadline = self.deadline
         # A fixed per-task slow allowance is charged at admission, not in
         # completion order. Worker speed/count cannot decide who gets a retry.
         while submitted < len(items) or pending:
@@ -310,7 +336,7 @@ class Session:
             while not expired and submitted < len(items) and sum(
                     lane == 'fast' for _, lane in pending.values()) < \
                     2 * self.args.search_jobs:
-                f = self.fast.submit(_execute, (kind, items[submitted]))
+                f = self.fast.submit(_execute, (kind, items[submitted]), deadline=deadline)
                 pending[f] = (submitted, 'fast')
                 submitted += 1
             if expired:
@@ -341,27 +367,32 @@ class Session:
                             self.args.slow_timeout_ms > self.args.timeout_ms:
                         self.slow_left -= budget
                         f = self.slow.submit(_execute, (kind, items[release]),
-                                             True, budget)
+                                             True, budget, deadline=deadline)
                         pending[f] = (release, 'slow')
                         self.metrics['slow_admitted'] += 1
                     else:
                         self.metrics['slow_not_admitted'] += 1
                         self.metrics['incomplete'] = True
                 release += 1
-        results = [out[i] for i in sorted(out)]
+        results = [dict(out[i], task_index=i) for i in sorted(out)]
         self.metrics['incomplete'] |= any(r['retry'] or r['deadline']
                                            for r in results)
         for result in results:
             add_stats(self.enumeration, result['enumeration'])
-        self.seconds[kind] = time.monotonic() - start
-        metrics['input_tasks'] = len(items)
-        metrics['returned_tasks'] = len(results)
+        self.seconds[kind] = self.seconds.get(kind, 0) + time.monotonic() - start
+        metrics['input_tasks'] = metrics.get('input_tasks', 0) + len(items)
+        metrics['returned_tasks'] = metrics.get('returned_tasks', 0) + len(results)
         return results
 
-    def search(self, insts, sy):
+    def search(self, insts, sy, single=True, alternatives=None):
         rows = {}
-        for result in self.map('discover', batches(insts, self.args.search_batch)):
-            rows.update(result['rows'])
+        tasks = [[(idx, inst, single, self.config['regions'] if alternatives is None else alternatives[idx])
+                  for idx, inst in batch]
+                 for batch in batches(insts, self.args.search_batch)]
+        for result in self.map('discover', tasks):
+            for idx, row in result['rows']:
+                row['pending'] = result['retry'] or result['deadline']
+                rows[idx] = row
         groups = collections.OrderedDict()
         for idx in sorted(rows):
             row = rows[idx]
@@ -370,6 +401,15 @@ class Session:
             for alt, candidates in ((False, row['cands']),
                                     (True, [{'tgt': t} for t in row['alternatives']])):
                 for j, c in enumerate(candidates):
+                    if c.get('known'):
+                        row['alt_ids' if alt else 'rids'][j] = c['known']
+                        continue
+                    if alt and self.config['use_known']:
+                        rid = known.Index(self.config['knowledge']).covers(
+                            insts[idx], c['tgt'], count=False)
+                        if rid:
+                            row['alt_ids'][j] = rid
+                            continue
                     inst = copy.copy(insts[idx])
                     if c.get('const_vars'):
                         inst.const_vars = tuple(c['const_vars'])
@@ -378,11 +418,73 @@ class Session:
                     key = candidate_key(inst, c['tgt'])
                     groups.setdefault(key, []).append(
                         ((idx, alt, j), inst, c['tgt'], provenance))
-        for result in self.map('generalize', groups.values()):
+        tasks = []
+        for key, entries in groups.items():
+            rid = sy.by_key.get(key)
+            initial = {'rules': {rid: sy.rules[rid]} if rid in sy.rules else {},
+                       'by_key': {key: rid} if rid else {},
+                       'rejected': {key: sy.rejected[key]} if key in sy.rejected else {}}
+            tasks.append({'entries': entries, 'initial': initial})
+        for result in self.map('generalize', tasks):
             merge_state(sy, result)
             for (idx, alt, j), rid in result['ids']:
                 rows[idx]['alt_ids' if alt else 'rids'][j] = rid
+                rows[idx]['pending'] |= result['retry'] or result['deadline']
+        # A discovered candidate without a returned family task is unfinished.
+        for row in rows.values():
+            if self.deadline is not None and time.monotonic() >= self.deadline:
+                row['pending'] = True
         return rows
+
+    @staticmethod
+    def reasons(result):
+        reasons = set()
+        if result['retry']:
+            reasons.add('unknown')
+        if result['deadline'] or result.get('stats', {}).get('deadline_reached'):
+            reasons.discard('unknown')
+            reasons.add('time')
+        for limit in result['enumeration'].get('banks_truncated_at', []):
+            reasons.add('time' if limit.startswith('time ') else 'terms')
+        return reasons
+
+    def region_tasks(self, sy, tasks):
+        """Group queued instances by rule family, retaining task completion."""
+        groups, owners = collections.OrderedDict(), {}
+        expected, completed, ended = collections.Counter(), collections.Counter(), {}
+        for key, pending in tasks:
+            for inst, tgt, rid in pending:
+                if rid in sy.rules:
+                    groups.setdefault(rid, []).append((inst, tgt, rid))
+                    owners.setdefault(rid, set()).add(key)
+        for keys in owners.values():
+            expected.update(keys)
+        rids = list(groups)
+        stats = {}
+        for result in self.map('region', [(sy.rules[rid], groups[rid]) for rid in rids]):
+            merge_state(sy, result)
+            add_stats(stats, result['stats'])
+            for key in owners[rids[result['task_index']]]:
+                completed[key] += 1
+                ended.setdefault(key, set()).update(self.reasons(result))
+        return stats, {k: ended[k] for k in completed if completed[k] == expected[k]}
+
+    def sibling_tasks(self, sy, tasks, found):
+        groups, owners = collections.OrderedDict(), {}
+        for key, pair in tasks:
+            family = sibling_key(pair)
+            groups.setdefault(family, []).append(pair)
+            owners.setdefault(family, []).append(key)
+        families = list(groups)
+        items = [(groups[k], {p.base_key: found.get(p.base_key, ()) for p in groups[k]})
+                 for k in families]
+        stats, ended = {}, {}
+        for result in self.map('sibling', items):
+            merge_state(sy, result)
+            add_stats(stats, result['stats'])
+            for key in owners[families[result['task_index']]]:
+                ended[key] = self.reasons(result)
+        return stats, ended
 
     def finalize(self, sy, insts, preserve):
         # Candidates that can dominate each other have identical source

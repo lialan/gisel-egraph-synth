@@ -37,8 +37,10 @@ completion order.
 
 Workers use `spawn`, independent solver contexts and independent SQLite
 connections. A WAL proof store shares only SAT/UNSAT conclusions. Logical
-query budgets count cache hits too, so another worker winning a cache race
-does not grant extra queries. Physical solver calls and cache hits are
+query budgets count same-run cache hits too, so another worker winning a
+cache race does not grant extra queries. A snapshot of proof keys at run
+start makes previous-run proofs free, letting bounded searches advance
+across runs. Physical solver calls and cache hits are
 reported separately for each lane and stage.
 
 ## Slow proofs
@@ -78,14 +80,29 @@ change and need not preserve every bounded heuristic decision.
 Worker count does not change task boundaries, query budgets or merge order.
 Wall-clock timeouts can still vary with machine load. Inspect
 `parallel.incomplete` and the per-stage fast/slow metrics in `rules.stats.json`
-before interpreting a run as a completed comparison. `mine` treats unresolved
-parallel work as an incomplete search. The overall enumeration remains
+before interpreting a run as a completed comparison. The persistent queue
+distinguishes work still open at the same budget from work closed until a
+limiting budget increases. `mine` uses this queue and final-guard failures
+to decide whether a search remains incomplete. The overall enumeration remains
 bounded; completion does not mean exhaustive search.
 
-Persistent SAT/UNSAT history and learned rules are reused. The legacy
-per-instance discovery checkpoint is currently bypassed in process mode.
-Default generated files and target selections are unchanged by enabling
-this infrastructure.
+Persistent SAT/UNSAT history, learned rules and the task queue are reused
+in both serial and process mode. `max_instances`/`max_pairs` count pending
+tasks. Known root rules seed multi-output discovery; `--multi-share 0.3`
+reserves an initial portion of a timed run for those earlier tasks, with
+stage deadlines passed to both worker pools.
+
+Only the coordinator writes checkpoints. It first stages completed tasks in
+memory, publishes the output catalog, learned catalog and referenced proofs,
+then commits all task rows in one SQLite transaction. An interrupted run
+before commit replays work; after commit it can reuse the published rules.
+Publication errors and worker exceptions cannot leave completed tasks without
+their rules. A cache-directory lock serializes coordinators sharing that
+cache, while all search workers remain parallel. Partial term banks are
+rebuilt on restart. Process interruption tests cover termination before/after
+catalog publication, mid-transaction rollback and post-commit restart.
+
+Default generated files and target selections are unchanged by this queue.
 
 ## Replay a timing experiment
 

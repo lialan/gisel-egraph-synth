@@ -162,22 +162,49 @@ machine measurements and local caches do not belong in Git.
 
 Local progress defaults to `.cache/girs/` (ignored by Git). Set `cache_dir`
 in a mine configuration or `synth --cache DIR` to share it across run
-directories. It contains atomic instance checkpoints, newly verified local
-rules and their proofs, a SQLite proof-obligation cache, and compiler builds.
+directories. It contains a persistent task queue (`agenda.sqlite3`), newly
+verified local rules and their proofs, a SQLite proof-obligation cache, and
+compiler builds. The queue covers single-root search, alternate root forms,
+joint regions and siblings, in both serial and default 16-process mode.
 Proof keys include complete SMT declarations, requested model values and
 semantic identity, independent of execution quotas. Increasing time, term
 or proof budgets reuses decided SAT/UNSAT obligations; UNKNOWN is retried.
-Completed instances are reused only for the same search domain and knowledge.
-Truncated searches are never marked exhausted. Measurement checkpoints also
+Completed tasks are reused within the same search domain. The queue visits
+new tasks first, then unfinished tasks in least-searched order. `max_instances`
+and `max_pairs` count pending work, so repeated capped runs advance. A deadline
+leaves work open; a term/candidate/solver limit reopens when its budget grows.
+A proof quota can advance with the same budget using previous-run proofs,
+until no further progress is made. Truncated searches are never marked
+exhausted. Measurement checkpoints also
 bind compiler bytes, input bytes, target, flags and disabled rule records.
 
 No new verified rules means no candidate rebuild, selection, or held-out
 evaluation. The report records `no_new_rules`, not an exhaustive-search claim.
 Increasing a budget does not invalidate the baseline build or corpus
-extraction. Search-method changes invalidate instance checkpoints but not
+extraction. Search-method changes start a new queue domain but retain
 valid proof obligations; semantic changes require explicit revalidation.
 
-The current checkpoint boundary is a candidate/proof or completed instance.
+Workers save decided proof obligations as they finish. The coordinator stages
+task completion in memory, saves verified rule files and their proof artifacts,
+then commits all task checkpoints in one SQLite transaction. A process killed
+before that transaction replays unfinished tasks; one killed during it sees
+the old or the complete new queue. A saved catalog without its checkpoints is
+safe to replay. Failed publication never marks a task complete. One coordinator
+at a time owns a cache directory (`search.lock`); its workers still run in
+parallel. These guarantees cover process interruption, not a backup or recovery
+protocol for deleted/corrupt files.
+
+Known rules also seed multi-output discovery. `--multi-share` (default `0.3`,
+or `search.multi_share` in `mine`) reserves the first part of a timed run for
+multi-output tasks from earlier roots; unused time returns to single-root
+search. Workers obey these stage deadlines and share the existing slow-proof
+queue. Statistics expose `queue`, `candidate_fate`, and `cost_seconds`; worker
+enumeration/proof time can overlap and is not a wall-time breakdown.
+
+`eval/budget_rounds.py --config C --run-dir D --rounds N` records the queue,
+new rules and cost of repeated discovery rounds. Use independent caches when
+comparing one long run with several short runs.
+
 Partially built term banks are regenerated; this is not a serialized bank
 iterator. `time_budget_s` covers discovery and proof work, including slow
 solver retries, with cooperative checks between enumeration batches. Output
@@ -469,8 +496,9 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
    Instances are visited by corpus frequency times instructions at stake,
    with a share (`--explore-share`) for the rarest root operators. Refuting
    SMT models become samples for the rest of the run. The proved candidates
-   of an instance are kept in `--cache` by the instance, the limits and the
-   model hash; an UNKNOWN answer is not kept.
+   of an instance are kept as queue seeds in `--cache` by the instance and
+   search domain; known candidates still seed multi-output tasks. An UNKNOWN
+   answer is never kept as a proof.
 
    *Sources with vectors* (`vector_search.py`). A source that the corpus
    cannot read lane by lane (it has a vector operator, or lanes of more

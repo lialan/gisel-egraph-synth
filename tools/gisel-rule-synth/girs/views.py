@@ -1019,8 +1019,7 @@ def search(inst, backend, limits, dlim, ctx, log=None, have=()):
                 envs, clog, cvs):
             k = kind[c['tgt']]
             vst['proved_' + k] = vst.get('proved_' + k, 0) + 1
-            out.append({'tgt': c['tgt'], 'family': 'views-' + k,
-                        'const_vars': c['const_vars']})
+            out.append(dict(c, family='views-' + k))
     stats = {'views_' + k: v for k, v in vst.items()}
     stats.update({'views_smt_checks': st['smt_checks'],
                   'views_smt_refuted': st['smt_refuted'],
@@ -1051,6 +1050,16 @@ def merge_stats(st, vst):
     instance: the solver counts that decide whether the search is complete
     (a stored search has no open candidate), and the views counters.'''
     st['smt_unknown'] = st.get('smt_unknown', 0) + vst['views_smt_unknown']
+    # Enumeration and views can stop for different reasons. Keep both so
+    # the persistent queue reopens at the budget that limited either source.
+    reasons = set(st.get('limits', ()))
+    reason = {'time_budget': 'time', 'proof_budget': 'proofs',
+              'candidate_limit': 'candidates', 'smt_unknown': 'unknown'}.get(vst['views_stop'])
+    if reason:
+        reasons.add(reason)
+    if vst['views_smt_unknown']:
+        reasons.add('unknown')
+    st['limits'] = sorted(reasons)
     if st.get('stop') == 'complete' and vst['views_stop'] != 'complete':
         st['stop'] = vst['views_stop']
     for k, v in vst.items():

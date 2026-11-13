@@ -50,7 +50,7 @@ def search_sha():
     # search strategy (vector_search.py, views.py) invalidates the instance
     # checkpoints, not the catalog or a completed proof obligation.
     return _files(('discover.py', 'kernels.py', 'compose.py', 'egraph.py',
-                   'vector_search.py', 'parallel.py', 'views.py'))
+                   'vector_search.py', 'parallel.py', 'agenda.py', 'views.py'))
 
 
 def stamp(db):
@@ -202,6 +202,9 @@ class Index:
     def __init__(self, db):
         require_current(db)
         self.by_key = {}
+        # id -> rule, with the private fields: a known rule with one
+        # output is the base of a new rule with several outputs.
+        self.rules = {}
         self.hits = 0
         for r in db['rules']:
             if r.get('region') or r['semantic_status']['kind'] != \
@@ -211,9 +214,16 @@ class Index:
                         ('source_json', 'replacement_json'))
             key = synth.class_key(src, tgt, tuple(r['vw']),
                                   tuple(r.get('const_vars', ())))
-            self.by_key.setdefault(key, []).append(private(r))
+            p = private(r)
+            self.by_key.setdefault(key, []).append(p)
+            self.rules[r['id']] = p
 
-    def covers(self, inst, tgt, const_vars=None):
+    def covers(self, inst, tgt, const_vars=None, count=True, seed=False):
+        """The id of a known rule that applies to the instance with this
+        replacement, or None. ``count`` False: a lookup, not a candidate
+        that the search did not have to prove. ``seed``: the rule is the
+        base of a rule with several outputs, which gives the values below
+        the root to their other users; the rule can need one use."""
         src, tgt, vw, facts, perm = synth.canonicalize(
             inst.expr, tgt, inst.vw, inst.facts)
         cv = inst.const_vars if const_vars is None else const_vars
@@ -233,8 +243,9 @@ class Index:
                           if old in getattr(inst, 'lift_scalars', ())}
                 if not shared <= set(emit.shared_scalars(r)):
                     continue
-            if r['needs_one_use'] and (not inst.interior_uses or
-                                      any(n != 1 for n in inst.interior_uses)):
+            if r['needs_one_use'] and not seed and (
+                    not inst.interior_uses or
+                    any(n != 1 for n in inst.interior_uses)):
                 continue
             ps, pt = (ir.from_json(r[k]) for k in
                       ('source_json', 'replacement_json'))
@@ -244,7 +255,7 @@ class Index:
                 if any(mapping == sorted(map(tuple, m))
                        for m in d['width_maps']) and precond.eval_pred(
                            d['_pred'], facts, vw, src[1]):
-                    self.hits += 1
+                    self.hits += count
                     return r['id']
         return None
 
