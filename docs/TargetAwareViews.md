@@ -103,8 +103,10 @@ precondition as a property of the values:
 
 There is no `or-disjoint-to-add`: it fed bit operations into the arithmetic
 rules, which replaced the shifts and ors that the AMDGPU selector fuses
-(`v_lshl_or_b32`, `v_or3_b32`) by a multiplication; on the validation corpus
-the facts then cost 45 instructions instead of saving any.
+(`v_lshl_or_b32`, `v_or3_b32`) by a multiplication (on a memset of a
+variable byte, 14 more instructions per function for gfx1100; on the
+validation corpus for the default AMDGPU CPU, 45 more instructions than
+without the facts).
 
 A class whose bits are all known is related to that constant
 (`known-constants`): merged if it is never poison, refined otherwise.
@@ -140,6 +142,210 @@ added, merges, refinements, rewrites rejected as unsafe, views abandoned at
 a budget, views outside the supported subset, and applications that needed
 context facts. The report (`-gisel-egraph-report`), `-stats` and the export
 record (version 3: `features`, `views`, `context_facts`) show them.
+
+## AC views
+
+AC canonical forms and AC matching are described in
+`GIEGraphCombiner-Design.md` (AC terms). The terms are multisets of leaves;
+what happens to repeated leaves depends on the operator, and every rewrite
+that changes the number of reads of a leaf is a table rule with the usual
+classification:
+
+| Operator | Repeated leaf | Constants |
+|---|---|---|
+| `G_ADD` | kept (`a + a` stays two reads; `add-self` and the linear view relate it to `a << 1`) | folded modulo `2^W` (`fold-add`) |
+| `G_XOR` | a pair cancels (`xor-self`): exact only for a leaf that is neither undef nor poison | folded |
+| `G_AND`, `G_OR` | deduplicated (`and-self`, `or-self`): exact only for a leaf that is not undef | masks folded |
+| `G_MUL` | kept | folded |
+
+Merges: after every rebuild `canonicalizeAC` flattens the terms again, so a
+term whose leaves became one class (`(a + b) + c` once `a == b`) gets the
+canonical form of its new multiset, and terms of the same multiset meet.
+
+Cycles: flattening goes through the first unflagged node of the operator in
+each operand class, except through a class on the current path, and except
+through a class whose flattening has a leaf that is the class itself or
+uses it as an operand. Such a cycle appears after a merge, e.g. `x + 0`
+merged with `x`, or `y` merged with `(y - x) + x`; expanding through it
+would not simplify the term and would make every term that uses the class
+larger. A flattening over the leaf budget keeps a prefix of its leaves, and
+a cycle in the prefix still makes the class a leaf.
+
+Several decompositions of one class (two AC nodes in one class) give several
+views for matching (one per node), each flattened consistently through the
+first node of every operand class; the leaves of two decompositions are
+never combined in one view. Nothing is deleted: an inner sum that another
+node uses stays available, and extraction counts it once.
+
+Budget: a flattening with more than `MaxACLeaves` leaves (8,
+`-gisel-egraph-max-ac-leaves`) is abandoned and the term keeps its
+node-by-node form; equalities that congruence finds (regrouped prefixes)
+are still found. Canonicalization stops adding nodes at `MaxNodes`.
+
+`SaturationStats::Views` `"ac"` counts, over all canonicalization passes of
+a saturation (several per iteration): the flattenings with three or more
+leaves (`Views`), the canonical forms that added nodes (`Candidates`), the
+merges (equal to `SaturationStats::ACMerges`), the flattenings abandoned at
+`MaxACLeaves` and the stops at `MaxNodes` (`Budget`), and the flagged AC
+nodes, which stay leaves (`Unsupported`). Flattenings that the matcher
+abandons (`getACViews`) are not counted.
+
+## Linear view
+
+`applyLinearViews` (`lib/GIEGraphLinear.cpp`, `SaturationLimits::EnableLinear`,
+`-gisel-egraph-features=linear`) sees a class of integers as the linear form
+
+    c + k_1 * t_1 + ... + k_n * t_n   (modulo 2^W)
+
+where `W` is the width of the integer, or of the element of a fixed vector
+(lane by lane, never as one wide integer). The coefficients `k_i` and the
+constant `c` are `APInt`s of width `W`, so they wrap around exactly like the
+operators: `x * 2^31 + x * 2^31` is `0` in 32 bits.
+
+### Decomposition
+
+The decomposition goes through these nodes, all without flags:
+
+| Node | Form |
+|---|---|
+| `G_ADD a, b` | `form(a) + form(b)` |
+| `G_SUB a, b` (`0 - b` is a negation) | `form(a) - form(b)` |
+| `G_MUL a, k` with a constant `k` (either operand) | `k * form(a)` |
+| `G_SHL a, s` with a constant `s < W` | `2^s * form(a)` |
+| a constant (`getSplatConstant`) | `c` |
+
+Everything else is a leaf `t_i`: inputs, other operators, flagged nodes
+(`nsw`, `nuw`, ... add poison), products of two non-constants (there is no
+polynomial expansion), shifts by a variable or by `W` or more (`x << 32` is
+poison in 32 bits, not `0`), and casts (a form has one width). In each class
+the decomposition takes the first such node, in the order of the class. A
+class is a leaf if it is being decomposed already, or if its decomposition
+has a leaf that is the class itself or uses it as an operand: after a merge
+such as `y == (y - x) + x`, expanding `y` only restates it. Leaves are
+merged by canonical class id. Each leaf records how many times the
+decomposition reads it, one read per occurrence: `(x << 3) + x` reads `x`
+twice and has the coefficient 9.
+
+Types: integer scalars, and fixed vectors of integers whose constants are
+all splats. A vector constant with different lanes would need a coefficient
+per lane; such a view is not supported (`ViewStats::Unsupported`), as is a
+class of pointers, floating-point values or a scalable vector.
+
+### Implementations
+
+The canonical implementation of a form is built from ordinary binary nodes:
+
+| Coefficient `k` | Term | Part |
+|---|---|---|
+| `1` | `t` | added |
+| `2^s` | `t << s` | added |
+| `-1` | `t` | subtracted |
+| `-2^s` | `t << s` | subtracted |
+| other | `t * k` | added |
+
+The added terms and the constant form the AC sum `P`, the subtracted terms
+the AC sum `N`, both in the canonical order of `EGraph::addACTerm`, so they
+are the canonical forms that `canonicalizeAC` would build. The
+implementation is `P` (with the constant as a leaf), `c - N` without added
+terms, or `(P - N) + c`; a form without terms is the constant. The shift
+amounts have the type of the value. Two classes with the same form get the
+same implementation by hash-consing, so they become one class when both
+relations are exact.
+
+A product `t * k` whose coefficient has two set bits, `2^a + 2^b`, or is a
+run of ones, `2^a - 2^b` (also for a negative `k`, e.g. `-3 = 2^0 - 2^2`),
+also gets the form `(t << a) +/- (t << b)` in its class. That form reads `t`
+twice, so it needs a `t` that is not undef.
+
+The original nodes stay in the class; extraction chooses. Extraction only
+takes a refinement edge that is strictly cheaper, and with the default
+costs a tie keeps the original: `((a << 3) + a) - (b + b) + 7` (form
+`9a - 2b + 7`) is not rewritten to `a * 9 - (b << 1) + 7`.
+
+### Which classes
+
+The view is computed for every class with a node of the table above, and
+recomputed in every iteration (no cache: classes change with merges). It
+adds nodes only where the form shows something that the nodes do not:
+
+* the canonical implementation has fewer operations than the
+  decomposition, or
+* the relation is exact and the form has like terms (a leaf read twice), a
+  zero coefficient, or folds two constants (equal forms then meet).
+
+Otherwise, with two or more operators, the canonical implementation is only
+looked up (no new node; an existing class with the same form is related),
+and with one operator (`a + b`, `x * 3`) there is nothing to do.
+
+### Soundness
+
+When every read of every leaf is the same value that is neither undef nor
+poison, the class and an implementation compute the same polynomial of
+degree one in the integers modulo `2^W` (a shift by `s < W` multiplies by
+`2^s`). Both sides consist of operators without poison-generating flags,
+with shift amounts in range and without division, so each side is poison
+iff a leaf that it reads is poison. These are the preconditions of
+`classifyLeafReads`. The left-hand side reads each leaf as often as the
+decomposition does (each class equals each of its nodes, so expanding a
+class into the chosen node is exact), the canonical implementation once per
+leaf with a nonzero coefficient, a shift-add form twice. `relateClasses`
+then merges, adds a refinement edge, or does nothing:
+
+| Rewrite | Merged if | Otherwise |
+|---|---|---|
+| `x + x - x -> x` (3 reads, 1 read) | `x` not undef | refinement |
+| `x - x + y -> y` (`x` dropped) | `x` neither undef nor poison | refinement |
+| `(x << 3) + x -> x * 9` | `x` not undef | refinement |
+| `x * 9 -> (x << 3) + x` (2 reads) | `x` not undef | nothing (unsafe) |
+| `x * 2^31 + x * 2^31 -> 0` | `x` neither undef nor poison | refinement |
+
+### Budgets and statistics
+
+| Budget | Default | Over budget |
+|---|---|---|
+| `MaxViewTerms` | 8 | distinct leaves of one view: the view is abandoned |
+| `MaxViewVisits` | 64 | classes visited by one decomposition (a shared class once per use): abandoned |
+| `MaxViewCandidates` | 3 | implementations of one view, the canonical one first and then one shift-add form per product: the rest is dropped |
+| `MaxNodes` | 5000 | no more nodes; views that only look their implementation up still relate it |
+
+Each stop is counted once in `ViewStats::Budget`, and the class keeps its
+node-by-node form. The pass uses the defaults. `SaturationStats::Views`
+`"linear"` counts the views computed (`Views`), the implementations related
+(`Candidates`), the merges and refinement edges, the rewrites that
+`classifyLeafReads` rejected (`Unsafe`: shift-add forms of terms that may be
+undef), the budget stops and the unsupported views. `applyLinearViews`
+returns the number of new nodes, merges and refinement edges.
+
+### Effect and limitations
+
+On `(x * 3) + (y * 2) - (x + x + x)` the view relates the root to `y << 1`
+in the first iteration (19 nodes for inputs that may be undef, 21 merged for
+defined ones). The table rules alone find it in the 5th (4th) iteration with
+136 (128) nodes. With the default budget the graph saturates after 9
+iterations with 221 nodes (5 iterations, 61 nodes for defined inputs), where
+the rules alone stop at the iteration limit with 222 (195) nodes
+(`unittests/GIEGraphLinearTest.cpp`). In MIR,
+`test/AMDGPU/egraph-combiner-linear.mir` has a cancellation over three
+values that the rules do not finish within the default iteration limit.
+
+* Saturation is still bounded by the rules: the negation and factoring
+  rules with AC extension keep producing new combinations `k * x + m * y`,
+  and the view's nodes and merges are more material for them. Of twelve
+  measured runs (six expressions, inputs that may be undef or defined), six
+  end with fewer nodes than without the view (five of them saturate where
+  the rules alone do not, e.g. 304 instead of 2598 nodes), three with the
+  same, and three with more: two cancellations with inputs that may be
+  undef (1625 instead of 998 and 2232 instead of 1504 nodes, both at the
+  iteration limit either way), and `(x * 3) * 5 - x * 15 + y` with defined
+  inputs, which no longer saturates (229 nodes instead of 59). In the ten
+  runs with a cheaper result, the view finds it in the first iteration.
+* One decomposition per class (its first linear node); another node of the
+  class is only used through the classes that contain it.
+* A shift amount of an implementation has the type of the value; after the
+  legalizer such a shift may not be legal (`G_SHL s64, s64` on AMDGPU), and
+  extraction then does not take it.
+* No coefficients per lane (vector constants that are not splats) and no
+  products of non-constants.
 
 ## Bit-slice view
 
@@ -349,258 +555,6 @@ the whole expansion of the division (51 to 48 nodes), which selects to one
 or two more instructions; and the funnel shifts of `i128`, `v2i128` and
 `v2i24` change in both directions (from -3 to +5 per function).
 
-## Synthesizer integration
-
-The synthesizer (`tools/gisel-rule-synth`) reads the same operator
-properties (`gmir_ops.json`) and uses the views and facts in three places.
-Nothing it takes from the e-graph is trusted: every candidate is proved by
-the synthesizer's own SMT model before it is a rule.
-
-* **Views as a candidate family** (`girs/views.py`). The AC, linear and
-  slice views are computed on the sources of the corpus with the semantics
-  of this document: AC terms of the operators that `gmir_ops.json` marks
-  commutative and associative, through unflagged nodes of one integer type
-  (G_ADD and G_MUL keep the count of a leaf, G_XOR its parity, the
-  idempotent operators one leaf; constants fold modulo `2^W`); linear forms
-  `c + sum(k * t) mod 2^W` through G_ADD, G_SUB, negation and G_MUL and
-  G_SHL by constants; slices through shifts by constants, contiguous masks,
-  truncations, zero extensions and G_UBFX. A flagged node, a vector, a
-  floating-point, saturating or carry operator and a shift by the width
-  or more are leaves. The canonical forms are signatures: grouping keys
-  for statistics and for removing identical implementations, never a
-  reason to drop a different implementation. The implementations of a view
-  (the folded AC term, the linear form with its multiplications and
-  shifts, the direct form of a slice) are proposals of the family
-  `views-<kind>`: proved under the facts of the instance, then generalized
-  with CEGIS and width schedules. Undef and poison are decided by those
-  proofs (a proposal reads each input at most once), not by the view.
-* **Facts and preconditions** (`girs/egraph.py`). An e-graph candidate is
-  first proved with no fact of its inputs. If that proof holds, the
-  precondition follows from the matched source (`precondition_source`
-  `lhs`, no guard). If not, its known bits are the input of CEGIS, which
-  finds a precondition over known-bit atoms that the emitted guard tests
-  with `GISelValueTracking` (`guard`), or the candidate is rejected and
-  counted (`no_precondition_in_grammar`, `solver_unknown`). The records of
-  version 3 with `context_facts` are cross-checked: each one gives a guarded
-  rule, a counted rejection, candidates proved without facts, or no
-  candidate, and the count of each is in `rules.stats.json`
-  (`egraph.context_facts`).
-* **Tuples.** When the selected DAG computes two roots of a region with one
-  instruction of several results (`"res"` projections of one G_UADDO), the
-  root that reads the other is a seed of a rule with several outputs, which
-  `region.py` proves with every output in one query. Roots that do not read
-  each other are counted as a rule for several roots that the import does
-  not make.
-
-`eval/rule_chain.py` runs a conditional rule (x + y -> x | y with the guard
-"no bit is one in both", found from x + 1 with the low bit of x known zero)
-and the rule of a sum with its carry from a corpus to a scratch build of
-llc and the lit tests of `test/SynthChain`.
-
-## Linear view
-
-`applyLinearViews` (`lib/GIEGraphLinear.cpp`, `SaturationLimits::EnableLinear`,
-`-gisel-egraph-features=linear`) sees a class of integers as the linear form
-
-    c + k_1 * t_1 + ... + k_n * t_n   (modulo 2^W)
-
-where `W` is the width of the integer, or of the element of a fixed vector
-(lane by lane, never as one wide integer). The coefficients `k_i` and the
-constant `c` are `APInt`s of width `W`, so they wrap around exactly like the
-operators: `x * 2^31 + x * 2^31` is `0` in 32 bits.
-
-### Decomposition
-
-The decomposition goes through these nodes, all without flags:
-
-| Node | Form |
-|---|---|
-| `G_ADD a, b` | `form(a) + form(b)` |
-| `G_SUB a, b` (`0 - b` is a negation) | `form(a) - form(b)` |
-| `G_MUL a, k` with a constant `k` (either operand) | `k * form(a)` |
-| `G_SHL a, s` with a constant `s < W` | `2^s * form(a)` |
-| a constant (`getSplatConstant`) | `c` |
-
-Everything else is a leaf `t_i`: inputs, other operators, flagged nodes
-(`nsw`, `nuw`, ... add poison), products of two non-constants (there is no
-polynomial expansion), shifts by a variable or by `W` or more (`x << 32` is
-poison in 32 bits, not `0`), and casts (a form has one width). In each class
-the decomposition takes the first such node, in the order of the class. A
-class is a leaf if it is being decomposed already, or if its decomposition
-has a leaf that is the class itself or uses it as an operand: after a merge
-such as `y == (y - x) + x`, expanding `y` only restates it. Leaves are
-merged by canonical class id. Each leaf records how many times the
-decomposition reads it, one read per occurrence: `(x << 3) + x` reads `x`
-twice and has the coefficient 9.
-
-Types: integer scalars, and fixed vectors of integers whose constants are
-all splats. A vector constant with different lanes would need a coefficient
-per lane; such a view is not supported (`ViewStats::Unsupported`), as is a
-class of pointers, floating-point values or a scalable vector.
-
-### Implementations
-
-The canonical implementation of a form is built from ordinary binary nodes:
-
-| Coefficient `k` | Term | Part |
-|---|---|---|
-| `1` | `t` | added |
-| `2^s` | `t << s` | added |
-| `-1` | `t` | subtracted |
-| `-2^s` | `t << s` | subtracted |
-| other | `t * k` | added |
-
-The added terms and the constant form the AC sum `P`, the subtracted terms
-the AC sum `N`, both in the canonical order of `EGraph::addACTerm`, so they
-are the canonical forms that `canonicalizeAC` would build. The
-implementation is `P` (with the constant as a leaf), `c - N` without added
-terms, or `(P - N) + c`; a form without terms is the constant. The shift
-amounts have the type of the value. Two classes with the same form get the
-same implementation by hash-consing, so they become one class when both
-relations are exact.
-
-A product `t * k` whose coefficient has two set bits, `2^a + 2^b`, or is a
-run of ones, `2^a - 2^b` (also for a negative `k`, e.g. `-3 = 2^0 - 2^2`),
-also gets the form `(t << a) +/- (t << b)` in its class. That form reads `t`
-twice, so it needs a `t` that is not undef.
-
-The original nodes stay in the class; extraction chooses. Extraction only
-takes a refinement edge that is strictly cheaper, and with the default
-costs a tie keeps the original: `((a << 3) + a) - (b + b) + 7` (form
-`9a - 2b + 7`) is not rewritten to `a * 9 - (b << 1) + 7`.
-
-### Which classes
-
-The view is computed for every class with a node of the table above, and
-recomputed in every iteration (no cache: classes change with merges). It
-adds nodes only where the form shows something that the nodes do not:
-
-* the canonical implementation has fewer operations than the
-  decomposition, or
-* the relation is exact and the form has like terms (a leaf read twice), a
-  zero coefficient, or folds two constants (equal forms then meet).
-
-Otherwise, with two or more operators, the canonical implementation is only
-looked up (no new node; an existing class with the same form is related),
-and with one operator (`a + b`, `x * 3`) there is nothing to do.
-
-### Soundness
-
-When every read of every leaf is the same value that is neither undef nor
-poison, the class and an implementation compute the same polynomial of
-degree one in the integers modulo `2^W` (a shift by `s < W` multiplies by
-`2^s`). Both sides consist of operators without poison-generating flags,
-with shift amounts in range and without division, so each side is poison
-iff a leaf that it reads is poison. These are the preconditions of
-`classifyLeafReads`. The left-hand side reads each leaf as often as the
-decomposition does (each class equals each of its nodes, so expanding a
-class into the chosen node is exact), the canonical implementation once per
-leaf with a nonzero coefficient, a shift-add form twice. `relateClasses`
-then merges, adds a refinement edge, or does nothing:
-
-| Rewrite | Merged if | Otherwise |
-|---|---|---|
-| `x + x - x -> x` (3 reads, 1 read) | `x` not undef | refinement |
-| `x - x + y -> y` (`x` dropped) | `x` neither undef nor poison | refinement |
-| `(x << 3) + x -> x * 9` | `x` not undef | refinement |
-| `x * 9 -> (x << 3) + x` (2 reads) | `x` not undef | nothing (unsafe) |
-| `x * 2^31 + x * 2^31 -> 0` | `x` neither undef nor poison | refinement |
-
-### Budgets and statistics
-
-| Budget | Default | Over budget |
-|---|---|---|
-| `MaxViewTerms` | 8 | distinct leaves of one view: the view is abandoned |
-| `MaxViewVisits` | 64 | classes visited by one decomposition (a shared class once per use): abandoned |
-| `MaxViewCandidates` | 3 | implementations of one view, the canonical one first and then one shift-add form per product: the rest is dropped |
-| `MaxNodes` | 5000 | no more nodes; views that only look their implementation up still relate it |
-
-Each stop is counted once in `ViewStats::Budget`, and the class keeps its
-node-by-node form. The pass uses the defaults. `SaturationStats::Views`
-`"linear"` counts the views computed (`Views`), the implementations related
-(`Candidates`), the merges and refinement edges, the rewrites that
-`classifyLeafReads` rejected (`Unsafe`: shift-add forms of terms that may be
-undef), the budget stops and the unsupported views. `applyLinearViews`
-returns the number of new nodes, merges and refinement edges.
-
-### Effect and limitations
-
-On `(x * 3) + (y * 2) - (x + x + x)` the view relates the root to `y << 1`
-in the first iteration (19 nodes for inputs that may be undef, 21 merged for
-defined ones). The table rules alone find it in the 5th (4th) iteration with
-136 (128) nodes. With the default budget the graph saturates after 9
-iterations with 221 nodes (5 iterations, 61 nodes for defined inputs), where
-the rules alone stop at the iteration limit with 222 (195) nodes
-(`unittests/GIEGraphLinearTest.cpp`). In MIR,
-`test/AMDGPU/egraph-combiner-linear.mir` has a cancellation over three
-values that the rules do not finish within the default iteration limit.
-
-* Saturation is still bounded by the rules: the negation and factoring
-  rules with AC extension keep producing new combinations `k * x + m * y`,
-  and the view's nodes and merges are more material for them. Of twelve
-  measured runs (six expressions, inputs that may be undef or defined), six
-  end with fewer nodes than without the view (five of them saturate where
-  the rules alone do not, e.g. 304 instead of 2598 nodes), three with the
-  same, and three with more: two cancellations with inputs that may be
-  undef (1625 instead of 998 and 2232 instead of 1504 nodes, both at the
-  iteration limit either way), and `(x * 3) * 5 - x * 15 + y` with defined
-  inputs, which no longer saturates (229 nodes instead of 59). In the ten
-  runs with a cheaper result, the view finds it in the first iteration.
-* One decomposition per class (its first linear node); another node of the
-  class is only used through the classes that contain it.
-* A shift amount of an implementation has the type of the value; after the
-  legalizer such a shift may not be legal (`G_SHL s64, s64` on AMDGPU), and
-  extraction then does not take it.
-* No coefficients per lane (vector constants that are not splats) and no
-  products of non-constants.
-
-## AC views
-
-AC canonical forms and AC matching are described in
-`GIEGraphCombiner-Design.md` (AC terms). The terms are multisets of leaves;
-what happens to repeated leaves depends on the operator, and every rewrite
-that changes the number of reads of a leaf is a table rule with the usual
-classification:
-
-| Operator | Repeated leaf | Constants |
-|---|---|---|
-| `G_ADD` | kept (`a + a` stays two reads; `add-self` and the linear view relate it to `a << 1`) | folded modulo `2^W` (`fold-add`) |
-| `G_XOR` | a pair cancels (`xor-self`): exact only for a leaf that is neither undef nor poison | folded |
-| `G_AND`, `G_OR` | deduplicated (`and-self`, `or-self`): exact only for a leaf that is not undef | masks folded |
-| `G_MUL` | kept | folded |
-
-Merges: after every rebuild `canonicalizeAC` flattens the terms again, so a
-term whose leaves became one class (`(a + b) + c` once `a == b`) gets the
-canonical form of its new multiset, and terms of the same multiset meet.
-
-Cycles: flattening goes through the first unflagged node of the operator in
-each operand class, except through a class on the current path, and except
-through a class whose flattening has a leaf that is the class itself or
-uses it as an operand. Such a cycle appears after a merge, e.g. `x + 0`
-merged with `x`, or `y` merged with `(y - x) + x`; expanding through it
-would not simplify the term and would make every term that uses the class
-larger. A flattening over the leaf budget keeps a prefix of its leaves, and
-a cycle in the prefix still makes the class a leaf.
-
-Several decompositions of one class (two AC nodes in one class) give several
-views for matching (one per node), each flattened consistently through the
-first node of every operand class; the leaves of two decompositions are
-never combined in one view. Nothing is deleted: an inner sum that another
-node uses stays available, and extraction counts it once.
-
-Budget: a flattening with more than `MaxACLeaves` leaves (8,
-`-gisel-egraph-max-ac-leaves`) is abandoned and the term keeps its
-node-by-node form; equalities that congruence finds (regrouped prefixes)
-are still found. Canonicalization stops adding nodes at `MaxNodes`.
-
-`SaturationStats::Views` `"ac"` counts, over all canonicalization passes of
-a saturation (several per iteration): the flattenings with three or more
-leaves (`Views`), the canonical forms that added nodes (`Candidates`), the
-merges (equal to `SaturationStats::ACMerges`), the flattenings abandoned at
-`MaxACLeaves` and the stops at `MaxNodes` (`Budget`), and the flagged AC
-nodes, which stay leaves (`Unsupported`). Flattenings that the matcher
-abandons (`getACViews`) are not counted.
-
 ## Target pattern costs
 
 Extraction and profitability use one cost function for a DAG of nodes,
@@ -746,29 +700,12 @@ the original.
 
 ### Corpus
 
-On the 1402 comparable files of `manifests/amdgpu-validation.txt` for gfx1100
-(`tools/gisel-rule-synth/eval/views_eval.py` of the integration branch,
-instructions of the final assembly; the same functions fall
-back to SelectionDAG in every configuration):
-
-| Configuration | Instructions | vs stock | Files better / worse than stock |
-|---|---|---|---|
-| stock | 295530 | | |
-| e-graph, `none` | 295033 | -497 | 68 / 17 |
-| e-graph, all features | 294796 | -734 | 86 / 27 |
-| all but `patterns` | 295064 | -466 | 72 / 23 |
-| all but `banks` | 294846 | -684 | 84 / 29 |
-| all but `dag` | 295077 | -453 | 70 / 20 |
-| all but `tuples` | 294796 | -734 | 86 / 27 |
-
-The pattern costs and the sharing-aware extraction each account for about
-270 instructions; most of it is shifts and adds that become one
-`v_lshl_add_u32` (56 in the stock code, 385 with all features). Against
-`none`, all features make 28 files smaller and 15 larger; the larger ones
-are mostly instruction order around uniform selects (SCC) and vector code
-whose node costs are rough. The tuple rules change nothing on this corpus
-(CodeGenPrepare already forms the overflow operations, see below). The CPU
-time of llc grows by about 2% over `none`.
+Measured on the branch of this part alone (without the linear and slice
+views), the pattern costs and the sharing-aware extraction each saved about
+270 instructions on the validation corpus, mostly shifts and adds that
+became one `v_lshl_add_u32`. With all parts merged the slice view takes
+most of these opportunities first; see [Evaluation](#evaluation) for the
+numbers of the merged pass.
 
 ## Register banks
 
@@ -888,3 +825,132 @@ e-graph combiner too). The tuple rules matter for MIR in which the add and
 the comparison are separate (with `-disable-cgp` the stock pipeline gives 4
 instructions for the same function and the e-graph combiner 2;
 `test/AMDGPU/egraph-combiner-uaddo.ll`).
+
+## Synthesizer integration
+
+The synthesizer (`tools/gisel-rule-synth`) reads the same operator
+properties (`gmir_ops.json`) and uses the views and facts in three places.
+Nothing it takes from the e-graph is trusted: every candidate is proved by
+the synthesizer's own SMT model before it is a rule.
+
+* **Views as a candidate family** (`girs/views.py`). The AC, linear and
+  slice views are computed on the sources of the corpus with the semantics
+  of this document: AC terms of the operators that `gmir_ops.json` marks
+  commutative and associative, through unflagged nodes of one integer type
+  (G_ADD and G_MUL keep the count of a leaf, G_XOR its parity, the
+  idempotent operators one leaf; constants fold modulo `2^W`); linear forms
+  `c + sum(k * t) mod 2^W` through G_ADD, G_SUB, negation and G_MUL and
+  G_SHL by constants; slices through shifts by constants, contiguous masks,
+  truncations, zero extensions and G_UBFX. A flagged node, a vector, a
+  floating-point, saturating or carry operator and a shift by the width
+  or more are leaves. The canonical forms are signatures: grouping keys
+  for statistics and for removing identical implementations, never a
+  reason to drop a different implementation. The implementations of a view
+  (the folded AC term, the linear form with its multiplications and
+  shifts, the direct form of a slice) are proposals of the family
+  `views-<kind>`: proved under the facts of the instance, then generalized
+  with CEGIS and width schedules. Undef and poison are decided by those
+  proofs (a proposal reads each input at most once), not by the view.
+* **Facts and preconditions** (`girs/egraph.py`). An e-graph candidate is
+  first proved with no fact of its inputs. If that proof holds, the
+  precondition follows from the matched source (`precondition_source`
+  `lhs`, no guard). If not, its known bits are the input of CEGIS, which
+  finds a precondition over known-bit atoms that the emitted guard tests
+  with `GISelValueTracking` (`guard`), or the candidate is rejected and
+  counted (`no_precondition_in_grammar`, `solver_unknown`). The records of
+  version 3 with `context_facts` are cross-checked: each one gives a guarded
+  rule, a counted rejection, candidates proved without facts, or no
+  candidate, and the count of each is in `rules.stats.json`
+  (`egraph.context_facts`).
+* **Tuples.** When the selected DAG computes two roots of a region with one
+  instruction of several results (`"res"` projections of one G_UADDO), the
+  root that reads the other is a seed of a rule with several outputs, which
+  `region.py` proves with every output in one query. Roots that do not read
+  each other are counted as a rule for several roots that the import does
+  not make.
+
+`eval/rule_chain.py` runs a conditional rule (x + y -> x | y with the guard
+"no bit is one in both", found from x + 1 with the low bit of x known zero)
+and the rule of a sum with its carry from a corpus to a scratch build of
+llc and the lit tests of `test/SynthChain`.
+
+## Evaluation
+
+`tools/gisel-rule-synth/eval/views_eval.py` compiles a fixed list of `.ll`
+files for gfx1100 (`-O2 -global-isel -global-isel-abort=2
+-verify-machineinstrs`) in the configurations `stock` (no e-graph pass),
+`none` (the pass with `-gisel-egraph-features=none`, i.e. the engine before
+these features), `all` (the default) and all-but-one-feature. The measures
+are static: instructions of the final assembly, encoded code size
+(`codeLenInByte`), registers, CPU time and peak memory of llc. Nothing was
+run on a GPU; no run-time performance is claimed.
+
+**Validation corpus** (`manifests/amdgpu-validation.txt`, 1469 LLVM AMDGPU
+tests; 1405 compile in every configuration with the same SelectionDAG
+fallbacks; none fails in one configuration only):
+
+| Configuration | Instructions | vs stock | Code bytes vs stock | Files better / worse than stock |
+|---|---|---|---|---|
+| stock | 296564 | | | |
+| none | 296071 | -493 | -2548 | 68 / 16 |
+| all | 295681 | -883 | -5120 | 92 / 30 |
+| all but facts | 295690 | -874 | -5036 | 88 / 29 |
+| all but linear | 295680 | -884 | -5140 | 92 / 30 |
+| all but slice | 296057 | -507 | -3052 | 75 / 26 |
+| all but tuples | 295681 | -883 | -5120 | 92 / 30 |
+| all but patterns | 295692 | -872 | -4716 | 87 / 31 |
+| all but banks | 295691 | -873 | -5740 | 90 / 32 |
+| all but dag | 295710 | -854 | -4592 | 86 / 26 |
+
+Against `none`, all features make 49 files smaller and 23 larger (the
+largest: `load-local-i8.ll` +27, `load-constant-i8.ll` +13,
+`urem-constant-i128.ll` +12, `addsub64_carry.ll` +9; the largest gains:
+`cvt_f32_ubyte.ll` -89, `fptoi.i128.ll` -73, `load-global-i8.ll` -68,
+`load-global-i1.ll` -49). The slice view gives most of the gain (376 of
+390 instructions over `none`); the linear view and the tuple rules change
+nothing on this corpus (the existing rules already reach the linear
+cancellations in it, and CodeGenPrepare already forms `uadd.with.overflow`
+from an add and a comparison). The sum of the CPU time of llc and its peak
+memory (105 MiB) are within noise of `none`; the e-graph rule matches grow
+by about 60% with the fact rules.
+
+**Feature corpus** (`eval/views-corpus/`, 17 kernels, not used by any test
+or by discovery): stock 190, none 184, all 182 instructions. The stock
+pipeline already selects one `v_add3_u32` for `(a + 7) + (b + 9)`, one
+`v_lshl_add_u32` for `(a << 3) + a` and one `v_add_co_u32` for an add with
+its carry; the e-graph keeps these (no false gain). The gains are the
+cancellation `(a*3) + (b*2) - (a+a+a)` (14 to 8 instructions; the engine
+without the features already finds it), the nested bit field
+`((x>>4)&255)>>2 & 15` (two `v_bfe_u32` to one) and one instruction from
+the facts and the pattern costs together.
+
+The comparison with `stock` includes everything the existing pipeline does
+after the pass (the post-legalizer combiner, the selector's multi-node
+patterns), so a rewrite that the pipeline would have done anyway is not
+counted.
+
+## Limitations
+
+* The views and the facts are bounded and conservative: one decomposition
+  per class for the linear and slice views, scalar slices only, no
+  per-lane linear coefficients, no products of non-constants, no
+  `G_SPLAT_VECTOR`, no floating point. Over budget a view is abandoned and
+  counted; the class keeps its node-by-node form.
+* The cost model is a static proxy: instruction count first, encoded size
+  second, depth only reported. It does not model latency, register pressure
+  or scheduling, SALU fusions (`s_lshl{1-4}_add_u32`), `v_readfirstlane` for
+  uniform values that need VALU-only operations, or VCC versus SGPR pairs
+  for `s1` values. Banks before RegBankSelect are predicted from
+  uniformity.
+* After the legalizer on subtargets with real 16-bit registers (gfx11 and
+  later), the pass does not create new 16-bit scalar operations: a valid
+  rewrite of `permute_i8.ll` was miscompiled after register allocation by
+  the existing true16 code (`test/AMDGPU/egraph-combiner-true16.ll`).
+* The pass is still not in any default pipeline (`-amdgpu-gisel-egraph`),
+  and it does not run after RegBankSelect except in shadow mode.
+* The synthesizer proves every candidate that the views propose, but on real
+  corpora (taken after LLVM's own combines) the views family finds few new
+  rules, and none of them has been selected for a target profile by a
+  measured run; the conditional rule `x + y -> x | y` (disjoint bits) is
+  shown end to end in a scratch build (`eval/rule_chain.py`), not in the
+  shipped profiles, where it is an equal-cost rule.
