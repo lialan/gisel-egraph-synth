@@ -14,10 +14,19 @@ import tempfile
 
 SGPR = re.compile(r'^\s+\.sgpr_count:\s+(\d+)', re.M)
 VGPR = re.compile(r'^\s+\.vgpr_count:\s+(\d+)', re.M)
+SGPR_SPILL = re.compile(r'^\s+\.sgpr_spill_count:\s+(\d+)', re.M)
+VGPR_SPILL = re.compile(r'^\s+\.vgpr_spill_count:\s+(\d+)', re.M)
+# The size of the encoded machine code of each function (AMDGPU prints it
+# as a comment); the length of the assembly text is not a code size.
+CODE_LEN = re.compile(r';\s*codeLenInByte\s*=\s*(\d+)')
+SCRATCH = re.compile(r';\s*ScratchSize:\s*(\d+)')
 MATCHED = re.compile(r'gisel-synth: matched: (\w+)')
 PASSED = re.compile(r'gisel-synth: guard passed: (\w+)')
 JOINT_MATCHED = re.compile(r'gisel-synth-joint: anchor: (\w+)')
 JOINT_PASSED = re.compile(r'gisel-synth-joint: applied: (\w+)')
+# A joint rule that matched (and, with -gisel-synth-joint-screen, did not
+# apply): the screen of eval/joint_measure.py.
+JOINT_MATCHED_ONLY = re.compile(r'gisel-synth-joint: matched: (\w+)')
 ALL_PASSED = re.compile(r'(?:gisel-synth: guard passed: |gisel-synth-joint: applied: )(\w+)')
 FALLBACK = re.compile(r'Instruction selection used fallback path for (\S+)')
 
@@ -26,7 +35,17 @@ TIMEOUT = 120  # seconds per compilation
 
 
 def synth_flags(target, disabled=(), count_rules=True):
-    """Enable the measured pipelines and route each rule to its combiner."""
+    """Enable the measured pipelines and route each rule to its combiner.
+    A target with ``joint_only`` (eval/joint_measure.py) has the combiner
+    of the joint rules alone: every disabled rule is a joint rule."""
+    if getattr(target, 'joint_only', False):
+        flags = ['-gisel-synth-joint-combines']
+        if count_rules:
+            flags.append('-debug-only=gisel-synth-joint')
+        if disabled:
+            flags.append('--gisynthjointcombiner-disable-rule=' +
+                         ','.join(sorted(set(disabled))))
+        return flags
     flags = [target.enable_flag]
     joint = getattr(target, 'joint', False)
     if joint:
@@ -87,8 +106,11 @@ def compile_ll(llc, target, path, flags=(), synth=False, disabled=(),
     # GlobalISel; a change in this set makes two runs incomparable.
     res = {'rc': rc, 'fallback': sorted(set(FALLBACK.findall(stderr)))}
     if synth and count_rules:
-        m = collections.Counter(MATCHED.findall(stderr))
-        m.update(JOINT_MATCHED.findall(stderr))
+        if getattr(target, 'joint_only', False):
+            m = collections.Counter(JOINT_MATCHED_ONLY.findall(stderr))
+        else:
+            m = collections.Counter(MATCHED.findall(stderr))
+            m.update(JOINT_MATCHED.findall(stderr))
         g = collections.Counter(ALL_PASSED.findall(stderr))
         if m:
             res['matched'] = dict(sorted(m.items()))
@@ -101,7 +123,11 @@ def compile_ll(llc, target, path, flags=(), synth=False, disabled=(),
                    bytes=len(s))
         if target.name == 'AMDGPU':
             res.update(sgpr=sum(map(int, SGPR.findall(s))),
-                       vgpr=sum(map(int, VGPR.findall(s))))
+                       vgpr=sum(map(int, VGPR.findall(s))),
+                       code_bytes=sum(map(int, CODE_LEN.findall(s))),
+                       spills=sum(map(int, SGPR_SPILL.findall(s))) +
+                       sum(map(int, VGPR_SPILL.findall(s))),
+                       scratch=sum(map(int, SCRATCH.findall(s))))
     else:
         res['err'] = stderr[-400:]
     if os.path.exists(out):  # llc removes it itself when it fails

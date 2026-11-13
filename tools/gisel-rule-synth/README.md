@@ -1471,3 +1471,24 @@ new shared helpers, proved jointly and emitted as single-root
 [docs/Joint-Regions-Validation.md](../../docs/Joint-Regions-Validation.md);
 `eval/joint_run.sh` runs the whole flow, and `joint/` has the rules, the
 proofs and the results of the last run.
+
+The search can keep several proved implementations of a window, of equal
+or slightly higher generic cost, for the target measurement to choose
+from, and continue across runs:
+
+```
+# Equal generic cost admitted, up to 6 proved shapes per window; the agenda,
+# the proof history and the rule store in C (a later run continues).
+gi-rule-synth.py joint-search --regions R --out OUT --cache C --jobs 96 \
+    --cost-slack 0 --semantic-variants 6 [--time-budget-s 1200]
+# The marginal effect of each candidate over the frozen rules, and a set:
+eval/joint_measure.py --llc LLC_WITH_ALL --td ALL.td --rules OUT/rules.json \
+    --baseline joint/rules.json --manifest manifests/amdgpu-validation.txt \
+    --exclude manifests/amdgpu-discovery.txt --root LLVM_SRC --out M
+# Feed the measurement back: measured windows first, unprofitable rules
+# leave the quota of their window.
+gi-rule-synth.py joint-search ... --cache C --priority M/selection.json
+```
+
+`eval/joint_measured_run.sh` runs this flow end to end; the held-out
+corpus is only read by its last step (`joint_measure.py --evaluate`).
