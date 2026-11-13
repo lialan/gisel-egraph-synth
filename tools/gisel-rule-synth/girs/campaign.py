@@ -36,7 +36,8 @@ def round_config(config, index, remaining, previous):
         c['search']['time_budget_s'] = allowance * (1 - share)
         c['joint']['time_budget_s'] = allowance * share
     if previous and c['joint']['enabled']:
-        feedback = previous.joint.p('feedback.json')
+        feedback = previous.joint.p('feedback.json' if c['select']['strategy'] == 'measured'
+                                    else 'selection.json')
         if os.path.isfile(feedback):
             c['joint']['priority'] = feedback
         stats = mine._load(previous.joint.p('search', 'stats.json'), {})

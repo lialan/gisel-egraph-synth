@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from girs import joint  # noqa: E402
 from girs import joint_tasks  # noqa: E402
-from test_joint import dsq, helper_region  # noqa: E402
+from test_joint import dsq, helper_region, region, X, Y, Z, n  # noqa: E402
 
 
 def instances(*wins):
@@ -147,6 +147,33 @@ class JointTasksTest(unittest.TestCase):
         self.assertEqual(d, joint_tasks.domain(limits(max_proofs=12,
                                                       time_s=5,
                                                       semantic_variants=8)))
+
+    def test_measurement_releases_one_slot_among_profitable_rules(self):
+        # Three different equal-cost forms of (x - 1) - y. Keep two,
+        # then measure one as profitable and the other as unprofitable.
+        win = region([(32, True), (32, True), (32, True, 0xffffffff)], [
+            ('G_ADD', None, (32,), [X, Z], [1]),
+            ('G_SUB', None, (32,), [n(0), Y], [1])])
+        inst = instances(win)
+        lim = limits(semantic_variants=2, max_helpers=0, max_cost=2,
+                     max_proofs=20)
+        rules, rec, _ = joint_tasks.run(inst, lim, cache=self.cache)
+        self.assertEqual(len(rules), 2)
+        self.assertEqual(rec[0]['reasons'], ['variants'])
+        feedback = os.path.join(self.tmp.name, 'selection.json')
+        with open(feedback, 'w') as f:
+            json.dump({'candidates': {
+                rules[0]['id']: {'profitability_status': 'profitable'},
+                rules[1]['id']: {'profitability_status': 'no_gain'}}}, f)
+        more, rec, st = joint_tasks.run(inst, lim, cache=self.cache,
+                                        feedback=feedback)
+        self.assertEqual(st['searched_in_this_run'], 1)
+        self.assertEqual(rec[0]['mode'], 'prove')
+        self.assertEqual(len(more), 3)
+        self.assertTrue({r['id'] for r in rules} < {r['id'] for r in more})
+        _, _, warm = joint_tasks.run(inst, lim, cache=self.cache,
+                                      feedback=feedback)
+        self.assertEqual(warm['searched_in_this_run'], 0)
 
 
 if __name__ == '__main__':

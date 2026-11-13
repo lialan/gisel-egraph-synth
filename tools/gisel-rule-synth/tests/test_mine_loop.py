@@ -95,6 +95,17 @@ class SelectionTest(unittest.TestCase):
 
 
 class CampaignBudgetTest(unittest.TestCase):
+    def test_legacy_rounds_forward_the_latest_selection_feedback(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'selection.json'
+            p.write_text('{}')
+            c = copy.deepcopy(mine.DEFAULTS)
+            c['select']['strategy'] = 'legacy'
+            previous = types.SimpleNamespace(joint=types.SimpleNamespace(
+                p=lambda *parts: str(Path(d).joinpath(*parts))))
+            r = campaign.round_config(c, 0, None, previous)
+            self.assertEqual(r['joint']['priority'], str(p))
+
     def test_prior_unselected_candidate_is_remeasured_after_local_promotion(self):
         r = mine.Run.__new__(mine.Run)
         r.baseline_from = types.SimpleNamespace(active_ids=lambda: ['old', 'new_base'])

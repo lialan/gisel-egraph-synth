@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import shutil
 
-from . import joint, joint_emit, known, measure, paths, select, smt, targets
+from . import joint, joint_emit, joint_measure, known, measure, paths, select, smt, targets
 
 
 DEFAULTS = {'enabled': True, 'max_window': 5, 'max_cost': 3, 'max_outputs': 3,
@@ -22,7 +22,18 @@ DEFAULTS = {'enabled': True, 'max_window': 5, 'max_cost': 3, 'max_outputs': 3,
             'max_combos': 50000, 'max_proofs': 6, 'helper_cost': 2,
             'max_reuse': 4, 'samples': 48, 'max_evals': 20000000,
             'timeout_ms': 10000, 'seed': 0, 'time_budget_s': 0,
-            'checkpoint_s': 30, 'priority': None}
+            'max_tasks': None, 'checkpoint_s': 30,
+            'cache': None, 'priority': None, 'refresh_search': False}
+
+
+def incomplete(stats):
+    """A budget stop is not a completed search, even when it needs a
+    larger budget before the agenda can advance it."""
+    q = stats.get('queue', {})
+    return bool(stats.get('incomplete') or stats.get('interrupted') or
+                stats.get('failed_tasks') or stats.get('missing_rules') or
+                any(q.get(k) for k in ('not_searched', 'open',
+                                       'closed_at_this_depth')))
 
 
 def catalog_path():
@@ -223,6 +234,20 @@ class Joint:
     def extract(self, llc, path, out, kind, target):
         return self.run.cli._joint_extract_one(llc, path, out, target, baseline=True)
 
+    def feedback(self):
+        if not self.search_enabled():
+            return None
+        explicit = self.run.cfg['joint'].get('priority')
+        if explicit:
+            return explicit
+        names = ('feedback.json', 'selection.json') if self.run.cfg['select']['strategy'] == 'measured' \
+            else ('selection.json',)
+        return next((self.p(name) for name in names if os.path.exists(self.p(name))), None)
+
+    def feedback_identity(self):
+        from .mine import _sha_content
+        return _sha_content(self.feedback()) if self.feedback() else None
+
     def discover(self):
         from .mine import _dump, _stage_cache
         if not self.enabled():
@@ -239,24 +264,33 @@ class Joint:
                     'feedback': load(r.cfg['joint'].get('priority'))
                     if r.cfg['joint'].get('priority') else None}
         _stage_cache(self.p('search'), identity)
+        # The agenda, not the existence of stats.json, decides which
+        # windows to resume. Keep it outside the replaceable search output.
+        args = {k: v for k, v in r.cfg['joint'].items() if k != 'enabled'}
+        args.update(cache=args['cache'] or r.cfg['cache_dir'],
+                    priority=self.feedback(),
+                    refresh_search=args['refresh_search'] or r.cfg['refresh_search'])
+        rc = r.cli.cmd_joint_search(r.cli.default_args('joint-search',
+            regions=[self.p('corpus')], out=self.p('search'), **args))
         stats = load(self.p('search', 'stats.json'))
-        if stats is None or stats.get('failed_shards') or \
-                stats.get('queue', {}).get('open') or stats.get('queue', {}).get('not_searched') or any(
-                k.startswith('error:') for k in stats['status']):
-            args = {k: v for k, v in r.cfg['joint'].items() if k != 'enabled'}
-            r.cli.cmd_joint_search(r.cli.default_args('joint-search',
-                regions=[self.p('corpus')], out=self.p('search'),
-                cache=os.path.join(r.cfg['cache_dir'] or os.path.join(paths.REPO, '.cache', 'girs'), 'joint'),
-                refresh_search=r.cfg['refresh_search'], **args))
-            stats = load(self.p('search', 'stats.json'))
-        if stats.get('failed_shards') or any(k.startswith('error:') for k in stats['status']):
+        if (not stats or rc not in (None, 0, 130) or
+                stats.get('failed_tasks') or stats.get('failed_shards') or
+                stats.get('missing_rules') or
+                any(k.startswith('error:') for k in stats.get('status', {}))):
             raise RuntimeError('mine: joint search failed; see ' + self.p('search'))
-        db = merge(self.baseline(), load(self.p('search', 'rules.json'))['rules'])
+        db = self.baseline()
+        previous = self.library()
+        if previous.get('model') == db.get('model'):
+            db = merge(db, previous['rules'])
+        db = merge(db, load(self.p('search', 'rules.json'))['rules'])
         os.makedirs(self.p('library'), exist_ok=True)
         copy_proofs(db, self.p('library', 'proofs'),
                     [self.p('baseline', 'proofs'), self.p('search', 'proofs')])
         _dump(db, self.p('library', 'rules.json'))
-        return dict(stats, candidates=len(self.delta()), pinned=len(self.pinned()))
+        if rc == 130 or stats.get('interrupted'):
+            raise SystemExit(130)
+        return dict(stats, incomplete=incomplete(stats),
+                    candidates=len(self.delta()), pinned=len(self.pinned()))
 
     def build_files(self, baseline):
         if not self.enabled():
@@ -283,16 +317,46 @@ class Joint:
     def select(self, ordinary, compare):
         from .mine import _dump
         r = self.run
+        joint_pins = set(self.pinned())
         jp = {'target': r.target.name, 'rules': {
-            i: {'selection': 'emitted', 'pinned': i in self.pinned()} for i in self.active()}}
+            i: {'selection': 'emitted' if i in joint_pins else 'unmeasured',
+                'pinned': i in joint_pins} for i in self.active()}}
         all_rules = dict(ordinary['rules'], **jp['rules'])
         selected = {i for i, p in all_rules.items() if p['selection'] == 'emitted'}
         base = {p: v['base'] for p, v in compare.items()}
         files = sorted(p for p in base if base[p]['rc'] == 0)
         names, pins = r.all_names(), r.all_pinned()
-        # Always eliminate compilation failures/fallback changes/regressions
-        # before marginal measurements; a crashing all-candidate set is not
-        # evidence that an individual joint candidate is profitable.
+        # Start with the selected ordinary rules and the pinned joint rules.
+        # Never enable all joint candidates together to decide eligibility:
+        # alternatives of one window would hide each other.
+        selected, dropped, cur, _ = select.enforce(r.candidate_llc(), r.target,
+            files, base, names, selected, r.cfg['jobs'], r.log, pinned=pins)
+        for i, why in dropped.items():
+            all_rules[i]['selection'] = why['reason']
+            all_rules[i]['final_set'] = why
+        comparison_base = sorted(selected)
+        M = joint_measure.Measurer(r.candidate_llc(), r.target, names,
+            self.p('measure-cache.jsonl'), r.cfg['jobs'], names=names)
+        by_id = {rule['id']: rule for rule in self.library()['rules']}
+        candidate_rules = [by_id[i] for i in self.delta()]
+        info, screened, screening = joint_measure.measure_candidates(
+            M, files, candidate_rules, comparison_base, cur)
+        best, windows = joint_measure.per_window(self.delta(), info)
+        additions = joint_measure.greedy(M, cur, comparison_base, best,
+            screened, info, lambda ids: joint.rewrite_cycles(
+                [by_id[i] for i in sorted(joint_pins) + ids]))
+        selected.update(additions)
+        for i, evidence in info.items():
+            status = evidence.get('selection', evidence['profitability_status'])
+            jp['rules'][i].update(evidence)
+            jp['rules'][i]['selection'] = (
+                'emitted' if i in additions else
+                'final_set_violation' if status == 'regression' else
+                'no_measured_gain' if status in ('no_gain', 'no_application',
+                                                'never_matched', 'no_gain_in_set')
+                else status)
+        # Validate the combination on every selection file, including files
+        # where screening found no joint candidate, against the frozen B.
         selected, dropped, cur, _ = select.enforce(r.candidate_llc(), r.target,
             files, base, names, selected, r.cfg['jobs'], r.log, pinned=pins)
         for i, why in dropped.items():
@@ -312,6 +376,18 @@ class Joint:
             prof['selected_set'] = summary
             prof['summary'] = counts(prof)
         _dump(jp, self.p(r.target.name + '.selected.json'))
+        # The same schema as the standalone selector: the next discover
+        # consumes measured gains and releases unprofitable quota slots.
+        for i in info:
+            info[i]['selection'] = jp['rules'][i]['selection']
+        _dump({'config': {'target': r.target.name, 'llc_sha256': M.llc_sha,
+                         'llc_flags': r.target.ll_flags,
+                         'metric_version': joint_measure.METRIC_VERSION,
+                         'baseline_ids': sorted(pins),
+                         'comparison_base_ids': comparison_base},
+               'selected': sorted(selected), 'candidates': info,
+               'windows': windows, 'screening': screening},
+              self.p('selection.json'))
         return ordinary
 
     def artifacts(self):

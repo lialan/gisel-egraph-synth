@@ -211,6 +211,10 @@ class Run:
         cdir = os.path.dirname(os.path.abspath(config_path))
         if c['corpus_metadata'] and not os.path.isabs(c['corpus_metadata']):
             c['corpus_metadata'] = os.path.join(cdir, c['corpus_metadata'])
+        c['joint'] = dict(c['joint'])
+        for key in ('cache', 'priority'):
+            if c['joint'][key]:
+                c['joint'][key] = os.path.abspath(os.path.join(cdir, c['joint'][key]))
         for role, p in list(c['manifests'].items()):
             if not os.path.isabs(p):
                 here = os.path.join(cdir, p)
@@ -762,7 +766,7 @@ class Run:
     def inputs_discover(self):
         c = self.cfg
         return {'extract': self._done('extract'), 'search': c['search'],
-                'joint': c['joint'],
+                'joint': c['joint'], 'joint_feedback': self.joint.feedback_identity(),
                 'refresh_search': c['refresh_search'],
                 'mode': c['mode'], 'model': self.cli._model_sha(),
                 'generator': self.cli._generator_sha()}
@@ -806,8 +810,7 @@ class Run:
         joint_stats = self.joint.discover()
         incomplete = bool(st['queue']['left'] or
                           st['disjuncts'].get('final_guard_unknown') or
-                          joint_stats.get('queue', {}).get('open') or
-                          joint_stats.get('queue', {}).get('not_searched'))
+                          joint_stats.get('incomplete'))
         return {'rules': len(db['rules']), 'delta': len(self.delta()), 'joint': joint_stats,
                 'incomplete': incomplete, 'queue': st['queue'],
                 'by_class': st['rules_by_class'],
@@ -939,7 +942,9 @@ class Run:
                 'select': self.cfg['select'],
                 'selector': _sha_file(select.__file__),
                 'portfolio': _sha_file(portfolio.__file__),
-                'objective': _sha_file(objective.__file__)}
+                'objective': _sha_file(objective.__file__),
+                'joint_selector': _sha_file(mine_joint.__file__),
+                'joint_measure': _sha_file(mine_joint.joint_measure.__file__)}
 
     def stage_select(self):
         if self.cfg['select']['strategy'] == 'measured':
