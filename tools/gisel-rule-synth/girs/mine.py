@@ -245,7 +245,8 @@ class Run:
 
     def has_delta(self):
         return bool(self.delta() or self.joint.delta() or
-                    set(self.active_ids()) - set(self.pinned()))
+                    (getattr(self, 'baseline_from', None) and
+                     set(self.active_ids()) - set(self.pinned())))
 
     def all_pinned(self):
         return self.pinned() + self.joint.pinned()
