@@ -21,7 +21,9 @@ BASE (one of the above) with extra llc flags, e.g. an experimental switch:
 `--define 'ordis=all -gisel-egraph-or-disjoint-to-add' --configs all,ordis`.
 
 Per file and configuration it records: the instruction count of the
-assembly, the encoded code size (sum of `; codeLenInByte`), SGPRs and
+assembly (and how many of them are scheduling and wait hints: s_delay_alu,
+s_waitcnt*, s_nop, s_clause, s_set_inst_prefetch_distance), the encoded
+code size (sum of `; codeLenInByte`), SGPRs and
 VGPRs, the counts of a few instructions (moves and copies between banks,
 v_add3_u32, bit-field extracts, carry adds), the CPU time and the peak
 resident set size of llc, the functions
@@ -69,6 +71,10 @@ MNEMONICS = ('v_mov_b32', 's_mov_b32', 'v_readfirstlane_b32', 'v_add3_u32',
              's_add_u32', 'v_lshl_add_u32', 'v_mad_u32_u24', 'v_mul_lo_u32',
              's_mul_i32', 'v_lshlrev_b32', 'v_and_b32', 'v_or_b32',
              'v_cndmask_b32', 'v_cmp_gt_u32', 'v_cmp_lt_u32')
+# Scheduling and wait hints: counted in insns (the target's instruction
+# pattern), and also on their own (hints), since they come from the
+# scheduler and the hazard recognizer rather than the selected code.
+HINTS = ('s_delay_alu', 's_nop', 's_clause', 's_set_inst_prefetch_distance')
 STAT = re.compile(r'^\s*(\d+)\s+(\S+)\s+-\s+(.*)$', re.M)
 # -time-passes: the title of a timer group, and a row of times
 # ("0.0123 ( 45.6%)" per column) followed by the name of the timer.
@@ -192,6 +198,8 @@ def compile_one(llc, target, mcpu, path, config, timeout, defines=None,
             for l in code if l.strip() and l.startswith('\t'))
         res.update(
             insns=len(re.findall(target.insn_regex, s, re.M)),
+            hints=sum(n for m, n in words.items()
+                      if m in HINTS or m.startswith('s_waitcnt')),
             code_bytes=sum(map(int, CODE_LEN.findall(s))),
             sgpr=sum(map(int, measure.SGPR.findall(s))),
             vgpr=sum(map(int, measure.VGPR.findall(s))),
@@ -235,7 +243,11 @@ def summarize(res, configs, out=sys.stdout):
                                         r.get('rss_kib', 0) // 1024)
             for m, n in r.get('mnemonics', {}).items():
                 tot[c]['#' + m] += n
-    keys = ['insns', 'code_bytes', 'sgpr', 'vgpr', 'user', 'max_rss_mib']
+    for p in comparable:
+        for c in configs:
+            tot[c]['hints'] += res[p][c].get('hints', 0)
+    keys = ['insns', 'hints', 'code_bytes', 'sgpr', 'vgpr', 'user',
+            'max_rss_mib']
     print('%-10s' % 'config' + ''.join('%14s' % k for k in keys), file=out)
     for c in configs:
         print('%-10s' % c + ''.join(
@@ -246,10 +258,18 @@ def summarize(res, configs, out=sys.stdout):
                      if res[p][c]['insns'] < res[p][base]['insns'])
         worse = sum(1 for p in comparable
                     if res[p][c]['insns'] > res[p][base]['insns'])
+        def real(p, cfg):
+            return res[p][cfg]['insns'] - res[p][cfg].get('hints', 0)
+        rbetter = sum(1 for p in comparable if real(p, c) < real(p, base))
+        rworse = sum(1 for p in comparable if real(p, c) > real(p, base))
         print('%s vs %s: %+d instructions, %+d code bytes; %d files better, '
-              '%d worse' % (c, base, tot[c]['insns'] - tot[base]['insns'],
-                            tot[c]['code_bytes'] - tot[base]['code_bytes'],
-                            better, worse), file=out)
+              '%d worse; without hints %+d, %d files better, %d worse' % (
+                  c, base, tot[c]['insns'] - tot[base]['insns'],
+                  tot[c]['code_bytes'] - tot[base]['code_bytes'],
+                  better, worse,
+                  (tot[c]['insns'] - tot[c]['hints']) -
+                  (tot[base]['insns'] - tot[base]['hints']),
+                  rbetter, rworse), file=out)
     for c in configs:
         mn = {k[1:]: v for k, v in sorted(tot[c].items()) if k[0] == '#'}
         print('%s mnemonics: %s' % (c, json.dumps(mn)), file=out)

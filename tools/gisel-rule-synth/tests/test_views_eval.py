@@ -127,7 +127,7 @@ class DiffTest(unittest.TestCase):
             c = views_diff.compare(views_diff.load(run + ':none'),
                                    views_diff.load(run))
             self.assertEqual(c['files'], ['a.ll', 'b.ll', 'c.ll'])
-            self.assertEqual(c['delta']['a.ll'], (-2, -8))
+            self.assertEqual(c['delta']['a.ll'], (-2, -8, -2))
             self.assertEqual((c['better'], c['worse']), (1, 1))
             self.assertEqual(c['totals']['b']['insns'] -
                              c['totals']['a']['insns'], -1)
@@ -153,6 +153,26 @@ class DiffTest(unittest.TestCase):
                                    views_diff.load(run2 + ':all'),
                                    pairwise=True)
             self.assertEqual(p['files'], ['a.ll', 'b.ll'])
+
+
+class HintsTest(unittest.TestCase):
+    def test_hints_apart(self):
+        # The same selected code with one more s_delay_alu: worse in
+        # instructions, equal without the hints.
+        with tempfile.TemporaryDirectory() as d:
+            a, b = result(10), result(11)
+            a['hints'], b['hints'] = 2, 3
+            path = os.path.join(d, 'r.json')
+            with open(path, 'w') as f:
+                json.dump({'files': {'x.ll': {'none': a, 'all': b}}}, f)
+            c = views_diff.compare(views_diff.load(path + ':none'),
+                                   views_diff.load(path))
+            self.assertEqual(c['delta']['x.ll'], (1, 4, 0))
+            self.assertEqual((c['worse'], c['real_worse']), (1, 0))
+
+    def test_hint_mnemonics(self):
+        self.assertIn('s_delay_alu', views_eval.HINTS)
+        self.assertNotIn('v_mov_b32', views_eval.HINTS)
 
 
 class LLVMRootTest(unittest.TestCase):

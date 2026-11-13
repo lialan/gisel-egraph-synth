@@ -19,6 +19,13 @@ import json
 import sys
 
 KEYS = ('insns', 'code_bytes', 'sgpr', 'vgpr')
+# The instructions without the scheduling and wait hints (views_eval.py
+# records hints; older results count as no hints).
+REAL = 'real'
+
+
+def real(r):
+    return r['insns'] - r.get('hints', 0)
 
 
 def load(spec):
@@ -59,12 +66,17 @@ def compare(a, b, pairwise=False):
             for k in KEYS:
                 tot[side][k] += r[k]
             mn[side].update(r.get('mnemonics', {}))
+        for side, r in (('a', a[p]), ('b', b[p])):
+            tot[side][REAL] += real(r)
         delta[p] = (b[p]['insns'] - a[p]['insns'],
-                    b[p]['code_bytes'] - a[p]['code_bytes'])
+                    b[p]['code_bytes'] - a[p]['code_bytes'],
+                    real(b[p]) - real(a[p]))
     return {'files': common, 'totals': tot, 'mnemonics': mn,
             'delta': delta,
             'better': sum(1 for d in delta.values() if d[0] < 0),
-            'worse': sum(1 for d in delta.values() if d[0] > 0)}
+            'worse': sum(1 for d in delta.values() if d[0] > 0),
+            'real_better': sum(1 for d in delta.values() if d[2] < 0),
+            'real_worse': sum(1 for d in delta.values() if d[2] > 0)}
 
 
 def report(c, a_name, b_name, top, out=sys.stdout):
@@ -78,14 +90,18 @@ def report(c, a_name, b_name, top, out=sys.stdout):
                                      for k in KEYS), file=out)
     print('B better in %d files, worse in %d' % (c['better'], c['worse']),
           file=out)
+    print('without scheduling and wait hints: %+d instructions; B better in '
+          '%d files, worse in %d' % (tb[REAL] - ta[REAL], c['real_better'],
+                                    c['real_worse']), file=out)
     ranked = sorted(c['delta'].items(), key=lambda kv: (kv[1][0], kv[0]))
     gains = [kv for kv in ranked if kv[1][0] < 0][:top]
     losses = [kv for kv in reversed(ranked) if kv[1][0] > 0][:top]
     for title, rows in (('largest gains', gains), ('largest losses', losses)):
         if rows:
-            print('%s (instructions, bytes):' % title, file=out)
-            for p, (di, db) in rows:
-                print('  %+6d %+7d  %s' % (di, db, p), file=out)
+            print('%s (instructions, bytes, without hints):' % title,
+                  file=out)
+            for p, (di, db, dr) in rows:
+                print('  %+6d %+7d %+6d  %s' % (di, db, dr, p), file=out)
     ma, mb = c['mnemonics']['a'], c['mnemonics']['b']
     changed = {m: mb[m] - ma[m] for m in sorted(set(ma) | set(mb))
                if mb[m] != ma[m]}
