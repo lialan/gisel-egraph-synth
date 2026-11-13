@@ -16,6 +16,7 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallBitVector.h"
@@ -94,6 +95,8 @@ STATISTIC(NumDagImprovements,
           "Number of choices improved by the DAG cost in extraction");
 STATISTIC(NumRestored, "Number of classes whose original node extraction "
                        "restored at no cost");
+STATISTIC(NumRedundantSkipped, "Number of instructions left out of regions "
+                               "as redundant with a dominating one");
 STATISTIC(NumUniformRoots, "Number of roots that must stay uniform");
 
 namespace {
@@ -150,6 +153,11 @@ static cl::opt<bool> PreferOriginal(
     "gisel-egraph-prefer-original", cl::Hidden, cl::init(true),
     cl::desc("On a tie of the cost, let extraction keep the instructions of "
              "the region (CostModel::isPreferred)"));
+static cl::opt<bool> SkipRedundant(
+    "gisel-egraph-skip-redundant", cl::Hidden, cl::init(true),
+    cl::desc("Leave out of a region an instruction that an instruction of a "
+             "dominating block computes already (MachineCSE removes it after "
+             "instruction selection)"));
 static cl::opt<unsigned> MaxDagEvaluations(
     "gisel-egraph-max-dag-evaluations", cl::Hidden, cl::init(512),
     cl::desc("Maximum number of DAG cost evaluations of the sharing-aware "
@@ -981,6 +989,19 @@ private:
     return MUI->isUniformAtDef(Reg);
   }
   void exportNode(json::OStream &J, const EGraph &G, const ENode &N) const;
+  /// True if \p MI computes a value that an instruction of a block that
+  /// properly dominates its block computes too (equal value numbers, see
+  /// computeValueNumbers). Such an instruction stays out of regions: the
+  /// stock pipeline removes it (MachineCSE after instruction selection), so
+  /// the region would count an instruction that does not remain, and a
+  /// rewrite of it into another form would keep it from being removed.
+  bool isRedundant(const MachineInstr &MI);
+  /// Value numbers of the pure candidate instructions (not PHIs,
+  /// terminators or G_FREEZE): equal for the same operator, flags,
+  /// attributes and types with operands of equal value numbers; a constant
+  /// by its value; any other register is its own value. Computed on first
+  /// use and again after a rewrite.
+  void computeValueNumbers();
 
   MachineFunction &MF;
   MachineRegisterInfo &MRI;
@@ -995,6 +1016,11 @@ private:
   std::optional<MachineCycleInfo> MCI;
   std::optional<MachineUniformityInfo> MUI;
   DenseMap<const MachineInstr *, unsigned> Order;
+  /// computeValueNumbers: the value number of each pure candidate
+  /// instruction, and the blocks with an instruction of each number.
+  bool ValueNumbersValid = false;
+  DenseMap<const MachineInstr *, unsigned> InstrVN;
+  DenseMap<unsigned, SmallVector<const MachineBasicBlock *, 2>> VNBlocks;
   SmallPtrSet<const MachineInstr *, 32> Visited;
   SmallPtrSet<const MachineInstr *, 32> Erased;
 };
@@ -1048,6 +1074,118 @@ void EGraphCombinerImpl::numberBlock(MachineBasicBlock &MBB) {
     Order[&MI] = I++;
 }
 
+void EGraphCombinerImpl::computeValueNumbers() {
+  NamedRegionTimer T("value-numbers", "Value numbering",
+                     AnalysisTimerGroupName, AnalysisTimerGroupDesc,
+                     TimePassesIsEnabled);
+  InstrVN.clear();
+  VNBlocks.clear();
+  std::map<std::vector<uint64_t>, unsigned> Numbers;
+  DenseMap<Register, unsigned> RegVN;
+  auto Intern = [&](std::vector<uint64_t> Key) {
+    return Numbers.try_emplace(std::move(Key), Numbers.size()).first->second;
+  };
+  // A constant is its type and value (each block can have its own
+  // G_CONSTANT of a value). A register without a number of an instruction
+  // (an argument, a load, a PHI...) is its own value.
+  auto ValueOf = [&](Register Reg) {
+    auto It = RegVN.find(Reg);
+    if (It != RegVN.end())
+      return It->second;
+    std::vector<uint64_t> Key;
+    const MachineInstr *Def = MRI.getVRegDef(Reg);
+    std::optional<APInt> C;
+    if (Def && Def->getOpcode() == TargetOpcode::G_CONSTANT &&
+        Def->getOperand(1).isCImm())
+      C = Def->getOperand(1).getCImm()->getValue();
+    else if (Def && Def->getOpcode() == TargetOpcode::G_FCONSTANT &&
+             Def->getOperand(1).isFPImm())
+      C = Def->getOperand(1).getFPImm()->getValueAPF().bitcastToAPInt();
+    if (C) {
+      Key = {~uint64_t(2), Def->getOpcode(), getTypeKey(MRI.getType(Reg)),
+             C->getBitWidth()};
+      for (unsigned W = 0, E = C->getNumWords(); W != E; ++W)
+        Key.push_back(C->getRawData()[W]);
+    } else {
+      Key = {~uint64_t(0), Reg.id()};
+    }
+    unsigned V = Intern(std::move(Key));
+    RegVN[Reg] = V;
+    return V;
+  };
+  // In reverse post-order the definitions of the operands of an instruction
+  // that is not a PHI come first.
+  ReversePostOrderTraversal<MachineFunction *> RPOT(&MF);
+  for (MachineBasicBlock *MBB : RPOT) {
+    for (MachineInstr &MI : *MBB) {
+      if (MI.isPHI() || MI.isTerminator() || !isCandidate(MI, MRI))
+        continue;
+      uint32_t Implied;
+      const OpProperties *P =
+          getOpPropertiesForInstr(MI.getOpcode(), Implied);
+      if (!P->hasResult() || P->Shape == OpShape::Phi || P->StopsPoison ||
+          MI.mayLoadOrStore() || MI.hasUnmodeledSideEffects())
+        continue;
+      std::vector<uint64_t> Key = {MI.getOpcode(),
+                                   MI.getFlags() & SemanticFlags};
+      for (const MachineOperand &MO : MI.operands()) {
+        if (MO.isReg() && MO.isDef()) {
+          Key.push_back(getTypeKey(MRI.getType(MO.getReg())));
+        } else if (MO.isReg()) {
+          Key.push_back(ValueOf(MO.getReg()));
+        } else if (MO.isImm()) {
+          Key.push_back(1);
+          Key.push_back(MO.getImm());
+        } else if (MO.isCImm()) {
+          const APInt &V = MO.getCImm()->getValue();
+          Key.push_back(2);
+          Key.push_back(V.getBitWidth());
+          for (unsigned W = 0, E = V.getNumWords(); W != E; ++W)
+            Key.push_back(V.getRawData()[W]);
+        } else if (MO.isFPImm()) {
+          APInt V = MO.getFPImm()->getValueAPF().bitcastToAPInt();
+          Key.push_back(3);
+          Key.push_back(V.getBitWidth());
+          for (unsigned W = 0, E = V.getNumWords(); W != E; ++W)
+            Key.push_back(V.getRawData()[W]);
+        } else if (MO.isPredicate()) {
+          Key.push_back(4);
+          Key.push_back(MO.getPredicate());
+        } else {
+          // Another kind of operand: no number.
+          Key.clear();
+          break;
+        }
+      }
+      if (Key.empty())
+        continue;
+      unsigned V = Intern(std::move(Key));
+      InstrVN[&MI] = V;
+      for (unsigned I = 0, E = MI.getNumExplicitDefs(); I != E; ++I)
+        RegVN[MI.getOperand(I).getReg()] = Intern({~uint64_t(1), V, I});
+      SmallVectorImpl<const MachineBasicBlock *> &Blocks = VNBlocks[V];
+      if (!is_contained(Blocks, MBB))
+        Blocks.push_back(MBB);
+    }
+  }
+  ValueNumbersValid = true;
+}
+
+bool EGraphCombinerImpl::isRedundant(const MachineInstr &MI) {
+  if (!SkipRedundant)
+    return false;
+  if (!ValueNumbersValid)
+    computeValueNumbers();
+  auto It = InstrVN.find(&MI);
+  if (It == InstrVN.end())
+    return false;
+  const MachineBasicBlock *MBB = MI.getParent();
+  for (const MachineBasicBlock *Other : VNBlocks.lookup(It->second))
+    if (Other != MBB && getDomTree().properlyDominates(Other, MBB))
+      return true;
+  return false;
+}
+
 Region EGraphCombinerImpl::formRegion(MachineInstr &Seed) {
   MachineBasicBlock *MBB = Seed.getParent();
   SetVector<MachineInstr *> In;
@@ -1055,7 +1193,8 @@ Region EGraphCombinerImpl::formRegion(MachineInstr &Seed) {
   Work.push_back(&Seed);
   auto Eligible = [&](MachineInstr *MI) {
     return MI && MI->getParent() == MBB && !Visited.count(MI) &&
-           !Erased.count(MI) && !In.contains(MI) && isCandidate(*MI, MRI);
+           !Erased.count(MI) && !In.contains(MI) && isCandidate(*MI, MRI) &&
+           !isRedundant(*MI);
   };
   while (!Work.empty() && In.size() < MaxRegionInstrs) {
     MachineInstr *MI = Work.pop_back_val();
@@ -2165,8 +2304,9 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
   CostSaved += OldCost - NewCost;
   numberBlock(MBB);
   // The uniformity of the new registers is not known: compute the analysis
-  // again when it is needed next.
+  // again when it is needed next. The same for the value numbers.
   MUI.reset();
+  ValueNumbersValid = false;
   return true;
 }
 
@@ -2190,6 +2330,11 @@ bool EGraphCombinerImpl::run() {
       if (Erased.count(MI) || Visited.count(MI) || !isCandidate(*MI, MRI) ||
           MI->getOpcode() == TargetOpcode::G_BR)
         continue;
+      if (isRedundant(*MI)) {
+        Visited.insert(MI);
+        ++NumRedundantSkipped;
+        continue;
+      }
       Region R = formRegion(*MI);
       if (processRegion(MBB, R)) {
         Changed = true;

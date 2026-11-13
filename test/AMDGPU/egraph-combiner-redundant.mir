@@ -1,0 +1,121 @@
+# RUN: llc -mtriple=amdgpu11.00-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-report %s -o /dev/null 2>&1 | FileCheck %s
+# RUN: llc -mtriple=amdgpu11.00-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-report -gisel-egraph-skip-redundant=false %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=ALL
+# RUN: llc -mtriple=amdgpu11.00-amd-amdhsa -run-pass=gisel-egraph-combiner,machineverifier -gisel-egraph-mode=rewrite %s -o - | FileCheck %s --check-prefix=MIR
+
+# An instruction that an instruction of a dominating block computes already
+# (equal operator and operands, constants by value) is left out of the
+# regions: MachineCSE removes it after instruction selection, so a region
+# must not count it, nor rewrite it into a form that is no longer equal to
+# the dominating one. Its users read it as an input.
+
+# The or of shifted bytes of %bb.1 is the one of %bb.0 (with constants of
+# its own): the region of %bb.1 is the add alone.
+# CHECK: dominated: %bb.0: instrs=3
+# CHECK: dominated: %bb.1: instrs=1 roots=1 inputs=2
+# ALL: dominated: %bb.0: instrs=3
+# ALL: dominated: %bb.1: instrs=4 roots=1 inputs=2
+
+# In two blocks of which neither dominates the other, both copies stay.
+# CHECK: siblings: %bb.1: instrs=3
+# CHECK: siblings: %bb.2: instrs=3
+
+# A freeze can be a different value each time: never redundant.
+# CHECK: freeze: %bb.1: instrs=2 roots=1 inputs=1
+
+# MIR-LABEL: name: dominated
+# MIR: bb.1:
+# MIR: %m2:_(s32) = G_AND %a, %k2
+# MIR-NEXT: %e2:_(s32) = G_CONSTANT i32 8
+# MIR-NEXT: %h2:_(s32) = G_SHL %m2, %e2(s32)
+# MIR-NEXT: %x2:_(s32) = G_OR %m2, %h2
+# MIR-NEXT: %y:_(s32) = G_ADD %x2, %v
+---
+name: dominated
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $vgpr0, $vgpr1
+    %a:_(s32) = COPY $vgpr0
+    %v:_(s32) = COPY $vgpr1
+    %k:_(s32) = G_CONSTANT i32 255
+    %m:_(s32) = G_AND %a, %k
+    %e:_(s32) = G_CONSTANT i32 8
+    %h:_(s32) = G_SHL %m, %e(s32)
+    %x:_(s32) = G_OR %m, %h
+    %z:_(s32) = G_CONSTANT i32 0
+    %c:_(s1) = G_ICMP intpred(eq), %v(s32), %z
+    G_BRCOND %c(s1), %bb.2
+    G_BR %bb.1
+
+  bb.1:
+    %k2:_(s32) = G_CONSTANT i32 255
+    %m2:_(s32) = G_AND %a, %k2
+    %e2:_(s32) = G_CONSTANT i32 8
+    %h2:_(s32) = G_SHL %m2, %e2(s32)
+    %x2:_(s32) = G_OR %m2, %h2
+    %y:_(s32) = G_ADD %x2, %v
+    $vgpr0 = COPY %y(s32)
+    SI_RETURN implicit $vgpr0
+
+  bb.2:
+    $vgpr0 = COPY %x(s32)
+    SI_RETURN implicit $vgpr0
+...
+---
+name: siblings
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $vgpr0, $vgpr1
+    %a:_(s32) = COPY $vgpr0
+    %v:_(s32) = COPY $vgpr1
+    %z:_(s32) = G_CONSTANT i32 0
+    %c:_(s1) = G_ICMP intpred(eq), %v(s32), %z
+    G_BRCOND %c(s1), %bb.2
+    G_BR %bb.1
+
+  bb.1:
+    %k:_(s32) = G_CONSTANT i32 255
+    %m:_(s32) = G_AND %a, %k
+    %e:_(s32) = G_CONSTANT i32 8
+    %h:_(s32) = G_SHL %m, %e(s32)
+    %x:_(s32) = G_OR %m, %h
+    $vgpr0 = COPY %x(s32)
+    SI_RETURN implicit $vgpr0
+
+  bb.2:
+    %k2:_(s32) = G_CONSTANT i32 255
+    %m2:_(s32) = G_AND %a, %k2
+    %e2:_(s32) = G_CONSTANT i32 8
+    %h2:_(s32) = G_SHL %m2, %e2(s32)
+    %x2:_(s32) = G_OR %m2, %h2
+    $vgpr0 = COPY %x2(s32)
+    SI_RETURN implicit $vgpr0
+...
+---
+name: freeze
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $vgpr0, $vgpr1
+    %a:_(s32) = COPY $vgpr0
+    %v:_(s32) = COPY $vgpr1
+    %f:_(s32) = G_FREEZE %a
+    %z:_(s32) = G_CONSTANT i32 0
+    %c:_(s1) = G_ICMP intpred(eq), %v(s32), %z
+    G_BRCOND %c(s1), %bb.2
+    G_BR %bb.1
+
+  bb.1:
+    %f2:_(s32) = G_FREEZE %a
+    %y:_(s32) = G_ADD %f2, %f2
+    $vgpr0 = COPY %y(s32)
+    SI_RETURN implicit $vgpr0
+
+  bb.2:
+    $vgpr0 = COPY %f(s32)
+    SI_RETURN implicit $vgpr0
+...
