@@ -38,7 +38,7 @@ class Objective:
 
     def violations(self, base, cur):
         return {p: why for p in base
-                if (why := self.violation(base[p], cur[p]))}
+                if not base[p]['rc'] and (why := self.violation(base[p], cur[p]))}
 
     def gain(self, base, cur):
         return sum(self.value(base[p]) - self.value(cur[p]) for p in base

@@ -244,7 +244,8 @@ class Run:
         return mine_joint.Joint(self)
 
     def has_delta(self):
-        return bool(self.delta() or self.joint.delta())
+        return bool(self.delta() or self.joint.delta() or
+                    set(self.active_ids()) - set(self.pinned()))
 
     def all_pinned(self):
         return self.pinned() + self.joint.pinned()
@@ -335,9 +336,16 @@ class Run:
 
     def active_ids(self):
         delta = set(self.delta())
-        return self.pinned() + [r['id'] for r in
+        previous = getattr(self, 'baseline_from', None)
+        # An unselected candidate can become useful after another rule was
+        # promoted. Retain all candidates offered earlier in this campaign,
+        # even though they are now knowledge rather than a fresh discovery.
+        retained = set(previous.active_ids()) if previous else set()
+        pinned = self.pinned()
+        return pinned + [r['id'] for r in
             emit.candidates(self.library(), self.target)
-            if (r.get('variant_of', r['id']) in delta and emit.emittable(r))]
+            if r['id'] not in pinned and emit.emittable(r) and
+            (r.get('variant_of', r['id']) in delta or r['id'] in retained)]
 
     def baseline_llc(self):
         return self.p('baseline', 'llc')

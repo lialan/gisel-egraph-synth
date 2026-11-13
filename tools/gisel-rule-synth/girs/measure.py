@@ -148,12 +148,16 @@ def compile_ll(llc, target, path, flags=(), synth=False, disabled=(),
         res.update(insns=len(re.findall(target.insn_regex, s, re.M)),
                    bytes=len(s))
         if target.name == 'AMDGPU':
+            code_lengths = CODE_LEN.findall(s)
             res.update(sgpr=sum(map(int, SGPR.findall(s))),
                        vgpr=sum(map(int, VGPR.findall(s))),
-                       code_bytes=sum(map(int, CODE_LEN.findall(s))),
+                       code_bytes=sum(map(int, code_lengths)),
                        spills=sum(map(int, SGPR_SPILL.findall(s))) +
                        sum(map(int, VGPR_SPILL.findall(s))),
                        scratch=sum(map(int, SCRATCH.findall(s))))
+            if res['insns'] and not code_lengths:
+                del res['code_bytes']
+                res['metric_error'] = 'AMDGPU code length metadata missing'
         elif getattr(target, 'measure_code_bytes', False):
             objcmd = cmd[:-2] + ['-filetype=obj', '-o', out + '.o']
             orc, oerr, ocpu = run_timed(objcmd, timeout, cwd)

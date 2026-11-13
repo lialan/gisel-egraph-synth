@@ -9,6 +9,20 @@ from . import joint, known, mine_joint
 from .objective import Objective
 
 
+def feedback_record(info, window, metric):
+    """Feed the measured set result back while preserving solo evidence."""
+    out = dict(info, window=window)
+    status = info['selection']
+    gain = info.get('final_marginal_gain', info.get('in_set_gain', info['solo_gain']))
+    if status == 'no_gain_in_set':
+        out['profitability_status'] = 'no_gain'
+    elif status in ('worse_in_set', 'cycle'):
+        out['profitability_status'] = 'regression'
+    out['marginal'] = {'gain': gain if status == 'emitted' else min(0, gain),
+                       'metric': metric}
+    return out
+
+
 def choose(candidates, pinned, compile_set, objective, cycles=lambda _: [], log=print):
     pinned = set(pinned)
     base = compile_set(pinned)
@@ -109,7 +123,7 @@ def select_run(run):
               'selected_set': summary}
         jp['summary'] = mine_joint.counts(jp)
         _dump(jp, run.joint.p(run.target.name + '.selected.json'))
-        feedback = {i: dict(p, window=by[i].get('window')) for i, p in info.items()
+        feedback = {i: feedback_record(p, by[i].get('window'), policy.metric) for i, p in info.items()
                     if i in by and i not in run.all_pinned()}
         _dump({'objective': policy.json(), 'candidates': feedback}, run.joint.p('feedback.json'))
     return {'summary': prof['summary'], 'selected_set': summary}

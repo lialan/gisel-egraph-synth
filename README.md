@@ -184,8 +184,10 @@ for what is not yet known:
               mine --export:  K := K + Delta,  B := B + selected Delta
 ```
 
-A run that finds nothing new stops after discovery and reports
-`no_new_rules`. The report never claims that a search was exhaustive.
+A single run that finds nothing new stops after discovery and reports
+`no_new_rules`. A campaign still evaluates its final baseline, so a null
+result can be compared with other arms. The report never claims that a
+search was exhaustive.
 
 ## How the e-graph combiner works
 

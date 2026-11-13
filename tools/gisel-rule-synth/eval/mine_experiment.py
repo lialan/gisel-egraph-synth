@@ -101,6 +101,8 @@ def main():
         summary[label] = {'objective': report['objective'],
             'search_elapsed_s': report['campaign']['search_elapsed_s'],
             'new_selected': report['campaign']['new_selected'],
+            'newly_discovered_selected': report['campaign']['newly_discovered_selected'],
+            'known_rules_newly_selected': report['campaign']['known_rules_newly_selected'],
             'rounds': [{k: r.get(k) for k in ('search_elapsed_s', 'new_selected', 'selection')}
                        for r in report['campaign']['rounds']],
             'evaluation': report['evaluation'],

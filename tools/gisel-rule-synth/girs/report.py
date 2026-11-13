@@ -421,13 +421,15 @@ def markdown(rep):
                           'not claimed to be exhausted.', '']
     if rep.get('joint', {}).get('enabled'):
         j = rep['joint']
+        metric = rep.get('objective', {}).get('metric', 'insns')
         lines += ['## Joint DAG rules', '',
                   '%d candidate additions, %d pinned baseline rules, %d selected. '
                   'Evaluation below includes ordinary and joint rules together. '
-                  'New joint rules require a marginal instruction-count gain.' %
-                  (len(j['candidates']), len(j['pinned']), len(j['selected'])), '',
-                  _table(['Rule', 'Selection', 'Marginal instruction delta'],
-                         [[i, p['selection'], p.get('in_set', {}).get('insns', '')]
+                  'New joint rules require a marginal gain in `%s`.' %
+                  (len(j['candidates']), len(j['pinned']), len(j['selected']), metric), '',
+                  _table(['Rule', 'Selection', 'Marginal gain (' + metric + ')'],
+                         [[i, p['selection'], p.get('final_marginal_gain',
+                             p.get('in_set_gain', -p.get('in_set', {}).get('insns', 0)))]
                           for i, p in (j.get('profile') or {}).get('rules', {}).items()]), '']
     for name, ev in rep['evaluation'].items():
         if not isinstance(ev, dict):
@@ -436,11 +438,12 @@ def markdown(rep):
             continue
         lines += ['### %s' % name, '', _table(
             ['Role/pipeline', 'Files', 'Compared', 'Instructions', 'Instruction delta',
-             'Code byte delta', 'Objective delta',
+             'Code byte delta', 'Code bytes compared', 'Objective delta',
              'Better', 'Worse', 'Compile failures', 'Fallback changed',
              'CPU s (base -> set)'],
             [[k, v['files'], v['compared'], v['insns_base'],
               '%+d' % v['insns_delta'], v.get('code_bytes_delta', 'unavailable'),
+              v.get('code_bytes_compared', 0),
               v.get('objective_delta', v['insns_delta']), v['files_better'], v['files_worse'],
               len(v['compile_failures']), len(v['fallback_changed']),
               '%.1f -> %.1f' % (v['cpu_base'], v['cpu'])]

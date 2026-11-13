@@ -71,8 +71,10 @@ report both requested allowance and actual search/total time.
 
 Each round has its own directory and immutable baseline. Accepted rules
 become the next round's baseline; the next extraction therefore sees the
-residual after those rules. The ordinary proof/search cache and joint
-agenda persist across rounds. Joint feedback supplies measured gain and
+residual after those rules. Earlier unselected ordinary and joint candidates
+remain eligible for measurement against the new baseline. The ordinary
+proof/search cache and joint agenda persist across rounds. Joint feedback
+supplies the measured in-set gain (retaining solo evidence separately) and
 releases failed implementations from their window's quota. Limits grow
 only for recorded blocked categories (terms, time per window, helpers,
 candidate lists, combinations, variants), up to `max_growth` times the
@@ -151,8 +153,11 @@ python3 tools/gisel-rule-synth/eval/mine_experiment.py \
 For each seed, the harness runs a single-round instruction objective,
 a three-round instruction objective, and a three-round code-size objective.
 The first two use the same engine, candidate policy, corpus and worker
-counts: this isolates the effect of feedback rounds, not unrelated changes
-between compiler versions. Each arm has a cold search cache. The initial
+counts. They compare the whole feedback policy (round allocation, cache
+continuation and targeted limit growth); they do not isolate each of those
+features. The allowance is a maximum: an arm can stop earlier at its other
+limits, so actual search time must also be compared. Each arm has a cold
+search cache. The initial
 compiler image is copied once; builds may then reuse their intermediate
 objects without changing this reference. All arms complete selection
 before any evaluates held-out. The protocol and per-arm configurations

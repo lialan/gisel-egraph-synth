@@ -150,6 +150,8 @@ def execute(root, until=None, force=(), export=False):
                  new_selected=sorted(set(previous.all_final()) - set(first.all_pinned())),
                  stop=state.get('stop', 'round_limit'))
     original_knowledge = {r['id'] for r in first.baseline_library()['rules']}
+    original_knowledge.update(r['id'] for r in mine.emit.candidates(
+        first.baseline_library(), first.target))
     if first.joint.enabled():
         original_knowledge.update(r['id'] for r in first.joint.baseline()['rules'])
     state['newly_discovered_selected'] = sorted(set(state['new_selected']) - original_knowledge)

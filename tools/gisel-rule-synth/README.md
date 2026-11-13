@@ -320,6 +320,10 @@ $S mine --config tools/gisel-rule-synth/configs/m3-auto.json \
 checked rule set and its report (`report.md`, `report.json`), without a
 manual step between the stages:
 
+For repeated feedback rounds, configurable static objectives, a pinned
+real-program corpus and fixed-allowance comparisons, see
+[Corpus mining campaigns](../../docs/Corpus-Mining.md).
+
 | Stage | Result |
 |---|---|
 | `identity` | what the run is made from: source commit and dirty state, hashes of the tool, of the semantic model and of the registry, the compiler, the frozen library and profiles, the manifests, the budgets and the seed |
@@ -328,9 +332,9 @@ manual step between the stages:
 | `extract` | residual trees and joint DAGs after B, plus the target legality table |
 | `discover` | ordinary and joint candidates, preconditions and proofs, in separate catalogs |
 | `build` | a compiler with B and both kinds of candidate additions |
-| `measure` | the selection files with B and with B plus the additions |
-| `select` | the target profile |
-| `verify` | the selected set on every selection file: compile failures, machine verifier errors, changed SelectionDAG fallbacks, files with more instructions. A rule that makes a file worse is removed, and the check runs again |
+| `measure` | the pinned baseline B on every selection file |
+| `select` | each candidate alone over B, then profitable additions inside the growing set; configured objective and per-file guardrails determine the profile |
+| `verify` | recompile the final set on every supported selection file; reject failures, changed SelectionDAG fallbacks, objective regressions or guardrail violations |
 | `freeze` | hashes of both catalogs and profiles, compiler, configuration and source files; held-out files have not been used by search or selection |
 | `heldout` | the frozen set and the reference sets on every role and pipeline |
 | `report` | the counts, the relation to the frozen library, the search record and the evaluation |
@@ -343,7 +347,7 @@ manual step between the stages:
   `--until STAGE` stops after a stage; `--force STAGE...` runs stages again.
 - **Configuration.** `configs/*.json`: `mode`, `target`, `manifests` (role ->
   file with one `.ll` path per line), `search` (grammar, budgets, seed,
-  `regions`, `siblings`, `views`), `joint`, `select`. `girs/mine.py` (`DEFAULTS`) has every key. `--local
+  `regions`, `siblings`, `views`), `joint`, `select`, `loop`. `girs/mine.py` (`DEFAULTS`) has every key. `--local
   FILE` gives the values of one machine (compiler paths, reference
   compilers, jobs).
 - **Roles.** `discovery` files give the corpus. `discovery` and `validation`

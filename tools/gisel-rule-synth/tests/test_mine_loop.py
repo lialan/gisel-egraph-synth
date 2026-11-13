@@ -78,8 +78,50 @@ class SelectionTest(unittest.TestCase):
                 'profitability_status': 'profitable', 'marginal': {'gain': 16, 'metric': 'code_bytes'}}}}))
             self.assertEqual(joint_tasks.load_feedback(str(p))[1], {'w': 16})
 
+    def test_overlap_feedback_releases_a_candidate_with_no_marginal_gain(self):
+        _, info, _ = self.choose(lambda ids: {'f': (8, 32) if ids else (10, 40)})
+        feedback = portfolio.feedback_record(info['b'], 'window', 'insns')
+        self.assertEqual(feedback['solo_gain'], 2)
+        self.assertEqual(feedback['marginal']['gain'], 0)
+        self.assertIn(feedback['profitability_status'], joint_tasks.RELEASED)
+
+    def test_final_verification_can_omit_failed_baseline_units(self):
+        base = {'ok': result(10, 40), 'unsupported': {'rc': 1}}
+        cur = {'ok': result(9, 36)}
+        self.assertEqual(Objective().violations(base, cur), {})
+        self.assertEqual(Objective().gain(base, cur), 1)
+        with self.assertRaises(KeyError):
+            Objective().violations(base, {})
+
 
 class CampaignBudgetTest(unittest.TestCase):
+    def test_prior_unselected_candidate_is_remeasured_after_local_promotion(self):
+        r = mine.Run.__new__(mine.Run)
+        r.baseline_from = types.SimpleNamespace(active_ids=lambda: ['old', 'new_base'])
+        r.delta = lambda: []
+        r.pinned = lambda: ['new_base']
+        r.library = lambda: {}
+        r.target = object()
+        r.cfg = {'joint': {'enabled': False}}
+        candidates = [{'id': i} for i in ('old', 'new_base', 'unrelated_knowledge')]
+        with mock.patch.object(mine.emit, 'candidates', return_value=candidates), \
+                mock.patch.object(mine.emit, 'emittable', return_value=True):
+            self.assertEqual(r.active_ids(), ['new_base', 'old'])
+            self.assertTrue(r.has_delta())
+            selected, _, _ = portfolio.choose(r.active_ids(), r.pinned(),
+                lambda ids: {'f': result(8 if {'old', 'new_base'} <= ids else 10, 40)},
+                Objective(), log=lambda _: None)
+        self.assertEqual(selected, {'old', 'new_base'})
+
+    def test_cli_completion_returns_a_success_status_not_a_run_object(self):
+        run = types.SimpleNamespace(cfg=copy.deepcopy(mine.DEFAULTS))
+        run.cfg['loop']['rounds'] = 2
+        args = types.SimpleNamespace(config='c', run_dir='r', local=None,
+            refresh_search=False, export=False, until='verify', force=[])
+        with mock.patch.object(mine, 'Run', return_value=run), \
+                mock.patch.object(campaign, 'execute', return_value=object()):
+            self.assertIsNone(cli.cmd_mine(args))
+
     def test_total_allowance_is_split_across_rounds_and_search_paths(self):
         c = copy.deepcopy(mine.DEFAULTS)
         c['loop'].update(rounds=3, search_budget_s=90, joint_share=.75)
@@ -119,6 +161,17 @@ def mine_joint_defaults():
 
 
 class EncodedSizeTest(unittest.TestCase):
+    def test_missing_backend_code_length_cannot_look_like_zero_bytes(self):
+        target = types.SimpleNamespace(name='AMDGPU', ll_flags=[], insn_regex=r'^  s_')
+        def run(cmd, *args):
+            Path(cmd[-1]).write_text('  s_endpgm 0\n')
+            return 0, '', .01
+        with mock.patch.object(measure, 'run_timed', side_effect=run):
+            measured = measure.compile_ll('llc', target, 'input.ll')
+        self.assertEqual(measured['rc'], 0)
+        with self.assertRaisesRegex(ValueError, 'measurement'):
+            Objective('code_bytes').value(measured)
+
     def test_elf_counts_executable_sections_not_data_or_object_length(self):
         data = bytearray(64 + 3 * 64)
         data[:6] = b'\x7fELF\x02\x01'
@@ -233,6 +286,15 @@ class CampaignEndToEndTest(unittest.TestCase):
                     with mock.patch.object(cli, 'cmd_joint_search', side_effect=AssertionError('researched')):
                         campaign.execute(run)
                     self.assertEqual(len(heldout_calls), 2)
+                    with mock.patch.object(mine, 'export') as export:
+                        campaign.execute(run, export=True)
+                    exported = export.call_args.args[0]
+                    self.assertNotIn(profitable, exported.export_baseline.all_pinned())
+                    self.assertIn(profitable, exported.all_pinned())
+                    p = Path(final.p('profile', final.target.name + '.json'))
+                    p.write_text(p.read_text() + '\n')
+                    with self.assertRaisesRegex(ValueError, 'artifacts changed'):
+                        campaign.execute(run)
             finally:
                 os.chdir(cwd)
 

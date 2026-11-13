@@ -3,7 +3,7 @@ residual extraction, and selection together with the ordinary candidates.
 
 The shipped standalone rules are knowledge, not a measured target baseline.
 Only a pinned profile can enable a rule in B. New rules must demonstrate a
-marginal instruction-count gain in the combined set before promotion.
+marginal gain in the configured objective before promotion.
 """
 import copy
 import hashlib
