@@ -76,7 +76,17 @@ static cl::opt<std::string> LegalityOut(
     "gisel-synth-legality", cl::Hidden,
     cl::desc("Also write the action of the legalizer for each operator of "
              "the e-graph operator table and each combination of scalar "
-             "widths to this JSON file"));
+             "widths, and of fixed vector types, to this JSON file"));
+
+static cl::list<unsigned> LegalityLanes(
+    "gisel-synth-legality-lanes", cl::Hidden, cl::CommaSeparated,
+    cl::desc("Numbers of lanes of the fixed vector types of the legality "
+             "table (default: 2,3,4,8)"));
+
+static cl::list<unsigned> LegalityElems(
+    "gisel-synth-legality-elems", cl::Hidden, cl::CommaSeparated,
+    cl::desc("Widths of the lanes of the fixed vector types of the legality "
+             "table (default: 1,8,16,32,64)"));
 
 namespace {
 
@@ -284,11 +294,13 @@ class Extractor {
   GISelValueTracking &VT;
   const MachineDominatorTree &MDT;
   const MachineBasicBlock &MBB;
+  SmallVector<const MachineBasicBlock *, 8> Blocks;
 
 public:
   Extractor(const MachineRegisterInfo &MRI, GISelValueTracking &VT,
             const MachineDominatorTree &MDT, const MachineBasicBlock &MBB)
-      : MRI(MRI), VT(VT), MDT(MDT), MBB(MBB) {}
+      : MRI(MRI), VT(VT), MDT(MDT), MBB(MBB),
+        Blocks(gisynth::straightLineBlocks(MBB)) {}
 
   /// True if \p MI is an instruction of a tree in this block.
   bool isNode(const MachineInstr &MI) const {
@@ -319,7 +331,8 @@ public:
       Out.push_back(std::move(T));
       return Out;
     }
-    if (!Def || Def->getParent() != &MBB || !isNode(*Def))
+    if (!Def || !is_contained(Blocks, Def->getParent()) || !isNode(*Def) ||
+        (Def->getParent() != &MBB && !gisynth::isStraightLineRegionInstr(*Def)))
       return Out;
 
     // Cartesian product of the operand variants. A hint is not an
@@ -381,6 +394,22 @@ public:
     write(OS, MF, T);
   }
 
+  void writeFPFacts(json::OStream &J, Register R) const {
+    LLT Ty = MRI.getType(R).getScalarType();
+    unsigned W = Ty.getSizeInBits();
+    if (Ty.isPointer() || Ty.isInteger() || (W != 16 && W != 32 && W != 64))
+      return;
+    auto F = gisynth::getFPValueFacts(VT, MRI, R);
+    J.attributeObject("fp_facts", [&] {
+      J.attribute("classes", unsigned(F.Classes));
+      J.attribute("integral", F.Integral);
+      if (F.Lower) {
+        J.attribute("lower", hex(F.Lower->bitcastToAPInt()));
+        J.attribute("upper", hex(F.Upper->bitcastToAPInt()));
+      }
+    });
+  }
+
   void write(raw_ostream &OS, const MachineFunction &MF, const Tree &T) const {
     // The constrained operations of a tree have one floating-point
     // environment, which is the one of the root: a rule checks the same
@@ -391,6 +420,18 @@ public:
           gisynth::isConstrainedFPOpcode(N.MI->getOpcode()) &&
           !gisynth::isSameFPEnvironment(*N.MI, *Root))
         return;
+    bool Pure = all_of(T.Nodes, [](const TreeNode &N) {
+      return !N.MI || gisynth::isStraightLineRegionInstr(*N.MI);
+    });
+    bool Crosses = any_of(T.Nodes, [&](const TreeNode &N) {
+      // An extending-load hint describes a boundary input; it does not
+      // import or move the load. Preserve these existing block-local trees
+      // even when that input was loaded in another block.
+      return N.MI && (N.Forwarded || !isa<GAnyLoad>(N.MI)) &&
+             N.MI->getParent() != &MBB;
+    });
+    if (Crosses && !Pure)
+      return;
     // Inputs are numbered in order of first (left-to-right) occurrence, and a
     // register that occurs twice is the same input.
     DenseMap<Register, unsigned> InputIdx;
@@ -409,6 +450,13 @@ public:
     J.object([&] {
       J.attribute("fn", MF.getName());
       J.attribute("bb", MBB.getNumber());
+      // An explicit scope certificate, shared by all pure trees of this
+      // chain. Old corpora without it remain block-local in sibling.py.
+      if (Pure && Blocks.size() > 1)
+        J.attributeArray("straight_line", [&] {
+          for (const MachineBasicBlock *BB : Blocks)
+            J.value(BB->getNumber());
+        });
       J.attribute("root", regName(T.Nodes.back().Reg));
       J.attribute("interior", Interior);
       J.attributeBegin("expr");
@@ -427,6 +475,7 @@ public:
             J.attribute("type", typeName(Ty));
             J.attribute("zero", hex(KB.Zero));
             J.attribute("one", hex(KB.One));
+            writeFPFacts(J, R);
             // A fact like the known bits: a rule that needs it checks it
             // again where it matches.
             J.attribute("noundef", gisynth::isDefinedValue(R, MRI));
@@ -516,9 +565,11 @@ private:
         J.attribute("lanes", Ty.getNumElements());
       J.attribute("type", typeName(Ty));
       J.attribute("reg", regName(N.Reg));
+      J.attribute("bb", N.MI->getParent()->getNumber());
       KnownBits KB = VT.getKnownBits(N.Reg);
       J.attribute("zero", hex(KB.Zero));
       J.attribute("one", hex(KB.One));
+      writeFPFacts(J, N.Reg);
       J.attribute("noundef", isGuaranteedNotToBeUndefOrPoison(N.Reg, MRI));
       J.attribute("uses",
                   static_cast<int64_t>(std::distance(MRI.use_nodbg_begin(N.Reg),
@@ -586,10 +637,125 @@ std::optional<LLT> getPointerType(const DataLayout &DL, unsigned Width) {
   return std::nullopt;
 }
 
+/// The largest number of lanes of a vector type of the legality table.
+constexpr unsigned MaxVectorLanesOfTable = 16;
+
+std::string lltText(LLT Ty) {
+  std::string S;
+  raw_string_ostream OS(S);
+  OS << Ty;
+  return S;
+}
+
+/// The combinations of types of the type indices of \p Opc with fixed vectors
+/// that the legality table has: the types that a node with vectors of the
+/// rule synthesizer gives the instruction. Each combination has one number of
+/// lanes \p Lanes for the vectors that the operator computes lane by lane; an
+/// operator that moves lanes also has vectors with other numbers of lanes.
+void forEachVectorTypes(unsigned Opc, const egraph::OpProperties &P,
+                        unsigned NumIdx, unsigned Lanes,
+                        ArrayRef<unsigned> Elems,
+                        function_ref<void(ArrayRef<LLT>)> Fn) {
+  auto V = [](unsigned N, unsigned E) {
+    return LLT::fixed_vector(N, LLT::scalar(E));
+  };
+  // The index of a lane: the index types of the targets.
+  static const unsigned IdxWidths[] = {32, 64};
+  switch (Opc) {
+  case TargetOpcode::G_BUILD_VECTOR:
+  case TargetOpcode::G_SPLAT_VECTOR:
+    for (unsigned E : Elems)
+      Fn({V(Lanes, E), LLT::scalar(E)});
+    return;
+  case TargetOpcode::G_EXTRACT_VECTOR_ELT:
+    for (unsigned E : Elems)
+      for (unsigned I : IdxWidths)
+        Fn({LLT::scalar(E), V(Lanes, E), LLT::scalar(I)});
+    return;
+  case TargetOpcode::G_INSERT_VECTOR_ELT:
+    for (unsigned E : Elems)
+      for (unsigned I : IdxWidths)
+        Fn({V(Lanes, E), LLT::scalar(E), LLT::scalar(I)});
+    return;
+  case TargetOpcode::G_SHUFFLE_VECTOR:
+    for (unsigned E : Elems)
+      for (unsigned Src : {2u, 3u, 4u, 8u})
+        Fn({V(Lanes, E), V(Src, E)});
+    return;
+  case TargetOpcode::G_CONCAT_VECTORS:
+    for (unsigned E : Elems)
+      for (unsigned K : {2u, 4u})
+        if (Lanes * K <= MaxVectorLanesOfTable)
+          Fn({V(Lanes * K, E), V(Lanes, E)});
+    return;
+  case TargetOpcode::G_EXTRACT_SUBVECTOR:
+  case TargetOpcode::G_INSERT_SUBVECTOR:
+    for (unsigned E : Elems)
+      for (unsigned K : {2u, 4u})
+        if (Lanes * K <= MaxVectorLanesOfTable) {
+          if (Opc == TargetOpcode::G_EXTRACT_SUBVECTOR)
+            Fn({V(Lanes, E), V(Lanes * K, E)});
+          else
+            Fn({V(Lanes * K, E), V(Lanes, E)});
+        }
+    return;
+  default:
+    break;
+  }
+  if (P.IsVector || NumIdx == 0 || NumIdx > 2)
+    return;
+  for (unsigned TypeIdx = 0; TypeIdx != NumIdx; ++TypeIdx)
+    if (isPointerTypeIdx(Opc, TypeIdx))
+      return;
+  // An operator that computes each lane from the same lane of its operands:
+  // each type index is a vector with \p Lanes lanes. The condition of a
+  // G_SELECT can also be one scalar for all lanes.
+  for (unsigned A : Elems) {
+    if (NumIdx == 1) {
+      Fn({V(Lanes, A)});
+      continue;
+    }
+    for (unsigned B : Elems)
+      Fn({V(Lanes, A), V(Lanes, B)});
+    if (Opc == TargetOpcode::G_SELECT)
+      Fn({V(Lanes, A), LLT::scalar(1)});
+  }
+}
+
+/// A conversion's type indices distinguish integer and FP even at equal
+/// widths. Legacy targets deliberately collapse these back to scalar LLTs.
+bool setConversionTypes(const egraph::OpProperties &P,
+                        SmallVectorImpl<LLT> &Ts) {
+  using egraph::CastKind;
+  if (!egraph::isFPCast(P.Cast))
+    return true;
+  if (Ts.size() != 2)
+    return false;
+  bool FloatResult =
+      P.Cast == CastKind::FPExtend || P.Cast == CastKind::FPTruncate ||
+      P.Cast == CastKind::SIntToFP || P.Cast == CastKind::UIntToFP;
+  bool FloatInput =
+      P.Cast != CastKind::SIntToFP && P.Cast != CastKind::UIntToFP;
+  for (unsigned I = 0; I < 2; ++I) {
+    unsigned W = Ts[I].getScalarSizeInBits();
+    bool IsFP = I == 0 ? FloatResult : FloatInput;
+    if (IsFP && W != 16 && W != 32 && W != 64)
+      return false;
+    LLT T = IsFP ? LLT::floatIEEE(W) : LLT::integer(W);
+    Ts[I] = Ts[I].isVector() ? LLT::fixed_vector(Ts[I].getNumElements(), T) : T;
+  }
+  return true;
+}
+
 /// Writes what the legalizer of the target does with each operator of the
-/// table: operator -> widths of its type indices -> action. The synthesizer
-/// reads it to try the operators that the target has before the others. It is
-/// not a cost model: a rule is selected from measurements.
+/// table: operator -> widths of its type indices -> action, and operator ->
+/// the types of its type indices (fixed vectors) -> action. The synthesizer
+/// reads it to try the operators that the target has before the others, and
+/// to propose a replacement with vectors only in operations that the target
+/// legalizes. It is not a cost model: a rule is selected from measurements.
+/// An action is the action of the legalizer; whether a form that is not
+/// Legal is acceptable depends on the stage (before the legalizer, a form
+/// that the legalizer can change is acceptable; after it, only Legal).
 void writeLegality(const MachineFunction &MF) {
   const TargetSubtargetInfo &STI = MF.getSubtarget();
   const LegalizerInfo *LI = STI.getLegalizerInfo();
@@ -605,9 +771,14 @@ void writeLegality(const MachineFunction &MF) {
   const DataLayout &DL = MF.getDataLayout();
   json::OStream J(OS, 1);
   J.object([&] {
-    J.attribute("version", 1);
+    J.attribute("version", 3);
+    J.attribute("typed_fp_casts", LLT::getUseExtended());
     J.attribute("target", MF.getTarget().getTargetTriple().str());
     J.attribute("cpu", STI.getCPU());
+    J.attribute("features", STI.getFeatureString());
+    // The stage of the pipeline at which the table was written; the actions
+    // are those of the LegalizerInfo, which every stage shares.
+    J.attribute("stage", "pre-legalizer");
     J.attributeObject("operators", [&] {
       for (unsigned Opc = TargetOpcode::PRE_ISEL_GENERIC_OPCODE_START;
            Opc <= TargetOpcode::PRE_ISEL_GENERIC_OPCODE_END; ++Opc) {
@@ -645,7 +816,7 @@ void writeLegality(const MachineFunction &MF) {
                 HasTypes = false;
             }
             std::string Action = "Unsupported";
-            if (HasTypes) {
+            if (HasTypes && setConversionTypes(*P, Types)) {
               Action.clear();
               raw_string_ostream AS(Action);
               AS << LI->getAction({Opc, Types}).Action;
@@ -660,6 +831,75 @@ void writeLegality(const MachineFunction &MF) {
             if (I == NumIdx)
               break;
           }
+        });
+      }
+    });
+    SmallVector<unsigned, 8> Lanes(LegalityLanes.begin(), LegalityLanes.end());
+    if (Lanes.empty())
+      Lanes = {2, 3, 4, 8};
+    SmallVector<unsigned, 8> Elems(LegalityElems.begin(), LegalityElems.end());
+    if (Elems.empty())
+      Elems = {1, 8, 16, 32, 64};
+    // The MI operand of each type index, so that a node of the synthesizer
+    // (operand 0 is the result) can give the types of a query.
+    J.attributeObject("type_operands", [&] {
+      for (unsigned Opc = TargetOpcode::PRE_ISEL_GENERIC_OPCODE_START;
+           Opc <= TargetOpcode::PRE_ISEL_GENERIC_OPCODE_END; ++Opc) {
+        if (!getSupportedOp(Opc))
+          continue;
+        const MCInstrDesc &Desc = TII->get(Opc);
+        SmallVector<int, 4> First;
+        for (auto [I, Op] : enumerate(Desc.operands())) {
+          if (!Op.isGenericType())
+            continue;
+          unsigned Idx = Op.getGenericTypeIndex();
+          if (First.size() <= Idx)
+            First.resize(Idx + 1, -1);
+          if (First[Idx] < 0)
+            First[Idx] = I;
+        }
+        if (First.empty())
+          continue;
+        J.attributeArray(TII->getName(Opc), [&] {
+          for (int I : First)
+            J.value(I);
+        });
+      }
+    });
+    J.attributeObject("typed", [&] {
+      for (unsigned Opc = TargetOpcode::PRE_ISEL_GENERIC_OPCODE_START;
+           Opc <= TargetOpcode::PRE_ISEL_GENERIC_OPCODE_END; ++Opc) {
+        const egraph::OpProperties *P = getSupportedOp(Opc);
+        if (!P)
+          continue;
+        const MCInstrDesc &Desc = TII->get(Opc);
+        unsigned NumIdx = 0;
+        for (const MCOperandInfo &Op : Desc.operands())
+          if (Op.isGenericType())
+            NumIdx = std::max(NumIdx, Op.getGenericTypeIndex() + 1);
+        std::vector<std::pair<std::string, std::string>> Rows;
+        for (unsigned N : Lanes)
+          forEachVectorTypes(Opc, *P, NumIdx, N, Elems,
+                             [&](ArrayRef<LLT> Types) {
+                               if (Types.size() != NumIdx)
+                                 return;
+                               SmallVector<LLT, 4> Typed(Types);
+                               if (!setConversionTypes(*P, Typed))
+                                 return;
+                               Types = Typed;
+                               std::string Key;
+                               for (LLT T : Types)
+                                 Key += (Key.empty() ? "" : ",") + lltText(T);
+                               std::string Action;
+                               raw_string_ostream AS(Action);
+                               AS << LI->getAction({Opc, Types}).Action;
+                               Rows.emplace_back(Key, Action);
+                             });
+        if (Rows.empty())
+          continue;
+        J.attributeObject(TII->getName(Opc), [&] {
+          for (const auto &[Key, Action] : Rows)
+            J.attribute(Key, Action);
         });
       }
     });

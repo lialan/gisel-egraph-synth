@@ -10,6 +10,14 @@ rules and how to write a small MIR function.
 
 import os
 
+
+def ops_lanes(t):
+    return t >> 16
+
+
+def ops_elem(t):
+    return t & 0xffff
+
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROFILE_DIR = os.path.join(HERE, 'targets')
 
@@ -93,11 +101,84 @@ class Capability:
 
     NATIVE = ('Legal', 'Custom')
     RESIZED = ('WidenScalar', 'NarrowScalar')
+    # Actions with which the legalizer has no rule for the types: a
+    # replacement must not create such an instruction.
+    NO_RULE = ('Unsupported', 'NotFound', 'UseLegacyRules')
+    STAGES = ('pre-legalizer', 'post-legalizer')
 
     def __init__(self, table, digest=''):
         self.ops = table['operators']
         self.target = table.get('target', '')
+        self.cpu = table.get('cpu', '')
+        self.features = table.get('features', '')
         self.digest = digest
+        # Version 2: operator -> the types of its type indices (LLT text,
+        # fixed vectors) -> action, and the MI operand of each type index.
+        self.typed = table.get('typed', {})
+        self.typed_fp_casts = table.get('typed_fp_casts', False)
+        self.type_operands = table.get('type_operands', {})
+
+    @staticmethod
+    def llt(t):
+        """The LLT text of the type code ``t`` of an integer value."""
+        return '<%d x s%d>' % (ops_lanes(t), ops_elem(t)) if ops_lanes(t) \
+            else 's%d' % t
+
+    def node_types(self, n, vw, idx_bits=32):
+        """The LLT texts of the type indices of the instruction of the node
+        ``n`` (operand 0 of the instruction is the result), or None. A
+        constant index of a lane is a register with ``idx_bits`` bits."""
+        from . import ir, ops
+        info, attr, _ = ops.parse(n[0])
+        where = self.type_operands.get(info.name)
+        if not where:
+            return None
+        widths = [n[1]] + [ir.width(a, vw) for a in n[2:]]
+        if info.attr == 'pred':
+            # Operand 1 of a comparison is its predicate.
+            widths.insert(1, None)
+        if info.attr == 'imm?' and attr is not None:
+            widths.append(idx_bits)
+        kinds = [None] * len(widths)
+        if self.typed_fp_casts and info.shape == 'cast' and (info.fp_operand or info.fp_result):
+            kinds = ['f' if info.fp_result else 'i', 'f' if info.fp_operand else 'i']
+        out = []
+        for k in where:
+            if k < 0 or k >= len(widths) or widths[k] is None:
+                return None
+            t = self.llt(widths[k])
+            out.append(t.replace('s', kinds[k]) if kinds[k] else t)
+        return out
+
+    def action_of(self, n, vw, idx_bits=32):
+        """The action of the legalizer for the instruction of the node
+        ``n``, or None if the table does not have its types."""
+        from . import ops
+        types = self.node_types(n, vw, idx_bits)
+        if types is None:
+            return None
+        key = ','.join(types)
+        name = ops.parse(n[0])[0].name
+        if key in self.typed.get(name, {}):
+            return self.typed[name][key]
+        if not any(t.startswith('<') for t in types):
+            return self.ops.get(name, {}).get(
+                ','.join(t[1:] for t in types))
+        return None
+
+    def can_create(self, n, vw, stage='pre-legalizer', idx_bits=32):
+        """True if a rule of the ``stage`` can create the instruction of the
+        node ``n``: before the legalizer, the legalizer has a rule for its
+        types (it can change the instruction later); after it, the
+        instruction is Legal. None if the table does not say. A Legal or
+        Custom action is not the cost of one machine instruction."""
+        assert stage in self.STAGES
+        a = self.action_of(n, vw, idx_bits)
+        if a is None:
+            return None
+        if stage == 'post-legalizer':
+            return a == 'Legal'
+        return a not in self.NO_RULE
 
     @classmethod
     def load(cls, path):
@@ -110,6 +191,10 @@ class Capability:
     def action(self, name, widths):
         return self.ops.get(name, {}).get(
             ','.join(str(w) for w in widths), 'Unsupported')
+
+    def supports_width(self, width):
+        return any(str(width) in key.split(',') and a not in self.NO_RULE
+                   for rows in self.ops.values() for key, a in rows.items())
 
     def capable(self, name, types):
         """True if the target has the operator ``name`` for values of the

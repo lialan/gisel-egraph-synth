@@ -13,6 +13,7 @@
 
 #include "GISelEGraphSynth/GISynthPredicates.h"
 #include "GISelMITest.h"
+#include "llvm/CodeGen/GlobalISel/CSEInfo.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 
@@ -328,6 +329,157 @@ TEST_F(AArch64GISelMITest, IsJointRegionFillsThePlan) {
                              {Copies[0]}, Plan));
 }
 
+TEST_F(AArch64GISelMITest, StraightLineJointRegion) {
+  setUp("  %3:_(s64) = G_ADD %0, %1\n"
+        "  %4:_(s64) = G_MUL %3, %2\n"
+        "  G_BR %bb.3\n"
+        "  bb.2:\n"
+        "  %5:_(s1) = G_ICMP intpred(ult), %3(s64), %0\n"
+        "  %6:_(s64) = G_ZEXT %5\n"
+        "  $x0 = COPY %6\n"
+        "  RET_ReallyLR implicit $x0\n"
+        "  bb.3:\n"
+        "  G_BR %bb.2\n");
+  if (!TM)
+    GTEST_SKIP();
+  auto *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  auto *Cmp = findOpcode(*MF, TargetOpcode::G_ICMP);
+  // The block layout is deliberately not the execution order.
+  auto Blocks = straightLineBlocks(*Cmp->getParent());
+  ASSERT_EQ(Blocks.size(), 3u);
+  EXPECT_EQ(Blocks.front(), Add->getParent());
+  EXPECT_EQ(Blocks.back(), Cmp->getParent());
+  Register Sum = Add->getOperand(0).getReg();
+  Register Carry = Cmp->getOperand(0).getReg();
+  EXPECT_FALSE(isRegionScope(*MRI, Carry, {Sum}, false));
+  EXPECT_TRUE(isRegionScope(*MRI, Carry, {Sum}, true));
+  RegionPlan Plan;
+  ASSERT_TRUE(isJointRegion(*MRI, Carry, {Sum}, {Copies[0], Copies[1]}, Plan));
+  EXPECT_EQ(Plan.InsertPt, Add);
+  EXPECT_EQ(firstRegionOutput(*Cmp, {Sum}, {}, /*MaxDistance=*/2), nullptr);
+  B.setInstrAndDebugLoc(applyRegionPlan(Plan));
+  releaseResults(*MRI, *Add);
+  releaseResults(*MRI, *Cmp);
+  B.buildUAddo(Sum, Carry, Copies[0], Copies[1]);
+  Add->eraseFromParent();
+  Cmp->eraseFromParent();
+  MachineDominatorTree MDT(*MF);
+  for (Register R : {Sum, Carry})
+    for (MachineOperand &Use : MRI->use_nodbg_operands(R))
+      EXPECT_TRUE(MDT.dominates(MRI->getVRegDef(R), Use.getParent()));
+  EXPECT_EQ(MF->size(), 3u);
+  EXPECT_NE(findOpcode(*MF, TargetOpcode::G_BR, 1), nullptr);
+}
+
+TEST_F(AArch64GISelMITest, StraightLineSiblingAndLateInput) {
+  setUp("  %3:_(s64) = G_SUB %0, %1\n"
+        "  G_BR %bb.2\n"
+        "  bb.2:\n"
+        "  %4:_(s64) = G_ADD %0, %2\n"
+        "  %5:_(s1) = G_ICMP intpred(uge), %0(s64), %1\n"
+        "  %6:_(s64) = G_SELECT %5(s1), %2, %4\n");
+  if (!TM)
+    GTEST_SKIP();
+  auto *Sub = findOpcode(*MF, TargetOpcode::G_SUB);
+  auto *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  auto *Select = findOpcode(*MF, TargetOpcode::G_SELECT);
+  auto IsSub = [](const MachineInstr &MI) {
+    return MI.getOpcode() == TargetOpcode::G_SUB;
+  };
+  EXPECT_EQ(findSiblingRoot(*MRI, *Select, Copies[0], IsSub), nullptr);
+  EXPECT_EQ(findSiblingRoot(*MRI, *Select, Copies[0], IsSub, 8, {}, {}, true),
+            Sub);
+  RegionPlan Plan;
+  Plan.Sibs = {Sub};
+  EXPECT_TRUE(planRegion(*Select, Plan, 0, {Copies[0], Copies[1]}));
+  EXPECT_EQ(Plan.InsertPt, Sub);
+  EXPECT_FALSE(
+      planRegion(*Select, Plan, 0, {Copies[0], Add->getOperand(0).getReg()}));
+}
+
+TEST_F(AArch64GISelMITest, StraightLineMoveKeptSibling) {
+  setUp("  %3:_(s64) = G_SUB %0, %1\n"
+        "  G_BR %bb.2\n"
+        "  bb.2:\n"
+        "  %4:_(s64) = G_ADD %0, %2\n");
+  if (!TM)
+    GTEST_SKIP();
+  auto *Sub = findOpcode(*MF, TargetOpcode::G_SUB);
+  auto *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  RegionPlan Plan;
+  Plan.Sibs = {Add};
+  ASSERT_TRUE(planRegion(*Sub, Plan, 1, {Copies[0], Copies[2]}));
+  ASSERT_EQ(Plan.Move.size(), 1u);
+  MachineBasicBlock *OriginalBlock = Add->getParent();
+  GISelCSEInfo CSE;
+  CSE.setCSEConfig(std::make_unique<CSEConfigFull>());
+  CSE.analyze(*MF);
+  EXPECT_EQ(&applyRegionPlan(Plan, &CSE), Sub);
+  CSE.handleRecordedInsts();
+  if (Error Err = CSE.verify())
+    FAIL() << toString(std::move(Err));
+  EXPECT_EQ(Add->getParent(), Sub->getParent());
+  EXPECT_TRUE(isBefore(*Add, *Sub));
+  EXPECT_TRUE(OriginalBlock->empty());
+  EXPECT_EQ(Sub->getParent()->succ_size(), 1u);
+}
+
+TEST_F(AArch64GISelMITest, StraightLineRejectsBranchAndJoin) {
+  setUp("  %3:_(s64) = G_ADD %0, %1\n"
+        "  %4:_(s1) = G_ICMP intpred(eq), %0(s64), %1\n"
+        "  G_BRCOND %4, %bb.3\n"
+        "  G_BR %bb.2\n"
+        "  bb.2:\n"
+        "  %5:_(s1) = G_ICMP intpred(ult), %3(s64), %0\n"
+        "  G_BR %bb.3\n"
+        "  bb.3:\n"
+        "  %6:_(s64) = G_PHI %0(s64), %bb.1, %3(s64), %bb.2\n");
+  if (!TM)
+    GTEST_SKIP();
+  auto *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  auto *Cmp = findOpcode(*MF, TargetOpcode::G_ICMP, 1);
+  EXPECT_EQ(straightLineBlocks(*Add->getParent()).size(), 1u);
+  EXPECT_EQ(straightLineBlocks(*Cmp->getParent()).size(), 1u);
+  RegionPlan Plan;
+  EXPECT_FALSE(isJointRegion(*MRI, Cmp->getOperand(0).getReg(),
+                             {Add->getOperand(0).getReg()},
+                             {Copies[0], Copies[1]}, Plan));
+}
+
+TEST_F(AArch64GISelMITest, StraightLineRejectsNonPureInterior) {
+  setUp("  %3:_(s64) = G_FREEZE %0\n"
+        "  %4:_(s64) = G_UDIV %0, %1\n"
+        "  G_BR %bb.2\n"
+        "  bb.2:\n"
+        "  %5:_(s64) = G_ADD %3, %4\n");
+  if (!TM)
+    GTEST_SKIP();
+  auto *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  auto *Freeze = findOpcode(*MF, TargetOpcode::G_FREEZE);
+  auto *Div = findOpcode(*MF, TargetOpcode::G_UDIV);
+  EXPECT_FALSE(isRegionScope(*MRI, Add->getOperand(0).getReg(),
+                             {Freeze->getOperand(0).getReg()}, true));
+  EXPECT_FALSE(isRegionScope(*MRI, Add->getOperand(0).getReg(),
+                             {Div->getOperand(0).getReg()}, true));
+}
+
+TEST_F(AArch64GISelMITest, StraightLineRejectsCycleAndLimitsBlocks) {
+  setUp("  G_BR %bb.4\n"
+        "  bb.2:\n"
+        "  G_BR %bb.3\n"
+        "  bb.3:\n"
+        "  G_BR %bb.2\n"
+        "  bb.4:\n"
+        "  %3:_(s64) = G_ADD %0, %1\n");
+  if (!TM)
+    GTEST_SKIP();
+  auto *Cycle = findOpcode(*MF, TargetOpcode::G_BR, 1)->getParent();
+  EXPECT_EQ(straightLineBlocks(*Cycle).size(), 1u);
+  auto *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  EXPECT_EQ(straightLineBlocks(*Add->getParent()).size(), 2u);
+  EXPECT_EQ(straightLineBlocks(*Add->getParent(), /*MaxBlocks=*/1).size(), 1u);
+}
+
 TEST_F(AArch64GISelMITest, ReleaseResults) {
   // Three roots become one G_USUBO and one G_XOR that reads its borrow.
   StringRef MIRString = "  %3:_(s64) = G_SUB %0, %1\n"
@@ -428,6 +580,24 @@ TEST_F(AArch64GISelMITest, ScalarWidthsOfPointers) {
   EXPECT_TRUE(getScalarWidths(*MRI, {Int, V}, W, 0, /*Lift=*/true));
   EXPECT_EQ(W[0], 32u);
   EXPECT_EQ(W[1], (2u << 16) | 32u);
+  // A register that can be one scalar for all lanes (the condition of a
+  // G_SELECT of vectors) does not count for the number of lanes; the other
+  // registers still need one number of lanes.
+  unsigned W3[3] = {0, 0, 0};
+  EXPECT_TRUE(getScalarWidths(*MRI, {Int, V, V}, W3, 0, /*Lift=*/true,
+                              /*SharedScalars=*/0b001));
+  EXPECT_EQ(W3[0], 32u);
+  EXPECT_EQ(W3[1], 32u);
+  EXPECT_EQ(W3[2], 32u);
+  // A vector there is also accepted, with the same number of lanes.
+  EXPECT_TRUE(getScalarWidths(*MRI, {V, V, V}, W3, 0, /*Lift=*/true,
+                              /*SharedScalars=*/0b001));
+  EXPECT_EQ(W3[0], 32u);
+  // Only the marked register can be a scalar.
+  EXPECT_TRUE(getScalarWidths(*MRI, {V, Int, V}, W3, 0, /*Lift=*/true,
+                              /*SharedScalars=*/0b001));
+  EXPECT_EQ(W3[1], 32u);
+  EXPECT_EQ(W3[0], (2u << 16) | 32u);
   // A vector of scalars is not a vector of pointers.
   EXPECT_FALSE(getScalarWidths(*MRI, {V}, W, 0b1));
   // Two pointers of one width have one type: a new pointer takes its type
@@ -875,3 +1045,56 @@ TEST_F(AArch64GISelMITest, EraseDeadSourceOp) {
 }
 
 } // namespace
+
+TEST(GISynthValueFactsTest, PrecisionAgainstAPFloat) {
+  for (unsigned FPWidth : {16u, 32u, 64u})
+    for (bool Signed : {false, true})
+      for (uint32_t Z :
+           {0xff000000u, 0xffff0000u, 0xffffff00u, 0x7fu, 0x80000000u}) {
+        KnownBits K(32);
+        K.Zero = APInt(32, Z);
+        if (!knownIntFitsFP(K, Signed, FPWidth))
+          continue;
+        for (uint32_t X : {0u, 1u, 0x7fffffffu, 0xffffffffu, 0x80000000u,
+                           0x01000001u, 0x0000ffffu}) {
+          APFloat F(getIEEEFormat(FPWidth));
+          auto Status = F.convertFromAPInt(APInt(32, X & ~Z), Signed,
+                                           APFloat::rmNearestTiesToEven);
+          EXPECT_FALSE(Status & APFloat::opInexact);
+          EXPECT_TRUE(F.isFinite());
+        }
+      }
+  KnownBits NonNegative(32);
+  NonNegative.Zero.setSignBit();
+  EXPECT_FALSE(knownIntFitsFP(NonNegative, true, 32));
+  KnownBits Low24(32);
+  Low24.Zero = APInt(32, 0xff000000);
+  EXPECT_TRUE(knownIntFitsFP(Low24, true, 32));
+}
+
+TEST(GISynthValueFactsTest, InwardRangeRounding) {
+  FPValueFacts F;
+  APFloat TooBig(APFloat::IEEEsingle());
+  TooBig.convertFromAPInt(APInt(32, 0x80000000), false,
+                          APFloat::rmNearestTiesToEven);
+  setFiniteBounds(F, TooBig, TooBig);
+  EXPECT_FALSE(knownFPInIntRange(F, true, 32));
+  EXPECT_TRUE(knownFPInIntRange(F, false, 32));
+  EXPECT_FALSE(knownFPInIntRange(FPValueFacts(), true, 32));
+}
+
+TEST_F(AArch64GISelMITest, SynthesizedLegalityAndTypes) {
+  setUp("  %3:_(s64) = G_ADD %0, %1\n");
+  if (!TM)
+    GTEST_SKIP();
+  Register R = findOpcode(*MF, TargetOpcode::G_ADD)->getOperand(0).getReg();
+  LLT S32 = LLT::scalar(32), S64 = LLT::scalar(64), S8 = LLT::scalar(8);
+  EXPECT_TRUE(isLegalSynthOp(*MRI, R, TargetOpcode::G_ADD, {S64, S64, S64}));
+  EXPECT_FALSE(isLegalSynthOp(*MRI, R, TargetOpcode::G_ADD, {S64, S32, S64}));
+  EXPECT_TRUE(isLegalSynthOp(*MRI, R, TargetOpcode::G_SITOFP, {S32, S8}));
+  MF->getProperties().set(MachineFunctionProperties::Property::Legalized);
+  EXPECT_FALSE(isLegalSynthOp(*MRI, R, TargetOpcode::G_SITOFP, {S32, S8}));
+  EXPECT_EQ(makeSynthType(32, 'f', 0, true), S32);
+  EXPECT_EQ(makeSynthType(32, 'f', 2), LLT::fixed_vector(2, LLT::float32()));
+  EXPECT_NE(makeSynthType(32, 'f'), makeSynthType(32, 'i'));
+}

@@ -40,10 +40,14 @@ class AgendaTest(unittest.TestCase):
         self.addCleanup(a.close)
         return a
 
+    def publish(self, a, *args, **kwargs):
+        a.record(*args, **kwargs)
+        a.commit()
+
     def test_a_complete_task_is_not_searched_again(self):
         a = self.open()
         self.assertEqual(a.pending('single', 'k'), agenda.NEW)
-        a.record('single', 'k', result={'targets': [[1, []]]})
+        self.publish(a, 'single', 'k', result={'targets': [[1, []]]})
         # Not again in this run, and not in the next one.
         self.assertIsNone(a.pending('single', 'k'))
         b = self.open()
@@ -54,7 +58,7 @@ class AgendaTest(unittest.TestCase):
                                                                'k'))
 
     def test_another_domain_has_its_own_tasks(self):
-        self.open().record('single', 'k')
+        self.publish(self.open(), 'single', 'k')
         self.assertEqual(self.open('other').pending('single', 'k'),
                          agenda.NEW)
 
@@ -64,7 +68,7 @@ class AgendaTest(unittest.TestCase):
                                ('candidates', 'max_candidates'),
                                ('unknown', 'timeout_ms')):
             key = reason + budget
-            self.open().record('single', key, [reason])
+            self.publish(self.open(), 'single', key, [reason])
             self.assertIsNone(self.open().pending('single', key), key)
             higher = self.open(**{budget: DEPTH[budget] + 1})
             self.assertEqual(higher.pending('single', key), agenda.RETRY)
@@ -74,24 +78,24 @@ class AgendaTest(unittest.TestCase):
                 'single', key), key)
 
     def test_the_deadline_leaves_a_task_open(self):
-        self.open().record('single', 'k', ['time'], progress=3,
+        self.publish(self.open(), 'single', 'k', ['time'], progress=3,
                            result={'targets': []})
         b = self.open()
         self.assertEqual(b.pending('single', 'k'), agenda.RETRY)
-        b.record('single', 'k')
+        self.publish(b, 'single', 'k')
         self.assertIsNone(self.open().pending('single', 'k'))
 
     def test_the_proof_budget_continues_until_it_makes_no_progress(self):
         # A decided proof is in the proof history: the next search of the
         # task decides other candidates with the same budget.
-        self.open().record('single', 'k', ['proofs'], progress=4)
+        self.publish(self.open(), 'single', 'k', ['proofs'], progress=4)
         b = self.open()
         self.assertEqual(b.pending('single', 'k'), agenda.RETRY)
-        b.record('single', 'k', ['proofs'], progress=7)
+        self.publish(b, 'single', 'k', ['proofs'], progress=7)
         c = self.open()
         self.assertEqual(c.pending('single', 'k'), agenda.RETRY)
         # No more candidates decided: the solver does not decide them.
-        c.record('single', 'k', ['proofs'], progress=7)
+        self.publish(c, 'single', 'k', ['proofs'], progress=7)
         self.assertIsNone(self.open().pending('single', 'k'))
         self.assertEqual(self.open(max_proofs=9).pending('single', 'k'),
                          agenda.RETRY)
@@ -100,11 +104,11 @@ class AgendaTest(unittest.TestCase):
 
     def test_new_tasks_first_then_the_least_searched(self):
         a = self.open()
-        a.record('single', 'twice', ['time'])
-        a.record('single', 'done')
+        self.publish(a, 'single', 'twice', ['time'])
+        self.publish(a, 'single', 'done')
         b = self.open()
-        b.record('single', 'twice', ['time'])
-        b.record('single', 'once', ['time'])
+        self.publish(b, 'single', 'twice', ['time'])
+        self.publish(b, 'single', 'once', ['time'])
         c = self.open()
         new, retry = c.order('single', ['once', 'x', 'done', 'twice', 'y'],
                              lambda k: k)
@@ -112,18 +116,18 @@ class AgendaTest(unittest.TestCase):
         self.assertEqual(retry, ['once', 'twice'])
 
     def test_reopen_searches_every_task_once(self):
-        self.open().record('single', 'k')
+        self.publish(self.open(), 'single', 'k')
         a = agenda.Agenda(self.tmp.name, 'd', DEPTH, reopen=True)
         self.addCleanup(a.close)
         self.assertEqual(a.pending('single', 'k'), agenda.RETRY)
-        a.record('single', 'k')
+        self.publish(a, 'single', 'k')
         self.assertIsNone(a.pending('single', 'k'))
 
     def test_summary(self):
         a = self.open()
-        a.record('single', 'c')
-        a.record('single', 't', ['time'])
-        a.record('single', 'b', ['terms', 'unknown'])
+        self.publish(a, 'single', 'c')
+        self.publish(a, 'single', 't', ['time'])
+        self.publish(a, 'single', 'b', ['terms', 'unknown'])
         s = a.summary('single', ['c', 't', 'b', 'n', 'n'])
         self.assertEqual(
             {k: s[k] for k in ('tasks', 'complete', 'not_searched', 'open',
@@ -138,7 +142,7 @@ class AgendaTest(unittest.TestCase):
 
     def test_without_a_directory_the_tasks_are_of_this_process(self):
         a = agenda.Agenda(None, 'd', DEPTH)
-        a.record('single', 'k')
+        self.publish(a, 'single', 'k')
         self.assertIsNone(a.pending('single', 'k'))
         a.close()
         b = agenda.Agenda(None, 'd', DEPTH)
@@ -322,7 +326,7 @@ class RunsTest(unittest.TestCase):
         cli.cmd_synth(cli.default_args(
             'synth', corpus=[corpus_file], o=out,
             proofs=self.path('proofs%d' % self.n), known=known_db,
-            cache=self.path(cache) if cache else '', **over))
+            cache=self.path(cache) if cache else '', search_jobs=0, **over))
         with open(out) as f:
             db = json.load(f)
         with open(os.path.splitext(out)[0] + '.stats.json') as f:

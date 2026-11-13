@@ -1809,9 +1809,15 @@ TEST_F(GIEGraphFPConversionTest, IntegerExtensionBeforeConversion) {
 // has no node for them, and their folds are the reference of the model.
 TEST(GIEGraphModelOnlyTest, NotOperatorsOfTheEGraph) {
   for (const OpProperties &P : getModelOnlyOpProperties()) {
-    EXPECT_EQ(getOpProperties(P.Opcode), nullptr) << P.Name;
+    // The vector operators that the e-graph has are the same entries.
+    EXPECT_EQ(getOpProperties(P.Opcode),
+              isEGraphVectorOp(P.Opcode) ? &P : nullptr)
+        << P.Name;
     EXPECT_EQ(getModelOnlyOpProperties(P.Opcode), &P) << P.Name;
+    EXPECT_EQ(P.IsVector, P.Shape == OpShape::Vector) << P.Name;
   }
+  EXPECT_TRUE(isEGraphVectorOp(T::G_SHUFFLE_VECTOR));
+  EXPECT_FALSE(isEGraphVectorOp(T::G_VECREDUCE_ADD));
   EXPECT_EQ(getModelOnlyOpProperties(T::G_ADD), nullptr);
   EXPECT_NE(getModelOnlyOpProperties(T::G_IMPLICIT_DEF), nullptr);
 }
@@ -1854,3 +1860,387 @@ TEST(GIEGraphModelOnlyTest, OperationsOnTheBitsOfAFloat) {
 }
 
 } // namespace
+
+//===----------------------------------------------------------------------===//
+// Fixed vectors (OpShape::Vector and the lane rules)
+//===----------------------------------------------------------------------===//
+
+namespace {
+class GIEGraphVectorTest : public GIEGraphTest {
+protected:
+  const LLT S16 = LLT::scalar(16);
+  const LLT V2S16 = LLT::fixed_vector(2, 16);
+  const LLT V2S32 = LLT::fixed_vector(2, 32);
+  const LLT V4S16 = LLT::fixed_vector(4, 16);
+
+  EClassId build(LLT Ty, ArrayRef<EClassId> Lanes) {
+    return G.addOp(T::G_BUILD_VECTOR, Ty, Lanes);
+  }
+  EClassId splat(LLT Ty, int64_t Value) {
+    EClassId C = cst(Value, Ty.getElementType());
+    SmallVector<EClassId, 4> Lanes(Ty.getNumElements(), C);
+    return build(Ty, Lanes);
+  }
+  EClassId extract(EClassId V, unsigned Lane) {
+    return G.addOp(T::G_EXTRACT_VECTOR_ELT, G.getType(V).getElementType(), {V},
+                   0, Lane);
+  }
+  EClassId insert(EClassId V, EClassId X, unsigned Lane) {
+    return G.addOp(T::G_INSERT_VECTOR_ELT, G.getType(V), {V, X}, 0, Lane);
+  }
+  EClassId shuffle(LLT Ty, EClassId A, EClassId B, ArrayRef<int> Mask) {
+    return G.addOp(T::G_SHUFFLE_VECTOR, Ty, {A, B}, 0, G.internMask(Mask));
+  }
+};
+} // namespace
+
+TEST_F(GIEGraphVectorTest, MaskIsPartOfTheIdentity) {
+  EClassId A = in(V2S32), B = in(V2S32);
+  EClassId S1 = shuffle(V2S32, A, B, {1, 0});
+  EClassId S2 = shuffle(V2S32, A, B, {0, 3});
+  EClassId S3 = shuffle(V2S32, A, B, {1, 0});
+  G.rebuild();
+  EXPECT_FALSE(G.equivalent(S1, S2));
+  EXPECT_TRUE(G.equivalent(S1, S3));
+  EXPECT_EQ(G.internMask({1, 0}), G.internMask(SmallVector<int>{1, 0}));
+}
+
+TEST_F(GIEGraphVectorTest, TypeKeyOfVectors) {
+  // Equal types have equal keys; the same number of bits in another shape
+  // is another type.
+  EXPECT_EQ(getTypeKey(V2S32), getTypeKey(LLT::fixed_vector(2, 32)));
+  EXPECT_NE(getTypeKey(V2S32), getTypeKey(V4S16));
+  EXPECT_NE(getTypeKey(V2S32), getTypeKey(S64));
+}
+
+TEST_F(GIEGraphVectorTest, ExtractOfBuildAndInsert) {
+  EClassId X = in(S16), Y = in(S16), Z = in(S16);
+  EClassId V = build(V2S16, {X, Y});
+  EClassId E1 = extract(V, 1);
+  EClassId I = insert(V, Z, 0);
+  EClassId E0 = extract(I, 0), E1I = extract(I, 1);
+  runAll();
+  EXPECT_TRUE(G.equivalent(E1, Y));
+  EXPECT_TRUE(G.equivalent(E0, Z));
+  EXPECT_TRUE(G.equivalent(E1I, Y));
+}
+
+TEST_F(GIEGraphVectorTest, ExtractThroughShuffleRemapsTheIndex) {
+  EClassId A = in(V2S32), B = in(V2S32);
+  EClassId S = shuffle(V2S32, A, B, {3, 0});
+  EClassId E = extract(S, 0);
+  runAll();
+  EXPECT_TRUE(G.equivalent(E, lookup([&] { return extract(B, 1); })));
+}
+
+TEST_F(GIEGraphVectorTest, UndefinedLaneIsNotRelated) {
+  EClassId A = in(V2S32), B = in(V2S32);
+  EClassId S = shuffle(V2S32, A, B, {-1, 0});
+  EClassId E0 = extract(S, 0);
+  SaturationStats St = runAll();
+  // Lane 0 has no value: no rule relates it to a lane of A or B.
+  EXPECT_FALSE(G.equivalent(E0, lookup([&] { return extract(A, 0); })));
+  EXPECT_FALSE(G.equivalent(E0, lookup([&] { return extract(B, 0); })));
+  EXPECT_FALSE(G.getClass(S).NotUndef);
+  (void)St;
+}
+
+TEST_F(GIEGraphVectorTest, BuildOfExtractsIsTheVector) {
+  EClassId V = in(V2S32);
+  EClassId B = build(V2S32, {extract(V, 0), extract(V, 1)});
+  EClassId R = build(V2S32, {extract(V, 1), extract(V, 0)});
+  SaturationStats St = runAll();
+  EXPECT_TRUE(G.equivalent(B, V));
+  EXPECT_TRUE(G.equivalent(R, lookup([&] {
+    return shuffle(V2S32, V, V, {1, 0});
+  })));
+  EXPECT_GT(St.LaneRuleApplications["vector-build-of-extracts"], 0u);
+}
+
+TEST_F(GIEGraphVectorTest, ShuffleComposition) {
+  EClassId A = in(V2S32), B = in(V2S32);
+  EClassId Inner = shuffle(V2S32, A, B, {1, 2});
+  EClassId Outer = shuffle(V2S32, Inner, Inner, {1, 0});
+  EClassId Back = shuffle(V2S32, Outer, Outer, {1, 0});
+  runAll();
+  EXPECT_TRUE(G.equivalent(Outer, lookup([&] {
+    return shuffle(V2S32, B, A, {0, 3});
+  })));
+  EXPECT_TRUE(G.equivalent(Back, Inner));
+}
+
+TEST_F(GIEGraphVectorTest, PermutationOfALaneWiseOperation) {
+  EClassId A = in(V2S32), B = in(V2S32);
+  EClassId Sum = op(T::G_ADD, shuffle(V2S32, A, A, {1, 0}),
+                    shuffle(V2S32, B, B, {1, 0}));
+  runAll();
+  EXPECT_TRUE(G.equivalent(Sum, lookup([&] {
+    EClassId Whole = add(A, B);
+    return shuffle(V2S32, Whole, Whole, {1, 0});
+  })));
+}
+
+TEST_F(GIEGraphVectorTest, ScalarizeOnlyWithoutUndefinedBehaviour) {
+  EClassId A = in(V2S32), B = in(V2S32);
+  EClassId E = extract(add(A, B), 1);
+  EClassId D = extract(op(T::G_UDIV, A, B), 1);
+  runAll();
+  EXPECT_TRUE(G.equivalent(E, lookup([&] {
+    return add(extract(A, 1), extract(B, 1));
+  })));
+  // A division of all lanes can trap in lane 0: the division of lane 1
+  // alone is not the same instruction.
+  EXPECT_FALSE(G.equivalent(D, lookup([&] {
+    return op(T::G_UDIV, extract(A, 1), extract(B, 1));
+  })));
+}
+
+TEST_F(GIEGraphVectorTest, ConstantsFoldLaneByLane) {
+  // Overflow in the low lane must not carry into the high lane:
+  // <0xffff, 2> + <1, 3> is <0, 5>, not the packed integer sum <0, 6>.
+  EClassId C = op(T::G_ADD, build(V2S16, {cst(0xffff, S16), cst(2, S16)}),
+                  build(V2S16, {cst(1, S16), cst(3, S16)}));
+  run(rules({"fold-add"}));
+  EXPECT_TRUE(G.equivalent(C, lookup([&] {
+    return build(V2S16, {cst(0, S16), cst(5, S16)});
+  })));
+  EXPECT_FALSE(G.equivalent(C, lookup([&] {
+    return build(V2S16, {cst(0, S16), cst(6, S16)});
+  })));
+  EXPECT_FALSE(G.getConstant(C).has_value());
+}
+
+TEST_F(GIEGraphVectorTest, LiteralOfAVectorIsASplat) {
+  // x - x is 0 in each lane: the literal of the rule is a splat of the
+  // scalar 0 of the width of a lane, never a constant of 64 bits. (With an
+  // input that can be undef, 0 only refines x - x.)
+  EClassId A = in(V2S32, /*Defined=*/true);
+  EClassId D = sub(A, A);
+  runAll();
+  for (const ENode &N : G.getClass(D).Nodes)
+    EXPECT_FALSE(N.isConstant());
+  EXPECT_EQ(G.getType(D), V2S32);
+  EXPECT_FALSE(G.getConstant(D).has_value());
+  ASSERT_TRUE(G.getClass(D).SplatConst.has_value());
+  EXPECT_EQ(*G.getClass(D).SplatConst, APInt(32, 0));
+  EXPECT_TRUE(G.equivalent(D, lookup([&] {
+    return build(V2S32, {cst(0), cst(0)});
+  })));
+}
+
+TEST_F(GIEGraphVectorTest, XorTwiceOfVectors) {
+  EClassId A = in(V2S16), B = in(V2S16, /*Defined=*/true);
+  EClassId X = op(T::G_XOR, op(T::G_XOR, A, B), B);
+  // U can be undef: (c ^ u) ^ u only refines to c.
+  EClassId C = in(V2S16), U = in(V2S16);
+  EClassId Y = op(T::G_XOR, op(T::G_XOR, C, U), U);
+  runAll();
+  EXPECT_TRUE(G.equivalent(X, A));
+  EXPECT_FALSE(G.equivalent(Y, C));
+  EXPECT_TRUE(G.refinesTo(Y, C));
+}
+
+TEST_F(GIEGraphVectorTest, LiteralMatchesASplatInTheWidthOfALane) {
+  EClassId A = in(V2S16);
+  // -1 of 16 bits in each lane.
+  EClassId M = build(V2S16, {cst(-1, S16), cst(-1, S16)});
+  EClassId And = op(T::G_AND, A, M);
+  EClassId Add = add(A, build(V2S16, {cst(0, S16), cst(0, S16)}));
+  // Not a splat: no literal.
+  EClassId Other = add(A, build(V2S16, {cst(0, S16), cst(1, S16)}));
+  runAll();
+  EXPECT_TRUE(G.equivalent(And, A));
+  EXPECT_TRUE(G.equivalent(Add, A));
+  EXPECT_FALSE(G.equivalent(Other, A));
+  EXPECT_FALSE(G.getClass(Other).SplatConst.has_value());
+}
+
+TEST_F(GIEGraphVectorTest, TableLiteralIdentitiesUseElementWidths) {
+  for (LLT Ty : {LLT::fixed_vector(4, 1), V2S16, V2S32}) {
+    SCOPED_TRACE(Ty.getScalarSizeInBits());
+    EClassId X = in(Ty), Zero = splat(Ty, 0), Ones = splat(Ty, -1);
+    EClassId Xor = op(T::G_XOR, X, Zero);
+    EClassId And = op(T::G_AND, X, Ones);
+    run(rules({"xor-zero", "and-ones"}));
+    EXPECT_TRUE(G.equivalent(Xor, X));
+    EXPECT_TRUE(G.equivalent(And, X));
+    EXPECT_EQ(G.getScalarOrSplatConstant(Ones),
+              APInt::getAllOnes(Ty.getScalarSizeInBits()));
+    EXPECT_FALSE(G.getConstant(Zero).has_value());
+    EXPECT_FALSE(G.getConstant(Ones).has_value());
+  }
+}
+
+TEST_F(GIEGraphVectorTest, TableLiteralsRequireEveryLaneToBeConstant) {
+  EClassId X = in(V2S16), U = in(S16), Zero = cst(0, S16);
+  EClassId NonUniform = build(V2S16, {Zero, cst(1, S16)});
+  EClassId Partial = build(V2S16, {Zero, U});
+  EClassId RepeatedUnknown = build(V2S16, {U, U});
+  EClassId Zeros = splat(V2S16, 0);
+  EClassId UndefinedLane = shuffle(V2S16, Zeros, Zeros, {0, -1});
+  EClassId A = op(T::G_XOR, X, NonUniform);
+  EClassId B = op(T::G_XOR, X, Partial);
+  EClassId C = op(T::G_XOR, X, UndefinedLane);
+  run(rules({"xor-zero"}));
+  for (EClassId V : {NonUniform, Partial, RepeatedUnknown, UndefinedLane})
+    EXPECT_FALSE(G.getScalarOrSplatConstant(V).has_value());
+  EXPECT_FALSE(G.equivalent(A, X));
+  EXPECT_FALSE(G.refinesTo(A, X));
+  EXPECT_FALSE(G.equivalent(B, X));
+  EXPECT_FALSE(G.equivalent(C, X));
+}
+
+TEST_F(GIEGraphVectorTest, SelfCancellationPreservesConstantAndRefinementKinds) {
+  EClassId A = in(V2S32), Defined = in(V2S32, /*Defined=*/true);
+  EClassId D = op(T::G_XOR, A, A);
+  EClassId Exact = op(T::G_XOR, Defined, Defined);
+  EClassId Zero = splat(V2S32, 0);
+  run(rules({"xor-self"}));
+  EXPECT_FALSE(G.equivalent(D, Zero));
+  EXPECT_TRUE(G.refinesTo(D, Zero));
+  EXPECT_FALSE(G.refinesTo(Zero, D));
+  EXPECT_TRUE(G.equivalent(Exact, Zero));
+  // A refinement to a constant does not establish an exact constant value.
+  EXPECT_FALSE(G.getScalarOrSplatConstant(D).has_value());
+  EXPECT_EQ(G.getScalarOrSplatConstant(Exact), APInt(32, 0));
+  // Even after merging the XOR and build nodes, EClass::Const remains a
+  // scalar-only fact. Rebuilding must retain the vector's build node.
+  for (EClassId V : {D, Exact, Zero}) {
+    EXPECT_EQ(G.getType(V), V2S32);
+    EXPECT_FALSE(G.getConstant(V).has_value());
+    for (const ENode &N : G.getClass(V).Nodes)
+      EXPECT_FALSE(N.isConstant());
+  }
+}
+
+TEST_F(GIEGraphVectorTest, XorCancellationThroughSplatZero) {
+  EClassId X = in(V2S16), Y = in(V2S16);
+  EClassId DefinedY = in(V2S16, /*Defined=*/true);
+  EClassId R = op(T::G_XOR, op(T::G_XOR, X, Y), Y);
+  EClassId Exact = op(T::G_XOR, op(T::G_XOR, X, DefinedY), DefinedY);
+  // No zero exists in the graph before the self rule creates its splat.
+  runAll();
+  EXPECT_TRUE(G.refinesTo(R, X));
+  EXPECT_FALSE(G.equivalent(R, X));
+  EXPECT_TRUE(G.equivalent(Exact, X));
+  Extractor E(G, DefaultCostModel());
+  EXPECT_EQ(E.getTreeCost(R), 0u);
+  ASSERT_TRUE(E.getChosenNode(R)->isInput());
+  EXPECT_EQ(E.getChosenNode(R)->InputIdx, E.getChosenNode(X)->InputIdx);
+}
+
+TEST_F(GIEGraphVectorTest, ComputedSplatConstantsBuildVectorOperations) {
+  EClassId X = in(V2S16);
+  EClassId Product = mul(X, splat(V2S16, 8));
+  EClassId Sum = add(X, splat(V2S16, -3));
+  run(rules({"mul-pow2-to-shl", "add-negconst"}));
+  EXPECT_TRUE(G.equivalent(Product, lookup([&] {
+    return shl(X, splat(V2S16, 3));
+  })));
+  EXPECT_TRUE(G.equivalent(Sum, lookup([&] {
+    return sub(X, splat(V2S16, 3));
+  })));
+}
+
+TEST_F(GIEGraphVectorTest, ConstantFoldingMatchesSplatsDirectly) {
+  EClassId Sum = add(splat(V2S16, 0xffff), splat(V2S16, 1));
+  G.rebuild();
+  std::vector<RewriteRule> R = rules({"fold-add"});
+  SmallVector<RuleMatch, 4> Matches;
+  matchRule(G, R[0], Matches);
+  ASSERT_FALSE(Matches.empty());
+  // Apply the table rule directly: lane scalarization must not hide a
+  // broken #constant match, computed value width, or RHS splat builder.
+  EXPECT_EQ(applyMatch(G, R[0], Matches.front()), ApplyResult::Merged);
+  G.rebuild();
+  EXPECT_EQ(G.getScalarOrSplatConstant(Sum), APInt(16, 0));
+  EXPECT_FALSE(G.getConstant(Sum).has_value());
+  EXPECT_TRUE(G.equivalent(Sum, lookup([&] { return splat(V2S16, 0); })));
+}
+
+TEST_F(GIEGraphVectorTest, ShiftSplatBoundsUseElementWidth) {
+  EClassId X = in(V2S16, /*Defined=*/true);
+  EClassId Valid = shl(X, splat(V2S16, 15));
+  EClassId Invalid = shl(X, splat(V2S16, 16));
+  run(rules({"shl-to-mul"}));
+  EXPECT_TRUE(G.equivalent(Valid, lookup([&] {
+    return mul(X, splat(V2S16, 0x8000));
+  })));
+  // 16 is smaller than the whole vector's 32 bits, but already poison for
+  // each 16-bit lane. It must not be rewritten as a multiplication by zero.
+  EXPECT_FALSE(G.equivalent(Invalid, lookup([&] {
+    return mul(X, splat(V2S16, 0));
+  })));
+  EXPECT_EQ(G.getClass(Invalid).Nodes.size(), 1u);
+  EXPECT_FALSE(G.getClass(Invalid).NotPoison);
+}
+
+TEST_F(GIEGraphVectorTest, MixedWidthCastsUseElementWidth) {
+  const OpProperties &TruncProperties = *getOpProperties(T::G_TRUNC);
+  EXPECT_FALSE(isValidCast(TruncProperties, V4S16, V2S32, 0));
+  EXPECT_FALSE(isValidCast(TruncProperties, S16, V2S32, 0));
+  EClassId X = in(V2S32);
+  EClassId Trunc = G.addOp(T::G_TRUNC, V2S16, {X});
+  EClassId ZExt = G.addOp(T::G_ZEXT, V2S32, {Trunc});
+  EClassId SExt = G.addOp(T::G_SEXT, V2S32, {Trunc});
+  EClassId Constant = G.addOp(T::G_ZEXT, V2S32, {splat(V2S16, -1)});
+  G.rebuild();
+  std::vector<RewriteRule> Fold = rules({"fold-zext"});
+  SmallVector<RuleMatch, 4> Matches;
+  matchRule(G, Fold[0], Matches);
+  ASSERT_FALSE(Matches.empty());
+  EXPECT_EQ(applyMatch(G, Fold[0], Matches.front()), ApplyResult::Merged);
+  G.rebuild();
+  EXPECT_EQ(G.getScalarOrSplatConstant(Constant), APInt(32, 0xffff));
+
+  run(rules({"zext-of-trunc-to-and", "sext-of-trunc-to-sextinreg"}));
+  EXPECT_TRUE(G.equivalent(ZExt, lookup([&] {
+    return op(T::G_AND, X, splat(V2S32, 0xffff));
+  })));
+  EXPECT_TRUE(G.equivalent(SExt, lookup([&] {
+    return G.addOp(T::G_SEXT_INREG, V2S32, {X}, 0, 16);
+  })));
+}
+
+TEST_F(GIEGraphVectorTest, CompareAndSelectPreserveConditionShapes) {
+  const LLT V2S1 = LLT::fixed_vector(2, 1);
+  EClassId X = in(V2S16), Y = in(V2S16);
+  EClassId Cmp =
+      G.addOp(T::G_ICMP, V2S1, {op(T::G_XOR, X, Y), splat(V2S16, 0)}, 0,
+              CmpInst::ICMP_NE);
+  EClassId Shared = in(V2S16, /*Defined=*/true);
+  EClassId ScalarCond = in(LLT::scalar(1)), MaskCond = in(V2S1);
+  EClassId ScalarSelect = G.addOp(
+      T::G_SELECT, V2S16, {ScalarCond, add(Shared, X), add(Shared, Y)});
+  EClassId MaskSelect = G.addOp(
+      T::G_SELECT, V2S16, {MaskCond, add(Shared, X), add(Shared, Y)});
+  run(rules({"icmp-ne-xor-zero", "select-factor-add"}));
+  EXPECT_TRUE(G.equivalent(Cmp, lookup([&] {
+    return G.addOp(T::G_ICMP, V2S1, {X, Y}, 0, CmpInst::ICMP_NE);
+  })));
+  EXPECT_TRUE(G.equivalent(ScalarSelect, lookup([&] {
+    return add(Shared, G.addOp(T::G_SELECT, V2S16, {ScalarCond, X, Y}));
+  })));
+  EXPECT_TRUE(G.equivalent(MaskSelect, lookup([&] {
+    return add(Shared, G.addOp(T::G_SELECT, V2S16, {MaskCond, X, Y}));
+  })));
+}
+
+TEST_F(GIEGraphVectorTest, SelectWithAScalarCondition) {
+  EClassId C = in(LLT::scalar(1)), A = in(V2S32), B = in(V2S32);
+  EClassId Sel = G.addOp(T::G_SELECT, V2S32, {C, A, B});
+  EClassId E = extract(Sel, 0);
+  runAll();
+  EXPECT_TRUE(G.equivalent(E, lookup([&] {
+    return G.addOp(T::G_SELECT, S32, {C, extract(A, 0), extract(B, 0)});
+  })));
+}
+
+TEST_F(GIEGraphVectorTest, ExtractionPrefersTheVector) {
+  EClassId V = in(V2S32);
+  EClassId B = build(V2S32, {extract(V, 0), extract(V, 1)});
+  runAll();
+  Extractor E(G, DefaultCostModel());
+  EXPECT_EQ(E.getTreeCost(B), 0u);
+  EXPECT_TRUE(E.getChosenNode(B)->isInput());
+}

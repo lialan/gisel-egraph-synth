@@ -13,7 +13,7 @@
  "generator_version": "2.1",
  "knowledge": {
   "schema": 1,
-  "semantics_sha256": "0f303a1cc0479fb4ab10a29e7a2b0f80e13eeba1998753e8d3af46e39a4a1ad5"
+  "semantics_sha256": "c32c3266559e83acdab82c226dbd6c182fe71fdb82736cf52f80ee588a8e7566"
  },
  "limits": {
   "discovery": {
@@ -13189,6 +13189,312 @@
    ],
    "widens_operation": false,
    "width_specific": false
+  },
+  {
+   "class": "reduces_cost",
+   "cost": {
+    "replacement": 0,
+    "source": 2
+   },
+   "coverage": {
+    "disjunct_occurrences": [
+     2
+    ],
+    "match_instances": 1,
+    "match_occurrences": 2,
+    "pass_instances": 1,
+    "pass_occurrences": 2
+   },
+   "disjuncts": [
+    {
+     "coverage_occurrences": 2,
+     "example": {
+      "facts": [
+       [
+        "0xffff0000",
+        "0x0"
+       ]
+      ],
+      "vw": [
+       32
+      ]
+     },
+     "pred": "exact_signed_to_f32(x0)",
+     "pred_json": [
+      [
+       "fitsfp",
+       0,
+       true,
+       32
+      ]
+     ],
+     "proofs": [
+      {
+       "result": "unsat",
+       "root_w": 32,
+       "smt2_sha256": "c44006c017d39b1f",
+       "vw": [
+        32
+       ],
+       "width_map": [
+        [
+         32,
+         32
+        ]
+       ]
+      }
+     ],
+     "support": {
+      "instances": 1,
+      "occurrences": 2
+     },
+     "width_maps": [
+      [
+       [
+        32,
+        32
+       ]
+      ]
+     ]
+    }
+   ],
+   "id": "synth_fptosi_d1815a75",
+   "needs_one_use": false,
+   "precondition": "exact_signed_to_f32(x0)",
+   "provenance": {
+    "discovery": "enumerative",
+    "generalization": "symbolic-known-bits",
+    "sources": [
+     "enumerative"
+    ]
+   },
+   "replacement": "x0",
+   "replacement_json": {
+    "var": 0
+   },
+   "search": {
+    "atoms": 3,
+    "counterexamples": 1,
+    "pruned_by_cex": 1,
+    "solver_calls": 3,
+    "tried": 4,
+    "unknown": 0
+   },
+   "semantic_status": {
+    "direction": "source -> replacement",
+    "dnf_proofs": [
+     {
+      "result": "unsat",
+      "root_w": 32,
+      "smt2_sha256": "c44006c017d39b1f",
+      "vw": [
+       32
+      ],
+      "width_map": [
+       [
+        32,
+        32
+       ]
+      ]
+     }
+    ],
+    "kind": "verified_refinement",
+    "model": "gmir-v3",
+    "solver": "z3 5.4.1"
+   },
+   "source": "(G_FPTOSI:s32 (G_SITOFP:s32 x0))",
+   "source_json": {
+    "args": [
+     {
+      "args": [
+       {
+        "var": 0
+       }
+      ],
+      "op": "G_SITOFP",
+      "w": 32
+     }
+    ],
+    "op": "G_FPTOSI",
+    "w": 32
+   },
+   "support": {
+    "examples": [
+     {
+      "file": "tools/gisel-rule-synth/corpus/fp-conversions.mir",
+      "fn": "train_1_0",
+      "root": "%4"
+     },
+     {
+      "file": "tools/gisel-rule-synth/corpus/fp-conversions.mir",
+      "fn": "train_1_1",
+      "root": "%4"
+     }
+    ],
+    "instances": 1,
+    "occurrences": 2,
+    "source_flags": [],
+    "training_constants": {}
+   },
+   "unselected_disjuncts": [],
+   "vw": [
+    32
+   ],
+   "widens_operation": false,
+   "width_specific": true
+  },
+  {
+   "class": "reduces_cost",
+   "cost": {
+    "replacement": 0,
+    "source": 2
+   },
+   "coverage": {
+    "disjunct_occurrences": [
+     2
+    ],
+    "match_instances": 1,
+    "match_occurrences": 2,
+    "pass_instances": 1,
+    "pass_occurrences": 2
+   },
+   "disjuncts": [
+    {
+     "coverage_occurrences": 2,
+     "example": {
+      "facts": [
+       [
+        "0xffff0000",
+        "0x0"
+       ]
+      ],
+      "vw": [
+       32
+      ]
+     },
+     "pred": "exact_unsigned_to_f32(x0)",
+     "pred_json": [
+      [
+       "fitsfp",
+       0,
+       false,
+       32
+      ]
+     ],
+     "proofs": [
+      {
+       "result": "unsat",
+       "root_w": 32,
+       "smt2_sha256": "9ee095d03399e1ab",
+       "vw": [
+        32
+       ],
+       "width_map": [
+        [
+         32,
+         32
+        ]
+       ]
+      }
+     ],
+     "support": {
+      "instances": 1,
+      "occurrences": 2
+     },
+     "width_maps": [
+      [
+       [
+        32,
+        32
+       ]
+      ]
+     ]
+    }
+   ],
+   "id": "synth_fptoui_8c41624c",
+   "needs_one_use": false,
+   "precondition": "exact_unsigned_to_f32(x0)",
+   "provenance": {
+    "discovery": "enumerative",
+    "generalization": "symbolic-known-bits",
+    "sources": [
+     "enumerative"
+    ]
+   },
+   "replacement": "x0",
+   "replacement_json": {
+    "var": 0
+   },
+   "search": {
+    "atoms": 3,
+    "counterexamples": 2,
+    "pruned_by_cex": 1,
+    "solver_calls": 4,
+    "tried": 5,
+    "unknown": 0
+   },
+   "semantic_status": {
+    "direction": "source -> replacement",
+    "dnf_proofs": [
+     {
+      "result": "unsat",
+      "root_w": 32,
+      "smt2_sha256": "9ee095d03399e1ab",
+      "vw": [
+       32
+      ],
+      "width_map": [
+       [
+        32,
+        32
+       ]
+      ]
+     }
+    ],
+    "kind": "verified_refinement",
+    "model": "gmir-v3",
+    "solver": "z3 5.4.1"
+   },
+   "source": "(G_FPTOUI:s32 (G_UITOFP:s32 x0))",
+   "source_json": {
+    "args": [
+     {
+      "args": [
+       {
+        "var": 0
+       }
+      ],
+      "op": "G_UITOFP",
+      "w": 32
+     }
+    ],
+    "op": "G_FPTOUI",
+    "w": 32
+   },
+   "support": {
+    "examples": [
+     {
+      "file": "tools/gisel-rule-synth/corpus/fp-conversions.mir",
+      "fn": "train_0_0",
+      "root": "%4"
+     },
+     {
+      "file": "tools/gisel-rule-synth/corpus/fp-conversions.mir",
+      "fn": "train_0_1",
+      "root": "%4"
+     }
+    ],
+    "instances": 1,
+    "occurrences": 2,
+    "source_flags": [],
+    "training_constants": {}
+   },
+   "unselected_disjuncts": [],
+   "vw": [
+    32
+   ],
+   "widens_operation": false,
+   "width_specific": true
   },
   {
    "class": "reduces_cost",
@@ -30358,6 +30664,162 @@
   {
    "class": "reduces_cost",
    "cost": {
+    "replacement": 0,
+    "source": 2
+   },
+   "coverage": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "disjuncts": [
+    {
+     "coverage_occurrences": 1,
+     "example": {
+      "facts": [
+       [
+        "0x0",
+        "0x0",
+        false,
+        320,
+        true,
+        0,
+        1199570688
+       ]
+      ],
+      "vw": [
+       32
+      ]
+     },
+     "pred": "fpclass(x0) subset 0x1d8 && finite_integral(x0)",
+     "pred_json": [
+      [
+       "fpclass",
+       0,
+       472
+      ],
+      [
+       "fpintegral",
+       0
+      ]
+     ],
+     "proofs": [
+      {
+       "result": "unsat",
+       "root_w": 32,
+       "smt2_sha256": "3cfe86b9bbabf267",
+       "vw": [
+        32
+       ],
+       "width_map": [
+        [
+         32,
+         32
+        ]
+       ]
+      }
+     ],
+     "support": {
+      "instances": 1,
+      "occurrences": 1
+     },
+     "width_maps": [
+      [
+       [
+        32,
+        32
+       ]
+      ]
+     ]
+    }
+   ],
+   "id": "synth_sitofp_85481d55",
+   "needs_one_use": false,
+   "precondition": "fpclass(x0) subset 0x1d8 && finite_integral(x0)",
+   "provenance": {
+    "discovery": "enumerative",
+    "generalization": "symbolic-known-bits",
+    "sources": [
+     "enumerative"
+    ]
+   },
+   "replacement": "x0",
+   "replacement_json": {
+    "var": 0
+   },
+   "search": {
+    "atoms": 18,
+    "counterexamples": 3,
+    "pruned_by_cex": 42,
+    "solver_calls": 5,
+    "tried": 47,
+    "unknown": 0
+   },
+   "semantic_status": {
+    "direction": "source -> replacement",
+    "dnf_proofs": [
+     {
+      "result": "unsat",
+      "root_w": 32,
+      "smt2_sha256": "3cfe86b9bbabf267",
+      "vw": [
+       32
+      ],
+      "width_map": [
+       [
+        32,
+        32
+       ]
+      ]
+     }
+    ],
+    "kind": "verified_refinement",
+    "model": "gmir-v3",
+    "solver": "z3 5.4.1"
+   },
+   "source": "(G_SITOFP:s32 (G_FPTOSI:s32 x0))",
+   "source_json": {
+    "args": [
+     {
+      "args": [
+       {
+        "var": 0
+       }
+      ],
+      "op": "G_FPTOSI",
+      "w": 32
+     }
+    ],
+    "op": "G_SITOFP",
+    "w": 32
+   },
+   "support": {
+    "examples": [
+     {
+      "file": "tools/gisel-rule-synth/corpus/fp-conversions.mir",
+      "fn": "train_1_1",
+      "root": "%5"
+     }
+    ],
+    "instances": 1,
+    "occurrences": 1,
+    "source_flags": [],
+    "training_constants": {}
+   },
+   "unselected_disjuncts": [],
+   "vw": [
+    32
+   ],
+   "widens_operation": false,
+   "width_specific": true
+  },
+  {
+   "class": "reduces_cost",
+   "cost": {
     "replacement": 1,
     "source": 2
    },
@@ -35485,6 +35947,162 @@
    ],
    "widens_operation": false,
    "width_specific": false
+  },
+  {
+   "class": "reduces_cost",
+   "cost": {
+    "replacement": 0,
+    "source": 2
+   },
+   "coverage": {
+    "disjunct_occurrences": [
+     1
+    ],
+    "match_instances": 1,
+    "match_occurrences": 1,
+    "pass_instances": 1,
+    "pass_occurrences": 1
+   },
+   "disjuncts": [
+    {
+     "coverage_occurrences": 1,
+     "example": {
+      "facts": [
+       [
+        "0x0",
+        "0x0",
+        false,
+        320,
+        true,
+        0,
+        1199570688
+       ]
+      ],
+      "vw": [
+       32
+      ]
+     },
+     "pred": "fpclass(x0) subset 0x1d8 && finite_integral(x0)",
+     "pred_json": [
+      [
+       "fpclass",
+       0,
+       472
+      ],
+      [
+       "fpintegral",
+       0
+      ]
+     ],
+     "proofs": [
+      {
+       "result": "unsat",
+       "root_w": 32,
+       "smt2_sha256": "6c5c92dd6d81136c",
+       "vw": [
+        32
+       ],
+       "width_map": [
+        [
+         32,
+         32
+        ]
+       ]
+      }
+     ],
+     "support": {
+      "instances": 1,
+      "occurrences": 1
+     },
+     "width_maps": [
+      [
+       [
+        32,
+        32
+       ]
+      ]
+     ]
+    }
+   ],
+   "id": "synth_uitofp_64edb584",
+   "needs_one_use": false,
+   "precondition": "fpclass(x0) subset 0x1d8 && finite_integral(x0)",
+   "provenance": {
+    "discovery": "enumerative",
+    "generalization": "symbolic-known-bits",
+    "sources": [
+     "enumerative"
+    ]
+   },
+   "replacement": "x0",
+   "replacement_json": {
+    "var": 0
+   },
+   "search": {
+    "atoms": 18,
+    "counterexamples": 3,
+    "pruned_by_cex": 42,
+    "solver_calls": 5,
+    "tried": 47,
+    "unknown": 0
+   },
+   "semantic_status": {
+    "direction": "source -> replacement",
+    "dnf_proofs": [
+     {
+      "result": "unsat",
+      "root_w": 32,
+      "smt2_sha256": "6c5c92dd6d81136c",
+      "vw": [
+       32
+      ],
+      "width_map": [
+       [
+        32,
+        32
+       ]
+      ]
+     }
+    ],
+    "kind": "verified_refinement",
+    "model": "gmir-v3",
+    "solver": "z3 5.4.1"
+   },
+   "source": "(G_UITOFP:s32 (G_FPTOUI:s32 x0))",
+   "source_json": {
+    "args": [
+     {
+      "args": [
+       {
+        "var": 0
+       }
+      ],
+      "op": "G_FPTOUI",
+      "w": 32
+     }
+    ],
+    "op": "G_UITOFP",
+    "w": 32
+   },
+   "support": {
+    "examples": [
+     {
+      "file": "tools/gisel-rule-synth/corpus/fp-conversions.mir",
+      "fn": "train_0_1",
+      "root": "%5"
+     }
+    ],
+    "instances": 1,
+    "occurrences": 1,
+    "source_flags": [],
+    "training_constants": {}
+   },
+   "unselected_disjuncts": [],
+   "vw": [
+    32
+   ],
+   "widens_operation": false,
+   "width_specific": true
   },
   {
    "class": "reduces_cost",

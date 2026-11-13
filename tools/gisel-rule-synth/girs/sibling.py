@@ -3,7 +3,8 @@
 region.py extends a rule to the values *below* its root. This module
 searches rules for roots that are not in one tree: the root of an
 expression tree (the primary root, which the combine rule matches) and up
-to MAX_SIBLINGS other instructions of the same basic block that read
+to MAX_SIBLINGS other instructions of the same block or straight-line
+chain that read
 values of the region (the siblings). Example: ``x - y`` and
 ``icmp ult x, y`` are two roots with the inputs x and y, and one G_USUBO
 computes both.
@@ -25,7 +26,8 @@ instruction. A G_FREEZE instruction is one term of the proof: a region
 with two G_FREEZE instructions of one value is rejected (freeze_ok).
 
 The corpus has one tree per root. The groups come from the registers of
-the records (load_pairs): the records of one basic block.
+the records (load_pairs): the records of one basic block, or a shared
+straight_line scope emitted by the extractor. Old corpora stay block-local.
 
 The search has no rewrite of its own. The values that a replacement can
 have for no added cost are *leaves* of the term bank of the single-root
@@ -45,7 +47,8 @@ sibling that stays and that a new instruction computes also (another
 result of that instruction) is then replaced by that result.
 
 Limits (each is a rejection, not an assumption):
-  - one basic block; a sibling is one instruction;
+  - one block or a certified straight-line chain of pure scalar integer
+    operations; a sibling is one instruction;
   - a sibling that is replaced has one result;
   - a sibling that stays is read by a replacement, and it does not read a
     sibling that is replaced;
@@ -249,17 +252,18 @@ def _group(a, bs):
 
 
 def load_pairs(paths, stats=None, max_siblings=MAX_SIBLINGS):
-    """The groups of the corpus files: per file, per basic block, each
+    """The groups of the corpus files: per file, per execution scope, each
     record with the records of one instruction that read its values (one
     sibling, and two siblings up to ``max_siblings``). Returns the
     distinct groups, most occurrences first."""
     stats = {} if stats is None else stats
     stats.update({'records': 0, 'pairs': 0, 'with_two_siblings': 0,
                   'with_a_value_below_the_root': 0,
-                  'with_an_input_of_the_sibling': 0})
+                  'with_an_input_of_the_sibling': 0,
+                  'cross_block_pairs': 0})
     by_key = {}
     for path in paths:
-        groups = {}
+        groups, locations = {}, {}
         with open(path) as f:
             for line in f:
                 line = line.strip()
@@ -274,10 +278,18 @@ def load_pairs(paths, stats=None, max_siblings=MAX_SIBLINGS):
                 stats['records'] += 1
                 one = inst if not ir.interior_nodes(inst.expr) else \
                     corpus.parse_record(_single(rec), path)
-                groups.setdefault((rec['fn'], rec['bb']), []).append(
-                    (inst, _instr(rec['expr']), _instrs(rec['expr'], set()),
-                     rec['root'], one))
-        for g in groups.values():
+                item = (inst, _instr(rec['expr']),
+                        _instrs(rec['expr'], set()), rec['root'], one)
+                locations[(rec['fn'], rec['root'])] = rec['bb']
+                groups.setdefault((rec['fn'], 'block', rec['bb']), []).append(item)
+                chain = rec.get('straight_line')
+                if isinstance(chain, list) and 1 < len(chain) <= 16 and \
+                        all(type(b) is int for b in chain) and \
+                        len(set(chain)) == len(chain) and rec['bb'] in chain and \
+                        region.straight_line_expr(inst.expr):
+                    groups.setdefault((rec['fn'], 'chain', tuple(chain)),
+                                      []).append(item)
+        for group_key, g in groups.items():
             # The root instruction of each record, as a sibling.
             singles = [(x[4], x[1], x[3]) for x in g if x[4] is not None]
             for a, aroot, anodes, areg_root, _ in g:
@@ -307,6 +319,12 @@ def load_pairs(paths, stats=None, max_siblings=MAX_SIBLINGS):
                             cands, 2)]
                 done = set()
                 for bs in sets:
+                    cross = any(locations[(a.prov[0][1], r)] !=
+                                locations[(a.prov[0][1], areg_root)]
+                                for _, r in bs)
+                    # The local group already covers pairs in one block.
+                    if group_key[1] == 'chain' and not cross:
+                        continue
                     grp = _group(a, bs)
                     if grp is None and len(bs) == 2:
                         # The second can read the result of the first
@@ -322,6 +340,7 @@ def load_pairs(paths, stats=None, max_siblings=MAX_SIBLINGS):
                         continue
                     done.add(p.key())
                     stats['pairs'] += 1
+                    stats['cross_block_pairs'] += cross
                     stats['with_two_siblings'] += len(sibs) == 2
                     refs = operand_refs(inst.expr, sibs)
                     stats['with_a_value_below_the_root'] += any(

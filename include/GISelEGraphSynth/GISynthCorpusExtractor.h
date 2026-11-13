@@ -11,11 +11,13 @@
 ///
 /// The pass never modifies MIR. For every instruction that is a scalar
 /// operator of the operator table of the e-graph combiner (GIEGraph.h,
-/// OpProperties) it writes small single-block expression trees rooted at each
+/// OpProperties) it writes small expression trees rooted at each
 /// result of that instruction to a JSON-lines file, together with the
 /// GISelValueTracking known bits of each tree input. The offline synthesizer
-/// reads that file to discover, generalize and verify combine rules. The
-/// extractor has no opcode list of its own, so an operator that is added to
+/// reads that file to discover, generalize and verify combine rules.
+/// Pure scalar integer trees can span a bounded straight-line chain of
+/// blocks; other operations retain their block-local extraction contract.
+/// The extractor has no opcode list of its own, so an operator that is added to
 /// the table is extracted too.
 ///
 /// The pass is not part of any default pipeline. lib/PassRegistration.cpp

@@ -463,8 +463,26 @@ def _schedule(insts, share):
 
 
 def cmd_synth(args):
-    from girs import agenda, compose, corpus, discover, egraph, ir, \
-        region, sibling, smt, synth, vector, known, history
+    from girs import parallel
+    if args.search_jobs < 0 or args.slow_jobs < 1 or args.search_batch < 1:
+        raise ValueError('search jobs must be nonnegative; slow jobs and batch size positive')
+    if min(args.slow_timeout_ms, args.slow_budget_s, args.slow_total_s) < 0:
+        raise ValueError('slow proof budgets must be nonnegative')
+    if not 0 <= args.multi_share <= 1:
+        raise ValueError('multi-share must be between zero and one')
+    with contextlib.ExitStack() as resources:
+        if args.cache:
+            import fcntl
+            os.makedirs(args.cache, exist_ok=True)
+            lock = resources.enter_context(open(os.path.join(args.cache, 'search.lock'), 'a'))
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        session = resources.enter_context(parallel.Session(args)) if args.search_jobs else None
+        return _cmd_synth(args, session, resources)
+
+
+def _cmd_synth(args, session=None, resources=None):
+    from girs import agenda, compose, corpus, discover, egraph, ir, ops, parallel, \
+        region, sibling, smt, synth, vector, vector_search, known, history
 
     if args.mode == 'semantics-only' and (args.egraph or args.compose_corpus
                                           or args.compose_axioms):
@@ -497,6 +515,9 @@ def cmd_synth(args):
     files = _corpus_files(args.corpus)
     with timed('corpus_load'):
         insts, cstats = corpus.load(files)
+    if args.only_vectors:
+        insts = [i for i in insts if i.lifted or vector.has_vector(i.vw, i.expr)]
+        cstats['searched_vector_scope'] = len(insts)
     # Most valuable first: occurrences times the instructions at stake.
     insts.sort(key=lambda i: (-len(i.prov) * ir.cost(i.expr),
                               ir.to_sexpr(i.expr), i.vw, i.facts))
@@ -511,17 +532,24 @@ def cmd_synth(args):
                            cost_slack=args.cost_slack,
                            max_rhs_cost=args.max_rhs_cost,
                            semantic_variants=args.semantic_variants,
+                           legalizer_stage=args.legalizer_stage,
+                           expand_types=args.expand_types,
                            max_terms=args.max_terms,
                            max_evals=args.max_evals,
                            max_proofs=args.max_proofs,
                            max_candidates=args.max_candidates,
                            capability=cap)
-    slim = synth.SynthLimits(max_atoms=args.max_atoms)
+    slim = synth.SynthLimits(max_atoms=args.max_atoms,
+                             slow_timeout_ms=args.slow_timeout_ms,
+                             slow_budget_s=args.slow_budget_s,
+                             slow_total_s=args.slow_total_s)
     ctx = discover.Context(dlim)
     deadline = backend.deadline
 
     def set_deadline(d):
         backend.deadline = dlim.deadline = d
+        if session:
+            session.deadline = d
 
     def late():
         return backend.deadline is not None and \
@@ -538,9 +566,19 @@ def cmd_synth(args):
     sy_multi = synth.Synthesizer(backend, slim, proof_dir=args.proofs)
     # The tasks of the search and their state from the earlier runs.
     ag = agenda.Agenda(args.cache or None,
-                       agenda.domain(dlim.identity(), vars(slim)),
+                       agenda.domain(dlim.identity(), vars(slim),
+                                     {'process_tasks': bool(session),
+                                      'batch': args.search_batch if session else None}),
                        agenda.depth(dlim.identity(), args.timeout_ms),
                        reopen=args.refresh_search)
+    resources.callback(ag.close)
+    if backend.history:
+        resources.callback(backend.history.close)
+    if session:
+        session.configure(dlim, slim, knowledge, ctx.known is not None, deadline)
+    process_rows = {}
+    alt_rows = {}
+    rule_tasks = {}
     dstats = {'instances': 0, 'with_candidates': 0, 'candidates': 0,
               'not_searched_time_budget': 0}
     dstats.update(discover.new_stats())
@@ -562,6 +600,15 @@ def cmd_synth(args):
                 for t, cv in (ag.result(stage, k) or {}).get('targets', ())]
         return stored[k]
 
+    def saved_targets(stage, key, additions):
+        # A bounded retry may return a different subset. Keep every proved
+        # seed from the earlier runs, including alternatives skipped as known.
+        targets = list((ag.result(stage, key) or {}).get('targets', []))
+        for target in additions:
+            if target not in targets:
+                targets.append(target)
+        return {'targets': targets}
+
     def seeds(inst):
         """The replacements of the root that are rules: [(replacement,
         rule id, the rule is of this run)]. A rule of this run has its
@@ -574,7 +621,7 @@ def cmd_synth(args):
                                          seed=True)
                 if rid is not None:
                     out.append((tgt, rid, False))
-            elif rid in sy.rules:
+            elif rid in sy.rules and sy.rules[rid]['semantic_status']['kind'] == 'verified_refinement':
                 out.append((tgt, rid, True))
         return out
 
@@ -598,8 +645,12 @@ def cmd_synth(args):
             return
         unknowns = backend.unknowns
         have = {t for t, _ in targets_of(inst)}
+        row = alt_rows.get(id(inst))
+        if session and row is None:
+            return
         out = []
-        for alt in region.root_alternatives(inst, dlim, ctx):
+        alts = row['alternatives'] if session else region.root_alternatives(inst, dlim, ctx)
+        for j, alt in enumerate(alts):
             if alt in have:
                 continue
             dstats['region_alternatives'] = dstats.get(
@@ -608,15 +659,19 @@ def cmd_synth(args):
                     known_index.covers(inst, alt, count=False):
                 out.append(alt)
                 continue
-            if discover.prove_concrete(inst, alt, backend).status != 'unsat':
+            if not session and discover.prove_concrete(inst, alt, backend).status != 'unsat':
                 continue
             out.append(alt)
-            rid = sy.add(inst, alt, provenance={
+            rid = row['alt_ids'][j] if session else sy.add(inst, alt, provenance={
                 'discovery': 'joint-region-alternative+smt'})
-            if rid:
+            if rid in sy.rules:
                 new_rule[k, alt] = rid
-        ag.record('alts', k, undecided(set(), unknowns), result={
-            'targets': [[ir.to_json(a), []] for a in out]})
+                rule_tasks.setdefault(rid, set()).add(('alts', k))
+        reasons = undecided(set(), unknowns)
+        if session and row['pending']:
+            reasons.add('time' if late() else 'unknown')
+        ag.record('alts', k, reasons, result=saved_targets(
+            'alts', k, [[ir.to_json(a), []] for a in out]))
         stored.pop(k, None)
 
     def search_one(inst):
@@ -624,26 +679,34 @@ def cmd_synth(args):
         dstats['instances'] += 1
         unknowns = backend.unknowns
         log = {}
-        if vector.has_vector(inst.vw, inst.expr):
-            # The lanes of the source give the replacement.
-            dstats['vector_instances'] = dstats.get('vector_instances',
-                                                    0) + 1
-            cands = [{'tgt': t} for t in vector.candidates(inst.expr,
-                                                          inst.vw)]
-            st, stop = {}, None
+        row = process_rows.get(id(inst))
+        if session:
+            cands, st, log = row['cands'], dict(row['stats']), row['log']
+        elif vector.has_vector(inst.vw, inst.expr):
+            with timed('discovery'):
+                cands, st = vector_search.search(inst, backend,
+                    vector_search.Limits.of(dlim), dlim, ctx, log)
         else:
             with timed('discovery'):
                 cands, st = discover.discover(inst, backend, dlim, ctx, log)
-            stop = st.pop('stop')
-            stops[stop] = stops.get(stop, 0) + 1
-            if cands:
-                dstats['with_candidates'] += 1
+        if vector.has_vector(inst.vw, inst.expr):
+            dstats['vector_instances'] = dstats.get('vector_instances', 0) + 1
+        stop = st.pop('stop')
+        stops[stop] = stops.get(stop, 0) + 1
+        if cands:
+            dstats['with_candidates'] += 1
         reasons = set(st.pop('limits', ()))
-        for name in st:
-            dstats[name] = dstats.get(name, 0) + st[name]
+        if stop not in ('complete', 'no_signature', 'source_always_poison'):
+            reasons.add({'time_budget': 'time', 'proof_budget': 'proofs',
+                         'candidate_limit': 'candidates', 'smt_unknown': 'unknown'}.get(stop, 'terms'))
+        for name, value in st.items():
+            if isinstance(value, (int, float)):
+                dstats[name] = dstats.get(name, 0) + value
+        if session and row['pending']:
+            reasons.add('time' if late() else 'unknown')
         rids = []
         with timed('generalization'):
-            for c in cands:
+            for j, c in enumerate(cands):
                 if c.get('known'):
                     rids.append(c['known'])
                     continue
@@ -656,14 +719,16 @@ def cmd_synth(args):
                     cinst.const_vars = tuple(c['const_vars'])
                     dstats['computed_constants'] = dstats.get(
                         'computed_constants', 0) + 1
-                rids.append(sy.add(cinst, c['tgt']))
+                prov = {'discovery': 'vector-search-%s+smt' % c['family']} if c.get('family') else None
+                rids.append(row['rids'][j] if session else sy.add(cinst, c['tgt'], prov))
                 if rids[-1]:
                     new_rule[k, c['tgt']] = rids[-1]
+                    rule_tasks.setdefault(rids[-1], set()).add(('single', k))
         ag.record('single', k, undecided(reasons, unknowns),
                   st.get('fingerprint_matches', 0) - st.get('not_tried', 0),
-                  {'targets': [[ir.to_json(c['tgt']),
+                  saved_targets('single', k, [[ir.to_json(c['tgt']),
                                 list(c.get('const_vars', ()))]
-                               for c in cands]})
+                               for c in cands]))
         stored.pop(k, None)
         with timed('generalization'):
             search_alternatives(inst)
@@ -700,13 +765,21 @@ def cmd_synth(args):
 
     def region_task(inst, sd):
         return agenda.task_key('region', tkey[id(inst)],
-                               sorted(ir.to_sexpr(t) for t, _, _ in sd))
+                               sorted((ir.to_sexpr(t), known.revision(sy.rules.get(rid) or known_index.rules[rid]))
+                                      for t, rid, _ in sd))
 
     def region_stage(synthesizer, final):
         """The region tasks of the instances that were searched: one task
         is the seeds of one instance. Not ``final``: only the tasks on
         known rules (a rule of this run has its final form after
         sy.finalize)."""
+        if session and not final:
+            alts = [i for i in insts if not vector.has_vector(i.vw, i.expr)
+                    and region.interior_outputs(i)
+                    and ag.row('single', tkey[id(i)]) is not None
+                    and ag.pending('alts', tkey[id(i)])]
+            for idx, row in session.search(alts, sy, single=False).items():
+                alt_rows[id(alts[idx])] = row
         tasks = []
         for inst in insts:
             if late():
@@ -722,6 +795,18 @@ def cmd_synth(args):
             key = region_task(inst, sd)
             if ag.pending('region', key):
                 tasks.append((key, [(inst, tgt, rid) for tgt, rid, _ in sd]))
+        if session:
+            lent = {rid for _, group in tasks for _, _, rid in group
+                    if rid not in synthesizer.rules and rid in known_index.rules}
+            for rid in lent:
+                synthesizer.rules[rid] = known_index.rules[rid]
+            st, ended = session.region_tasks(synthesizer, tasks)
+            for rid in lent:
+                del synthesizer.rules[rid]
+            for key, reasons in ended.items():
+                ag.record('region', key, reasons)
+            total(rstats, st)
+            return
         for key, group in tasks:
             if late():
                 break
@@ -750,9 +835,13 @@ def cmd_synth(args):
                 # The search and the proof of a group are for scalar
                 # values (vector.py has the model of a vector operator,
                 # by lanes).
-                if vector.has_vector(p.inst.vw, p.inst.expr, *p.sibs):
-                    pair_stats['with_a_vector'] = pair_stats.get(
-                        'with_a_vector', 0) + 1
+                exprs = (p.inst.expr,) + p.sibs
+                if vector.has_vector(p.inst.vw, *exprs) or any(
+                        ops.parse(n[0])[0].vector for e in exprs for n in ir.nodes(e)):
+                    pair_stats['with_a_vector'] = pair_stats.get('with_a_vector', 0) + 1
+                    pair_stats['unsupported_vector_groups'] = pair_stats.get('unsupported_vector_groups', 0) + 1
+                elif not all(ir.well_typed(e, p.inst.vw) for e in exprs):
+                    pair_stats['ill_typed_groups'] = pair_stats.get('ill_typed_groups', 0) + 1
                 else:
                     pairs.append(p)
         multi['loaded'] = True
@@ -769,6 +858,17 @@ def cmd_synth(args):
             if base is None or ag.row('single', tkey[id(base)]) is not None:
                 todo.append(p)
         new, retry = ag.order('sibling', todo, pair_task)
+        if session:
+            chosen = (new + retry)[:max(0, multi['pairs_left'])] if args.max_pairs else new + retry
+            found = {p.base_key: [t for t, _, _ in seeds(by_ikey[p.base_key])]
+                     for p in chosen if p.base_key in by_ikey}
+            st, ended = session.sibling_tasks(synthesizer,
+                [(pair_task(p), p) for p in chosen], found)
+            multi['pairs_left'] -= len(ended)
+            for key, reasons in ended.items():
+                ag.record('sibling', key, reasons)
+            total(sstats, st)
+            return
         for p in new + retry:
             if late() or (args.max_pairs and multi['pairs_left'] <= 0):
                 break
@@ -832,8 +932,13 @@ def cmd_synth(args):
     queue = _schedule(new, args.explore_share) + retry
     if args.max_instances:
         queue = queue[:args.max_instances]
+    if session:
+        for idx, row in session.search(queue, sy, alternatives=[
+                args.regions and bool(ag.pending('alts', tkey[id(i)])) for i in queue]).items():
+            process_rows[id(queue[idx])] = row
+            alt_rows[id(queue[idx])] = row
     for inst in queue:
-        if late():
+        if (session and id(inst) not in process_rows) or (not session and late()):
             # The budget ended the search: these instances have no result.
             dstats['not_searched_time_budget'] += 1
             continue
@@ -842,6 +947,9 @@ def cmd_synth(args):
     dstats['stop'] = dict(sorted(stops.items()))
     seconds['discovery'] = round(clock['discovery'], 2)
     seconds['generalization'] = round(clock['generalization'], 2)
+    if session:
+        seconds['discovery'] = round(session.seconds.get('discover', 0), 2)
+        seconds['generalization'] = round(session.seconds.get('generalize', 0), 2)
 
     # The second candidate source: the rewrites of the e-graph combiner.
     # A candidate goes through the same generalization and proofs.
@@ -856,6 +964,8 @@ def cmd_synth(args):
         before = set(sy.rules)
         hit = set()
         cands = imp.candidates()
+        if args.only_vectors:
+            cands = [c for c in cands if c.inst.lifted or vector.has_vector(c.inst.vw, c.inst.expr, c.tgt)]
         generalized = 0
         done = set()
         for c in cands:
@@ -895,6 +1005,13 @@ def cmd_synth(args):
         cinsts, ccstats = corpus.load(cfiles)
         deep = [i for i in cinsts if i.key() not in seen and
                 ir.cost(i.expr) >= clim.min_cost]
+        # Composition operates on scalar values; lane-wise lifted sources
+        # are supported, sources containing vector operators are not.
+        vec = [i for i in deep if vector.has_vector(i.vw, i.expr)]
+        pstats['vector_sources_skipped'] = len(vec)
+        deep = [i for i in deep if not vector.has_vector(i.vw, i.expr)]
+        if args.only_vectors:
+            deep = [i for i in deep if i.lifted]
         # Smallest sources first: a macro rule found on a small source is
         # a single step on every larger source that contains it.
         deep.sort(key=lambda i: (ir.cost(i.expr), -len(i.prov),
@@ -931,6 +1048,16 @@ def cmd_synth(args):
         pstats['macro_rules'] = len(set(sy.rules) - before)
         seconds['composition'] = round(time.monotonic() - t, 2)
 
+    if args.regions:
+        alts = [i for i in insts if region.interior_outputs(i)
+                and not vector.has_vector(i.vw, i.expr)
+                and ag.row('single', tkey[id(i)]) is not None
+                and ag.pending('alts', tkey[id(i)])]
+        if session:
+            for idx, row in session.search(alts, sy, single=False).items():
+                alt_rows[id(alts[idx])] = row
+        for inst in alts:
+            search_alternatives(inst)
     t = time.monotonic()
     seen_instances = {i.key() for i in insts}
     extra = []
@@ -939,8 +1066,14 @@ def cmd_synth(args):
             seen_instances.add(i.key())
             extra.append(i)
     target_cost_search = args.cost_slack is not None and args.cost_slack >= 0
-    fstats = sy.finalize(insts + extra, preserve_alternatives=(
-        target_cost_search or args.semantic_variants > 1))
+    preserve = target_cost_search or args.semantic_variants > 1
+    fstats = session.finalize(sy, insts + extra, preserve) if session else \
+        sy.finalize(insts + extra, preserve_alternatives=preserve)
+    for rid, tasks in rule_tasks.items():
+        r = sy.rules.get(rid)
+        if not r or r['semantic_status']['kind'] != 'verified_refinement':
+            for stage, key in tasks:
+                ag.defer(stage, key, 'time' if late() else 'unknown')
     seconds['selection_of_disjuncts'] = round(time.monotonic() - t, 2)
 
     # The other tasks with several outputs: on the rules of this run, and
@@ -976,7 +1109,6 @@ def cmd_synth(args):
             'sibling', [pair_task(p) for p in pairs])
     queue_stats['left'] = sum(q['not_searched'] + q['open']
                               for q in queue_stats.values())
-    ag.close()
     for name in ('regions', 'siblings', 'pair_load', 'corpus_load'):
         if clock[name]:
             seconds[name] = round(clock[name], 2)
@@ -1051,6 +1183,7 @@ def cmd_synth(args):
                     pass
             known.copy_proofs(combined, shared_proofs, [args.proofs])
             known.write(combined, learned_path)
+    ag.commit()
     if backend.history:
         # Capture statistics before closing; no outstanding transaction.
         backend.history.close()
@@ -1104,6 +1237,22 @@ def cmd_synth(args):
              'disjuncts': fstats, 'regions': rstats, 'siblings': sstats,
              'rules_by_class': by_class,
              'corpus': cstats}
+    if session:
+        stats['parallel'] = dict(session.metrics, search_jobs=args.search_jobs,
+                                 slow_jobs=args.slow_jobs, search_batch=args.search_batch)
+        parallel.add_stats(stats['enumeration'], session.enumeration)
+        for stages in session.metrics['stages'].values():
+            for lane in ('fast', 'slow'):
+                m = stages.get(lane, {})
+                stats['solver_calls'] += m.get('solver_calls', 0)
+                stats['solver_seconds'] += m.get('solver_seconds', 0)
+        stats['cost_seconds']['proof'] = stats['solver_seconds']
+        es = stats['enumeration'].get('seconds', {})
+        stats['cost_seconds']['enumeration'] = round(
+            es.get('bank_build', 0) + es.get('bank_eval', 0), 2)
+        # Worker CPU times can overlap; never subtract them from wall time.
+        stats['cost_seconds'].pop('other', None)
+        stats['cost_seconds']['worker_times_overlap'] = True
     with open(args.stats or os.path.splitext(args.o)[0] + '.stats.json',
               'w') as f:
         json.dump(stats, f, indent=1, sort_keys=True)
@@ -1114,7 +1263,7 @@ def cmd_synth(args):
           (len(insts), dstats['candidates'], pstats['proved'],
            estats.get('distinct', 0), len(rules),
            ', '.join('%d %s' % (n, c) for c, n in sorted(by_class.items())),
-           len(rejected), time.monotonic() - t0, backend.calls))
+           len(rejected), time.monotonic() - t0, stats['solver_calls']))
 
 
 # --------------------------------------------------------------- emit ---
@@ -1468,10 +1617,22 @@ def build_parser():
     p.add_argument('--proofs', default=DEFAULT_PROOFS)
     p.add_argument('--stats')
     p.add_argument('--timeout-ms', type=int, default=10000)
+    p.add_argument('--search-jobs', type=int, default=16,
+                   help='core search processes (default: 16); 0 keeps the legacy serial '
+                        'scheduler, 1 is the deterministic process-task reference')
+    p.add_argument('--slow-jobs', type=int, default=1,
+                   help='additional processes reserved for slow proofs')
+    p.add_argument('--search-batch', type=int, default=32,
+                   help='fixed discovery batch size, independent of worker count')
+    p.add_argument('--slow-timeout-ms', type=int, default=120000)
+    p.add_argument('--slow-budget-s', type=float, default=300,
+                   help='wall-time allowance of one slow task')
+    p.add_argument('--slow-total-s', type=float, default=3600,
+                   help='total slow-task allowances, assigned in stable task order')
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--grammar',
                    choices=('base', 'source', 'all', 'registry', 'auto'),
-                   default='source',
+                   default='auto',
                    help='operators of the replacement terms of the '
                         'enumerative search: the base grammar; that and '
                         'the operators of the source (default); the 44 '
@@ -1500,6 +1661,8 @@ def build_parser():
                         '(equal cost only for one-operation sources)')
     p.add_argument('--max-rhs-cost', type=int, default=0,
                    help='absolute RHS cost budget (0: no additional cap)')
+    p.add_argument('--legalizer-stage', choices=('pre-legalizer', 'post-legalizer'), default='pre-legalizer')
+    p.add_argument('--expand-types', action='store_true', help='search a bounded palette of additional integer/FP types')
     p.add_argument('--semantic-variants', type=int, default=1,
                    help='bounded instruction forms per sampled function; '
                         'use more than 1 to preserve different lowerings '
@@ -1519,17 +1682,17 @@ def build_parser():
     p.add_argument('--siblings', action='store_true',
                    help='also search rules for several roots: the root of '
                         'a tree and one or two other instructions of the '
-                        'block that read values of the region '
+                        'straight-line scope that read values of the region '
                         '(girs/sibling.py)')
+    p.add_argument('--multi-share', type=float, default=0.3,
+                   help='time share reserved for multi-output work on previous results')
     p.add_argument('--max-pairs', type=int, default=0,
                    help='budget: groups of roots that --siblings searches '
                         '(0: all)')
-    p.add_argument('--multi-share', type=float, default=0.3,
-                   help='the part of --time-budget-s that the tasks with '
-                        'several outputs (--regions, --siblings) on the '
-                        'rules of earlier runs have before the search for '
-                        'one output; what they do not use goes to that '
-                        'search')
+    p.add_argument('--only-vectors', action='store_true',
+                   help='search only the sources that the corpus read from '
+                   'fixed vectors (lifted lane by lane or with vector '
+                   'operators) and the e-graph candidates with vectors')
     p.add_argument('--explore-share', type=float, default=0.2,
                    help='the part of the search order that goes to the '
                         'root operators with the fewest instances so far '

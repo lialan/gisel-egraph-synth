@@ -49,6 +49,7 @@ add_public_tablegen_target(GISynthCombinersGen)
 set(GISELEGRAPHSYNTH_SOURCES
   lib/GIEGraph.cpp
   lib/GIEGraphCombiner.cpp
+  lib/GIEGraphLanes.cpp
   lib/GIEGraphRules.cpp
   lib/GISynthCorpusExtractor.cpp
   lib/SynthCombinerAMDGPU.cpp

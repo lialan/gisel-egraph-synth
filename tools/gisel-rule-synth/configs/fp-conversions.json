@@ -1,0 +1,25 @@
+{
+ "target": "AMDGPU",
+ "mode": "semantics-only",
+ "search": {
+  "grammar": "auto",
+  "expand_types": true,
+  "legalizer_stage": "pre-legalizer",
+  "max_atoms": 3,
+  "max_terms": 5000,
+  "max_evals": 250000,
+  "max_proofs": 24,
+  "timeout_ms": 1500,
+  "time_budget_s": 180,
+  "cost_slack": 0
+ },
+ "name": "fp-conversions",
+ "manifests": {
+  "discovery": "../manifests/amdgpu-fp-discovery.txt",
+  "validation": "../manifests/amdgpu-fp-validation.txt",
+  "heldout": "../manifests/amdgpu-fp-heldout.txt"
+ },
+ "pipelines": [
+  "direct"
+ ]
+}

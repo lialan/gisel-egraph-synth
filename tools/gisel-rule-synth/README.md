@@ -1,9 +1,73 @@
 # gisel-rule-synth
 
 Offline tool that discovers, generalizes, proves and generates GlobalISel
-combine rules (GIRuleSynthesizer). Normal compilation only runs the
-generated `GICombineRule`s through the existing combiner. No solver, search
-engine or e-graph runs inside LLVM.
+combine rules (GIRuleSynthesizer). With synthesized rules enabled,
+compilation runs the generated `GICombineRule`s through this project's
+combiners after the native pre-legalizer combiners. It needs no solver or
+offline search engine. The separate e-graph pass is opt-in.
+
+## Target-Aware Superoptimization and Rule Synthesis for LLVM GlobalISel
+
+The project explores offline superoptimization of Generic MIR and the
+synthesis of reusable GlobalISel combine rules. Here, superoptimization
+means searching a bounded space of modeled expressions for a cheaper,
+valid replacement. It does not imply exhaustive search or a globally
+optimal result.
+
+- **GIEGraph** represents Generic MIR expressions in an e-graph and applies
+  registered rewrites under bounded equality saturation. It keeps
+  equivalence separate from one-way refinement, so an undef/poison
+  refinement is not treated as an equality. Its extractor uses operation
+  costs and target legality to choose a replacement. The experimental
+  [GIEGraphCombiner](../../docs/GIEGraphCombiner-Design.md) can export
+  before/after DAGs as candidates for the offline synthesizer.
+- **GIRuleSynthesizer** also discovers replacements independently by
+  enumerating typed expressions from an operator registry. Samples filter
+  candidates; SMT checks refinement, and CEGIS synthesizes preconditions
+  that generalize concrete known-bit facts. Rules are proved for their
+  recorded width schedules and guards. An e-graph candidate goes through
+  the same proof pipeline; it is not trusted because a rewrite fired.
+  The `semantics-only` mode uses enumerative discovery alone, while
+  `hybrid` also uses e-graph candidates and rule composition.
+- **Rule generation** turns the proved library and target profiles into
+  TableGen `GICombineRule` records, C++ guards and replacement builders,
+  and per-target `GICombineGroup`s. With the generated combines enabled,
+  compilation applies those rules through this project's combiners after
+  the native pre-legalizer combiners; it does not repeat the offline search
+  or invoke a solver. The separate experimental e-graph pass remains
+  opt-in.
+- **Corpus-driven discovery** starts with Generic MIR extracted from
+  compiler test inputs after native combines and the pinned selected
+  rules, including known bits and type information. Incremental runs
+  discover and measure additions to that baseline. The `mine` workflow
+  supports direct and `opt -O2` inputs, discovery and validation manifests,
+  and a held-out evaluation after the rule set is frozen. It records search
+  budgets, proof outcomes, coverage and measured effects. A discovered
+  candidate is not by itself evidence of a code-generation improvement.
+
+### What is target-aware today
+
+GIEGraph's cost model combines configurable operation weights with
+`LegalizerInfo` checks, with stricter requirements for new instructions
+after legalization. The synthesizer can use an extracted legality table
+to prioritize target-supported operators in its `auto` grammar. This
+guides search; it is not a proof that every candidate lowers profitably.
+
+AMDGPU and AArch64 profiles select rules using corpus coverage, probes
+against the existing combiner, and measurements of final static
+instruction counts. The complete run also checks compilation failures,
+machine-verifier errors, changed SelectionDAG fallbacks and instruction
+count regressions. These are code-generation measurements, not hardware
+latency or throughput measurements; the current costs are not a complete
+microarchitectural performance model.
+
+The operator registry includes models for a limited set of AMDGPU
+intrinsics, with restrictions on the types and intrinsics a rule can
+create. It does not provide arbitrary target ISA instruction synthesis.
+Broader target-operator coverage and richer target cost models remain
+extension directions. Search and proofs are limited to the implemented
+semantic models, supported types, proved width schedules and configured
+budgets; an UNKNOWN solver result is not accepted as a proof.
 
 ## Requirements
 
@@ -28,8 +92,9 @@ engine or e-graph runs inside LLVM.
 
 `emit` writes each rule record once and one `GICombineGroup` per target
 (`gi_synth_combines_amdgpu`, `gi_synth_combines_aarch64`). To add a target:
-describe it in `girs/targets.py`, include the group in its pre-legalizer
-combiner behind a flag, and run `select`.
+describe it in `girs/targets.py`, add its group to a synthesized-rule
+combiner after the native pre-legalizer combiner behind a flag, and run
+`select`.
 
 ## Incremental discovery (default)
 
@@ -53,13 +118,8 @@ remaining MIR. Before concrete SMT checks and generalization, a known-rule
 index skips an identical source/replacement pair only when its proved widths,
 constant requirements, vector applicability, guard, and one-use requirements
 cover the instance.
-It does not blacklist a source opcode, root, or rule family. A covered
-candidate is still a result of the search, without a proof: it bounds the
-other candidates like a proved one, so the result of a search does not
-depend on what is known. Multi-output and sibling searches take it from
-the catalog as their single-root seed. A known rule that needs one use is
-a seed too, because a multi-output rule gives the inner value to its other
-users.
+It does not blacklist a source opcode, root, or rule family. Multi-output
+and sibling searches retain their single-root seeds, even if already known.
 
 ```sh
 # Normal run: use committed K/B and shared local progress.
@@ -102,72 +162,49 @@ machine measurements and local caches do not belong in Git.
 
 Local progress defaults to `.cache/girs/` (ignored by Git). Set `cache_dir`
 in a mine configuration or `synth --cache DIR` to share it across run
-directories. It contains the search queue, newly verified local rules and
-their proofs, a SQLite proof-obligation cache, and compiler builds.
+directories. It contains a persistent task queue (`agenda.sqlite3`), newly
+verified local rules and their proofs, a SQLite proof-obligation cache, and
+compiler builds. The queue covers single-root search, alternate root forms,
+joint regions and siblings, in both serial and default 16-process mode.
 Proof keys include complete SMT declarations, requested model values and
 semantic identity, independent of execution quotas. Increasing time, term
 or proof budgets reuses decided SAT/UNSAT obligations; UNKNOWN is retried.
-Measurement checkpoints also bind compiler bytes, input bytes, target,
-flags and disabled rule records.
-
-### The search queue
-
-`agenda.sqlite3` in the cache directory has one row for each search task:
-an instance (`single`), the extra root forms of an instance with an inner
-output (`alts`), the multi-output search on the seeds of an instance
-(`region`), and a group of roots (`sibling`). A row records whether the
-search is complete, the limits that ended it, the budgets it had, and how
-many runs searched it.
-
-```
-  run N                               agenda.sqlite3
-  -----                               --------------
-  1. multi-output tasks on rules      task        state     ended by   runs
-     of earlier runs (multi_share)    single a1   complete  -          1
-  2. single-output tasks:             single b7   partial   terms      2
-       new tasks, by value            single c3   partial   time       1
-       then open tasks, least         region d9   complete  -          1
-       searched first                 sibling e2  (no row: not searched)
-  3. multi-output tasks on the
-     rules of this run
-```
-
-* A complete task is not searched again, and it does not use
-  `max_instances` or `max_pairs`. These limits count the tasks that a run
-  searches.
-* A task that the deadline ended is open: the next run with the same
-  budgets continues it. A task that the proof budget ended is open while
-  each search decides more candidates (decided proofs are in the proof
-  cache).
-* A task that a term, evaluation, candidate or solver limit ended opens
-  only when that limit is higher than before. Until then it is
-  `closed_at_this_depth`, not complete.
-* A row belongs to one search domain (semantic model, search method,
-  grammar and synthesis limits). Budgets are the depth inside a domain.
-  `--refresh-search` searches every task once more.
-* `multi_share` (default 0.3) is the part of `time_budget_s` that the
-  multi-output tasks on rules of earlier runs have before the single-output
-  search. What they do not use goes to that search.
-
-`rules.stats.json` reports the state of the queue (`queue`, with `left` =
-the tasks that a run with the same budgets still searches), the time by
-kind (`cost_seconds`: enumeration, proof, files, other) and the outcome of
-the candidates (`candidate_fate`). The discovery stage of `mine` stays
-pending while `left` is not zero, so the same command continues the search.
-
-`eval/budget_rounds.py --config C --run-dir D --rounds N` runs N discovery
-rounds with the time budget of the configuration and records the queue,
-the new rules and the cost after each round. With one cache directory for
-each arm it compares one long run with several short runs of the same
-total budget.
+Completed tasks are reused within the same search domain. The queue visits
+new tasks first, then unfinished tasks in least-searched order. `max_instances`
+and `max_pairs` count pending work, so repeated capped runs advance. A deadline
+leaves work open; a term/candidate/solver limit reopens when its budget grows.
+A proof quota can advance with the same budget using previous-run proofs,
+until no further progress is made. Truncated searches are never marked
+exhausted. Measurement checkpoints also
+bind compiler bytes, input bytes, target, flags and disabled rule records.
 
 No new verified rules means no candidate rebuild, selection, or held-out
 evaluation. The report records `no_new_rules`, not an exhaustive-search claim.
 Increasing a budget does not invalidate the baseline build or corpus
-extraction. Search-method changes start a new search domain in the queue
-but keep valid proof obligations; semantic changes require explicit revalidation.
+extraction. Search-method changes start a new queue domain but retain
+valid proof obligations; semantic changes require explicit revalidation.
 
-The current checkpoint boundary is a candidate/proof or completed instance.
+Workers save decided proof obligations as they finish. The coordinator stages
+task completion in memory, saves verified rule files and their proof artifacts,
+then commits all task checkpoints in one SQLite transaction. A process killed
+before that transaction replays unfinished tasks; one killed during it sees
+the old or the complete new queue. A saved catalog without its checkpoints is
+safe to replay. Failed publication never marks a task complete. One coordinator
+at a time owns a cache directory (`search.lock`); its workers still run in
+parallel. These guarantees cover process interruption, not a backup or recovery
+protocol for deleted/corrupt files.
+
+Known rules also seed multi-output discovery. `--multi-share` (default `0.3`,
+or `search.multi_share` in `mine`) reserves the first part of a timed run for
+multi-output tasks from earlier roots; unused time returns to single-root
+search. Workers obey these stage deadlines and share the existing slow-proof
+queue. Statistics expose `queue`, `candidate_fate`, and `cost_seconds`; worker
+enumeration/proof time can overlap and is not a wall-time breakdown.
+
+`eval/budget_rounds.py --config C --run-dir D --rounds N` records the queue,
+new rules and cost of repeated discovery rounds. Use independent caches when
+comparing one long run with several short runs.
+
 Partially built term banks are regenerated; this is not a serialized bank
 iterator. `time_budget_s` covers discovery and proof work, including slow
 solver retries, with cooperative checks between enumeration batches. Output
@@ -404,7 +441,16 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
    e-graph combiner can find a rule with the precondition `def(x)`. The two
    results of one instruction have the same `mi`. `llc
    -gisel-synth-legality=FILE` writes what the legalizer does with each
-   operator at each combination of scalar widths (`targets.Capability`).
+   operator at each combination of scalar widths, and (version 2) at the
+   full `LLT` of each type index with fixed vectors (lanes from
+   `-gisel-synth-legality-lanes`, default 2,3,4,8; lane widths from
+   `-gisel-synth-legality-elems`, default 1,8,16,32,64), with the CPU and
+   the feature string of the subtarget and the MI operand of each type
+   index (`targets.Capability`). The table has the action of the
+   legalizer, not a cost: `Legal` or `Custom` is not one cheap machine
+   instruction. Before the legalizer a replacement may create an
+   instruction that the legalizer changes (`FewerElements`, `Lower`, ...);
+   after it only a `Legal` one (`Capability.can_create`).
 1. **Discovery** (`discover.py`). Enumerative search for a cheaper
    expression that agrees with the source on samples, then an SMT proof under
    the instance's concrete known bits. The source can have every operator
@@ -449,9 +495,34 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
 
    Instances are visited by corpus frequency times instructions at stake,
    with a share (`--explore-share`) for the rarest root operators. Refuting
-   SMT models become samples for the rest of the run. With `--cache`, the
-   result of each instance is a row of the search queue (see "The search
-   queue"): later runs search the instances that have no complete row.
+   SMT models become samples for the rest of the run. The proved candidates
+   of an instance are kept as queue seeds in `--cache` by the instance and
+   search domain; known candidates still seed multi-output tasks. An UNKNOWN
+   answer is never kept as a proof.
+
+   *Sources with vectors* (`vector_search.py`). A source that the corpus
+   cannot read lane by lane (it has a vector operator, or lanes of more
+   than one number) is searched by its lanes, with the same cache, budgets,
+   statistics and search log. The candidates of an instance are bounded
+   (`--max-candidates`, the cost bound of `--cost-slack` and
+   `--max-rhs-cost`) and come in three families, recorded in the
+   provenance of a rule (`vector-search-<family>+smt`):
+
+   | Family | Candidates |
+   |---|---|
+   | `lanes` | the lanes of the source as a vector expression: the variable with these lanes, a `G_SHUFFLE_VECTOR` of at most two variables, `G_CONCAT_VECTORS`, `G_EXTRACT_SUBVECTOR`, a `G_INSERT_VECTOR_ELT` into a variable, an operation of the lanes on vector operands, a `G_BUILD_VECTOR`. This removes builds of extracted lanes, composes shuffles and moves an extraction through a shuffle (the index is remapped). |
+   | `template` | the lanes are one scalar expression of *columns* (the same position in each lane; equal columns are one variable, so a shared value stays one value). The search for scalars looks for a cheaper template under the facts that each lane has, and the result is written as a vector expression again. A column that is one scalar of the rule (a shared scalar) is only read as the condition of a `G_SELECT`. |
+   | `permute` | each column is one permutation of the lanes of a whole variable, the same for all: the operation of the whole vectors, then one shuffle. |
+
+   A mask comes from the source, from the composition of its masks or from
+   the lanes of a column, never from an enumeration of all masks. With the
+   legality table of the target, a candidate does not create a vector
+   operation that the legalizer has no rule for. Each candidate is only a
+   proposal: `Synthesizer.add` proves it (the joint proof of the lanes)
+   and generalizes it with CEGIS and width schedules. `--only-vectors`
+   (`search.only_vectors` of `mine`) restricts a search to the sources
+   that the corpus read from vectors and to the e-graph candidates with
+   vectors; it is the scope of a search, not a list of answers.
 2. **Generalization** (`synth.py`, `precond.py`). One rule per (source,
    replacement), widths abstracted. CEGIS over a known-bits grammar finds
    *every* minimal sufficient conjunction, not just the first; strictly
@@ -476,7 +547,7 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
 4. **E-graph candidates** (`egraph.py`). `llc -gisel-egraph-export=FILE`
    makes the e-graph combiner write, for each region with a cheaper form,
    the original expression DAG, the DAG that the extractor selected, the
-   inputs with their known bits and the roots (format version 1, one JSON
+   inputs with their known bits and the roots (format version 2, one JSON
    object per line; the function is not changed). The importer reads each
    record in three steps. (a) The maximal subterms that the two DAGs have in
    common become variables. (b) The pair is divided at the operators that
@@ -516,7 +587,7 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
      root. A width map without that proof is not a width of the new rule.
      The replacements read each input once in all.
    - *Generated code*: the guard also checks that each replaced value has
-     another user, is in the block of the root, and that no input of the
+     another user, is in the permitted scope of the root, and that no input of the
      replacement is defined after the first of them (`isJointRegion`). It
      puts that position in the plan of the rule (`RegionPlan`, the match
      data of the combine rule). The apply function builds the replacement
@@ -525,14 +596,16 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
      registers (`releaseResults`), so that an old register has only the
      definition of the new instruction when a later new instruction reads
      it (the builder reads that definition when it folds constants).
-   - *Limits*: one basic block; the other outputs are below the root (step
+   - *Limits*: one basic block, or a straight-line chain for pure scalar
+     integer operations (see below); the other outputs are below the root (step
      6 has roots that are not in one tree); a value that occurs twice in
      the source and a result of an instruction with several results are
      not replaced; no computed constants.
 
 6. **Regions with several roots** (`sibling.py`, `synth --siblings`). The
    other roots (the siblings, at most two) are not in the tree of the
-   primary root: each is one instruction of the same block that reads a
+   primary root: each is one instruction of the same block or permitted
+   straight-line chain that reads a
    value of the region.
 
    ```
@@ -554,7 +627,8 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
      has the value of each operand of each sibling
      (`region.siblings[].operands`: `var`, `node` or `sibling`).
    - *Groups*: the corpus has one tree per root. `sibling.load_pairs` makes
-     the groups from the records of one basic block by their registers:
+     the groups from the records of one basic block, and from records with
+     a common `straight_line` scope, by their registers:
      each tree with the root instructions of the other records that read
      an input or a value below the root of that tree, one or two of them.
      An instruction of the tree, the definition of an input and a second
@@ -603,12 +677,76 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
      pattern matched or that stays; it reads their registers. The root
      and each sibling that the rule replaces release their registers
      before the replacement is built (`releaseResults`, see step 5).
-   - *Limits*: one basic block; at most two siblings; a sibling is one
-     instruction; a sibling that is replaced has one result; a sibling that
+   - *Limits*: one block or a permitted straight-line chain; at most two
+     siblings; a sibling is one instruction; a sibling that is replaced has one result; a sibling that
      stays does not read one that is replaced; an input that only a sibling
      reads is a constant in the corpus; no `G_FREEZE` term twice; a sibling
      that can trap and that stays is not emitted (the apply step can move
      it); no computed constants.
+
+**Straight-line scope.** The corpus extractor follows definitions across
+unconditional edges with one successor and one predecessor. A chain has at
+most 16 blocks, follows execution order rather than layout, and never crosses
+an entry backedge, a branch, a join or an exceptional/address-taken entry.
+A cycle or a chain exceeding the block limit falls back to block-local scope.
+No blocks, edges, PHIs or terminators are rewritten.
+
+Cross-block nodes and replacements are restricted to pure scalar integer
+operations without immediate UB. Memory, intrinsics, floating point,
+pointers, vectors, `G_FREEZE`, `G_IMPLICIT_DEF`, `G_ANYEXT`, division and
+remainder stay outside this subset. They may supply boundary inputs, but are
+not included as cross-block nodes. Single-block rules keep their existing
+operator support.
+
+A pure tree's corpus record has `straight_line: [bb, ...]` in execution
+order; each expression node also records its defining `bb`. Register and
+multi-result instruction identities remain function-scoped. Records without
+the scope field retain the old block-local sibling grouping. Local groups
+are still searched, and are not counted again as cross-block occurrences.
+
+`--regions` and `--siblings` use these records automatically. The algebraic
+joint proof is unchanged: there is no branch selector or path assumption,
+and every replaced output is checked together, including its poison and
+undef behavior. A wrong secondary output still invalidates the candidate.
+The generated guard independently checks the actual CFG, every matched
+instruction and the replacement's operator subset; corpus metadata is not
+trusted at application time.
+
+Placement uses at most 64 instructions on either side of the primary root,
+including intervening branches. The replacement is built before the earliest
+old output, after all required input definitions. In valid SSA, an input
+outside the chain that is read by a matched non-PHI dominates the chain's
+entry; an input defined inside it must precede the insertion point. This
+placement preserves ordinary external uses and uses on PHI incoming edges.
+A kept sibling may move to that point only after the same checks. Its move
+notifies the combiner/CSE observer, whose instruction identity includes its
+block. The CFG and its dominator tree stay valid.
+
+This scope extension belongs to the offline rule synthesis and generated
+combiner pipeline. The separate online `gisel-egraph-combiner` continues to
+form block-local e-graphs.
+
+The focused test below extracts real cross-block MIR, discovers and proves
+multi-output and sibling rules, builds an isolated compiler containing the
+emitted TableGen/C++, applies it with MachineVerifier enabled, and checks
+that the CFG is unchanged. It does not replace the checked-in rule catalog
+or target profiles:
+
+```sh
+GIRS_LLC="$PWD/build/plugin/bin/llc" \
+GIRS_LLVM_BUILD="$PWD/build/llvm" \
+GIRS_TEST_REGION_BUILD=1 \
+python3 -m unittest discover -s tools/gisel-rule-synth/tests \
+  -p test_straight_line.py -v
+```
+
+The new scope helper is part of the matcher contract hash. An existing
+catalog/cache therefore needs revalidation before reuse in this development
+worktree. For an isolated search, use `synth CORPUS --regions --siblings
+--grammar registry --known '' --cache NEW_CACHE -o NEW_LIBRARY` and emit that
+library with `--all-candidates` into a separate build. The test above follows
+this path. Promoting rules into the shared target profiles still requires
+the normal measurement and reselection workflow.
 
 A replacement can have a *computed constant*: a constant that the source
 does not have. The importer looks for a recipe, an expression over the
@@ -702,7 +840,8 @@ takes its place.
 | `girs/match.py` | rule matching on corpus trees, coverage |
 | `girs/smt.py` | z3 backend and gMIR bitvector/poison encoding |
 | `girs/fp.py` | IEEE formats of the conversion operators: exact evaluator and z3 encoding |
-| `girs/vector.py` | Fixed vectors: the scalar expression of each lane, the joint proof of the lanes, the search for a vector replacement, lane-wise rules |
+| `girs/vector.py` | Fixed vectors: the scalar expression of each lane, definedness, the joint proof of the lanes with a precondition, the conditions of a sound replacement, lane-wise rules and shared scalars |
+| `girs/vector_search.py` | The search for a replacement of a source with vectors: lane forms, scalar templates, permutations; budgets and the legality of the target (a search strategy: known.search_sha) |
 | `girs/targets.py` | per-target compiler flags and names |
 | `girs/measure.py` | running llc, instruction and rule counters |
 | `girs/select.py` | per-target coverage, novelty, redundancy, ranking, selection |
@@ -844,14 +983,37 @@ every disjunct of `P` and for the emitted disjunction as a whole.
   (`G_VECREDUCE_*`) is the chain of its scalar operator over the lanes in
   their order; the high bits of a result that is wider than a lane are not
   specified. The proof of a rule with vectors is the joint proof of its
-  lanes.
+  lanes: each lane of the replacement refines the same lane of the source,
+  and the replacement has undefined behaviour only where some lane of the
+  source has. A replacement never has an operation that can trap, so a
+  replacement that computes fewer or other lanes than the source adds no
+  undefined behaviour; a constrained operation is not in a source with an
+  operator on whole vectors (its exceptions in the lanes that the result
+  does not read would not be in the model).
+  - A rule that keeps vectors has the preconditions and the width
+    schedules of a rule for scalars. The known bits of a vector register
+    are the bits that each lane has (GISelValueTracking), so an atom reads
+    a lane: `all(KO(x1))` says that each lane of `x1` has all bits one (a
+    splat of -1), and `def(x)` that no lane is undef or poison
+    (`vector.LaneFacts`). CEGIS finds them from the counterexamples of the
+    joint proof, whose facts are the facts of a lane. A schedule keeps the
+    number of lanes and varies the width of the lanes (`<2 x s16>` ->
+    `<2 x s32>`, never `<4 x s16>` or `s64`); a vector of more than 512
+    bits is not a schedule. The guard reads the width of a lane for an
+    atom.
   - A lane with the mask entry -1, and the result for a variable index
     outside of the vector, have no specified value. LLVM says poison or
     undefined; the model takes some value, which is the more defined one,
-    and a rule does not build such an instruction. A rule builds
-    `G_BUILD_VECTOR`, `G_SHUFFLE_VECTOR` and `G_EXTRACT_VECTOR_ELT` with
-    a constant index; it matches the other vector operators and does not
-    build them.
+    and a rule does not build such an instruction
+    (`vector.undefined_lane`). A rule builds `G_BUILD_VECTOR`,
+    `G_SHUFFLE_VECTOR`, `G_CONCAT_VECTORS`, `G_EXTRACT_SUBVECTOR`,
+    `G_INSERT_SUBVECTOR`, and `G_EXTRACT_VECTOR_ELT` and
+    `G_INSERT_VECTOR_ELT` with a constant index (`ops.creatable`); it
+    matches the other vector operators and does not build them. The
+    legalizer of a target can have no rule for a vector operator at some
+    types (AMDGPU has none for `G_EXTRACT_SUBVECTOR`): with the legality
+    table of the target, the search does not propose such a replacement,
+    and the selection measures the others.
   - A floating-point reduction without `SEQ` "can reduce the elements in
     any order". The model has the order of the lanes, which is one
     permitted result, so the proof holds only for an instruction that the
@@ -864,12 +1026,26 @@ every disjunct of `P` and for the emitted disjunction as a whole.
     checks it).
   - A rule for scalars whose source is in the corpus with vectors, and
     whose operators all compute lane by lane, also accepts vectors
-    (`lift`): the proof for scalars is a proof for each lane. LLVM has no
+    (`lift`): the proof for scalars is a proof for each lane. The role of
+    each operand (`ops.operand_roles`: elementwise, shared scalar, scalar
+    element, index, lane mapping) decides it. The condition of a
+    `G_SELECT` of vectors can be one scalar (a shared scalar): each lane
+    reads the same value of it, which the proof for each value of the
+    condition covers, and the register is read once as in the source. Such
+    a rule records `lift_scalars`; its guard accepts a scalar in these
+    registers if the source and the replacement read them only as a
+    condition (`emit.shared_scalars`, `getScalarWidths(...,
+    SharedScalars)`), and the other registers have one number of lanes.
+    This applicability is part of the revision of a rule (a new `_v`
+    revision of a known rule without it). LLVM has no
     `G_SBFX`, `G_UBFX`, `G_EXTRACT`, `G_INSERT` and no operator with a
     carry input (`G_UADDE`, ...) on vectors, so a rule with one of them
     stays a rule for scalars.
   - Scalable vectors have no model (`G_SPLAT_VECTOR`, `G_STEP_VECTOR`,
-    `G_VSCALE`).
+    `G_VSCALE`). `G_SPLAT_VECTOR` can have a fixed vector result in this
+    LLVM (the machine verifier permits it, with a source that can be wider
+    than a lane); it has no model here yet, so such an instruction is an
+    input of a tree.
 - A `G_PHI` is the selection of one of its incoming values by the edge
   that the control flow took into its block. The edge is one more input of
   the source: the proof holds for each edge, a replacement and a
@@ -1106,3 +1282,58 @@ This step proves that two products with equal operands are equal, which
 the circuits of two 24-bit or 32-bit products do not show in the time
 limit. Each other result of the step is ignored, and the formula is then
 checked as it is.
+
+## Integer / floating-point conversion conditions
+
+The extractor and generated guards share `GISynthValueFacts.inc`: integer
+exact-representability from KnownBits (magnitude, trailing zeros, precision
+and finite exponent range), LLVM FPClass masks, finite-integral facts and
+inclusive finite FP bounds. These are facts about non-poison values and do
+not imply `noundef`. The Python sampler, concrete proof, CEGIS grammar and
+runtime guards use the same contracts. Old KnownBits-only corpora remain
+valid; unavailable facts are unknown. Bounds are transferred through integer
+conversions, constants, copies, selects, fixed-vector builds, sign operations,
+FP casts and modeled rounding operations. This is conservative analysis,
+not a complete general FP interval analysis.
+
+The default CLI grammar is `auto`; `--expand-types` adds a bounded palette
+of integer and IEEE half/single/double types. Newly required types can be
+constructed by the emitter, preserving fixed-vector shape and the target's
+legacy/extended LLT convention. Fresh widths not bound by a matched register
+remain fixed in the proof schedule. bfloat16, arbitrary FP formats and
+scalable-vector conversion discovery are not added by this change.
+
+When a capability table is supplied, scalar candidates as well as vector
+candidates must have a supported legalization action. Version 3 tables
+query conversion type indices with actual integer/FP kinds. At every match,
+generated guards query the current MachineFunction's LegalizerInfo for new
+RHS operations and implicit literal/splat construction. Before legalization,
+a supported legalization action is sufficient; afterwards the operation must
+be Legal. Intrinsic providers retain their separate contracts. Legality is
+not evidence of profitability.
+
+A bounded conversion search preset (three discovery files, three selection
+files, six held-out files) is `configs/fp-conversions.json`. It enables equal
+Generic-cost alternatives for subsequent target measurement. For a compiled
+end-to-end check independent of that preset:
+
+```sh
+python3 tools/gisel-rule-synth/eval_fp_conversions.py \
+  --llc build/plugin/bin/llc --build-dir build/plugin \
+  --output build/validation/conversions \
+  --heldout-manifest /absolute/path/to/independent-files.txt
+```
+
+The manifest contains absolute `.ll` paths. The driver discovers from actual
+extracted MIR without supplied replacements, freezes the rule set, builds
+once, tests guards on different masks, then compares the same compiler with
+only the new rules enabled/disabled. Shared baseline compile failures are
+reported and excluded; changed failures/fallbacks or a per-file instruction
+regression fail validation. It saves proofs, input hashes, generated files,
+compiler identity and per-file static instruction counts. It restores the
+generated source files after building; run `ninja -C build/plugin` to restore
+the default compiler binary afterwards.
+
+See [the analysis and Legalizer follow-up register](../../docs/IntegerFP-Conversion-Coverage.md)
+for implemented coverage, missing judgments worth adding and the validation
+results. Generated rules are not promoted based on synthetic MIR savings.

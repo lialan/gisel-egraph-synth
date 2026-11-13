@@ -24,6 +24,10 @@ Atoms:
     ('trailc', t, j)   t covers its low W - umin(j) bits   bits kept by shl
     ('ugew', i, j)     umin(i) >=u bitwidth(j)         shifted out of j
     ('one', i)         x_i is the constant 1           the known bits say it
+    ('fitsfp', i, signed, fw) every possible integer is exact in FP format fw
+    ('fpclass', i, mask) possible FP classes are a subset of mask
+    ('fpintegral', i)  every non-poison value is a finite integer
+    ('fprange', i, signed, bits) finite bounds lie within the integer range
     ('def', i)         x_i is neither undef nor poison
                        gisynth::isDefinedValue
     ('is_f1', i)       x_i is the floating-point constant 1.0 (one atom for
@@ -69,6 +73,11 @@ import z3
 
 from . import fp
 from . import ir
+from . import ops
+from . import valuefacts
+
+_VALUE_ATOMS = ("fitsfp", "fpclass", "fpintegral", "fprange")
+_FP_VALUE_ATOMS = ("fpclass", "fpintegral", "fprange")
 
 # The atoms ('is_<literal>', i).
 _FP_LIT = {'is_' + k: k for k in fp.LITERALS}
@@ -88,6 +97,14 @@ def term_str(t):
 
 def atom_str(a):
     k = a[0]
+    if k == 'fitsfp':
+        return 'exact_%s_to_f%d(x%d)' % ('signed' if a[2] else 'unsigned', a[3], a[1])
+    if k == 'fpclass':
+        return 'fpclass(x%d) subset 0x%x' % (a[1], a[2])
+    if k == 'fpintegral':
+        return 'finite_integral(x%d)' % a[1]
+    if k == 'fprange':
+        return 'fp_in_%s%d_range(x%d)' % ('i' if a[2] else 'u', a[3], a[1])
     if k == 'def':
         return 'defined(x%d)' % a[1]
     if k == 'one':
@@ -144,6 +161,15 @@ def _w(j, vw, rw):
     return rw if j == 'r' else vw[j]
 
 
+def lane_widths(vw, rw=None):
+    """The widths of the atoms of variables of the type codes ``vw`` and
+    of a root of the type code ``rw``: the width of a lane of a vector
+    (the known bits of a vector register are those of each lane,
+    vector.LaneFacts). A scalar width is its own lane width."""
+    return (tuple(ops.elem(w) for w in vw),
+            None if rw is None else ops.elem(rw))
+
+
 def _vstr(j):
     return 'root' if j == 'r' else 'x%d' % j
 
@@ -165,7 +191,7 @@ def _mentions(a):
     return out
 
 
-def enumerate_atoms(vw, rw=None, env=(), fvars=()):
+def enumerate_atoms(vw, rw=None, env=(), fvars=(), fp_widths=()):
     """All grammar atoms for variables of widths ``vw`` and root width
     ``rw``, in a deterministic order.
 
@@ -177,6 +203,7 @@ def enumerate_atoms(vw, rw=None, env=(), fvars=()):
     _FP_BIT_ATOMS and the atoms on a floating-point constant. No other
     variable has the atoms on a floating-point constant."""
     env, fvars = set(env), set(fvars)
+    vw, rw = lane_widths(vw, rw)
     out = [a for a in _enumerate_atoms(vw, rw)
            if not _mentions(a) & env and
            (a[0] in _FP_BIT_ATOMS or not _mentions(a) & fvars)]
@@ -186,6 +213,22 @@ def enumerate_atoms(vw, rw=None, env=(), fvars=()):
         elif i in fvars and fp.is_format(vw[i]):
             out += [(k, i) for k in _FP_LIT]
             out.append(('finv', i))
+            # Class subsets are generic analysis predicates, not rewrite patterns.
+            masks = [valuefacts.ALL ^ (1 << b) for b in range(10)]
+            masks += [valuefacts.ALL ^ valuefacts.NAN, valuefacts.FINITE,
+                      valuefacts.FINITE & ~valuefacts.NEGZERO, 448, 60]
+            out += [('fpclass', i, mask) for mask in sorted(set(masks))]
+            out.append(('fpintegral', i))
+            out += [('fprange', i, signed, bits) for signed in (False, True)
+                    for bits in (8, 16, 32, 64)]
+        elif i not in env:
+            for fw in sorted(set(fp_widths)):
+                if not fp.is_format(fw):
+                    continue
+                for signed in (False, True):
+                    # A condition true of every value adds no information.
+                    if not valuefacts.fits_fp((0, 0), vw[i], signed, fw):
+                        out.append(('fitsfp', i, signed, fw))
     return out
 
 
@@ -260,7 +303,16 @@ def _cro(v, w):
 
 
 def eval_atom(a, facts, vw, rw=None):
+    vw, rw = lane_widths(vw, rw)
     k = a[0]
+    if k == 'fitsfp':
+        return valuefacts.fits_fp(facts[a[1]], vw[a[1]], a[2], a[3])
+    if k == 'fpclass':
+        return valuefacts.fields(facts[a[1]])[0] & ~a[2] == 0
+    if k == 'fpintegral':
+        return valuefacts.fields(facts[a[1]])[1]
+    if k == 'fprange':
+        return valuefacts.in_int_range(facts[a[1]], vw[a[1]], a[2], a[3])
     if k == 'def':
         return len(facts[a[1]]) > 2 and bool(facts[a[1]][2])
     if k == 'one':
@@ -342,6 +394,27 @@ def _zext_to(a, b):
 def z3_atom(a, enc):
     k = a[0]
     vw = enc.vw
+    if k == 'fitsfp':
+        return valuefacts.z3_fits_fp(enc.kz[a[1]], enc.ko[a[1]], a[2], a[3])
+    if k in _FP_VALUE_ATOMS:
+        i = a[1]
+        values = enc.fp_values[i] if hasattr(enc, 'fp_values') else [(enc.x[i], enc.xp[i])]
+        cs = []
+        for x, poison in values:
+            if not fp.is_format(x.size()):
+                return z3.BoolVal(False)
+            f = fp.z3_value(x)
+            if k == 'fpclass':
+                prop = fp.z3_classify(x, a[2])
+            elif k == 'fpintegral':
+                prop = z3.And(z3.Not(z3.fpIsInf(f)),
+                              z3.fpEQ(f, z3.fpRoundToIntegral(z3.RTZ(), f)))
+            else:
+                lo, hi = valuefacts.int_range(x.size(), a[2], a[3])
+                prop = z3.And(z3.fpGEQ(f, fp.z3_value(z3.BitVecVal(lo, x.size()))),
+                              z3.fpLEQ(f, fp.z3_value(z3.BitVecVal(hi, x.size()))))
+            cs.append(z3.Or(poison, prop))
+        return z3.And(cs)
     if k == 'def':
         return z3.Not(enc.xp[a[1]])
     if k == 'one':
@@ -442,6 +515,14 @@ def _cpp_term(t):
 
 def cpp_atom(a):
     k = a[0]
+    if k == 'fitsfp':
+        return 'knownIntFitsFP(K%d, %s, %d)' % (a[1], str(a[2]).lower(), a[3])
+    if k == 'fpclass':
+        return '(unsigned(F%d.Classes) & ~%du) == 0' % (a[1], a[2])
+    if k == 'fpintegral':
+        return 'F%d.Integral' % a[1]
+    if k == 'fprange':
+        return 'knownFPInIntRange(F%d, %s, %d)' % (a[1], str(a[2]).lower(), a[3])
     if k == 'def':
         return 'isDefinedValue(X%d, MRI)' % a[1]
     if k == 'one':
@@ -503,6 +584,8 @@ _TERM_VAR = ('lowones', 'hiones', 'lead', 'trail', 'leadc', 'trailc')
 def atom_vars(a):
     """Variables whose known bits the atom reads."""
     k = a[0]
+    if k in _VALUE_ATOMS:
+        return [a[1]]
     if k in ('def', 'nofpe'):
         return []
     if k in _VAR1:
@@ -537,6 +620,8 @@ def pred_cost(p, have=()):
 
 def atom_to_json(a):
     k = a[0]
+    if k in _VALUE_ATOMS:
+        return list(a)
     if k in _VAR1:
         return [k, a[1]]
     if k in _TERM_VAR:
@@ -550,6 +635,8 @@ def atom_to_json(a):
 
 def atom_from_json(j):
     k = j[0]
+    if k in _VALUE_ATOMS:
+        return tuple(j)
     if k in _VAR1:
         return (k, j[1])
     if k in _TERM_VAR:
@@ -563,6 +650,8 @@ def atom_from_json(j):
 
 def rename_atom(a, m):
     k = a[0]
+    if k in _VALUE_ATOMS:
+        return (k, m[a[1]]) + a[2:]
     if k in _VAR1:
         return (k, m[a[1]])
     if k in _TERM_VAR:
@@ -596,7 +685,7 @@ def implies_dnf(p, dnf, vw, backend, rw=None):
     """True iff, for every consistent fact assignment, the conjunction p
     implies the disjunction ``dnf`` (a list of conjunctions)."""
     from .smt import Encoder
-    enc = Encoder(vw, rw)
+    enc = Encoder(*lane_widths(vw, rw))
     f = z3.And(enc.fact_consistency(), z3_pred(p, enc),
                z3.Not(z3_dnf(dnf, enc)))
     return backend.check(f).status == 'unsat'
@@ -606,7 +695,7 @@ def implies(p, q, vw, backend, rw=None):
     """True iff, for every consistent fact assignment, p => q (facts only,
     no values involved). Decided by SMT; unknown counts as False."""
     from .smt import Encoder
-    enc = Encoder(vw, rw)
+    enc = Encoder(*lane_widths(vw, rw))
     f = z3.And(enc.fact_consistency(), z3_pred(p, enc),
                z3.Not(z3_pred(q, enc)))
     return backend.check(f).status == 'unsat'

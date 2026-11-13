@@ -253,7 +253,9 @@ refinements; with frozen inputs they become equivalences (see the
   Right-hand sides that would create such a shift are rejected.
 * Shift amount types may differ from the value type (`G_SHL s64, s32`); a
   constant amount is re-materialized at the value width only if it fits.
-* Only scalar types are supported (any width up to 128). Vectors, memory,
+* Scalar types up to 128 bits, and fixed vectors of at most 16 integer
+  lanes of at most 64 bits (see [Fixed vectors](#fixed-vectors)). Scalable
+  vectors, vectors of floating-point values or pointers, memory,
   floating-point arithmetic and anything with implicit operands are region
   boundaries. Floating-point values are in a region only as operands and
   results of the conversions, of `G_SELECT`, of `G_PHI` and of `G_FREEZE`
@@ -312,6 +314,7 @@ the poison rule of the operator:
 | `Merge`, `Unmerge` | `G_MERGE_VALUES`, `G_UNMERGE_VALUES` of scalars |
 | `Phi` | `G_PHI`: kept or replaced by a value, never created |
 | `Effect` | `G_BRCOND`, `G_BR`: no result; a branch on a negated condition exchanges its targets, the CFG does not change |
+| `Vector` | `G_BUILD_VECTOR`, `G_EXTRACT_VECTOR_ELT` and `G_INSERT_VECTOR_ELT` with a constant index inside the vector (the index is `Attr`), `G_SHUFFLE_VECTOR` (`Attr` is the id of the mask, `EGraph::internMask`), `G_CONCAT_VECTORS` |
 
 Three more properties control what a rule can do. `MayTrap` (division and
 remainder): the operator is never introduced unless the region has it with
@@ -533,7 +536,7 @@ model asks `LegalizerInfo::getAction()`:
 
 | Position | Allowed actions | Constants |
 |----------|-----------------|-----------|
-| before the legalizer | `Legal`, `Custom`, `NarrowScalar`, `WidenScalar` | always allowed |
+| before the legalizer | `Legal`, `Custom`, `NarrowScalar`, `WidenScalar`; for a vector type also `FewerElements`, `MoreElements`, `Bitcast` | always allowed |
 | after the legalizer | `Legal` only | `G_CONSTANT` of that type must be `Legal` |
 
 Before the legalizer the purpose is a correct cost: a rule can introduce an
@@ -547,6 +550,73 @@ These are crude instruction-count proxies, not AMDGPU latencies. On AMDGPU a
 expands to several instructions; constants are free if they are inline
 constants. A target cost model would consider these as well as register
 banks, VOP2/VOP3 encodings and legalization expansion.
+
+## Fixed vectors
+
+A fixed vector is one e-class like a scalar: its type is the full `LLT`,
+and `getTypeKey` gives equal keys to equal vector types (the number of lanes
+and the key of the lane type). Two types with the same number of bits and
+another shape (`<2 x s32>`, `<4 x s16>`, `s64`) are different types and
+never meet in one class.
+
+An operator that computes each lane from the same lane of its operands
+without undefined behaviour (`isLaneWiseOperator`: binary and unary
+operators, bit counts, comparisons, selects, integer extensions and
+truncations; not division and remainder) is a region instruction with
+vectors of one number of lanes; the condition of a `G_SELECT` can be one
+scalar. Table rules can build these lane-wise operations with fixed integer
+vector types. A comparison produces a mask with the same number of lanes
+and one bit per lane; a select also accepts that mask type.
+
+Value literals in table rules denote the same integer in every lane.
+`getScalarOrSplatConstant` recognizes a `G_BUILD_VECTOR` whose scalar lanes
+are all the same exact constant, and `addConstantSplat` builds that form.
+`EClass::SplatConst` retains the cached analysis for a build that repeats
+one constant class; the query also recognizes equal constant lane values.
+The payload of a constant variable or computed constant is one element;
+its full `LLT` retains the lane count. Literal values, masks, shifts and
+integer cast folds use the element width. Opcode attributes, such as the
+bit count of `G_SEXT_INREG`, remain single immediates.
+
+`EClass::Const` remains scalar-only. Vector constants stay as builds of
+scalar constant classes, so arithmetic never carries between lanes. A
+non-splat or a build with an unknown lane does not match a literal. The
+query does not follow refinement edges; the matcher follows them explicitly
+and records that the match only justifies refinement. Thus `(x ^ y) ^ y`
+can simplify to `x` through `xor-self` and `xor-zero`, while an unknown
+`y ^ y` refines to a zero splat rather than merging with it.
+
+The operators of `OpShape::Vector` move lanes. Their index or mask is part
+of the node identity: two shuffles of the same operands with different masks
+are different nodes, and the mask is interned by the graph so that the
+attribute is a small id. `NotUndef` and `NotPoison` of such a node need each
+lane that it reads; a shuffle lane with the mask entry -1 has no value.
+
+The lane rules (`applyLaneRules`, `lib/GIEGraphLanes.cpp`) run after the
+table rules in each iteration. Each is an equality of every lane, including
+poison, so it merges classes:
+
+| Rule | Equality |
+|------|----------|
+| `vector-extract-of-build` | `extract(build(a0..an), i) == ai` |
+| `vector-extract-of-insert` | `extract(insert(v, x, j), i)` is `x` for `i == j`, else `extract(v, i)` |
+| `vector-extract-of-shuffle` | `extract(shuffle(a, b, m), i) == extract(a or b, m[i] mod n)` if `m[i] != -1` |
+| `vector-extract-of-concat` | `extract(concat(v0, v1, ...), i) == extract(vk, i mod n)` |
+| `vector-scalarize` | `extract(op(a, b), i) == op(extract(a, i), extract(b, i))` for a lane-wise operator |
+| `vector-build-of-extracts` | a build of lanes of at most two vectors of one type is the vector, or one shuffle of them |
+| `vector-shuffle-identity`, `vector-shuffle-of-shuffle` | the identity mask of one operand; the composition of two shuffles into one of at most two vectors |
+| `vector-insert-of-extract` | `insert(v, extract(v, j), j) == v` |
+| `vector-permute-lanewise` | `op(shuffle(a, _, m), shuffle(b, _, m)) == shuffle(op(a, b), _, m)` for a permutation `m` of one operand |
+| `vector-lanewise-of-build` | `op(build(a...), build(b...)) == build(op(a0, b0), ...)`: constant lanes then fold in the width of a lane |
+
+No rule writes a lane without a value, and the rules that change which lanes
+of an operation are computed (`vector-scalarize`, `vector-permute-lanewise`,
+`vector-lanewise-of-build`) only apply to an operator without undefined
+behaviour: a division of all lanes can trap in a lane that the other side
+does not compute. The export writes the constant index of a lane as `imm`,
+the mask of a shuffle as `mask`, the known bits of a vector as the bits of
+each lane, and the names of the lane rules with the table rules (format
+version 2). Each candidate is proved again by the synthesizer.
 
 ## MIR integration
 
@@ -620,10 +690,16 @@ applied rewrites and estimated cost saved. `-time-passes` adds
 
 ## Known limitations
 
-* Regions are single-block, scalar only (integers, pointers for the
-  pointer operators, and floating-point values for the conversions), and
-  capped at 32 instructions; larger connected
-  components are split by the cap.
+* Regions are single-block (integers, pointers for the pointer operators,
+  floating-point values for the conversions, and fixed vectors of integers),
+  and capped at 32 instructions; larger connected components are split by
+  the cap.
+* Table-rule constant variables match scalar constants and fixed integer
+  splats. Non-splat vector constants fold through the lane rules instead.
+  New vector RHS operations are restricted to `isLaneWiseOperator` with
+  matching lane counts; scalable vectors, vector pointers and floating-point
+  vectors, vector division/remainder and multi-result operations are outside
+  this subset.
 * Inputs are almost never provably defined in real code, so most profitable
   candidates are refinements. They are still sound to apply.
 * Congruence closure rebuilds from scratch each iteration, and every rule is

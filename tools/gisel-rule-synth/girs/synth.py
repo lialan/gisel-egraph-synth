@@ -45,6 +45,7 @@ from . import ops
 from . import precond
 from . import smt
 from . import vector
+from . import valuefacts
 
 WIDTHS = (8, 16, 32, 64)
 # v2: each input can be poison, G_FREEZE, the conversions between integers
@@ -149,16 +150,24 @@ def class_key(src, tgt, vw, const_vars=()):
 def schedules(src, tgt, vw, limits, first=None):
     """Width schedules (src_i, tgt_i, vw_i, width_map) to verify. ``first``
     maps the pattern widths to the training widths (default: identity); that
-    schedule comes first."""
+    schedule comes first. A rule with vectors varies the width of the
+    lanes and keeps the number of lanes (_vector_maps)."""
     ws = all_widths(src, tgt, vw)
     first = first or {w: w for w in ws}
     head = [first[w] for w in ws]
-    pool = sorted(set(WIDTHS) | set(ws) | set(head))
+    if any(ops.lanes(w) for w in ws):
+        combos = _vector_maps(ws, head)
+    else:
+        pool = sorted(set(WIDTHS) | set(ws) | set(head))
+        combos = [tuple(head)] + list(itertools.combinations(pool, len(ws)))
     out = []
-    for combo in [tuple(head)] + list(itertools.combinations(pool, len(ws))):
+    for combo in combos:
         if out and list(combo) == head:
             continue
         wmap = dict(zip(ws, combo))
+        fresh = set(all_widths(src, tgt, vw)) - set(all_widths(src, src, vw))
+        if any(wmap[w] != w for w in fresh):
+            continue
         s = ir.map_widths(src, wmap)
         t = ir.map_widths(tgt, wmap)
         v = tuple(wmap[w] for w in vw)
@@ -169,14 +178,41 @@ def schedules(src, tgt, vw, limits, first=None):
     return out
 
 
+# The widths of a lane in the schedules of a rule with vectors.
+VECTOR_LANE_WIDTHS = (8, 16, 32, 64)
+# The largest vector of a schedule (bits): the proof has a term per lane.
+MAX_VECTOR_BITS = 512
+
+
+def _vector_maps(ws, head):
+    """The width maps of a rule with vectors: the type codes ``ws`` of the
+    pattern to type codes with the same number of lanes and other lane
+    widths. The lane widths of the pattern are classes (as the widths of
+    a scalar rule): the classes keep their order, and a scalar of the
+    width of a lane stays the width of that lane. The training map
+    ``head`` comes first."""
+    widths = sorted({ops.elem(w) for w in ws})
+    pool = sorted(set(VECTOR_LANE_WIDTHS) | set(widths) |
+                  {ops.elem(w) for w in head})
+    out = [tuple(head)]
+    for combo in itertools.combinations(pool, len(widths)):
+        m = dict(zip(widths, combo))
+        codes = tuple(ops.vec(ops.lanes(w), m[ops.elem(w)]) for w in ws)
+        if max(ops.bits(c) for c in codes) <= MAX_VECTOR_BITS:
+            out.append(codes)
+    return out
+
+
 # ------------------------------------------------------------- CEGIS ---
 
-def _facts_from_model(vals, n):
-    _, kz, ko, xp = smt.split_model(vals, n)
+def _facts_from_model(vals, n, widths=None):
+    xs, kz, ko, xp = smt.split_model(vals, n)
     # A value that is not poison in the model counts as defined: the
     # counterexample then also excludes the preconditions with 'def'.
-    return tuple((z, o, True) if not p else (z, o)
+    base = tuple((z, o, True) if not p else (z, o)
                  for z, o, p in zip(kz, ko, xp))
+    return tuple(valuefacts.concrete(f, x, w) for f, x, w in
+                 zip(base, xs, widths)) if widths is not None else base
 
 
 def verify(sched, dnf, backend, const_vars=(), strong=False):
@@ -203,7 +239,7 @@ def verify(sched, dnf, backend, const_vars=(), strong=False):
         f = smt.refinement_violation(enc, s, t, precond.z3_dnf(dnf, enc))
         r = backend.check(f, want_model_of=enc.model_terms())
         if r.status == 'sat':
-            return 'invalid', (v, _facts_from_model(r.model, len(v)), s[1])
+            return 'invalid', (v, _facts_from_model(r.model, len(v), v), s[1])
         if r.status != 'unsat':
             if k:
                 continue
@@ -241,7 +277,11 @@ def synthesize_precondition(src, tgt, vw, facts, sched, backend, limits,
     # the atoms of such a value.
     fvars = [i for i, k in ir.var_kinds(src).items() if k == 'f']
     atoms = [a for a in precond.enumerate_atoms(fvw, frw,
-                                                ir.env_vars(src), fvars)
+                                                ir.env_vars(src), fvars,
+                                                fp_widths=tuple(fpw for fpw in valuefacts.fp.FORMATS)
+                                                if any(ops.parse(n[0])[0].fp_operand or
+                                                       ops.parse(n[0])[0].fp_result
+                                                       for n in ir.nodes(src)) else ())
              if precond.eval_atom(a, facts, fvw, frw) and
              not (edge & set(precond.atom_all_vars(a)))]
     if pool is None:
@@ -467,6 +507,12 @@ class Synthesizer:
         """Generalizes and verifies one concrete discovery. Returns the rule
         id, or None if no precondition was found."""
         self.stats['discoveries'] += 1
+        # A lane of the replacement without a defined value in the model
+        # is poison in LLVM (vector.undefined_lane).
+        if vector.undefined_lane(tgt, inst.vw):
+            self.stats['undefined_lane_rejected'] = \
+                self.stats.get('undefined_lane_rejected', 0) + 1
+            return None
         # Two instructions with equal trees and a value of their own have
         # one value in the proof (ir.repeated_nondet).
         if ir.repeated_nondet(inst.expr):
@@ -497,71 +543,25 @@ class Synthesizer:
             self.stats['env_rejected'] = \
                 self.stats.get('env_rejected', 0) + 1
             return None
-        if vector.has_vector(inst.vw, inst.expr, tgt):
-            return self._add_vector(inst, tgt, provenance)
+        # A rule with vectors has the same generalization, preconditions
+        # and width schedules as a rule for scalars; its proofs are the
+        # joint proofs of the lanes (vector.verify).
         rid = self._add(inst, tgt, provenance)
         if rid and getattr(inst, 'lifted', False):
             # The source is in the corpus with vectors: the guard also
             # accepts vectors, lane by lane (emit.lifts).
-            self.rules[rid]['lift'] = True
+            rule = self.rules[rid]
+            rule['lift'] = True
+            shared = getattr(inst, 'lift_scalars', ())
+            if shared:
+                # The variables that were one scalar for all lanes (the
+                # condition of a G_SELECT of vectors), in the numbering of
+                # the rule.
+                perm = canonicalize(inst.expr, tgt, inst.vw, inst.facts)[4]
+                rule['lift_scalars'] = sorted(
+                    {new for new, old in enumerate(perm) if old in shared} |
+                    set(rule.get('lift_scalars', ())))
         return rid
-
-    def _add_vector(self, inst, tgt, provenance):
-        """A discovery with vectors: a rule for the types of the instance,
-        without a precondition. Its proof is the joint proof of the lanes
-        (vector.verify)."""
-        src, tgt, vw, facts, perm = canonicalize(inst.expr, tgt, inst.vw,
-                                                 inst.facts)
-        assert set(ir.variables(tgt)) <= set(ir.variables(src))
-        assert vector.linear(tgt, vw)
-        key = class_key(src, tgt, vw)
-        rule = self.rules.get(self.by_key.get(key))
-        if rule is None and key in self.rejected:
-            self.rejected[key]['instances'] += 1
-            return None
-        if rule is not None:
-            psrc = ir.from_json(rule['source_json'])
-            ptgt = ir.from_json(rule['replacement_json'])
-            pvw = tuple(rule['vw'])
-        else:
-            psrc, ptgt, pvw = src, tgt, vw
-        first = dict(zip(all_widths(psrc, ptgt, pvw),
-                         all_widths(src, tgt, vw)))
-        if (ir.map_widths(psrc, first), ir.map_widths(ptgt, first),
-                tuple(first[w] for w in pvw)) != (src, tgt, vw):
-            # The types of the instance are not the types of the rule in
-            # the same order.
-            return None
-        d = rule['disjuncts'][0] if rule is not None else None
-        if d is None or _map_key(first.items()) not in \
-                {_map_key(m) for m in d['width_maps']}:
-            st, proofs = verify([(src, tgt, vw, first)], [()], self.backend)
-            if st != 'valid':
-                if rule is None:
-                    self.stats['rejected'] += 1
-                    self.rejected[key] = {
-                        'source': ir.to_sexpr(src),
-                        'replacement': ir.to_sexpr(tgt), 'vw': list(vw),
-                        'reason': ('solver_unknown' if st == 'unknown' else
-                                   'not_a_refinement'),
-                        'search': {}, 'instances': 1, '_retries': 1,
-                        '_cex': [],
-                        'example': {
-                            'file': os.path.basename(inst.prov[0][0]),
-                            'fn': inst.prov[0][1], 'root': inst.prov[0][2],
-                            'facts': [[hex(f[0]), hex(f[1])] + list(f[2:])
-                                      for f in facts]}}
-                return None
-            if rule is None:
-                rule = self._new_rule(src, tgt, vw, key, {}, [], dict(
-                    provenance or {}, discovery='vector-lanes+smt'))
-            else:
-                self.stats['schedules_added'] += 1
-            d = self._add_disjunct(rule, (), proofs)
-        else:
-            self.stats['reused'] += 1
-        self._support(rule, d, inst, perm, facts, vw)
-        return rule['id']
 
     def _add(self, inst, tgt, provenance=None):
         # The replacement has the type of the source: two values with the
@@ -584,7 +584,9 @@ class Synthesizer:
         # Structural soundness conditions of the refinement argument
         # (README.md, "Semantic model").
         assert set(ir.variables(tgt)) <= set(ir.variables(src))
-        assert ir.is_linear_in(tgt, cv)
+        # A replacement with vectors reads each lane of each variable at
+        # most once (two lanes of one register are two values).
+        assert vector.linear(tgt, vw, cv)
         key = class_key(src, tgt, vw, cv)
         rw = src[1]
         rule = self.rules.get(self.by_key.get(key))

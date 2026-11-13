@@ -226,6 +226,7 @@ static std::vector<OpProperties> buildOpProperties() {
       break;
     case OpShape::Typed:
     case OpShape::Effect:
+    case OpShape::Vector:
       P.NumOperands = 0;
       break;
     }
@@ -1007,6 +1008,8 @@ static std::vector<OpProperties> buildModelOnlyOpProperties() {
       P.NumOperands = 1;
       break;
     case OpShape::Typed:
+    // The number of operands of a vector operator is set by its entry.
+    case OpShape::Vector:
       P.OperandKinds = Operands;
       P.ResultKinds = Results;
       P.NumOperands = Operands.size();
@@ -1260,7 +1263,7 @@ static std::vector<OpProperties> buildModelOnlyOpProperties() {
   // model: each lane of a vector is a value with a poison flag of its own.
   auto Vec = [&](unsigned Opc, const char *Name, int NumOperands,
                  bool Imm = false) {
-    OpProperties *P = Op(Opc, Name, OpShape::Typed, {}, {Main});
+    OpProperties *P = Op(Opc, Name, OpShape::Vector, {}, {Main});
     P->IsVector = true;
     P->NumOperands = NumOperands;
     P->ImmAttr = Imm;
@@ -1422,7 +1425,57 @@ const OpProperties *llvm::egraph::getOpProperties(unsigned Opcode) {
     }
     return I;
   }();
-  return Opcode < Index.size() ? Index[Opcode] : nullptr;
+  if (Opcode < Index.size() && Index[Opcode])
+    return Index[Opcode];
+  // The vector operators that the e-graph has (OpShape::Vector).
+  if (isEGraphVectorOp(Opcode))
+    return getModelOnlyOpProperties(Opcode);
+  return nullptr;
+}
+
+bool llvm::egraph::isEGraphVectorOp(unsigned Opc) {
+  switch (Opc) {
+  case TargetOpcode::G_BUILD_VECTOR:
+  case TargetOpcode::G_EXTRACT_VECTOR_ELT:
+  case TargetOpcode::G_INSERT_VECTOR_ELT:
+  case TargetOpcode::G_SHUFFLE_VECTOR:
+  case TargetOpcode::G_CONCAT_VECTORS:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool llvm::egraph::isLaneWiseOperator(const OpProperties &P) {
+  if (P.IsVector || P.MayTrap || P.IsFP || P.IsConstrained || P.Leaf ||
+      P.hasProjections() || P.StopsPoison)
+    return false;
+  switch (P.Shape) {
+  case OpShape::Binary:
+  case OpShape::Unary:
+  case OpShape::BitCount:
+  case OpShape::Compare:
+  case OpShape::Select:
+    return true;
+  case OpShape::Cast:
+    return P.Cast == CastKind::ZeroExtend || P.Cast == CastKind::SignExtend ||
+           P.Cast == CastKind::Truncate;
+  default:
+    return false;
+  }
+}
+
+static bool isFixedIntegerVector(LLT Ty) {
+  return Ty.isValid() && Ty.isFixedVector() &&
+         Ty.getElementType().isScalar() && !Ty.getElementType().isFloat();
+}
+
+/// Scalar-or-vector shape, independent of the width of an element.
+static bool hasSameLaneShape(LLT A, LLT B) {
+  if (!A.isVector() && !B.isVector())
+    return true;
+  return A.isFixedVector() && B.isFixedVector() &&
+         A.getNumElements() == B.getNumElements();
 }
 
 const OpProperties *llvm::egraph::getOpPropertiesForInstr(unsigned MIOpcode,
@@ -1443,6 +1496,10 @@ bool llvm::egraph::isValidCast(const OpProperties &P, LLT Ty, LLT SrcTy,
                                uint64_t Attr) {
   if (!Ty.isValid() || !SrcTy.isValid())
     return false;
+  if (Ty.isVector() || SrcTy.isVector())
+    return isFixedIntegerVector(Ty) && isFixedIntegerVector(SrcTy) &&
+           hasSameLaneShape(Ty, SrcTy) && isLaneWiseOperator(P) &&
+           isValidCast(P, Ty.getElementType(), SrcTy.getElementType(), Attr);
   switch (P.Cast) {
   case CastKind::PtrToInt:
     return Ty.isScalar() && SrcTy.isPointer();
@@ -1544,12 +1601,12 @@ static bool isDefinedDivision(const EGraph &G, const OpProperties &P,
 static bool propagatesPoisonExactly(const EGraph &G, const OpProperties &P,
                                     LLT Ty, ArrayRef<EClassId> Ops) {
   if (P.IsShift) {
-    const std::optional<APInt> &Amt = G.getClass(Ops[1]).Const;
+    std::optional<APInt> Amt = G.getScalarOrSplatConstant(Ops[1]);
     return Amt && Amt->ult(Ty.getScalarSizeInBits());
   }
   if (P.IsBitField) {
-    const std::optional<APInt> &Lsb = G.getClass(Ops[1]).Const;
-    const std::optional<APInt> &Width = G.getClass(Ops[2]).Const;
+    std::optional<APInt> Lsb = G.getScalarOrSplatConstant(Ops[1]);
+    std::optional<APInt> Width = G.getScalarOrSplatConstant(Ops[2]);
     unsigned W = Ty.getScalarSizeInBits();
     return Lsb && Width && Lsb->ult(W) && !Width->isZero() && Width->ule(W) &&
            Lsb->getZExtValue() + Width->getZExtValue() <= W;
@@ -1608,6 +1665,8 @@ static StringRef getShapeName(OpShape S) {
     return "unmerge";
   case OpShape::Effect:
     return "effect";
+  case OpShape::Vector:
+    return "vector";
   }
   llvm_unreachable("unknown operator shape");
 }
@@ -2246,6 +2305,10 @@ uint64_t llvm::egraph::getTypeKey(LLT Ty) {
   // same for equal types.
   if (Ty.isValid() && Ty.isScalar())
     return Ty.getSizeInBits().getFixedValue();
+  // The same for a fixed vector of such scalars.
+  if (Ty.isValid() && Ty.isFixedVector() && Ty.getElementType().isScalar())
+    return hash_combine(2, Ty.getNumElements(),
+                        getTypeKey(Ty.getElementType()));
   return hash_combine(1, Ty.getUniqueRAWLLTData());
 }
 
@@ -2275,6 +2338,44 @@ EClassId EGraph::addInput(const InputInfo &Info) {
 
 EClassId EGraph::addConstant(LLT Ty, const APInt &Val) {
   return add(ENode::makeConstant(Ty, Val));
+}
+
+EClassId EGraph::addConstantSplat(LLT Ty, const APInt &Val) {
+  assert((Ty.isScalar() || isFixedIntegerVector(Ty)) &&
+         Ty.getScalarSizeInBits() == Val.getBitWidth() &&
+         "constant must have the scalar or vector element width");
+  if (Ty.isScalar())
+    return addConstant(Ty, Val);
+  EClassId Lane = addConstant(Ty.getElementType(), Val);
+  SmallVector<EClassId, 4> Lanes(Ty.getNumElements(), Lane);
+  return addOp(TargetOpcode::G_BUILD_VECTOR, Ty, Lanes);
+}
+
+std::optional<APInt> EGraph::getScalarOrSplatConstant(EClassId Id) const {
+  const EClass &C = getClass(Id);
+  if (C.Const)
+    return C.Const;
+  if (!isFixedIntegerVector(C.Ty))
+    return std::nullopt;
+  for (const ENode &N : C.Nodes) {
+    if (!N.isOperation() || N.Opcode != TargetOpcode::G_BUILD_VECTOR ||
+        N.Ops.size() != C.Ty.getNumElements())
+      continue;
+    std::optional<APInt> Value;
+    bool IsSplat = true;
+    for (EClassId Lane : N.Ops) {
+      std::optional<APInt> LaneValue = getConstant(Lane);
+      if (getType(Lane) != C.Ty.getElementType() || !LaneValue ||
+          (Value && *Value != *LaneValue)) {
+        IsSplat = false;
+        break;
+      }
+      Value = LaneValue;
+    }
+    if (IsSplat)
+      return Value;
+  }
+  return std::nullopt;
 }
 
 EClassId EGraph::addOp(unsigned Opcode, LLT Ty, ArrayRef<EClassId> Ops,
@@ -2512,6 +2613,12 @@ EClassId EGraph::add(ENode N) {
   C.Ty = N.Ty;
   if (N.isConstant())
     C.Const = N.Imm;
+  // A splat of one constant class (EClass::SplatConst).
+  if (N.isOperation() && N.Opcode == TargetOpcode::G_BUILD_VECTOR &&
+      !N.Ops.empty() && all_of(N.Ops, [&](EClassId Op) {
+        return find(Op) == find(N.Ops[0]);
+      }))
+    C.SplatConst = Classes[find(N.Ops[0])].Const;
   C.NotUndef = computeNodeNotUndef(N);
   C.NotPoison = computeNodeNotPoison(N);
   Memo.emplace(N, Id);
@@ -2542,6 +2649,10 @@ bool EGraph::merge(EClassId A, EClassId B) {
     assert(*W.Const == *L.Const && "merging classes with different constants");
   if (!W.Const)
     W.Const = L.Const;
+  if (!W.SplatConst)
+    W.SplatConst = L.SplatConst;
+  if (!W.Known)
+    W.Known = L.Known;
   W.NotUndef |= L.NotUndef;
   W.NotPoison |= L.NotPoison;
   for (ENode &N : L.Nodes)
@@ -2551,6 +2662,7 @@ bool EGraph::merge(EClassId A, EClassId B) {
   L.Nodes.clear();
   L.RefinesTo.clear();
   L.Const.reset();
+  L.SplatConst.reset();
   Parent[Loser] = Winner;
   --NumClasses;
   Dirty = true;
@@ -2624,6 +2736,10 @@ bool EGraph::computeNodeNotUndef(const ENode &N) const {
     const OpProperties *P = getOpProperties(N.Opcode);
     if (!P || !P->hasResult())
       return false;
+    // A lane of a shuffle with the mask entry -1 has no value.
+    if (N.Opcode == TargetOpcode::G_SHUFFLE_VECTOR &&
+        is_contained(getMask(N.Attr), -1))
+      return false;
     if (P->StopsPoison)
       return true;
     return all_of(N.Ops, [&](EClassId Op) { return getClass(Op).NotUndef; });
@@ -2645,6 +2761,14 @@ bool EGraph::computeNodeNotPoison(const ENode &N) const {
       return true;
     if (N.Flags != 0 || !P || !P->hasResult() || P->MayBePoison)
       return false;
+    if (P->Shape == OpShape::Vector) {
+      // Each lane is a lane of an operand, or has no value (-1).
+      if (N.Opcode == TargetOpcode::G_SHUFFLE_VECTOR &&
+          is_contained(getMask(N.Attr), -1))
+        return false;
+      return all_of(N.Ops,
+                    [&](EClassId Op) { return getClass(Op).NotPoison; });
+    }
     if (!propagatesPoisonExactly(*this, *P, N.Ty, N.Ops))
       return false;
     // Undefined behaviour is treated like poison: a value that may trap is
@@ -2663,6 +2787,13 @@ void EGraph::recomputeAnalyses() {
   for (EClassId Id : Ids) {
     EClass &C = Classes[Id];
     for (const ENode &N : C.Nodes) {
+      // A splat of one constant: the constant of each lane.
+      if (N.isOperation() && N.Opcode == TargetOpcode::G_BUILD_VECTOR &&
+          !C.SplatConst && !N.Ops.empty() &&
+          all_of(N.Ops, [&](EClassId Op) { return find(Op) == find(N.Ops[0]); }))
+        for (const ENode &E : Classes[find(N.Ops[0])].Nodes)
+          if (E.isConstant())
+            C.SplatConst = E.Imm;
       if (!N.isConstant())
         continue;
       if (C.Const)
@@ -2792,7 +2923,7 @@ void EGraph::print(raw_ostream &OS) const {
         break;
       case ENodeKind::Operation:
         OS << getOpcodeName(N.Opcode);
-        printAttr(OS, N.Opcode, N.Attr);
+        printAttr(OS, N);
         if (N.Flags)
           OS << " flags=" << N.Flags;
         for (EClassId Op : N.Ops)
@@ -2804,6 +2935,30 @@ void EGraph::print(raw_ostream &OS) const {
     for (EClassId R : C.RefinesTo)
       OS << "  ~> e" << find(R) << "\n";
   }
+}
+
+uint64_t EGraph::internMask(ArrayRef<int> Mask) {
+  auto [It, Inserted] = MaskIds.try_emplace(
+      std::vector<int>(Mask.begin(), Mask.end()), Masks.size());
+  if (Inserted)
+    Masks.emplace_back(Mask.begin(), Mask.end());
+  return It->second;
+}
+
+void EGraph::printAttr(raw_ostream &OS, const ENode &N) const {
+  if (N.isOperation() && N.Opcode == TargetOpcode::G_SHUFFLE_VECTOR) {
+    OS << ":";
+    ListSeparator LS(".");
+    for (int M : getMask(N.Attr)) {
+      OS << LS;
+      if (M < 0)
+        OS << "u";
+      else
+        OS << M;
+    }
+    return;
+  }
+  ::printAttr(OS, N.Opcode, N.Attr);
 }
 
 //===----------------------------------------------------------------------===//
@@ -3258,7 +3413,7 @@ public:
 private:
   bool full() const { return Out.size() >= Limit; }
 
-  static std::vector<uint64_t> key(const RuleMatch &M) {
+  std::vector<uint64_t> key(const RuleMatch &M) const {
     std::vector<uint64_t> K;
     K.push_back(M.ViaRefinement);
     K.push_back(M.RootAttr);
@@ -3272,8 +3427,12 @@ private:
         K.push_back(~0ull);
       }
     }
-    for (const std::optional<APInt> &C : M.Consts)
+    for (unsigned I = 0, E = M.Consts.size(); I != E; ++I) {
+      const std::optional<APInt> &C = M.Consts[I];
       K.push_back(C ? uint64_t(hash_value(*C)) : ~uint64_t(0));
+      if (C)
+        K.push_back(getTypeKey(G.getType(M.ConstClasses[I])));
+    }
     K.push_back(M.Rest.Opcode);
     K.insert(K.end(), M.Rest.Leaves.begin(), M.Rest.Leaves.end());
     return K;
@@ -3355,7 +3514,8 @@ private:
       return true;
     case PatNode::Literal:
     case PatNode::ConstVar:
-      return Cls.Const.has_value() || !Cls.RefinesTo.empty();
+      return G.getScalarOrSplatConstant(C).has_value() ||
+             !Cls.RefinesTo.empty();
     case PatNode::Op:
       if (!Cls.RefinesTo.empty())
         return true;
@@ -3470,23 +3630,27 @@ private:
     case PatNode::Computed:
       llvm_unreachable("not structural");
     case PatNode::Literal: {
-      if (!Cls.Const)
+      std::optional<APInt> Value = G.getScalarOrSplatConstant(C);
+      if (!Value)
         return;
-      if (*Cls.Const == getLiteralValue(PN.Value, Cls.Const->getBitWidth()))
+      if (*Value == getLiteralValue(PN.Value, Value->getBitWidth()))
         K();
       return;
     }
     case PatNode::ConstVar: {
-      if (!Cls.Const)
+      std::optional<APInt> Value = G.getScalarOrSplatConstant(C);
+      if (!Value)
         return;
       std::optional<APInt> &Slot = Cur.Consts[PN.Index];
       if (!Slot) {
-        Slot = *Cls.Const;
+        Slot = *Value;
         Cur.ConstClasses[PN.Index] = C;
         K();
         Slot.reset();
-      } else if (Slot->getBitWidth() == Cls.Const->getBitWidth() &&
-                 *Slot == *Cls.Const) {
+        Cur.ConstClasses[PN.Index] = RuleMatch::NoClass;
+      } else if (G.getType(Cur.ConstClasses[PN.Index]) == Cls.Ty &&
+                 Slot->getBitWidth() == Value->getBitWidth() &&
+                 *Slot == *Value) {
         K();
       }
       return;
@@ -3632,24 +3796,40 @@ public:
         return G.addACTerm(T.Opcode, Ty, T.Leaves);
       }
       EClassId C = M.Vars[PN.Index];
-      if (!IsShiftAmount && Expected.isValid() && G.getType(C) != Expected)
-        return std::nullopt;
+      if (Expected.isValid()) {
+        LLT Actual = G.getType(C);
+        if (!IsShiftAmount && Actual != Expected)
+          return std::nullopt;
+        if (IsShiftAmount &&
+            (!hasSameLaneShape(Actual, Expected) ||
+             !(Actual.isScalar() || isFixedIntegerVector(Actual)) ||
+             Actual.getScalarType().isFloat()))
+          return std::nullopt;
+      }
       return C;
     }
     case PatNode::Literal:
-      // A literal is an integer.
-      if (!Expected.isValid() || !Expected.isScalar() || Expected.isFloat())
+      // A value literal is an integer, splatted to the expected lane shape.
+      if (!Expected.isValid() ||
+          !(Expected.isScalar() || isFixedIntegerVector(Expected)) ||
+          Expected.isFloat())
         return std::nullopt;
-      return G.addConstant(Expected,
-                           getLiteralValue(PN.Value, Expected.getSizeInBits()));
+      return G.addConstantSplat(
+          Expected, getLiteralValue(PN.Value, Expected.getScalarSizeInBits()));
     case PatNode::Computed:
       if (PN.Index >= Computed.size())
         return std::nullopt;
-      return buildConstant(Computed[PN.Index], Expected,
+      return buildConstant(Computed[PN.Index],
+                           Expected.isValid() ? Expected : inferType(PIdx),
                            /*MayResize=*/false);
     case PatNode::ConstVar: {
       const std::optional<APInt> &V = M.Consts[PN.Index];
       if (!V)
+        return std::nullopt;
+      LLT BoundTy = G.getType(M.ConstClasses[PN.Index]);
+      if (!Expected.isValid())
+        Expected = BoundTy;
+      if (!hasSameLaneShape(BoundTy, Expected))
         return std::nullopt;
       // Only shift amounts may change width, and only if the value fits.
       return buildConstant(*V, Expected, /*MayResize=*/IsShiftAmount);
@@ -3665,14 +3845,19 @@ private:
                                         bool MayResize) {
     if (!Expected.isValid())
       return G.addConstant(LLT::integer(V.getBitWidth()), V);
-    if (!Expected.isScalar())
+    if (!(Expected.isScalar() || isFixedIntegerVector(Expected)))
       return std::nullopt;
-    unsigned Width = Expected.getSizeInBits();
+    unsigned Width = Expected.getScalarSizeInBits();
     if (V.getBitWidth() == Width)
-      return G.addConstant(Expected, V);
+      return G.addConstantSplat(Expected, V);
     if (!MayResize || V.getActiveBits() > Width)
       return std::nullopt;
-    return G.addConstant(Expected, V.zextOrTrunc(Width));
+    return G.addConstantSplat(Expected, V.zextOrTrunc(Width));
+  }
+
+  static LLT boolType(LLT Ty) {
+    return Ty.isFixedVector() ? LLT::fixed_vector(Ty.getNumElements(), 1)
+                              : LLT::integer(1);
   }
 
   /// The type of pattern \p PIdx if it can be told without context, else an
@@ -3689,11 +3874,17 @@ private:
     case PatNode::Computed:
       if (PN.Index >= Computed.size())
         return LLT();
+      // A computed value is one element. Lane-wise patterns preserve the
+      // root's lane count, including below a width-changing cast. Computed
+      // attributes are handled separately by getAttr() and are not splats.
+      if (G.getType(M.Root).isFixedVector())
+        return LLT::fixed_vector(G.getType(M.Root).getNumElements(),
+                                 Computed[PN.Index].getBitWidth());
       return LLT::integer(Computed[PN.Index].getBitWidth());
     case PatNode::ConstVar:
       if (!M.Consts[PN.Index])
         return LLT();
-      return LLT::integer(M.Consts[PN.Index]->getBitWidth());
+      return G.getType(M.ConstClasses[PN.Index]);
     case PatNode::Op:
       break;
     }
@@ -3706,8 +3897,12 @@ private:
     case OpShape::Unary:
     case OpShape::PtrAdd:
       return inferType(PN.Children[0]);
-    case OpShape::Compare:
-      return LLT::integer(1);
+    case OpShape::Compare: {
+      LLT OpTy = inferType(PN.Children[0]);
+      if (!OpTy.isValid())
+        OpTy = inferType(PN.Children[1]);
+      return OpTy.isValid() ? boolType(OpTy) : LLT();
+    }
     case OpShape::Select: {
       LLT Ty = inferType(PN.Children[1]);
       return Ty.isValid() ? Ty : inferType(PN.Children[2]);
@@ -3724,6 +3919,8 @@ private:
     case OpShape::Unmerge:
     case OpShape::Phi:
     case OpShape::Effect:
+    // A pattern has no vector operator (OpShape::Vector).
+    case OpShape::Vector:
       break;
     }
     return LLT();
@@ -3773,6 +3970,9 @@ private:
     if (!Attr)
       return std::nullopt;
     LLT Ty = Expected.isValid() ? Expected : inferType(PIdx);
+    if (Ty.isVector() &&
+        (!isFixedIntegerVector(Ty) || !isLaneWiseOperator(*P)))
+      return std::nullopt;
     SmallVector<EClassId, 3> Ops;
     // Build operand \p I with the given type; false if that fails.
     auto Operand = [&](unsigned I, LLT OpTy, bool IsShiftAmount = false) {
@@ -3784,15 +3984,17 @@ private:
 
     switch (P->Shape) {
     case OpShape::Binary:
-      if (!Ty.isValid() || !Ty.isScalar() || !Operand(0, Ty) ||
+      if (!Ty.isValid() ||
+          !(Ty.isScalar() || isFixedIntegerVector(Ty)) || !Operand(0, Ty) ||
           !Operand(1, Ty, /*IsShiftAmount=*/P->hasAmount()))
         return std::nullopt;
       break;
     case OpShape::Unary:
-      if (!Ty.isValid() || !Ty.isScalar() || !Operand(0, Ty))
+      if (!Ty.isValid() ||
+          !(Ty.isScalar() || isFixedIntegerVector(Ty)) || !Operand(0, Ty))
         return std::nullopt;
       // The immediate of G_SEXT_INREG is a number of bits inside the value.
-      if (P->ImmAttr && (*Attr == 0 || *Attr >= Ty.getSizeInBits()))
+      if (P->ImmAttr && (*Attr == 0 || *Attr >= Ty.getScalarSizeInBits()))
         return std::nullopt;
       break;
     case OpShape::Cast:
@@ -3862,20 +4064,25 @@ private:
       break;
     }
     case OpShape::Compare: {
-      if (Ty != LLT::integer(1))
-        return std::nullopt;
       LLT OpTy = inferType(PN.Children[0]);
       if (!OpTy.isValid())
         OpTy = inferType(PN.Children[1]);
-      if (!OpTy.isValid() || !Operand(0, OpTy) || !Operand(1, OpTy))
+      if (!OpTy.isValid() || Ty != boolType(OpTy) || !Operand(0, OpTy) ||
+          !Operand(1, OpTy))
         return std::nullopt;
       break;
     }
-    case OpShape::Select:
-      if (!Ty.isValid() || !Operand(0, LLT::integer(1)) || !Operand(1, Ty) ||
+    case OpShape::Select: {
+      LLT CondTy = inferType(PN.Children[0]);
+      if (!CondTy.isValid())
+        CondTy = boolType(Ty);
+      if (!Ty.isValid() ||
+          (CondTy != LLT::integer(1) && CondTy != boolType(Ty)) ||
+          !Operand(0, CondTy) || !Operand(1, Ty) ||
           !Operand(2, Ty))
         return std::nullopt;
       break;
+    }
     case OpShape::PtrAdd: {
       if (!Ty.isValid() || !Ty.isPointer() || !Operand(0, Ty))
         return std::nullopt;
@@ -3887,6 +4094,8 @@ private:
       break;
     }
     case OpShape::Phi:
+    // A pattern has no vector operator (OpShape::Vector).
+    case OpShape::Vector:
       return std::nullopt;
     case OpShape::Effect:
       if (Expected.isValid())
@@ -3896,6 +4105,24 @@ private:
         if (!Operand(I, LLT()))
           return std::nullopt;
       break;
+    }
+
+    // The vector subset is the same lane-wise family used by the importer
+    // and lane rules. Only a select condition may be a scalar alongside
+    // vector operands; shifts may use a different element width.
+    if (Ty.isVector() || any_of(Ops, [&](EClassId C) {
+          return G.getType(C).isVector();
+        })) {
+      if (!isFixedIntegerVector(Ty) || !isLaneWiseOperator(*P))
+        return std::nullopt;
+      for (unsigned I = 0, E = Ops.size(); I != E; ++I) {
+        LLT OpTy = G.getType(Ops[I]);
+        if (P->Shape == OpShape::Select && I == 0 &&
+            OpTy == LLT::integer(1))
+          continue;
+        if (!isFixedIntegerVector(OpTy) || !hasSameLaneShape(Ty, OpTy))
+          return std::nullopt;
+      }
     }
 
     // Only the conversions (checked by isValidCast), G_SELECT and G_PHI take
@@ -4068,6 +4295,15 @@ SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
     G.rebuild();
     CanonicalizeAC();
     CollapsePhis();
+    // The lane rules of fixed vectors (applyLaneRules).
+    if (G.getNumNodes() < Limits.MaxNodes) {
+      if (unsigned N = applyLaneRules(G, Limits.MaxNodes,
+                                      Stats.LaneRuleApplications)) {
+        Stats.LaneMerges += N;
+        Changed = true;
+        G.rebuild();
+      }
+    }
     if (G.getNumClasses() + G.getNumNodes() != ClassesBefore)
       Changed = true;
     if (Stats.HitNodeLimit)
@@ -4271,7 +4507,7 @@ void Extractor::printExpr(
     return;
   case ENodeKind::Operation:
     OS << "(" << getOpcodeName(N->Opcode);
-    printAttr(OS, N->Opcode, N->Attr);
+    G.printAttr(OS, *N);
     if (N->Flags & PoisonVariantFlag)
       OS << "<poison-variant>";
     if (N->Flags & ~PoisonVariantFlag)

@@ -10,8 +10,9 @@
 ///
 /// E-nodes reuse TargetOpcode::G_* opcodes and LLT types: scalar integer
 /// arithmetic, casts, comparisons, selects, bit operations, pointer
-/// arithmetic, PHIs and conditional branches (see OpProperties). The graph
-/// supports hash-consing, union-find with congruence closure, a small
+/// arithmetic, fixed integer vectors, PHIs and conditional branches (see
+/// OpProperties). The graph supports hash-consing, union-find with congruence
+/// closure, a small
 /// e-class analysis (constant value, "not undef", "not poison") and
 /// *refinement edges*.
 ///
@@ -45,6 +46,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/CodeGenTypes/LowLevelType.h"
+#include "llvm/Support/KnownBits.h"
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -126,8 +128,15 @@ struct EClass {
   SmallVector<ENode, 2> Nodes;
   /// Classes whose value refines this class' value (this ~> target).
   SmallVector<EClassId, 1> RefinesTo;
-  /// Analysis: known constant value of the class.
+  /// Analysis: known scalar constant value of the class. Vector constants
+  /// remain G_BUILD_VECTOR nodes; see EGraph::getScalarOrSplatConstant.
   std::optional<APInt> Const;
+  std::optional<KnownBits> Known;
+  /// Analysis: for a fixed vector, the constant of each lane if the class
+  /// has a G_BUILD_VECTOR of one constant class (a splat). A pattern literal
+  /// matches it in the width of a lane; the class has no Const, so no fold
+  /// takes the vector as one integer.
+  std::optional<APInt> SplatConst;
   /// Analysis: the value is a single well-defined value or poison (never a
   /// "fluctuating" undef value). Allows duplicating/merging uses.
   bool NotUndef = false;
@@ -168,6 +177,9 @@ public:
   /// Add a symbolic input with the given definedness facts.
   EClassId addInput(const InputInfo &Info);
   EClassId addConstant(LLT Ty, const APInt &Val);
+  /// Add a scalar constant, or a fixed integer vector with Val in every
+  /// lane. Val has the element width, never the total vector width.
+  EClassId addConstantSplat(LLT Ty, const APInt &Val);
   EClassId addOp(unsigned Opcode, LLT Ty, ArrayRef<EClassId> Ops,
                  uint32_t Flags = 0, uint64_t Attr = 0);
   /// Generic hash-consed node insertion. Operands are canonicalized.
@@ -199,8 +211,15 @@ public:
   std::optional<APInt> getConstant(EClassId Id) const {
     return getClass(Id).Const;
   }
+  /// The exact scalar constant, or the element value of a fixed integer
+  /// vector whose lanes are all the same exact constant. Does not follow
+  /// refinement edges or treat undef/poison lanes as constant lanes.
+  std::optional<APInt> getScalarOrSplatConstant(EClassId Id) const;
   const InputInfo &getInputInfo(unsigned Idx) const { return Inputs[Idx]; }
   unsigned getNumInputs() const { return Inputs.size(); }
+  void setKnownBits(EClassId Id, KnownBits K) {
+    Classes[find(Id)].Known = std::move(K);
+  }
 
   /// Canonical class ids in increasing order.
   SmallVector<EClassId, 32> getClassIds() const;
@@ -256,6 +275,15 @@ public:
 
   void print(raw_ostream &OS) const;
 
+  /// The id of the shuffle mask \p Mask (the ENode::Attr of a
+  /// G_SHUFFLE_VECTOR): equal masks have one id, so the mask is part of the
+  /// identity of the node and of its hash.
+  uint64_t internMask(ArrayRef<int> Mask);
+  ArrayRef<int> getMask(uint64_t Id) const { return Masks[Id]; }
+  /// Print the attribute of the operation \p N as patterns write it (a
+  /// shuffle mask as its lanes).
+  void printAttr(raw_ostream &OS, const ENode &N) const;
+
 private:
   struct ENodeHash {
     size_t operator()(const ENode &N) const { return hash_value(N); }
@@ -274,6 +302,9 @@ private:
   /// memo, so re-deriving them is a no-op instead of a new class, and they
   /// still take part in congruence closure.
   std::vector<std::pair<ENode, EClassId>> Pruned;
+  /// The shuffle masks of the graph (internMask).
+  std::vector<SmallVector<int, 8>> Masks;
+  std::map<std::vector<int>, uint64_t> MaskIds;
   unsigned NumNodes = 0;
   unsigned NumClasses = 0;
   bool Dirty = false;
@@ -297,8 +328,9 @@ private:
 ///                                root, transformed by OpProperties::InvertAttr
 /// An operation without an attribute matches a node with any attribute; on
 /// the RHS it is created with attribute 0.
-/// The literals `smin` and `smax` are the smallest and the largest signed
-/// value of the width.
+/// Value literals denote a scalar or a constant splat, according to their
+/// operand type. The literals `smin` and `smax` are the smallest and the
+/// largest signed value of the element width. Attributes are not splats.
 struct PatNode {
   enum KindTy : uint8_t { Var, ConstVar, Literal, Computed, Op } Kind;
   enum AttrKindTy : uint8_t {
@@ -334,6 +366,8 @@ struct RuleMatch {
   /// the matched pattern and Rest the remaining leaves of the root's view.
   /// The rule then relates the root to `RHS op Rest`.
   ACTerm Rest;
+  /// Scalar values, or element values of constant splats. ConstClasses
+  /// retains the complete type, including the lane count.
   SmallVector<std::optional<APInt>, 2> Consts;
   /// The class that each constant variable was first matched with (its type
   /// is the type of the constant).
@@ -484,6 +518,16 @@ enum class OpShape : uint8_t {
   /// if the terminator can be inverted and bit 0 if this node is the
   /// inverted form.
   Effect,
+  /// An operator that builds or divides a fixed vector, or moves its lanes
+  /// (OpProperties::IsVector). The e-graph has the operators of
+  /// isEGraphVectorOp: G_BUILD_VECTOR (the lanes are the operands),
+  /// G_EXTRACT_VECTOR_ELT and G_INSERT_VECTOR_ELT with a constant index
+  /// inside the vector (ENode::Attr is the index; the index is not an
+  /// operand), G_SHUFFLE_VECTOR (ENode::Attr is the id of the mask in
+  /// EGraph::internMask) and G_CONCAT_VECTORS. Each lane is poison iff the
+  /// lane that it reads is; a shuffle lane with the mask entry -1 has no
+  /// value.
+  Vector,
 };
 
 enum class CastKind : uint8_t {
@@ -604,7 +648,9 @@ struct OpProperties {
   /// The operator builds, divides or reduces a fixed vector (G_BUILD_VECTOR,
   /// G_SHUFFLE_VECTOR, G_VECREDUCE_ADD): its result is not computed lane by
   /// lane. Only the operators of getModelOnlyOpProperties have this
-  /// property. NumOperands is -1 if the number of operands is not fixed.
+  /// property (their shape is OpShape::Vector); getOpProperties also gives
+  /// the ones that the e-graph has (isEGraphVectorOp). NumOperands is -1 if
+  /// the number of operands is not fixed.
   bool IsVector = false;
   /// OpShape::Typed: the kinds of the operands and of the results.
   SmallVector<TypeKind, 3> OperandKinds;
@@ -950,7 +996,30 @@ struct SaturationStats {
   unsigned Bans = 0;
   /// Number of matches applied per rule name (in rule order).
   SmallVector<unsigned, 32> RuleApplications;
+  /// Merges made by the lane rules of fixed vectors (applyLaneRules), per
+  /// rule name.
+  unsigned LaneMerges = 0;
+  std::map<std::string, unsigned> LaneRuleApplications;
 };
+
+/// True if the e-graph has nodes of the vector operator \p Opc
+/// (OpShape::Vector).
+bool isEGraphVectorOp(unsigned Opc);
+
+/// True if \p P computes each lane of a fixed vector from the same lane of
+/// its operands without undefined behaviour, so that lane i of the result is
+/// the scalar operator on lane i of the operands (a G_SELECT with a scalar
+/// condition reads it for each lane).
+bool isLaneWiseOperator(const OpProperties &P);
+
+/// The lane rules of fixed vectors: equalities of the lanes that the table
+/// rules cannot write (an index or a mask is computed from another one).
+/// Each rule merges two classes with the same value in each lane, including
+/// poison; none of them relates a lane without a value. Requires a clean
+/// graph; adds at most until the graph has \p MaxNodes nodes. Returns the
+/// number of merges.
+unsigned applyLaneRules(EGraph &G, unsigned MaxNodes,
+                        std::map<std::string, unsigned> &Applications);
 
 /// Bounded equality saturation. Deterministic for a given graph and rule set.
 SaturationStats saturate(EGraph &G, ArrayRef<RewriteRule> Rules,

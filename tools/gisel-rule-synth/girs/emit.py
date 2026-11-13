@@ -453,6 +453,22 @@ def lifts(rule):
                              ir.from_json(rule['replacement_json']))
 
 
+def shared_scalars(rule):
+    """The variables of a rule that accepts vectors (lifts) that can be one
+    scalar for all lanes: the rule was found with such a scalar
+    (``lift_scalars``), and its source and its replacement read the
+    variable only as the condition of a G_SELECT (a G_SELECT of vectors
+    can have a scalar condition; another operator cannot take a scalar
+    with vectors)."""
+    if not lifts(rule):
+        return []
+    src = ir.from_json(rule['source_json'])
+    tgt = ir.from_json(rule['replacement_json'])
+    return [v for v in rule.get('lift_scalars', ())
+            if vector.select_condition_only(src, v) and
+            vector.select_condition_only(tgt, v)]
+
+
 def _const_fn(rule):
     """The C++ function that reads the value of a constant of the rule:
     for a rule that accepts vectors, also the value of each lane of a
@@ -657,7 +673,7 @@ def _plan_inputs(rule):
 def _cpp_find_siblings(rule):
     """The lines of the guard that find the other roots of a rule for a
     region with several roots and that fill Plan.Sibs and Plan.Extra.
-    Each sibling is an instruction of the block of the root that reads a
+    Each sibling is an instruction of the permitted execution scope that reads a
     value that the tree or an earlier sibling has, and that has the
     operator and the operands of the rule. An operand that is a variable
     of the siblings only gets its register here."""
@@ -726,8 +742,10 @@ def _cpp_find_siblings(rule):
                 '      MRI, *Root, %s,' % _ref_reg(anchor, sibs),
                 '      [&](const MachineInstr &MI) {'] + body + [
             '        return false;', '      },',
-            '      /*MaxUsers=*/8, {%s}, Plan.Sibs);' % ', '.join(
-                'T%d' % k for k in range(len(interior))),
+            '      /*MaxUsers=*/8, {%s}, Plan.Sibs%s);' % (
+                ', '.join('T%d' % k for k in range(len(interior))),
+                ', /*AllowCrossBlock=*/true' if _straight_line_rule(rule)
+                else ''),
             '  if (!Sib%d)' % j, '    return false;',
             '  Plan.Sibs.push_back(Sib%d);' % j] + [
             '  [[maybe_unused]] Register S%dR%d = '
@@ -828,8 +846,10 @@ def _bits_fn(rule):
     types = _type_sources(rule)
 
     def bits(w):
-        return 'MRI.getType(%s).getScalarSizeInBits()' % _type_source(
-            types, w)
+        try:
+            return 'MRI.getType(%s).getScalarSizeInBits()' % _type_source(types, w)
+        except ValueError:
+            return str(ops.elem(w))
     return bits
 
 
@@ -934,10 +954,10 @@ def _bitcast_checks(rule):
 
     def reg(e, kind, root):
         if root:
-            return 'Dst'
+            return 'MRI.getType(Dst)'
         if ir.is_var(e):
-            return 'X%d' % e[1]
-        return _type_source(types, e[1], kind)
+            return 'MRI.getType(X%d)' % e[1]
+        return _materialized_type(rule, e[1], kind)
 
     def walk(e, kind, root):
         if not ir.is_op(e):
@@ -948,7 +968,7 @@ def _bitcast_checks(rule):
             if ir.is_op(a):
                 ak = ir.result_kind(a, ak)
             if ops.parse(e[0])[0].bitcast:
-                c = 'MRI.getType(%s) != MRI.getType(%s)' % (
+                c = '%s != %s' % (
                     reg(e, kind, root), reg(a, ak, False))
                 if c not in out:
                     out.append(c)
@@ -966,6 +986,11 @@ def _rule_exprs(rule):
     for b, t, _ in _siblings(rule):
         out += [b] + ([t] if t is not None else [])
     return out
+
+
+def _straight_line_rule(rule):
+    from . import region
+    return all(region.straight_line_expr(e) for e in _rule_exprs(rule))
 
 
 def needs_ieee_denormal(rule):
@@ -1015,6 +1040,75 @@ def _type_sources(rule):
         sibs
 
 
+def _materialized_type(rule, w, kind=None):
+    types = _type_sources(rule)
+    try:
+        return _type_source(types, w, kind, 'MRI.getType(%s)')
+    except ValueError:
+        if kind == 'p':
+            raise ValueError('a new pointer type needs an existing address space')
+        if kind == 'f' and not fp.is_format(ops.elem(w)):
+            raise ValueError('unsupported new floating-point format')
+        bits = _bits_fn(rule)(w)
+        lanes = str(ops.lanes(w))
+        if not ops.lanes(w) and lifts(rule):
+            lanes = '(MRI.getType(Dst).isVector() ? MRI.getType(Dst).getNumElements() : 0)'
+        return "makeSynthType(%s, '%s', %s, MRI.getType(Dst).getScalarType().isAnyScalar())" % (bits, kind or 'i', lanes)
+
+
+def _legality_checks(rule):
+    checks = []
+    vw = rule['vw']
+    src = ir.from_json(rule['source_json'])
+    root_kind, kinds = _check_kinds(src, ir.from_json(rule['replacement_json']))
+    def ty(w, kind):
+        return _materialized_type(rule, w, kind)
+    for n in _built_nodes(rule):
+        info, attr, res = ops.parse(n[0])
+        if info.intrinsic:
+            # Intrinsics use their provider's type and namespace contract.
+            continue
+        kind = ir.result_kind(n, root_kind)
+        if info.results == 1:
+            ts = [ty(n[1], kind)]
+        else:
+            main = ir.width(n[2], vw)
+            ts = [ty(main, 'f' if info.fp_result else 'i') if k == 'main'
+                  else ty(1, 'i') for k in info.meta['result_kinds']]
+        if info.attr == 'pred':
+            ts.append('LLT()')  # MI operand occupied by the predicate.
+        for k, a in enumerate(n[2:]):
+            if info.constrained and k == len(n) - 3:
+                continue
+            ak = ir.operand_kind(n, k, kind)
+            if ir.is_var(a):
+                ak = kinds.get(a[1], ak)
+            ts.append(ty(ir.width(a, vw), ak))
+        if info.attr == 'imm?' and attr is not None:
+            ts.append('getSynthVectorIndexType(MRI, Dst)')
+        checks.append('isLegalSynthOp(MRI, Dst, TargetOpcode::%s, {%s})' %
+                      (info.name, ', '.join(ts)))
+    # Literals and folded constant recipes also materialize instructions.
+    reuse = _reused(rule)
+    cv = tuple(rule.get('const_vars', ()))
+    def constants(e, kind):
+        if ir.is_var(e) or e in reuse:
+            return
+        kind = ir.result_kind(e, kind) if ir.is_op(e) else kind
+        if not ir.is_op(e) or ir.is_constant_expr(e, cv):
+            if ir.is_lit(e) and ir.lit_kind(e[2]) == 'f':
+                kind = 'f'
+            checks.append('isLegalSynthConstant(MRI, Dst, %s, %s)' %
+                          (ty(e[1], kind), 'true' if kind == 'f' else 'false'))
+            return
+        for k, a in enumerate(e[2:]):
+            if not (ops.parse(e[0])[0].constrained and k == len(e) - 3):
+                constants(a, ir.operand_kind(e, k, kind))
+    for t in _replacements(rule):
+        constants(t, ir.result_kind(t, root_kind))
+    return sorted(set(checks))
+
+
 def _apply_params(rule):
     """The registers that the pattern of the rule gives to the guard and
     to the apply function."""
@@ -1039,7 +1133,7 @@ def _cpp_apply(rule):
     root_kind = ir.result_kind(src)
 
     def ty(w, kind=None):
-        return _type_source(types, w, kind, 'MRI.getType(%s)')
+        return _materialized_type(rule, w, kind)
 
     def constant(dst, w, kind, val, is_fp_lit=False):
         """The instruction of the constant with the bits ``val`` (a C++
@@ -1146,11 +1240,20 @@ def _cpp_apply(rule):
                 text = 'B.buildShuffleVector(%s, %s, ArrayRef<int>({%s}))' % (
                     rtys[0], ', '.join(args),
                     ', '.join(str(x) for x in ops.mask_of(attr)))
-            elif info.attr == 'imm?' and attr is not None:
+            elif info.attr == 'imm?' and attr is not None and \
+                    info.name == 'G_EXTRACT_VECTOR_ELT':
                 # The builder makes the constant of the index.
-                assert info.name == 'G_EXTRACT_VECTOR_ELT'
                 text = 'B.buildExtractVectorElementConstant(%s, %s, %d)' % (
                     rtys[0], args[0], attr)
+            elif info.attr == 'imm?' and attr is not None:
+                assert info.name == 'G_INSERT_VECTOR_ELT'
+                # The index constant has the type of the indices of the
+                # target (TargetLowering::getVectorIdxLLT).
+                text = 'buildInsertVectorElementConstant(B, %s, %s, %s, %d)' \
+                    % (rtys[0], args[0], args[1], attr)
+            elif info.name == 'G_CONCAT_VECTORS':
+                text = 'B.buildConcatVectors(%s, {%s})' % (
+                    rtys[0], ', '.join(args))
             elif info.intrinsic:
                 text = 'B.buildIntrinsic(Intrinsic::%s, ' \
                     'ArrayRef<DstOp>({%s}))%s' % (
@@ -1198,7 +1301,7 @@ def _cpp_apply(rule):
         # The match step found the siblings and the position
         # (planRegion). A sibling that stays and that is after the
         # position is moved before it.
-        head = ['  B.setInstrAndDebugLoc(applyRegionPlan(Plan));'] + [
+        head = ['  B.setInstrAndDebugLoc(applyRegionPlan(Plan, B.getObserver()));'] + [
             '  [[maybe_unused]] Register X%d = Plan.Extra[%d];' % (v, i)
             for i, v in enumerate(_sibling_vars(rule))]
         for j, (b, rb, _) in enumerate(sibs):
@@ -1232,7 +1335,7 @@ def _cpp_apply(rule):
         # output.
         head = ['  MachineInstr *Old%d = MRI.getVRegDef(%s);' % (n, d)
                 for n, (d, _, _) in enumerate(outs)] + [
-            '  B.setInstrAndDebugLoc(applyRegionPlan(Plan));'] + [
+            '  B.setInstrAndDebugLoc(applyRegionPlan(Plan, B.getObserver()));'] + [
             '  releaseResults(MRI, *Old%d);' % n
             for n in range(len(outs))] + ['  releaseResults(MRI, Root);']
         tail = ['  Old%d->eraseFromParent();' % n for n in range(len(outs))]
@@ -1305,6 +1408,7 @@ def why_not_emittable(rule):
     try:
         _annotate(src)
         _bitcast_checks(rule)
+        _legality_checks(rule)
         _cpp_recipe_checks(tgt, cv, _bits_fn(rule))
         if _rule_needs_cpp_apply(rule):
             _cpp_apply(rule)
@@ -1476,16 +1580,29 @@ def _cpp_guard(r):
             'matched: %s\\n");' % r['id']]
     if sibs:
         out += _cpp_find_siblings(r)
+    if r.get('region'):
+        nodes = ['T%d' % i for i in range(k)] + [x for x, _, _ in sres]
+        out += ['  // All matched nodes share one permitted execution scope.',
+                '  if (!isRegionScope(MRI, Dst, {%s}, '
+                '/*AllowCrossBlock=*/%s))' % (
+                    ', '.join(nodes),
+                    'true' if _straight_line_rule(r) else 'false'),
+                '    return false;']
     # The registers that are pointers in the rule: the guard checks that
     # they are pointers, and that the others are scalars.
     reg_kind = {x: k for _, k, x in _type_sources(r)}
     ptrs = sum(1 << i for i, x in enumerate(regs) if reg_kind.get(x) == 'p')
     lift = lifts(r)
+    # The registers that can be one scalar for all lanes of the vectors of
+    # the other registers (shared_scalars).
+    shared = sum(1 << real.index(v) for v in shared_scalars(r))
     out += ['  unsigned W[%d];' % len(cols),
             '  if (!getScalarWidths(MRI, {%s}, W%s))' % (
                 ', '.join(regs),
-                ', UINT64_C(0x%x)%s' % (ptrs, ', /*Lift=*/true' if lift
-                                        else '') if ptrs or lift else ''),
+                ', UINT64_C(0x%x)%s%s' % (
+                    ptrs, ', /*Lift=*/true' if lift else '',
+                    ', /*SharedScalars=*/UINT64_C(0x%x)' % shared
+                    if shared else '') if ptrs or lift else ''),
             '    return false;']
     if vector.little_endian_only(vw, *_rule_exprs(r)):
         out += ['  // A G_BITCAST of the rule changes the number of lanes: '
@@ -1499,6 +1616,13 @@ def _cpp_guard(r):
                 'subnormal numbers.',
                 '  if (!hasIEEEDenormalMode(MRI, {%s}))' % ', '.join(regs),
                 '    return false;']
+    if needs_ieee_denormal(r):
+        available = {(w, k) for w, k, _ in _type_sources(r)}
+        for e in _rule_exprs(r):
+            for node in ir.nodes(e):
+                if ir.result_kind(node) == 'f' and (node[1], 'f') not in available:
+                    out += ['  if (MRI.getVRegDef(Dst)->getMF()->getDenormalMode(getIEEEFormat(%s)) != DenormalMode::getIEEE())' % _bits_fn(r)(node[1]),
+                            '    return false;']
     for ti, rows in enumerate(tables):
         out.append('  static constexpr %s V%d[][%d] = {%s};' % (
             # A type code of a vector has more than 16 bits.
@@ -1550,13 +1674,26 @@ def _cpp_guard(r):
         if src_kinds.get(v) == 'f':
             return 'getKnownBitsOrConstant(*VT, MRI, X%d)' % v
         return 'VT->getKnownBits(X%d)' % v
+    fp_fact_vars = sorted({a[1] for p in dnf for a in p
+                           if a[0] in precond._FP_VALUE_ATOMS})
+    if fp_fact_vars:
+        out += ['  if (!VT)', '    return false;']
+        out += ['  FPValueFacts F%d = getFPValueFacts(*VT, MRI, X%d);' % (i, i)
+                for i in fp_fact_vars]
     cpp = [[precond.cpp_atom(a) for a in p] for p in dnf]
     text = ' '.join(c for p in cpp for c in p)
+    # An atom has the width of a lane (precond.lane_widths): the low 16
+    # bits of the type code of a vector register (getScalarWidths).
+    lane = ' & 0xffff' if vector.has_vector(vw, src) else ''
     for pos, i in enumerate(real):
         if ('W%d' % i) in text.replace('WRoot', ''):
-            out.append('  [[maybe_unused]] unsigned W%d = W[%d];' % (i, pos))
+            out.append('  [[maybe_unused]] unsigned W%d = W[%d]%s;' % (
+                i, pos, lane))
     if 'WRoot' in text:
-        out.append('  [[maybe_unused]] unsigned WRoot = W[%d];' % (n + k))
+        out.append('  [[maybe_unused]] unsigned WRoot = W[%d]%s;' % (
+            n + k, lane))
+    for check in _legality_checks(r):
+        out += ['  if (!(%s))' % check, '    return false;']
     # Disjuncts without atoms need no value tracking; try them first.
     order = sorted(range(len(dnf)), key=lambda i: (bool(dnf[i]), i))
     have = set()
@@ -1596,7 +1733,7 @@ def _cpp_guard(r):
         stays = sum(1 << j for j, (_, rb, _) in enumerate(sibs)
                     if rb is None)
         out += ['  // The replacement can be built: the roots are near in '
-                'one block, and',
+                'one straight-line chain, and',
                 '  // the values that it reads are defined before the first '
                 'root that the',
                 '  // rule replaces.',

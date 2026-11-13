@@ -16,6 +16,7 @@
 #ifndef GISELEGRAPHSYNTH_GISYNTHPREDICATES_H
 #define GISELEGRAPHSYNTH_GISYNTHPREDICATES_H
 
+#include "GISelEGraphSynth/GISynthRegion.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/FloatingPointMode.h"
@@ -23,6 +24,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
 #include "llvm/CodeGen/GlobalISel/GenericMachineInstrs.h"
+#include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
@@ -30,6 +32,9 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Register.h"
+#include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/CodeGen/TargetLowering.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Intrinsics.h"
 // The intrinsics of the generated rules of a target.
@@ -67,13 +72,20 @@ constexpr unsigned MaxVectorLanes = 16;
 /// for scalars holds for each lane of vectors: if every register is a fixed
 /// vector and all have the same number of lanes, \p W gets the element
 /// widths.
+///
+/// The bit I of \p SharedScalars says that the register I can also be one
+/// scalar for all lanes (the condition of a G_SELECT of vectors, which each
+/// lane reads with one value): it is not counted for the number of lanes,
+/// and the other registers must still have one number of lanes.
 inline bool getScalarWidths(const MachineRegisterInfo &MRI,
                             std::initializer_list<Register> Regs, unsigned *W,
-                            uint64_t Pointers = 0, bool Lift = false) {
+                            uint64_t Pointers = 0, bool Lift = false,
+                            uint64_t SharedScalars = 0) {
   SmallVector<LLT, 4> PtrTys;
   unsigned Idx = 0;
   unsigned *Begin = W;
   unsigned CommonLanes = 0;
+  bool HaveLanes = false;
   bool SameLanes = true;
   for (Register R : Regs) {
     LLT Ty = MRI.getType(R);
@@ -86,9 +98,12 @@ inline bool getScalarWidths(const MachineRegisterInfo &MRI,
       Lanes = Ty.getNumElements();
       Ty = Ty.getElementType();
     }
-    if (Idx == 0)
-      CommonLanes = Lanes;
-    SameLanes &= Lanes == CommonLanes;
+    if (!(((SharedScalars >> Idx) & 1) && Lanes == 0)) {
+      if (!HaveLanes)
+        CommonLanes = Lanes;
+      HaveLanes = true;
+      SameLanes &= Lanes == CommonLanes;
+    }
     if ((Pointers >> Idx++) & 1) {
       const MachineInstr *Def = MRI.getVRegDef(R);
       if (!Ty.isPointer() || !Def)
@@ -114,6 +129,21 @@ inline bool getScalarWidths(const MachineRegisterInfo &MRI,
     for (unsigned *I = Begin; I != W; ++I)
       *I &= 0xffff;
   return true;
+}
+
+/// Builds \p Res = G_INSERT_VECTOR_ELT \p Vec, \p Elt, \p Idx with a constant
+/// index of the index type of the target, as
+/// MachineIRBuilder::buildExtractVectorElementConstant does for an
+/// extraction. A rule creates the instruction only with an index inside the
+/// vector (the proof has no value for another index).
+inline MachineInstrBuilder buildInsertVectorElementConstant(MachineIRBuilder &B,
+                                                            const DstOp &Res,
+                                                            const SrcOp &Vec,
+                                                            const SrcOp &Elt,
+                                                            unsigned Idx) {
+  const TargetLowering *TLI = B.getMF().getSubtarget().getTargetLowering();
+  LLT IdxTy = TLI->getVectorIdxLLT(B.getDataLayout());
+  return B.buildInsertVectorElement(Res, Vec, Elt, B.buildConstant(IdxTy, Idx));
 }
 
 /// The value of the constant \p R: a G_CONSTANT, or a G_BUILD_VECTOR whose
@@ -366,27 +396,36 @@ inline bool isExtLoadOf(const MachineRegisterInfo &MRI, Register Reg,
 /// built before the first of these values, so that it dominates every user.
 /// Returns the instruction that defines that first value, or nullptr if the
 /// rule cannot apply: a value of \p Outs is not defined before the root in
-/// the block of the root (within \p MaxDistance instructions), or an input
+/// its straight-line chain (within \p MaxDistance instructions), or an input
 /// that the replacement reads (\p Inputs) is defined after that position.
 inline MachineInstr *firstRegionOutput(MachineInstr &Root,
                                        std::initializer_list<Register> Outs,
                                        std::initializer_list<Register> Inputs,
                                        unsigned MaxDistance = 64) {
-  MachineBasicBlock &MBB = *Root.getParent();
+  const MachineRegisterInfo &MRI = Root.getMF()->getRegInfo();
+  if (!isRegionScope(MRI, Root.getOperand(0).getReg(), Outs,
+                     /*AllowCrossBlock=*/true))
+    return nullptr;
+  // In valid SSA, an input defined outside this chain and read by a
+  // matched non-PHI dominates the chain's entry: every internal block has
+  // exactly one predecessor. Only definitions inside the chain can be too
+  // late. Defining outputs at the earliest old definition also dominates
+  // their external uses, including PHI operands on outgoing edges.
+  auto Instrs = straightLineInstructions(Root, MaxDistance);
+  auto It = llvm::find(Instrs, &Root);
   size_t Found = 0;
   unsigned Distance = 0;
-  for (MachineBasicBlock::iterator It = Root.getIterator(), E = MBB.begin();
-       It != E && Distance != MaxDistance; ++Distance) {
-    --It;
+  while (It != Instrs.begin() && Distance++ != MaxDistance) {
+    MachineInstr &MI = **--It;
     bool IsOut = false;
-    for (const MachineOperand &MO : It->all_defs()) {
+    for (const MachineOperand &MO : MI.all_defs()) {
       if (is_contained(Outs, MO.getReg()))
         IsOut = true;
       else if (is_contained(Inputs, MO.getReg()))
         return nullptr;
     }
     if (IsOut && ++Found == Outs.size())
-      return &*It;
+      return &MI;
   }
   return nullptr;
 }
@@ -404,7 +443,7 @@ struct RegionPlan {
   /// The inputs that only the siblings read, in the order of the rule.
   SmallVector<Register, 2> Extra;
   /// The siblings that stay and that the apply step moves before InsertPt,
-  /// in the order of the block.
+  /// in execution order.
   SmallVector<MachineInstr *, 2> Move;
   /// The replacement is built before this instruction.
   MachineInstr *InsertPt = nullptr;
@@ -430,8 +469,9 @@ inline bool isJointRegion(const MachineRegisterInfo &MRI, Register Dst,
 }
 
 /// A rule for a region with several roots matches the tree of one root
-/// (\p Root). Another root (a sibling) is an instruction of the block of
-/// \p Root that reads \p Anchor and that \p Match accepts. It is not an
+/// (\p Root). Another root (a sibling) is an instruction of its block, or
+/// straight-line chain if AllowCrossBlock, that reads \p Anchor and that
+/// \p Match accepts. It is not an
 /// instruction of the matched tree (the definitions of \p Tree) and not one
 /// of \p Others. Returns the first such instruction among the first
 /// \p MaxUsers users of \p Anchor, or nullptr.
@@ -440,12 +480,17 @@ MachineInstr *findSiblingRoot(const MachineRegisterInfo &MRI,
                               MachineInstr &Root, Register Anchor,
                               MatchFn Match, unsigned MaxUsers = 8,
                               ArrayRef<Register> Tree = {},
-                              ArrayRef<MachineInstr *> Others = {}) {
+                              ArrayRef<MachineInstr *> Others = {},
+                              bool AllowCrossBlock = false) {
+  auto Blocks =
+      AllowCrossBlock
+          ? straightLineBlocks(*Root.getParent())
+          : SmallVector<const MachineBasicBlock *, 8>{Root.getParent()};
   unsigned NumUsers = 0;
   for (MachineInstr &UseMI : MRI.use_nodbg_instructions(Anchor)) {
     if (++NumUsers > MaxUsers)
       return nullptr;
-    if (&UseMI == &Root || UseMI.getParent() != Root.getParent() ||
+    if (&UseMI == &Root || !is_contained(Blocks, UseMI.getParent()) ||
         is_contained(Others, &UseMI) ||
         any_of(Tree, [&](Register R) { return MRI.getVRegDef(R) == &UseMI; }))
       continue;
@@ -468,52 +513,54 @@ MachineInstr *findSiblingRoot(const MachineRegisterInfo &MRI,
 /// users of every replaced value. Each register of \p Inputs must be
 /// defined before that position. A sibling that stays and that is after
 /// that position is moved before it. The root and the siblings are not
-/// more than \p MaxDistance instructions apart.
+/// more than \p MaxDistance instructions apart in one straight-line chain.
 inline bool planRegion(MachineInstr &Root, RegionPlan &Plan, unsigned Stays,
                        std::initializer_list<Register> Inputs,
                        unsigned MaxDistance = 64) {
-  MachineBasicBlock &MBB = *Root.getParent();
   const unsigned NumSibs = Plan.Sibs.size();
   auto DefinesInput = [&](const MachineInstr &MI) {
     return any_of(MI.all_defs(), [&](const MachineOperand &MO) {
       return is_contained(Inputs, MO.getReg());
     });
   };
-  // An input that the root or a sibling that the rule replaces defines:
-  // the replacement would read a value that it replaces.
   if (DefinesInput(Root))
     return false;
-  // The position of each sibling: its distance before the root, or the
-  // negative of its distance after the root.
+  bool Crosses = any_of(Plan.Sibs, [&](const MachineInstr *MI) {
+    return MI->getParent() != Root.getParent();
+  });
+  if (Crosses && (!isStraightLineRegionInstr(Root) ||
+                  !all_of(Plan.Sibs, [](const MachineInstr *MI) {
+                    return isStraightLineRegionInstr(*MI);
+                  })))
+    return false;
+  auto Instrs = straightLineInstructions(Root, MaxDistance);
+  auto RootIt = llvm::find(Instrs, &Root);
   SmallVector<int, 2> Pos(NumSibs, 0);
   unsigned Found = 0;
-  // The distance of the nearest definition of an input before the root.
   unsigned NearestInput = 0;
   unsigned Distance = 0;
-  for (MachineBasicBlock::iterator It = Root.getIterator(), E = MBB.begin();
-       It != E && Distance != MaxDistance && Found != NumSibs;) {
-    --It;
+  for (auto It = RootIt;
+       It != Instrs.begin() && Distance != MaxDistance && Found != NumSibs;) {
+    MachineInstr &MI = **--It;
     ++Distance;
     for (unsigned J = 0; J != NumSibs; ++J) {
-      if (Plan.Sibs[J] == &*It) {
+      if (Plan.Sibs[J] == &MI) {
         Pos[J] = Distance;
         ++Found;
       }
     }
-    if (!NearestInput && DefinesInput(*It))
+    if (!NearestInput && DefinesInput(MI))
       NearestInput = Distance;
   }
   Distance = 0;
-  for (MachineBasicBlock::iterator It = std::next(Root.getIterator()),
-                                   E = MBB.end();
-       It != E && Distance != MaxDistance && Found != NumSibs; ++It) {
+  for (auto It = std::next(RootIt);
+       It != Instrs.end() && Distance != MaxDistance && Found != NumSibs;
+       ++It) {
     ++Distance;
-    // An input that is defined after the root: no instruction before the
-    // root can read it.
-    if (DefinesInput(*It))
+    if (DefinesInput(**It))
       return false;
     for (unsigned J = 0; J != NumSibs; ++J) {
-      if (Plan.Sibs[J] == &*It) {
+      if (Plan.Sibs[J] == *It) {
         Pos[J] = -int(Distance);
         ++Found;
       }
@@ -533,7 +580,7 @@ inline bool planRegion(MachineInstr &Root, RegionPlan &Plan, unsigned Stays,
   if (NearestInput && int(NearestInput) <= First)
     return false;
   // The siblings that stay and that are after that position, in the order
-  // of the block.
+  // of execution.
   SmallVector<unsigned, 2> Late;
   for (unsigned J = 0; J != NumSibs; ++J)
     if (((Stays >> J) & 1) && Pos[J] < First)
@@ -549,10 +596,19 @@ inline bool planRegion(MachineInstr &Root, RegionPlan &Plan, unsigned Stays,
 /// before the position of the replacement. Their operands are defined
 /// before it (planRegion). Returns the instruction before which the
 /// replacement is built.
-inline MachineInstr &applyRegionPlan(const RegionPlan &Plan) {
+inline MachineInstr &applyRegionPlan(const RegionPlan &Plan,
+                                     GISelChangeObserver *Observer = nullptr) {
   MachineBasicBlock &MBB = *Plan.InsertPt->getParent();
-  for (MachineInstr *MI : Plan.Move)
-    MBB.splice(Plan.InsertPt->getIterator(), &MBB, MI->getIterator());
+  for (MachineInstr *MI : Plan.Move) {
+    // A splice between blocks only updates the instruction's parent. CSE
+    // hashes the block too, so explicitly invalidate its old entry.
+    if (Observer)
+      Observer->changingInstr(*MI);
+    MBB.splice(Plan.InsertPt->getIterator(), MI->getParent(),
+               MI->getIterator());
+    if (Observer)
+      Observer->changedInstr(*MI);
+  }
   return *Plan.InsertPt;
 }
 
@@ -861,6 +917,8 @@ inline void eraseDeadSourceOp(MachineRegisterInfo &MRI, Register Reg) {
       return;
   Def->eraseFromParent();
 }
+
+#include "GISelEGraphSynth/GISynthValueFacts.inc"
 
 #include "GISelEGraphSynth/GISynthGeneratedPredicates.inc"
 

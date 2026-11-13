@@ -427,7 +427,7 @@ class RealExtractionTest(unittest.TestCase):
         self.assertTrue(c['noundef'])
         i = self._inst('(G_FMUL:s32 x0 x1)')
         self.assertEqual(list(i.consts), [None, 0x40000000])
-        self.assertEqual(tuple(i.facts[1]),
+        self.assertEqual(tuple(i.facts[1][:3]),
                          (0xBFFFFFFF, 0x40000000, True))
 
     def test_pointer_constant_has_its_bits(self):

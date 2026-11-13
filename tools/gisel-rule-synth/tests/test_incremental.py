@@ -235,6 +235,7 @@ class HistoryTest(unittest.TestCase):
             for reason in agenda.REASONS:
                 a = agenda.Agenda(d, dom, agenda.depth(lim, 1000))
                 a.record('single', key, [reason])
+                a.commit()
                 a.close()
                 # More of the budget that ended the search opens it.
                 deeper = {k: v * 2 for k, v in
@@ -246,6 +247,7 @@ class HistoryTest(unittest.TestCase):
                 b.close()
             a = agenda.Agenda(d, dom, agenda.depth(lim, 1000))
             a.record('single', key)
+            a.commit()
             a.close()
             b = agenda.Agenda(d, dom, agenda.depth(lim, 1000))
             self.assertIsNone(b.pending('single', key))

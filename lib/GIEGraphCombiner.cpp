@@ -30,6 +30,7 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
@@ -159,7 +160,9 @@ static cl::opt<bool> ExportAll(
              "cheaper candidate"));
 
 /// The version of the record format of -gisel-egraph-export.
-static constexpr unsigned ExportVersion = 1;
+// Version 2: fixed vectors (an index of a lane is "imm", a shuffle mask is
+// "mask"; the known bits of a vector are those of each lane).
+static constexpr unsigned ExportVersion = 2;
 
 static const char *TimerGroupName = "gisel-egraph";
 static const char *TimerGroupDesc = "GlobalISel e-graph combiner";
@@ -176,9 +179,83 @@ static bool hasIEEEDenormalMode(const MachineFunction &MF, LLT Ty) {
          DenormalMode::getIEEE();
 }
 
+/// The largest number of lanes of a fixed vector of a region.
+static constexpr unsigned MaxRegionLanes = 16;
+
+/// True if a register of type \p Ty can be a value of a region: a scalar or
+/// a pointer of at most 128 bits, or a fixed vector of at most
+/// MaxRegionLanes integer scalars of at most 64 bits each.
+static bool isRegionType(LLT Ty) {
+  if (!Ty.isValid())
+    return false;
+  if (!Ty.isVector())
+    return Ty.getSizeInBits() <= 128;
+  LLT Elt = Ty.getElementType();
+  return Ty.isFixedVector() && Ty.getNumElements() <= MaxRegionLanes &&
+         Elt.isScalar() && !Elt.isFloat() && Elt.getSizeInBits() <= 64;
+}
+
+static unsigned getLanes(LLT Ty) {
+  return Ty.isFixedVector() ? Ty.getNumElements() : 0;
+}
+
+/// The constant index operand \p Idx of \p MI if it is inside a vector of
+/// \p Lanes lanes.
+static std::optional<uint64_t> getLaneIndex(const MachineInstr &MI,
+                                            unsigned Idx, unsigned Lanes,
+                                            const MachineRegisterInfo &MRI) {
+  std::optional<APInt> C = getIConstantVRegVal(MI.getOperand(Idx).getReg(), MRI);
+  if (!C || C->uge(Lanes))
+    return std::nullopt;
+  return C->getZExtValue();
+}
+
+/// The types of a vector operator (OpShape::Vector) of a region: the
+/// operators of isEGraphVectorOp, with a constant index inside the vector.
+static bool isVectorCandidate(const MachineInstr &MI, ArrayRef<LLT> Defs,
+                              ArrayRef<LLT> Uses,
+                              const MachineRegisterInfo &MRI) {
+  if (Defs.size() != 1 || Uses.empty())
+    return false;
+  LLT Dst = Defs[0];
+  switch (MI.getOpcode()) {
+  case TargetOpcode::G_BUILD_VECTOR:
+    return getLanes(Dst) == Uses.size() &&
+           all_of(Uses, [&](LLT T) { return T == Dst.getElementType(); });
+  case TargetOpcode::G_EXTRACT_VECTOR_ELT:
+    return Uses.size() == 2 && getLanes(Uses[0]) &&
+           Dst == Uses[0].getElementType() &&
+           getLaneIndex(MI, 2, getLanes(Uses[0]), MRI);
+  case TargetOpcode::G_INSERT_VECTOR_ELT:
+    return Uses.size() == 3 && getLanes(Dst) && Uses[0] == Dst &&
+           Uses[1] == Dst.getElementType() &&
+           getLaneIndex(MI, 3, getLanes(Dst), MRI);
+  case TargetOpcode::G_SHUFFLE_VECTOR: {
+    if (Uses.size() != 2 || Uses[0] != Uses[1] || !getLanes(Uses[0]) ||
+        !getLanes(Dst) ||
+        Dst.getElementType() != Uses[0].getElementType())
+      return false;
+    ArrayRef<int> Mask = MI.getOperand(3).getShuffleMask();
+    return Mask.size() == getLanes(Dst) &&
+           all_of(Mask, [&](int M) {
+             return M >= -1 && M < int(2 * getLanes(Uses[0]));
+           });
+  }
+  case TargetOpcode::G_CONCAT_VECTORS:
+    return Uses.size() >= 2 && getLanes(Uses[0]) && all_equal(Uses) &&
+           Dst.getElementType() == Uses[0].getElementType() &&
+           getLanes(Dst) == getLanes(Uses[0]) * Uses.size();
+  default:
+    return false;
+  }
+}
+
 /// A region instruction: a supported operation (see OpProperties) whose
 /// register operands are all virtual registers of scalar or pointer type,
-/// with the types that the shape of the operator requires.
+/// with the types that the shape of the operator requires. An operator that
+/// computes each lane from the same lane of its operands
+/// (isLaneWiseOperator) also takes fixed vectors with one number of lanes,
+/// and the vector operators of OpShape::Vector build and divide them.
 static bool isCandidate(const MachineInstr &MI,
                         const MachineRegisterInfo &MRI) {
   uint32_t ImpliedFlags;
@@ -187,6 +264,7 @@ static bool isCandidate(const MachineInstr &MI,
     return false;
   SmallVector<LLT, 4> Defs, Uses;
   unsigned NumImms = 0;
+  bool AnyVector = false;
   for (const MachineOperand &MO : MI.operands()) {
     if (MO.isImm()) {
       ++NumImms;
@@ -198,14 +276,51 @@ static bool isCandidate(const MachineInstr &MI,
     if (!MO.getReg().isVirtual() || MO.isImplicit())
       return false;
     LLT Ty = MRI.getType(MO.getReg());
-    if (!Ty.isValid() || Ty.isVector() || Ty.getSizeInBits() > 128)
+    if (!isRegionType(Ty))
       return false;
+    AnyVector |= Ty.isVector();
     (MO.isDef() ? Defs : Uses).push_back(Ty);
   }
   if (NumImms != (P->ImmAttr ? 1u : 0u))
     return false;
   if (P->NumOperands >= 0 && Uses.size() != unsigned(P->NumOperands))
     return false;
+  if (P->Shape == OpShape::Vector)
+    return isVectorCandidate(MI, Defs, Uses, MRI);
+  if (AnyVector) {
+    // Lane by lane: every vector has the lanes of the result, and a
+    // scalar is only the condition of a G_SELECT.
+    if (!isLaneWiseOperator(*P) || Defs.size() != 1 || !getLanes(Defs[0]))
+      return false;
+    unsigned Lanes = getLanes(Defs[0]);
+    for (unsigned I = 0, E = Uses.size(); I != E; ++I)
+      if (getLanes(Uses[I]) != Lanes &&
+          !(P->Shape == OpShape::Select && I == 0 &&
+            Uses[0] == LLT::scalar(1)))
+        return false;
+    LLT Res = Defs[0].getElementType();
+    LLT Op0 = Uses[0].getScalarType();
+    switch (P->Shape) {
+    case OpShape::Binary:
+      return Uses[0] == Defs[0] &&
+             (P->hasAmount() ? true : Uses[1] == Defs[0]);
+    case OpShape::Unary:
+      return Uses[0] == Defs[0];
+    case OpShape::BitCount:
+      return true;
+    case OpShape::Cast:
+      return P->Cast == CastKind::Truncate
+                 ? Res.getSizeInBits() < Op0.getSizeInBits()
+                 : Res.getSizeInBits() > Op0.getSizeInBits();
+    case OpShape::Compare:
+      return Res == LLT::scalar(1) && Uses[0] == Uses[1];
+    case OpShape::Select:
+      return Uses[0].getScalarType() == LLT::scalar(1) &&
+             Uses[1] == Defs[0] && Uses[2] == Defs[0];
+    default:
+      return false;
+    }
+  }
 
   const LLT S1 = LLT::scalar(1);
   auto OneDef = [&] { return Defs.size() == 1; };
@@ -291,6 +406,8 @@ static bool isCandidate(const MachineInstr &MI,
            Defs[0].getSizeInBits() * Defs.size() == Uses[0].getSizeInBits();
   case OpShape::Effect:
     return Defs.empty() && (Uses.empty() || Uses[0] == S1);
+  case OpShape::Vector:
+    return false;
   }
   llvm_unreachable("bad shape");
 }
@@ -377,6 +494,9 @@ public:
   const TargetInstrInfo *TII = nullptr;
   /// True after the legalizer.
   bool RequireLegal = false;
+  /// The type of the index of a lane (TargetLowering::getVectorIdxLLT): the
+  /// constant index of a G_EXTRACT_VECTOR_ELT or G_INSERT_VECTOR_ELT node.
+  LLT IdxTy = LLT::scalar(32);
 
   /// Record the operation \p N of the region; it is always allowed.
   void addOriginal(const EGraph &G, const ENode &N) {
@@ -407,6 +527,14 @@ public:
     case LegalizeActions::NarrowScalar:
     case LegalizeActions::WidenScalar:
       return !RequireLegal;
+    case LegalizeActions::FewerElements:
+    case LegalizeActions::MoreElements:
+    case LegalizeActions::Bitcast:
+      // Before the legalizer, a vector operation that the legalizer divides
+      // or widens into legal vector operations (not one that it lowers into
+      // other operations).
+      return !RequireLegal &&
+             any_of(Types, [](LLT Ty) { return Ty.isValid() && Ty.isVector(); });
     default:
       return false;
     }
@@ -439,6 +567,10 @@ private:
       append_range(OperandTys, getInstrResultTypes(G, N));
     for (EClassId Op : N.Ops)
       OperandTys.push_back(G.getType(Op));
+    // The constant index of a lane is a register of the instruction.
+    if (Opc == TargetOpcode::G_EXTRACT_VECTOR_ELT ||
+        Opc == TargetOpcode::G_INSERT_VECTOR_ELT)
+      OperandTys.push_back(IdxTy);
     SmallBitVector Seen(8);
     const MCInstrDesc &Desc = TII->get(Opc);
     ArrayRef<MCOperandInfo> Info = Desc.operands();
@@ -468,6 +600,8 @@ public:
     CM.MulCost = MulCost;
     CM.LI = MF.getSubtarget().getLegalizerInfo();
     CM.TII = MF.getSubtarget().getInstrInfo();
+    if (const TargetLowering *TLI = MF.getSubtarget().getTargetLowering())
+      CM.IdxTy = TLI->getVectorIdxLLT(MF.getDataLayout());
     CM.RequireLegal = IsLegalized;
   }
 
@@ -484,13 +618,13 @@ private:
       MDT.emplace(MF);
     return *MDT;
   }
-  /// Known bits for -gisel-egraph-export, computed on first use.
+  /// Value facts for rewrite guards and export, computed on first use.
   GISelValueTracking &getValueTracking() {
     if (!VT)
       VT.emplace(MF);
     return *VT;
   }
-  void exportNode(json::OStream &J, const ENode &N) const;
+  void exportNode(json::OStream &J, const EGraph &G, const ENode &N) const;
 
   MachineFunction &MF;
   MachineRegisterInfo &MRI;
@@ -506,10 +640,21 @@ private:
 } // namespace
 
 /// Write the operator, the attribute and the flags of the operation \p N.
-void EGraphCombinerImpl::exportNode(json::OStream &J, const ENode &N) const {
+void EGraphCombinerImpl::exportNode(json::OStream &J, const EGraph &G,
+                                    const ENode &N) const {
   const OpProperties *P = getOpProperties(N.Opcode);
   J.attribute("op", CM.TII->getName(getInstrOpcode(N)));
-  if (P->Shape == OpShape::Compare)
+  if (N.Opcode == TargetOpcode::G_SHUFFLE_VECTOR)
+    J.attributeArray("mask", [&] {
+      for (int M : G.getMask(N.Attr))
+        J.value(M);
+    });
+  else if (P->Shape == OpShape::Vector &&
+           (N.Opcode == TargetOpcode::G_EXTRACT_VECTOR_ELT ||
+            N.Opcode == TargetOpcode::G_INSERT_VECTOR_ELT))
+    // The constant index of the lane.
+    J.attribute("imm", N.Attr);
+  else if (P->Shape == OpShape::Compare)
     J.attribute("pred", getComparePredicateName(N.Attr));
   else if (P->hasProjections())
     J.attribute("res", N.Attr);
@@ -696,6 +841,8 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       InputIsCarried.push_back(Carried);
       InputIsPhiOnly.push_back(IsPhiOperand);
     }
+    if (Ty.isScalar() || Ty.isFixedVector())
+      G.setKnownBits(Id, getValueTracking().getKnownBits(Reg));
     Map[Reg] = Id;
     return Id;
   };
@@ -741,6 +888,34 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
         Sites.push_back(MI);
         break;
       }
+      case OpShape::Vector:
+        // A constant index of a lane is the attribute, not an operand
+        // (isVectorCandidate checked that it is inside the vector), and so
+        // is the mask of a shuffle.
+        switch (MI->getOpcode()) {
+        case TargetOpcode::G_EXTRACT_VECTOR_ELT:
+          Ops.push_back(GetOperandClass(MI->getOperand(1).getReg(), false));
+          Attr = getIConstantVRegVal(MI->getOperand(2).getReg(), MRI)
+                     ->getZExtValue();
+          break;
+        case TargetOpcode::G_INSERT_VECTOR_ELT:
+          Ops.push_back(GetOperandClass(MI->getOperand(1).getReg(), false));
+          Ops.push_back(GetOperandClass(MI->getOperand(2).getReg(), false));
+          Attr = getIConstantVRegVal(MI->getOperand(3).getReg(), MRI)
+                     ->getZExtValue();
+          break;
+        case TargetOpcode::G_SHUFFLE_VECTOR:
+          Ops.push_back(GetOperandClass(MI->getOperand(1).getReg(), false));
+          Ops.push_back(GetOperandClass(MI->getOperand(2).getReg(), false));
+          Attr = G.internMask(MI->getOperand(3).getShuffleMask());
+          break;
+        default:
+          for (const MachineOperand &MO : MI->uses())
+            if (MO.isReg())
+              Ops.push_back(GetOperandClass(MO.getReg(), false));
+          break;
+        }
+        break;
       default:
         for (const MachineOperand &MO : MI->operands()) {
           if (MO.isReg() && MO.isUse())
@@ -779,6 +954,8 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
         EClassId Id = G.add(N);
         if (Exporting)
           ExportNodes.push_back({Id, std::move(N), MI, I});
+        if (Ty.isScalar() || Ty.isFixedVector())
+          G.setKnownBits(Id, getValueTracking().getKnownBits(Def));
         RegClass[Def] = Id;
         if (P->Shape != OpShape::Phi)
           OrigDefs.push_back({Id, MI, I});
@@ -962,7 +1139,10 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
       return Name;
     };
     auto KnownBitsOf = [&](json::OStream &J, Register Reg) {
-      if (!MRI.getType(Reg).isScalar())
+      // The known bits of a fixed vector are the bits that each lane has.
+      LLT Ty = MRI.getType(Reg);
+      if (!Ty.isScalar() && !(Ty.isFixedVector() &&
+                              Ty.getElementType().isScalar()))
         return;
       KnownBits KB = getValueTracking().getKnownBits(Reg);
       J.attribute("zero", Hex(KB.Zero));
@@ -1018,7 +1198,7 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
         for (const ExportNode &EN : ExportNodes)
           J.object([&] {
             J.attribute("id", EN.Class);
-            exportNode(J, EN.N);
+            exportNode(J, G, EN.N);
             if (E.getChosenNode(E.resolve(EN.Class)))
               J.attribute("best", E.resolve(EN.Class));
             J.attribute("instr", Order.lookup(EN.MI));
@@ -1057,7 +1237,7 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
               J.attribute("type", TypeName(N->Ty));
               J.attribute("value", Hex(N->Imm));
             } else {
-              exportNode(J, *N);
+              exportNode(J, G, *N);
               if (N->Ty.isValid())
                 J.attribute("type", TypeName(N->Ty));
               J.attributeArray("args", [&] {
@@ -1092,6 +1272,9 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
         for (unsigned RI = 0, RE = Rules.size(); RI != RE; ++RI)
           if (S.RuleApplications[RI])
             J.attribute(Rules[RI].getName(), S.RuleApplications[RI]);
+        // The lane rules of fixed vectors (applyLaneRules).
+        for (const auto &[Name, N] : S.LaneRuleApplications)
+          J.attribute(Name, N);
       });
     });
     *Out << "\n";
@@ -1240,6 +1423,15 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
               OldAttr = MO.getPredicate();
             else if (MO.isImm())
               OldAttr = MO.getImm();
+            else if (MO.isShuffleMask())
+              OldAttr = G.internMask(MO.getShuffleMask());
+          }
+          if (P->Shape == OpShape::Vector &&
+              (Opc == TargetOpcode::G_EXTRACT_VECTOR_ELT ||
+               Opc == TargetOpcode::G_INSERT_VECTOR_ELT)) {
+            // The index register is the attribute of the node.
+            OldAttr = getIConstantVRegVal(UseRegs.pop_back_val(), MRI)
+                          ->getZExtValue();
           }
           bool Same = UseRegs == SrcRegs;
           bool Swapped = UseRegs.size() == 2 && UseRegs[0] == SrcRegs[1] &&
@@ -1251,7 +1443,8 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
                      OldAttr == CmpInst::getSwappedPredicate(
                                     static_cast<CmpInst::Predicate>(Attr)));
           else
-            Match = (!P->ImmAttr || OldAttr == Attr) &&
+            Match = (!(P->ImmAttr || P->Shape == OpShape::Vector) ||
+                     OldAttr == Attr) &&
                     (Same || (Swapped && P->Commutative));
           if (Match) {
             Old = MI;
@@ -1270,6 +1463,32 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
           Res = Old->getOperand(OldIdx).getReg();
           break;
         }
+      }
+      if (P->Shape == OpShape::Vector) {
+        switch (Opc) {
+        case TargetOpcode::G_EXTRACT_VECTOR_ELT:
+          Res = B.buildExtractVectorElementConstant(N->Ty, Srcs[0], Attr)
+                    .getReg(0);
+          break;
+        case TargetOpcode::G_INSERT_VECTOR_ELT:
+          Res = B.buildInsertVectorElement(N->Ty, Srcs[0], Srcs[1],
+                                           B.buildConstant(CM.IdxTy, Attr))
+                    .getReg(0);
+          break;
+        case TargetOpcode::G_SHUFFLE_VECTOR:
+          Res = B.buildShuffleVector(N->Ty, Srcs[0], Srcs[1], G.getMask(Attr))
+                    .getReg(0);
+          break;
+        case TargetOpcode::G_BUILD_VECTOR:
+          Res = B.buildBuildVector(N->Ty, SrcRegs).getReg(0);
+          break;
+        case TargetOpcode::G_CONCAT_VECTORS:
+          Res = B.buildConcatVectors(N->Ty, SrcRegs).getReg(0);
+          break;
+        default:
+          llvm_unreachable("not a vector operator of the e-graph");
+        }
+        break;
       }
       if (P->Shape == OpShape::Compare) {
         Res = B.buildICmp(static_cast<CmpInst::Predicate>(Attr), N->Ty, Srcs[0],
@@ -1385,7 +1604,10 @@ bool EGraphCombinerImpl::run() {
           MI->getOpcode() == TargetOpcode::G_BR)
         continue;
       Region R = formRegion(*MI);
-      Changed |= processRegion(MBB, R);
+      if (processRegion(MBB, R)) {
+        Changed = true;
+        VT.reset();
+      }
     }
   }
   return Changed;

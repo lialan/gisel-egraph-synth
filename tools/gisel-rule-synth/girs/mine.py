@@ -78,14 +78,22 @@ DEFAULTS = {
     'pipelines': ['direct', 'opt-O2'],
     'discovery_pipelines': ['direct'],
     'extract': {'depth': None, 'max_trees': None},
-    'search': {'grammar': 'source', 'seed': 0, 'max_instances': 0,
+    'search': {'grammar': 'auto', 'seed': 0, 'max_instances': 0,
+               'search_jobs': 16, 'slow_jobs': 1, 'search_batch': 32,
+               'slow_timeout_ms': 120000, 'slow_budget_s': 300,
+               'slow_total_s': 3600,
                'timeout_ms': 10000, 'max_atoms': 2, 'max_terms': 50000,
                'max_evals': 40000000, 'max_proofs': 48,
                'max_candidates': 6, 'time_budget_s': 0,
                'cost_slack': None, 'max_rhs_cost': 0,
-               'semantic_variants': 1,
+               'semantic_variants': 1, 'expand_types': False,
+               'legalizer_stage': 'pre-legalizer',
                'explore_share': 0.2, 'regions': False,
-               'siblings': False, 'max_pairs': 0, 'multi_share': 0.3},
+               'siblings': False, 'max_pairs': 0, 'multi_share': 0.3,
+               # Search only the sources that the corpus read from vectors
+               # (lifted lane by lane, or with vector operators), and only
+               # the e-graph candidates with vectors.
+               'only_vectors': False},
     'hybrid': {'egraph_stages': 'pre-legalizer', 'egraph_max_cost': 8,
                'compose_depth': 3, 'compose_steps': 3,
                'compose_axioms': False},
@@ -652,13 +660,15 @@ class Run:
             legality=self.p('corpus', 'legality.json')
             if os.path.exists(self.p('corpus', 'legality.json')) else None,
             **{k: s[k] for k in ('grammar', 'seed', 'max_instances',
+                                 'search_jobs', 'slow_jobs', 'search_batch',
+                                 'slow_timeout_ms', 'slow_budget_s', 'slow_total_s',
                                  'timeout_ms', 'max_atoms', 'max_terms',
                                  'max_evals', 'max_proofs',
                                  'max_candidates', 'time_budget_s',
                                  'cost_slack', 'max_rhs_cost',
-                                 'semantic_variants',
+                                 'semantic_variants', 'expand_types', 'legalizer_stage',
                                  'explore_share', 'regions', 'siblings',
-                                 'max_pairs', 'multi_share')})
+                                 'max_pairs', 'only_vectors', 'multi_share')})
         if c['mode'] == 'hybrid':
             h = c['hybrid']
             over.update(egraph=[self.p('egraph')],
@@ -673,9 +683,6 @@ class Run:
                      and r['provenance']['sources'] != ['enumerative']]
             assert not other, 'semantics-only run with other sources'
         st = _load(self.p('library', 'rules.stats.json'))
-        # Tasks that a later run with the same budgets searches: the
-        # stage runs again when the run continues. A task that needs a
-        # higher budget is not one of them.
         incomplete = bool(st['queue']['left'] or
                           st['disjuncts'].get('final_guard_unknown'))
         return {'rules': len(db['rules']), 'delta': len(self.delta()),

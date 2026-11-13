@@ -63,6 +63,8 @@ inline bool guard_synth_or_d7cb9f3c_1u(const MachineRegisterInfo &MRI, GISelValu
   static constexpr uint16_t V0[][6] = {{8, 8, 8, 8, 8, 8}, {16, 16, 16, 16, 16, 16}, {32, 32, 32, 32, 32, 32}, {64, 64, 64, 64, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
     return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_XOR, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
+    return false;
   if (!VT)
     return false;
   KnownBits K0 = VT->getKnownBits(X0);
@@ -87,6 +89,8 @@ inline bool guard_synth_sub_c1235ab0(const MachineRegisterInfo &MRI, GISelValueT
   static constexpr uint16_t V0[][6] = {{8, 8, 8, 8, 8, 8}, {16, 16, 16, 16, 16, 16}, {32, 32, 32, 32, 32, 32}, {64, 64, 64, 64, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
     return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_SUB, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
+    return false;
   bool Pass = true;
   if (!Pass)
     return false;
@@ -104,6 +108,8 @@ inline bool guard_synth_sub_c1235ab0_1u(const MachineRegisterInfo &MRI, GISelVal
     return false;
   static constexpr uint16_t V0[][6] = {{8, 8, 8, 8, 8, 8}, {16, 16, 16, 16, 16, 16}, {32, 32, 32, 32, 32, 32}, {64, 64, 64, 64, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_SUB, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
     return false;
   bool Pass = true;
   if (!Pass)
@@ -144,6 +150,8 @@ inline bool guard_synth_and_83abd1ae_1u(const MachineRegisterInfo &MRI, GISelVal
   static constexpr uint16_t V0[][5] = {{8, 8, 8, 8, 8}, {16, 16, 16, 16, 16}, {32, 32, 32, 32, 32}, {64, 64, 64, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
     return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_LSHR, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
+    return false;
   if (!VT)
     return false;
   KnownBits K1 = VT->getKnownBits(X1);
@@ -169,6 +177,8 @@ inline bool guard_synth_and_b1e9087f_1u(const MachineRegisterInfo &MRI, GISelVal
     return false;
   [[maybe_unused]] unsigned W0 = W[0];
   [[maybe_unused]] unsigned W1 = W[1];
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_ZEXT, {MRI.getType(Dst), MRI.getType(X0)})))
+    return false;
   if (!VT)
     return false;
   KnownBits K1 = VT->getKnownBits(X1);
@@ -190,6 +200,8 @@ inline bool guard_synth_and_d05a2340_1u(const MachineRegisterInfo &MRI, GISelVal
     return false;
   static constexpr uint16_t V0[][5] = {{16, 8, 16, 16, 16}, {32, 8, 32, 32, 32}, {32, 16, 32, 32, 32}, {64, 8, 64, 64, 64}, {64, 16, 64, 64, 64}, {64, 32, 64, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_LSHR, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(X1)})))
     return false;
   if (!VT)
     return false;
@@ -214,6 +226,10 @@ inline bool guard_synth_icmp_482ffe70_1u(const MachineRegisterInfo &MRI, GISelVa
   static constexpr uint16_t V0[][5] = {{1, 8, 8, 8, 1}, {1, 16, 16, 16, 1}, {1, 32, 32, 32, 1}, {1, 64, 64, 64, 1}};
   if (!isVerifiedSchedule(W, V0))
     return false;
+  if (!(isLegalSynthConstant(MRI, Dst, MRI.getType(Dst), false)))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_SELECT, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
+    return false;
   if (!VT)
     return false;
   KnownBits K1 = VT->getKnownBits(X1);
@@ -236,6 +252,10 @@ inline bool guard_synth_icmp_df1ee794_1u(const MachineRegisterInfo &MRI, GISelVa
   static constexpr uint16_t V0[][5] = {{1, 8, 8, 8, 1}, {1, 16, 16, 16, 1}, {1, 32, 32, 32, 1}, {1, 64, 64, 64, 1}};
   if (!isVerifiedSchedule(W, V0))
     return false;
+  if (!(isLegalSynthConstant(MRI, Dst, MRI.getType(Dst), false)))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_SELECT, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
+    return false;
   if (!VT)
     return false;
   KnownBits K1 = VT->getKnownBits(X1);
@@ -257,6 +277,8 @@ inline bool guard_synth_icmp_fa5e7560_1u(const MachineRegisterInfo &MRI, GISelVa
     return false;
   static constexpr uint16_t V0[][5] = {{8, 8, 8, 8, 1}, {16, 16, 16, 16, 1}, {32, 32, 32, 32, 1}, {64, 64, 64, 64, 1}};
   if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_ICMP, {MRI.getType(Dst), LLT(), MRI.getType(X0), MRI.getType(X0)})))
     return false;
   if (!VT)
     return false;
@@ -287,6 +309,8 @@ inline bool guard_synth_lshr_c497647d(const MachineRegisterInfo &MRI, GISelValue
   static constexpr uint16_t V0[][5] = {{8, 8, 8, 8, 8}, {16, 16, 16, 16, 16}, {32, 32, 32, 32, 32}, {64, 64, 64, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
     return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_LSHR, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
+    return false;
   if (!VT)
     return false;
   KnownBits K1 = VT->getKnownBits(X1);
@@ -310,6 +334,8 @@ inline bool guard_synth_or_9c2e7958(const MachineRegisterInfo &MRI, GISelValueTr
   static constexpr uint16_t V0[][4] = {{8, 8, 8, 8}, {16, 16, 16, 16}, {32, 32, 32, 32}, {64, 64, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
     return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_OR, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
+    return false;
   bool Pass = true;
   if (!Pass)
     return false;
@@ -327,6 +353,8 @@ inline bool guard_synth_or_d4ad0f19_1u(const MachineRegisterInfo &MRI, GISelValu
     return false;
   static constexpr uint16_t V0[][4] = {{8, 8, 8, 8}, {16, 16, 16, 16}, {32, 32, 32, 32}, {64, 64, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_XOR, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
     return false;
   if (!VT)
     return false;
@@ -350,6 +378,8 @@ inline bool guard_synth_select_4cdb868a(const MachineRegisterInfo &MRI, GISelVal
   static constexpr uint16_t V0[][4] = {{8, 8, 1, 8}, {16, 16, 1, 16}, {32, 32, 1, 32}, {64, 64, 1, 64}};
   if (!isVerifiedSchedule(W, V0))
     return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_SMAX, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
+    return false;
   bool Pass = true;
   if (!Pass)
     return false;
@@ -367,6 +397,8 @@ inline bool guard_synth_select_4cdb868a_1u(const MachineRegisterInfo &MRI, GISel
     return false;
   static constexpr uint16_t V0[][4] = {{8, 8, 1, 8}, {16, 16, 1, 16}, {32, 32, 1, 32}, {64, 64, 1, 64}};
   if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_SMAX, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
     return false;
   bool Pass = true;
   if (!Pass)
@@ -386,6 +418,8 @@ inline bool guard_synth_select_4f35dc63(const MachineRegisterInfo &MRI, GISelVal
   static constexpr uint16_t V0[][4] = {{8, 8, 1, 8}, {16, 16, 1, 16}, {32, 32, 1, 32}, {64, 64, 1, 64}};
   if (!isVerifiedSchedule(W, V0))
     return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_SMIN, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
+    return false;
   bool Pass = true;
   if (!Pass)
     return false;
@@ -403,6 +437,8 @@ inline bool guard_synth_select_4f35dc63_1u(const MachineRegisterInfo &MRI, GISel
     return false;
   static constexpr uint16_t V0[][4] = {{8, 8, 1, 8}, {16, 16, 1, 16}, {32, 32, 1, 32}, {64, 64, 1, 64}};
   if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_SMIN, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
     return false;
   bool Pass = true;
   if (!Pass)
@@ -422,6 +458,8 @@ inline bool guard_synth_shl_a7bba6d0_1u(const MachineRegisterInfo &MRI, GISelVal
   static constexpr uint16_t V0[][4] = {{16, 8, 16, 16}, {32, 8, 32, 32}, {32, 16, 32, 32}, {64, 8, 64, 64}, {64, 16, 64, 64}, {64, 32, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
     return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_SHL, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(X1)})))
+    return false;
   bool Pass = true;
   if (!Pass)
     return false;
@@ -439,6 +477,8 @@ inline bool guard_synth_shl_edbd16af_1u(const MachineRegisterInfo &MRI, GISelVal
     return false;
   static constexpr uint16_t V0[][5] = {{8, 8, 8, 8, 8}, {16, 16, 16, 16, 16}, {32, 32, 32, 32, 32}, {64, 64, 64, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_SHL, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
     return false;
   if (!VT)
     return false;
@@ -462,6 +502,8 @@ inline bool guard_synth_sitofp_9bd751dd_1u(const MachineRegisterInfo &MRI, GISel
   static constexpr uint16_t V0[][3] = {{8, 16, 16}, {8, 32, 32}, {8, 64, 64}, {16, 32, 32}, {16, 64, 64}, {32, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
     return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_SITOFP, {MRI.getType(Dst), MRI.getType(X0)})))
+    return false;
   bool Pass = true;
   if (!Pass)
     return false;
@@ -479,6 +521,8 @@ inline bool guard_synth_smax_d4d1ff0e_1u(const MachineRegisterInfo &MRI, GISelVa
     return false;
   static constexpr uint16_t V0[][4] = {{8, 8, 8, 8}, {16, 16, 16, 16}, {32, 32, 32, 32}, {64, 64, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_ABS, {MRI.getType(Dst), MRI.getType(Dst)})))
     return false;
   if (!VT)
     return false;
@@ -503,6 +547,8 @@ inline bool guard_synth_trunc_110bd23a_1u(const MachineRegisterInfo &MRI, GISelV
   static constexpr uint16_t V0[][3] = {{16, 8, 1}, {32, 8, 1}, {32, 16, 1}, {32, 16, 4}, {32, 16, 7}, {32, 16, 8}, {32, 16, 9}, {32, 16, 11}, {32, 16, 12}, {32, 16, 13}, {64, 16, 8}, {64, 32, 8}, {64, 32, 16}, {64, 55, 32}};
   if (!isVerifiedSchedule(W, V0))
     return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_TRUNC, {MRI.getType(Dst), MRI.getType(X0)})))
+    return false;
   bool Pass = true;
   if (!Pass)
     return false;
@@ -521,6 +567,8 @@ inline bool guard_synth_uitofp_1e203d50_1u(const MachineRegisterInfo &MRI, GISel
   static constexpr uint16_t V0[][3] = {{8, 16, 16}, {8, 32, 32}, {8, 64, 64}, {16, 32, 32}, {16, 64, 64}, {32, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
     return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_UITOFP, {MRI.getType(Dst), MRI.getType(X0)})))
+    return false;
   bool Pass = true;
   if (!Pass)
     return false;
@@ -538,6 +586,10 @@ inline bool guard_synth_zext_a25c36b8_1u(const MachineRegisterInfo &MRI, GISelVa
     return false;
   static constexpr uint16_t V0[][4] = {{1, 1, 1, 32}};
   if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!(isLegalSynthConstant(MRI, Dst, MRI.getType(Dst), false)))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_LSHR, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(X0)})))
     return false;
   if (!VT)
     return false;
@@ -559,6 +611,10 @@ inline bool guard_synth_and_5466e589(const MachineRegisterInfo &MRI, GISelValueT
     return false;
   static constexpr uint16_t V0[][6] = {{8, 8, 8, 8, 8, 8}, {16, 16, 16, 16, 16, 16}, {32, 32, 32, 32, 32, 32}, {64, 64, 64, 64, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_AND, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_XOR, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
     return false;
   if (!VT)
     return false;
@@ -582,6 +638,10 @@ inline bool guard_synth_or_ecb7e28d(const MachineRegisterInfo &MRI, GISelValueTr
   static constexpr uint16_t V0[][6] = {{8, 8, 8, 8, 8, 8}, {16, 16, 16, 16, 16, 16}, {32, 32, 32, 32, 32, 32}, {64, 64, 64, 64, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
     return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_AND, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_OR, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
+    return false;
   bool Pass = true;
   if (!Pass)
     return false;
@@ -599,6 +659,10 @@ inline bool guard_synth_select_0c7a2693(const MachineRegisterInfo &MRI, GISelVal
     return false;
   static constexpr uint16_t V0[][7] = {{1, 8, 8, 8, 8, 8, 8}, {1, 16, 16, 16, 16, 16, 16}, {1, 32, 32, 32, 32, 32, 32}, {1, 64, 64, 64, 64, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_SELECT, {MRI.getType(Dst), MRI.getType(X0), MRI.getType(Dst), MRI.getType(Dst)})))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_XOR, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
     return false;
   bool Pass = true;
   if (!Pass)
@@ -618,6 +682,10 @@ inline bool guard_synth_xor_70267483(const MachineRegisterInfo &MRI, GISelValueT
   static constexpr uint16_t V0[][6] = {{8, 8, 8, 8, 8, 8}, {16, 16, 16, 16, 16, 16}, {32, 32, 32, 32, 32, 32}, {64, 64, 64, 64, 64, 64}};
   if (!isVerifiedSchedule(W, V0))
     return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_AND, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_XOR, {MRI.getType(Dst), MRI.getType(Dst), MRI.getType(Dst)})))
+    return false;
   bool Pass = true;
   if (!Pass)
     return false;
@@ -635,6 +703,14 @@ inline bool guard_synth_and_dd9a6636(const MachineRegisterInfo &MRI, GISelValueT
     return false;
   static constexpr uint16_t V0[][7] = {{16, 16, 8, 8, 8, 8, 8}, {32, 32, 8, 8, 8, 8, 8}, {32, 32, 16, 16, 16, 16, 16}};
   if (!isVerifiedSchedule(W, V0))
+    return false;
+  if (!(isLegalSynthConstant(MRI, Dst, MRI.getType(X0), false)))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_AND, {MRI.getType(X0), MRI.getType(X0), MRI.getType(X0)})))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_TRUNC, {MRI.getType(Dst), MRI.getType(X0)})))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_XOR, {MRI.getType(X0), MRI.getType(X0), MRI.getType(X0)})))
     return false;
   if (!VT)
     return false;
@@ -667,6 +743,14 @@ inline bool guard_synth_icmp_7274715e(const MachineRegisterInfo &MRI, GISelValue
   if (!OptC3)
     return false;
   [[maybe_unused]] const APInt &C3 = *OptC3;
+  if (!(isLegalSynthConstant(MRI, Dst, MRI.getType(X0), false)))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_ICMP, {MRI.getType(Dst), LLT(), MRI.getType(X0), MRI.getType(X0)})))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_MUL, {MRI.getType(X0), MRI.getType(X0), MRI.getType(X0)})))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_SUB, {MRI.getType(X0), MRI.getType(X0), MRI.getType(X0)})))
+    return false;
   if (!VT)
     return false;
   KnownBits K3 = VT->getKnownBits(X3);
@@ -710,6 +794,14 @@ inline bool guard_synth_icmp_8f303343(const MachineRegisterInfo &MRI, GISelValue
   if (!OptC3)
     return false;
   [[maybe_unused]] const APInt &C3 = *OptC3;
+  if (!(isLegalSynthConstant(MRI, Dst, MRI.getType(X0), false)))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_ICMP, {MRI.getType(Dst), LLT(), MRI.getType(X0), MRI.getType(X0)})))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_MUL, {MRI.getType(X0), MRI.getType(X0), MRI.getType(X0)})))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_SUB, {MRI.getType(X0), MRI.getType(X0), MRI.getType(X0)})))
+    return false;
   if (!VT)
     return false;
   KnownBits K3 = VT->getKnownBits(X3);
@@ -743,6 +835,14 @@ inline bool guard_synth_or_2a6976e5(const MachineRegisterInfo &MRI, GISelValueTr
   static constexpr uint16_t V0[][7] = {{16, 16, 8, 8, 8, 8, 8}, {32, 32, 8, 8, 8, 8, 8}, {32, 32, 16, 16, 16, 16, 16}};
   if (!isVerifiedSchedule(W, V0))
     return false;
+  if (!(isLegalSynthConstant(MRI, Dst, MRI.getType(X0), false)))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_OR, {MRI.getType(X0), MRI.getType(X0), MRI.getType(X0)})))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_TRUNC, {MRI.getType(Dst), MRI.getType(X0)})))
+    return false;
+  if (!(isLegalSynthOp(MRI, Dst, TargetOpcode::G_XOR, {MRI.getType(X0), MRI.getType(X0), MRI.getType(X0)})))
+    return false;
   if (!VT)
     return false;
   KnownBits K2 = VT->getKnownBits(X2);
@@ -775,6 +875,7 @@ inline bool guard_synth_or_2a6976e5(const MachineRegisterInfo &MRI, GISelValueTr
     "synth_shl_edbd16af_1u_c1",
     "synth_smax_d4d1ff0e_1u",
     "synth_smax_d4d1ff0e_1u_c1",
+    "synth_trunc_110bd23a_1u",
     "synth_or_ecb7e28d",
     "synth_or_ecb7e28d_c1",
     "synth_or_ecb7e28d_c2",

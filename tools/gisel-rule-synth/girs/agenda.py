@@ -104,6 +104,7 @@ class Agenda:
                 'depth': json.loads(dep), 'progress': progress,
                 'stalled': bool(stalled), 'runs': runs, 'last_run': last}
         self.searched = {}
+        self.staged = {}
 
     def row(self, stage, key):
         return self.rows.get((stage, key))
@@ -165,17 +166,37 @@ class Agenda:
                'last_run': self.run}
         self.rows[stage, key] = row
         self.searched[stage, key] = row['state']
+        self.staged[stage, key] = result
+
+    def defer(self, stage, key, reason):
+        """A task whose final proof/publication is still pending."""
+        row = self.rows[stage, key]
+        row['state'] = self.searched[stage, key] = 'partial'
+        row['reasons'] = sorted(set(row['reasons']) | {reason})
+
+    def commit(self):
+        """Publish checkpoints only after the coordinator saved the rules.
+
+        A failed process before this transaction leaves the old agenda intact.
+        If rule publication succeeded but this transaction did not, replay is
+        harmless: the catalog and proof cache already contain the results.
+        close() never commits staged state.
+        """
         with self.db:
-            self.db.execute(
-                'INSERT OR REPLACE INTO tasks VALUES '
-                '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                (self.domain, stage, key, row['state'],
-                 json.dumps(reasons), json.dumps(row['depth'],
-                                                 sort_keys=True),
-                 progress, int(stalled), row['runs'], self.run,
-                 None if result is None else json.dumps(result)))
+            for (stage, key), result in self.staged.items():
+                row = self.rows[stage, key]
+                self.db.execute(
+                    'INSERT OR REPLACE INTO tasks VALUES '
+                    '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    (self.domain, stage, key, row['state'],
+                     json.dumps(row['reasons']), json.dumps(row['depth'], sort_keys=True),
+                     row['progress'], int(row['stalled']), row['runs'], self.run,
+                     None if result is None else json.dumps(result)))
+        self.staged.clear()
 
     def result(self, stage, key):
+        if (stage, key) in self.staged:
+            return self.staged[stage, key]
         r = self.db.execute(
             'SELECT result FROM tasks WHERE domain=? AND stage=? AND key=?',
             (self.domain, stage, key)).fetchone()

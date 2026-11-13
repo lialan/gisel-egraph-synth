@@ -1,0 +1,6 @@
+llvm/test/CodeGen/AMDGPU/slp-int-to-fp.ll
+llvm/test/CodeGen/AMDGPU/dagcombiner-bug-illegal-vec4-int-to-fp.ll
+llvm/test/CodeGen/AMDGPU/fptoui-sat-vector.ll
+llvm/test/CodeGen/AMDGPU/fptosi-sat-vector.ll
+llvm/test/CodeGen/AMDGPU/fptoui-sat-scalar.ll
+llvm/test/CodeGen/AMDGPU/fptosi-sat-scalar.ll
