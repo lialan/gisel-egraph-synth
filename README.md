@@ -49,6 +49,12 @@ The `mine` command runs the complete loop. Each stage writes its result into
 a run directory, so an interrupted run continues from the last stage that
 completed.
 
+For measured feedback rounds, instruction-count or encoded-size objectives,
+and a reproducible corpus of real C programs, see
+[Corpus mining campaigns](docs/Corpus-Mining.md). The experiment harness
+compares single-round and iterative search with equal search allowances,
+then evaluates their frozen selections on held-out programs.
+
 In `semantics-only` mode, discovery enumerates replacements from operator
 semantics without using the e-graph rewrites. `hybrid` mode also accepts
 e-graph candidates and rule composition. Every candidate source goes

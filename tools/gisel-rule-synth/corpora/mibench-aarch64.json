@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/llvm/llvm-test-suite.git",
+  "revision": "19b349c5aa391729e688f9b4b53ded177e1531cb",
+  "target": "aarch64-unknown-linux-gnu",
+  "flags": ["-O2", "-std=gnu89", "-Wno-implicit-function-declaration", "-Wno-implicit-int"],
+  "groups": {
+    "discovery": ["automotive-bitcount", "security-sha", "network-patricia"],
+    "validation": ["office-stringsearch", "security-blowfish", "telecomm-adpcm"],
+    "heldout": ["security-rijndael", "telecomm-CRC32", "automotive-basicmath"]
+  },
+  "directory": "MultiSource/Benchmarks/MiBench"
+}

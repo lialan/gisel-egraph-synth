@@ -1635,6 +1635,11 @@ def cmd_mine(args):
     if args.refresh_search:
         run.cfg['refresh_search'] = True
         mine._dump(run.cfg, run.p('config.json'))
+    if run.cfg['loop']['rounds'] > 1 or run.cfg['loop']['search_budget_s'] or \
+            os.path.isfile(run.p('campaign.json')):
+        from girs import campaign
+        campaign.execute(run, until=args.until, force=args.force, export=args.export)
+        return
     if args.export:
         return mine.export(run, sys.modules[__name__])
     run.run(until=args.until, force=args.force)
@@ -1785,6 +1790,8 @@ def _joint_limits(args):
                         max_proofs=args.max_proofs, timeout_ms=args.timeout_ms,
                         cost_slack=args.cost_slack,
                         semantic_variants=args.semantic_variants,
+                        helper_cost=args.helper_cost, max_reuse=args.max_reuse,
+                        samples=args.samples, max_evals=args.max_evals,
                         seed=args.seed)
 
 
@@ -2199,6 +2206,10 @@ def build_parser():
     p.add_argument('--max-cost', type=int, default=3)
     p.add_argument('--max-outputs', type=int, default=3)
     p.add_argument('--max-helpers', type=int, default=256)
+    p.add_argument('--helper-cost', type=int, default=2)
+    p.add_argument('--max-reuse', type=int, default=4)
+    p.add_argument('--samples', type=int, default=48)
+    p.add_argument('--max-evals', type=int, default=20000000)
     p.add_argument('--max-terms', type=int, default=200000)
     p.add_argument('--time-s', type=float, default=60.0,
                    help='time budget of one window')

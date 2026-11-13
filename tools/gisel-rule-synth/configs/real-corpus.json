@@ -1,0 +1,18 @@
+{
+  "name": "mibench-aarch64",
+  "target": "AArch64",
+  "mode": "semantics-only",
+  "manifests": {
+    "discovery": "../../../build/real-corpus/discovery.txt",
+    "validation": "../../../build/real-corpus/validation.txt",
+    "heldout": "../../../build/real-corpus/heldout.txt"
+  },
+  "corpus_metadata": "../../../build/real-corpus/metadata.json",
+  "roles": {"discovery": ["discovery"], "selection": ["validation"], "heldout": ["heldout"]},
+  "pipelines": ["direct"],
+  "discovery_pipelines": ["direct"],
+  "loop": {"rounds": 3, "search_budget_s": 300, "joint_share": 0.5},
+  "search": {"seed": 17, "search_jobs": 16, "slow_total_s": 0},
+  "joint": {"seed": 17, "jobs": 16, "cost_slack": 0, "semantic_variants": 6},
+  "select": {"strategy": "measured", "metric": "insns", "guardrails": {}}
+}

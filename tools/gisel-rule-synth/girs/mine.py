@@ -54,6 +54,7 @@ from . import select
 from . import targets
 from . import known
 from . import mine_joint
+from .objective import Objective
 
 STAGES = ('identity', 'baseline', 'prepare', 'extract', 'discover', 'build', 'measure',
           'select', 'verify', 'freeze', 'heldout', 'report')
@@ -73,6 +74,7 @@ DEFAULTS = {
     # role -> file with one .ll path per line, relative to the root of the
     # LLVM source tree (third_party/llvm-project).
     'manifests': {},
+    'corpus_metadata': None,
     'roles': {'discovery': ['discovery'],
               'selection': ['discovery', 'validation'],
               'heldout': ['heldout']},
@@ -101,7 +103,10 @@ DEFAULTS = {
                'compose_depth': 3, 'compose_steps': 3,
                'compose_axioms': False},
     'joint': mine_joint.DEFAULTS,
-    'select': {'no_regressions': True, 'keep_unmeasured': False},
+    'select': {'no_regressions': True, 'keep_unmeasured': False,
+               'strategy': 'measured', 'metric': 'insns', 'guardrails': {}},
+    'loop': {'rounds': 1, 'search_budget_s': 0, 'joint_share': 0.5,
+             'growth': 2, 'max_growth': 4},
     # name -> {'llc': path, 'synth': bool, 'flags': [...]}: other rule
     # sets that the report compares with, each with its own compiler.
     'references': {},
@@ -155,7 +160,7 @@ def _merge(base, over, where='config'):
         if k not in base:
             raise SystemExit('%s: unknown key %r' % (where, k))
         if isinstance(base[k], dict) and base[k] and k not in (
-                'manifests', 'references', 'roles'):
+                'manifests', 'references', 'roles', 'guardrails'):
             out[k] = _merge(base[k], v, '%s.%s' % (where, k))
         else:
             out[k] = v
@@ -183,9 +188,11 @@ class Unit:
 
 
 class Run:
-    def __init__(self, config_path, run_dir, cli, log=print, local=None):
+    def __init__(self, config_path, run_dir, cli, log=print, local=None,
+                 baseline_from=None):
         self.cli = cli
         self.log = log
+        self.baseline_from = baseline_from
         self.root = paths.LLVM_ROOT   # the llvm-project directory
         with open(config_path) as f:
             self.cfg = _merge(DEFAULTS, json.load(f))
@@ -202,6 +209,8 @@ class Run:
         c['cache_dir'] = os.path.abspath(c['cache_dir'] or
                                          os.path.join(paths.REPO, '.cache', 'girs'))
         cdir = os.path.dirname(os.path.abspath(config_path))
+        if c['corpus_metadata'] and not os.path.isabs(c['corpus_metadata']):
+            c['corpus_metadata'] = os.path.join(cdir, c['corpus_metadata'])
         for role, p in list(c['manifests'].items()):
             if not os.path.isabs(p):
                 here = os.path.join(cdir, p)
@@ -210,6 +219,13 @@ class Run:
             c['manifests'][role] = p
         self.target = copy.copy(targets.get(c['target']))
         self.target.joint = self.joint.enabled()
+        Objective(c['select']['metric'], c['select']['guardrails'])
+        if c['select']['strategy'] not in ('measured', 'legacy'):
+            raise ValueError('select.strategy must be measured or legacy')
+        if c['select']['strategy'] == 'legacy' and (c['select']['metric'] != 'insns'
+                                                   or c['select']['guardrails']):
+            raise ValueError('legacy selection supports only insns without guardrails')
+        self.target.measure_code_bytes = True
         self.dir = os.path.abspath(run_dir)
         os.makedirs(self.dir, exist_ok=True)
         self.state_path = self.p('state.json')
@@ -250,11 +266,25 @@ class Run:
         contain equivalent tests. Missing files cannot establish independence.
         """
         seen = {}
+        roles = self.cfg.get('roles', DEFAULTS['roles'])
+        if set(roles['heldout']) & (set(roles['discovery']) | set(roles['selection'])):
+            raise ValueError('heldout roles cannot be used for discovery or selection')
+        metadata = _load(self.cfg.get('corpus_metadata'), {}) if self.cfg.get('corpus_metadata') else {}
+        units = {os.path.realpath(u['ir']): u for u in metadata.get('units', [])}
+        projects = {}
         for role in sorted(self.cfg['manifests']):
             for path in self.manifest(role):
                 digest = _sha_content(path)
                 if digest is None:
                     raise SystemExit('mine: cannot read corpus file %s' % path)
+                if self.cfg.get('corpus_metadata'):
+                    unit = units.get(os.path.realpath(path))
+                    if not unit or unit['sha256'] != digest or unit['role'] != role:
+                        raise ValueError('corpus metadata missing or stale: ' + path)
+                    project = unit['project']
+                    if project in projects and projects[project] != role:
+                        raise ValueError('program group overlaps corpus roles: ' + project)
+                    projects[project] = role
                 for key in (('path', os.path.realpath(path)), ('content', digest)):
                     if key in seen and seen[key][0] != role:
                         other, source = seen[key]
@@ -395,6 +425,7 @@ class Run:
             'target_model': _sha_file(targets.__file__),
             'measure': _sha_file(measure.__file__),
             'joint': getattr(self.target, 'joint', False),
+            'encoded_size': getattr(self.target, 'measure_code_bytes', False),
             'joint_disabled': sorted(getattr(self.target, 'joint_disabled', ())),
             'flags': list(flags), 'synth': bool(synth),
             'disabled': sorted(disabled), 'count_rules': bool(count_rules)},
@@ -402,10 +433,10 @@ class Run:
 
     # -- stage driver --
 
-    def run(self, until=None, force=()):
-        for name in STAGES:
+    def run(self, until=None, force=(), stages=None):
+        for name in stages or STAGES:
             if name in ('build', 'measure', 'select', 'verify', 'freeze',
-                        'heldout') and not self.has_delta():
+                        'heldout') and not self.has_delta() and not getattr(self, 'evaluate_baseline', False):
                 self.state['stages'][name] = {
                     'status': 'skipped', 'summary': {'reason': 'no_new_rules'}}
                 _dump(self.state, self.state_path)
@@ -451,13 +482,19 @@ class Run:
 
     def inputs_identity(self):
         c = self.cfg
+        prev = getattr(self, 'baseline_from', None)
         return {'config': c, 'generator': self.cli._generator_sha(),
+                'previous': {'ordinary': _sha_file(prev.p('profile', prev.target.name + '.json')),
+                             'knowledge': _sha_file(prev.p('library', 'rules.json')),
+                             'joint': prev.joint.artifacts() if prev.joint.enabled() else None}
+                            if prev else None,
                 'head': self.cli._git('rev-parse', 'HEAD'),
                 'llc': _sha_file(c['llc']),
                 'catalog': _sha_file(self.cli.DEFAULT_DB),
                 'profiles': {n: _sha_file(t.profile_path) for n, t in
                              targets.TARGETS.items()},
                 'source_files': self.source_identity(),
+                'corpus_metadata': _sha_content(c.get('corpus_metadata')),
                 'joint': self.joint.identity(),
                 'manifests': {r: _sha_file(p)
                               for r, p in sorted(c['manifests'].items())}}
@@ -499,6 +536,31 @@ class Run:
             if os.path.exists(t.profile_path):
                 shutil.copyfile(t.profile_path, self.p(
                     'frozen-baseline', name + '.json'))
+        previous = getattr(self, 'baseline_from', None)
+        if previous:
+            # Round-local promotion. Maintained knowledge is written only
+            # by export, after the final held-out evaluation.
+            shutil.copyfile(previous.p('library', 'rules.json'),
+                            self.p('frozen-baseline', 'rules.json'))
+            fdb = known.load(self.p('frozen-baseline', 'rules.json'))
+            known.copy_proofs(fdb, self.p('frozen-baseline', 'proofs'),
+                             [previous.p('library', 'proofs')])
+            for name in targets.TARGETS:
+                src = previous.p('profile', name + '.json') if name == self.target.name else \
+                    previous.p('frozen-baseline', name + '.json')
+                shutil.copyfile(src, self.p('frozen-baseline', name + '.json'))
+            if self.joint.enabled():
+                jdb = previous.joint.library()
+                _dump(jdb, self.joint.p('baseline', 'rules.json'))
+                mine_joint.copy_proofs(jdb, self.joint.p('baseline', 'proofs'),
+                                      [previous.joint.p('library', 'proofs')])
+                for name in targets.TARGETS:
+                    src = previous.joint.p(name + '.json') if name == self.target.name else \
+                        previous.joint.p('baseline', name + '.json')
+                    shutil.copyfile(src, self.joint.p('baseline', name + '.json'))
+            frozen = {'rules.json': _sha_file(self.p('frozen-baseline', 'rules.json'))}
+            frozen.update({'targets/' + n + '.json': _sha_file(
+                self.p('frozen-baseline', n + '.json')) for n in targets.TARGETS})
         import numpy
         import z3
         ident = {
@@ -526,7 +588,7 @@ class Run:
             'baseline_pipeline': {
                 'flags': self.target.ll_flags + measure.synth_flags(
                     self.target, count_rules=False),
-                'synthesized_rules': 'fixed repository baseline',
+                'synthesized_rules': 'previous round' if previous else 'fixed repository baseline',
                 'extraction_point': 'after ' + self.target.synth_pass,
                 'opt-O2': ['opt', '-O2'] + self.target.triple_flags},
             'frozen_baseline': {
@@ -734,7 +796,9 @@ class Run:
         st = _load(self.p('library', 'rules.stats.json'))
         joint_stats = self.joint.discover()
         incomplete = bool(st['queue']['left'] or
-                          st['disjuncts'].get('final_guard_unknown'))
+                          st['disjuncts'].get('final_guard_unknown') or
+                          joint_stats.get('queue', {}).get('open') or
+                          joint_stats.get('queue', {}).get('not_searched'))
         return {'rules': len(db['rules']), 'delta': len(self.delta()), 'joint': joint_stats,
                 'incomplete': incomplete, 'queue': st['queue'],
                 'by_class': st['rules_by_class'],
@@ -846,13 +910,13 @@ class Run:
         llc = self.candidate_llc()
         base = self._compile_many(llc, paths, self.p('measure', 'base.json'),
                                   synth=True, disabled=self.baseline_off())
-        cand = self._compile_many(llc, paths,
-                                  self.p('measure', 'candidates.json'),
-                                  synth=True)
+        cand = base if self.cfg['select']['strategy'] == 'measured' else self._compile_many(
+            llc, paths, self.p('measure', 'candidates.json'), synth=True)
         _dump({p: {'base': base[p], 'synth': cand[p]} for p in paths},
               self.p('measure', 'compare.json'))
         ok = [p for p in paths if base[p]['rc'] == 0]
         return {'units': len(paths), 'base_compiles': len(ok),
+                'mode': self.cfg['select']['strategy'],
                 'candidates_fail': sum(1 for p in ok if cand[p]['rc']),
                 'units_with_a_match': sum(1 for p in ok
                                           if cand[p].get('matched'))}
@@ -865,6 +929,9 @@ class Run:
                 'selector': _sha_file(select.__file__)}
 
     def stage_select(self):
+        if self.cfg['select']['strategy'] == 'measured':
+            from . import portfolio
+            return portfolio.select_run(self)
         c = self.cfg
         db = self.library()
         index = _load(self.p('corpus', 'index.json'))
@@ -910,7 +977,14 @@ class Run:
         base = _load(self.p('measure', 'base.json'))
         paths = sorted(p for p in base if base[p]['rc'] == 0)
         llc = self.candidate_llc()
-        if c['select']['no_regressions'] or self.joint.enabled():
+        if c['select']['strategy'] == 'measured':
+            policy = Objective(c['select']['metric'], c['select']['guardrails'])
+            cur, _ = select._measure_set(llc, self.target, paths, names, sel, c['jobs'])
+            final, dropped = sel, {}
+            unexplained = policy.violations(base, cur)
+            if unexplained:
+                raise ValueError('mine: measured set failed final verification: ' + repr(unexplained))
+        elif c['select']['no_regressions'] or self.joint.enabled():
             final, dropped, cur, unexplained = select.enforce(
                 llc, self.target, paths, base, names, sel, c['jobs'],
                 self.log, pinned=self.all_pinned())
@@ -918,7 +992,7 @@ class Run:
             final, dropped, unexplained = sel, {}, {}
             cur, _, _ = select.check_set(llc, self.target, paths, base,
                                          names, sel, c['jobs'])
-        viol = select._violations(cur, base)
+        viol = Objective(c['select']['metric'], c['select']['guardrails']).violations(base, cur)
         for rid, why in dropped.items():
             combined_rules[rid]['selection'] = why['reason']
             combined_rules[rid]['final_set'] = why
@@ -956,6 +1030,7 @@ class Run:
 
     def inputs_freeze(self):
         return {'verify': self._done('verify'),
+                'evaluation_baseline': getattr(self, 'evaluation_pinned', None),
                 'source_files': self.source_identity()}
 
     def stage_freeze(self):
@@ -971,7 +1046,10 @@ class Run:
             'compiler_sha256': _sha_file(self.candidate_llc()),
             'manifests': self.inputs_identity()['manifests'],
             'source_files': self.source_identity(),
+            'corpus_metadata_sha256': _sha_content(self.cfg.get('corpus_metadata')),
             'rules': self.all_final(),
+            'objective': Objective(self.cfg['select']['metric'], self.cfg['select']['guardrails']).json(),
+            'evaluation_baseline': getattr(self, 'evaluation_pinned', self.all_pinned()),
             'statement': 'The held-out files were not compiled with a '
                          'candidate and were not read by a search, a '
                          'precondition synthesis or a selection before '
@@ -1014,8 +1092,10 @@ class Run:
         units = self.units('selection') + self.units('heldout')
         paths = [u.path for u in units]
         llc = self.candidate_llc()
+        evaluation_pins = set(getattr(self, 'evaluation_pinned', self.all_pinned()))
+        base_off = [n for rid, ns in names.items() if rid not in evaluation_pins for n in ns]
         base = self._compile_many(llc, paths, self.p('eval', 'base.json'),
-                                  synth=True, disabled=self.baseline_off(),
+                                  synth=True, disabled=base_off,
                                   count_rules=False)
         runs = {'final': self._compile_many(
             llc, paths, self.p('eval', 'final.json'), synth=True,
@@ -1041,7 +1121,8 @@ class Run:
             if name.endswith('.baseline_differs'):
                 out[name] = cur
                 continue
-            out[name] = summarize(units, base, cur)
+            out[name] = summarize(units, base, cur,
+                Objective(c['select']['metric'], c['select']['guardrails']))
         _dump(out, self.p('eval', 'summary.json'))
         ho = {k: v for k, v in out['final'].items()
               if k.startswith(tuple(self.roles('heldout')))}
@@ -1067,8 +1148,10 @@ class Run:
             _dump(profile, self.p('profile', self.target.name + '.json'))
         rep = report.build(self)
         rep['incremental'] = self.library()['incremental']
-        rep['status'] = 'evaluated' if self.has_delta() else 'no_new_rules'
-        rep['evaluated'] = self.has_delta()
+        evaluated = self.has_delta() or getattr(self, 'evaluate_baseline', False)
+        rep['status'] = 'evaluated' if evaluated else 'no_new_rules'
+        rep['evaluated'] = evaluated
+        rep['objective'] = Objective(self.cfg['select']['metric'], self.cfg['select']['guardrails']).json()
         rep['joint'] = {'enabled': self.joint.enabled(),
                         'candidates': self.joint.delta(), 'pinned': self.joint.pinned(),
                         'selected': self.joint.final(),
@@ -1076,7 +1159,7 @@ class Run:
                                    if self.joint.enabled() else None,
                         'search': self.state['stages'].get('discover', {}).get(
                             'summary', {}).get('joint')}
-        if not self.has_delta():
+        if not evaluated:
             rep['evaluation'] = {}
             rep['frozen'] = None
         _dump(rep, self.p('report.json'))
@@ -1085,16 +1168,20 @@ class Run:
         return {'rules': rep['rules']['counts']}
 
 
-def summarize(units, base, cur):
+def summarize(units, base, cur, objective=None):
     """'<role>/<pipeline>' -> totals of ``cur`` against ``base`` over the
     units that compile without the rules."""
     out = {}
+    objective = objective or Objective()
     for u in units:
         b, c = base[u.path], cur[u.path]
         s = out.setdefault('%s/%s' % (u.role, u.pipeline), {
             'files': 0, 'base_fails': 0, 'compile_failures': [],
             'fallback_changed': [], 'compared': 0, 'insns_base': 0,
             'insns_delta': 0, 'bytes_delta': 0, 'files_better': 0,
+            'code_bytes_delta': 0, 'code_bytes_compared': 0,
+            'objective': objective.json(), 'objective_delta': 0,
+            'guardrail_violations': [],
             'files_worse': 0, 'changes': [], 'cpu_base': 0.0, 'cpu': 0.0})
         s['files'] += 1
         if b['rc']:
@@ -1113,11 +1200,19 @@ def summarize(units, base, cur):
         s['insns_base'] += b['insns']
         s['insns_delta'] += d
         s['bytes_delta'] += c['bytes'] - b['bytes']
+        if 'code_bytes' in c and 'code_bytes' in b:
+            s['code_bytes_delta'] += c['code_bytes'] - b['code_bytes']
+            s['code_bytes_compared'] += 1
+        od = objective.value(c) - objective.value(b)
+        s['objective_delta'] += od
+        why = objective.violation(b, c)
+        if why and why.startswith('guardrail:'):
+            s['guardrail_violations'].append([u.source, why])
         s['cpu_base'] += b['user']
         s['cpu'] += c['user']
-        if d:
-            s['files_better' if d < 0 else 'files_worse'] += 1
-            s['changes'].append([u.source, d])
+        if od:
+            s['files_better' if od < 0 else 'files_worse'] += 1
+            s['changes'].append([u.source, od])
     for s in out.values():
         s['changes'].sort(key=lambda x: (x[1], x[0]))
         s['cpu_base'] = round(s['cpu_base'], 1)
@@ -1131,7 +1226,8 @@ def export(run, cli, log=print):
     are then stale until `gi-rule-synth.py emit`."""
     if run.state['stages'].get('report', {}).get('status') != 'done':
         raise SystemExit('mine --export: the run is not finished')
-    if not run.has_delta():
+    initial = getattr(run, 'export_baseline', run)
+    if not run.has_delta() and not (set(run.all_final()) - set(initial.all_pinned())):
         log('mine --export: no new rules; baseline unchanged')
         return
     known.require_current(run.library())
@@ -1142,6 +1238,8 @@ def export(run, cli, log=print):
                 'compiler_sha256': _sha_file(run.candidate_llc()),
                 'config_sha256': _sha_file(run.p('config.json')),
                 'source_files': run.source_identity()}
+    if run.cfg.get('corpus_metadata'):
+        expected['corpus_metadata_sha256'] = _sha_content(run.cfg['corpus_metadata'])
     expected.update(run.joint.artifacts())
     if any(frozen.get(k) != v for k, v in expected.items()):
         raise SystemExit('mine --export: frozen evaluation artifacts changed')
@@ -1152,7 +1250,7 @@ def export(run, cli, log=print):
     heldout = {k: v for k, v in evaluations.items()
                if k.split('/')[0] in run.roles('heldout')}
     if not heldout or any(not v['compared'] or v['compile_failures'] or
-                          v['fallback_changed'] or v['files_worse']
+                          v['fallback_changed'] or v['files_worse'] or v.get('guardrail_violations')
                           for v in evaluations.values()):
         raise SystemExit('mine --export: held-out evaluation is missing or regresses')
     # Compare-and-swap the selected target; another run may have promoted
@@ -1161,7 +1259,7 @@ def export(run, cli, log=print):
         fcntl.flock(lock, fcntl.LOCK_EX)
         current = known.load(cli.DEFAULT_DB)
         live = _load(run.target.profile_path)
-        if live != run.baseline_profile():
+        if live != initial.baseline_profile():
             raise SystemExit('mine --export: target baseline changed; rerun '
                              'measurement against the new baseline')
         joint_export = None
@@ -1173,7 +1271,7 @@ def export(run, cli, log=print):
         if run.joint.enabled():
             jdb = mine_joint.validate(_load(mine_joint.catalog_path()))
             jlive = mine_joint.profile(jdb, run.target.name)
-            if jlive != run.joint.baseline_profiles()[run.target.name]:
+            if jlive != initial.joint.baseline_profiles()[run.target.name]:
                 raise SystemExit('mine --export: joint target baseline changed; '
                                  'rerun measurement against the new baseline')
             jmerged = mine_joint.merge(jdb, run.joint.library()['rules'])

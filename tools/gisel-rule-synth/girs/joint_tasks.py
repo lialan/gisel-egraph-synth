@@ -263,7 +263,8 @@ def load_feedback(path):
         status[rid] = info.get('profitability_status', 'unmeasured')
         w = info.get('window')
         if w is not None:
-            g = info.get('marginal', {}).get('insns_saved', 0) or 0
+            marginal = info.get('marginal', {})
+            g = marginal.get('gain', marginal.get('insns_saved', 0)) or 0
             gain[w] = max(gain.get(w, 0), g)
     return status, gain
 

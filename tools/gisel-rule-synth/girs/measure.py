@@ -10,6 +10,7 @@ import collections
 import os
 import re
 import subprocess
+import struct
 import tempfile
 
 SGPR = re.compile(r'^\s+\.sgpr_count:\s+(\d+)', re.M)
@@ -32,6 +33,31 @@ FALLBACK = re.compile(r'Instruction selection used fallback path for (\S+)')
 
 
 TIMEOUT = 120  # seconds per compilation
+
+
+def elf_code_bytes(data):
+    """Sum encoded executable sections, including their internal padding.
+
+    ELF section flags, not assembly text length or total object size. The
+    object also contains data, debug information and relocation tables.
+    """
+    if len(data) < 16 or data[:4] != b'\x7fELF' or data[4] not in (1, 2) or data[5] not in (1, 2):
+        raise ValueError('code_bytes requires an ELF object')
+    endian = '<' if data[5] == 1 else '>'
+    wide = data[4] == 2
+    off = struct.unpack_from(endian + ('Q' if wide else 'I'), data, 40 if wide else 32)[0]
+    entsize, count = struct.unpack_from(endian + 'HH', data, 58 if wide else 46)
+    fmt = endian + ('IIQQQQIIQQ' if wide else 'IIIIIIIIII')
+    if entsize < struct.calcsize(fmt) or not off:
+        raise ValueError('invalid ELF section table')
+    if count == 0:
+        count = struct.unpack_from(fmt, data, off)[5]
+    total = 0
+    for i in range(count):
+        section = struct.unpack_from(fmt, data, off + i * entsize)
+        if section[2] & 4 and section[1] != 8:  # SHF_EXECINSTR, not SHT_NOBITS
+            total += section[5]
+    return total
 
 
 def synth_flags(target, disabled=(), count_rules=True):
@@ -128,6 +154,20 @@ def compile_ll(llc, target, path, flags=(), synth=False, disabled=(),
                        spills=sum(map(int, SGPR_SPILL.findall(s))) +
                        sum(map(int, VGPR_SPILL.findall(s))),
                        scratch=sum(map(int, SCRATCH.findall(s))))
+        elif getattr(target, 'measure_code_bytes', False):
+            objcmd = cmd[:-2] + ['-filetype=obj', '-o', out + '.o']
+            orc, oerr, ocpu = run_timed(objcmd, timeout, cwd)
+            res['metric_user'] = ocpu
+            try:
+                if orc:
+                    raise ValueError('object compilation failed: ' + oerr[-200:])
+                with open(out + '.o', 'rb') as f:
+                    res['code_bytes'] = elf_code_bytes(f.read())
+            except (ValueError, OSError, struct.error) as exc:
+                res['metric_error'] = str(exc)
+            finally:
+                if os.path.exists(out + '.o'):
+                    os.remove(out + '.o')
     else:
         res['err'] = stderr[-400:]
     if os.path.exists(out):  # llc removes it itself when it fails

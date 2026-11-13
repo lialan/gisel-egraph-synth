@@ -201,7 +201,9 @@ def build(run):
     def gain(rid):
         if prof['rules'][rid].get('pinned'):
             return 0  # Historical baseline measurements are not this run's gain.
-        return -prof['rules'][rid].get('in_set', {}).get('insns', 0)
+        p = prof['rules'][rid]
+        return p.get('final_marginal_gain', p.get('in_set_gain',
+                     -p.get('in_set', {}).get('insns', 0)))
 
     rel = {r['id']: relation(r, frozen_by_id, frozen_families)
            for r in db['rules']}
@@ -336,14 +338,16 @@ def acceptance(rep, run):
     for key, s in rep['evaluation'].get('final', {}).items():
         if key.split('/')[0] in run.roles('heldout'):
             ho[key] = {'insns_delta': s['insns_delta'],
+                       'objective_delta': s.get('objective_delta', s['insns_delta']),
+                       'guardrail_violations': len(s.get('guardrail_violations', [])),
                        'files_better': s['files_better'],
                        'files_worse': s['files_worse'],
                        'compile_failures': len(s['compile_failures']),
                        'fallback_changed': len(s['fallback_changed'])}
     ho_ok = bool(ho) and all(
         v['files_worse'] == 0 and v['compile_failures'] == 0 and
-        v['fallback_changed'] == 0 for v in ho.values()) and \
-        sum(v['insns_delta'] for v in ho.values()) < 0
+        v['fallback_changed'] == 0 and not v['guardrail_violations'] for v in ho.values()) and \
+        sum(v['objective_delta'] for v in ho.values()) < 0
     return {
         'cold_start_semantics_only': rep['mode'] == 'semantics-only' and
                                     not run.library().get('incremental', {}).get(
@@ -431,11 +435,13 @@ def markdown(rep):
                       'run in %d files.' % (name.split('.')[0], len(ev)), '']
             continue
         lines += ['### %s' % name, '', _table(
-            ['Role/pipeline', 'Files', 'Compared', 'Instructions', 'Delta',
+            ['Role/pipeline', 'Files', 'Compared', 'Instructions', 'Instruction delta',
+             'Code byte delta', 'Objective delta',
              'Better', 'Worse', 'Compile failures', 'Fallback changed',
              'CPU s (base -> set)'],
             [[k, v['files'], v['compared'], v['insns_base'],
-              '%+d' % v['insns_delta'], v['files_better'], v['files_worse'],
+              '%+d' % v['insns_delta'], v.get('code_bytes_delta', 'unavailable'),
+              v.get('objective_delta', v['insns_delta']), v['files_better'], v['files_worse'],
               len(v['compile_failures']), len(v['fallback_changed']),
               '%.1f -> %.1f' % (v['cpu_base'], v['cpu'])]
              for k, v in sorted(ev.items())]), '']

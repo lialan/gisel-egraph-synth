@@ -17,7 +17,12 @@ from . import joint, joint_emit, known, measure, paths, select, smt, targets
 
 DEFAULTS = {'enabled': True, 'max_window': 5, 'max_cost': 3, 'max_outputs': 3,
             'max_helpers': 256, 'max_terms': 200000, 'time_s': 5.0,
-            'max_windows': 0, 'max_windows_per_block': 2000, 'jobs': 16}
+            'max_windows': 0, 'max_windows_per_block': 2000, 'jobs': 16,
+            'cost_slack': 0, 'semantic_variants': 6, 'max_cands': 12,
+            'max_combos': 50000, 'max_proofs': 6, 'helper_cost': 2,
+            'max_reuse': 4, 'samples': 48, 'max_evals': 20000000,
+            'timeout_ms': 10000, 'seed': 0, 'time_budget_s': 0,
+            'checkpoint_s': 30, 'priority': None}
 
 
 def catalog_path():
@@ -230,14 +235,19 @@ class Joint:
             _dump(db, self.p('library', 'rules.json'))
             return {'skipped': 'vector-only scope; joint baseline retained'}
         identity = {'extract': r._done('extract'), 'config': r.cfg['joint'],
-                    'model': r.cli._model_sha()}
+                    'model': r.cli._model_sha(),
+                    'feedback': load(r.cfg['joint'].get('priority'))
+                    if r.cfg['joint'].get('priority') else None}
         _stage_cache(self.p('search'), identity)
         stats = load(self.p('search', 'stats.json'))
-        if stats is None or stats.get('failed_shards') or any(
+        if stats is None or stats.get('failed_shards') or \
+                stats.get('queue', {}).get('open') or stats.get('queue', {}).get('not_searched') or any(
                 k.startswith('error:') for k in stats['status']):
             args = {k: v for k, v in r.cfg['joint'].items() if k != 'enabled'}
             r.cli.cmd_joint_search(r.cli.default_args('joint-search',
-                regions=[self.p('corpus')], out=self.p('search'), **args))
+                regions=[self.p('corpus')], out=self.p('search'),
+                cache=os.path.join(r.cfg['cache_dir'] or os.path.join(paths.REPO, '.cache', 'girs'), 'joint'),
+                refresh_search=r.cfg['refresh_search'], **args))
             stats = load(self.p('search', 'stats.json'))
         if stats.get('failed_shards') or any(k.startswith('error:') for k in stats['status']):
             raise RuntimeError('mine: joint search failed; see ' + self.p('search'))
