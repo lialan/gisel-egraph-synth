@@ -44,6 +44,12 @@ foreach(target AMDGPU AArch64)
     EXTRA_INCLUDES ${PROJECT_SOURCE_DIR}/td
     DEPENDS ${SYNTH_TD_DEPENDS})
 endforeach()
+# The combiner of the joint region rules (lib/SynthJointCombiner.td).
+set(LLVM_TARGET_DEFINITIONS lib/SynthJointCombiner.td)
+llvm_tablegen(lib/GISynthJointCombiner.inc
+  -gen-global-isel-combiner -combiners=GISynthJointCombiner
+  EXTRA_INCLUDES ${PROJECT_SOURCE_DIR}/td
+  DEPENDS ${PROJECT_SOURCE_DIR}/td/GISynthJointCombines.td)
 add_public_tablegen_target(GISynthCombinersGen)
 
 set(GISELEGRAPHSYNTH_SOURCES
@@ -58,6 +64,7 @@ set(GISELEGRAPHSYNTH_SOURCES
   lib/GISynthCorpusExtractor.cpp
   lib/SynthCombinerAMDGPU.cpp
   lib/SynthCombinerAArch64.cpp
+  lib/SynthJointCombiner.cpp
   )
 
 # The sources, compiled once for bin/llc and the unit tests.

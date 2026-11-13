@@ -673,7 +673,74 @@ def _is_fp(e):
     return ir.result_kind(e) == 'f' and fp.is_format(e[1])
 
 
-def joint_violation(enc, pairs, guard):
+def flag_poison(name, flags, xs):
+    """The condition under which the flags ``flags`` (nuw, nsw, exact,
+    disjoint) make the operation ``name`` on the values ``xs`` poison, or
+    None. The search proves its rules for instructions without flags; this
+    is the model of the instructions that keep their flags (see
+    joint.py, relax_flags)."""
+    a, b = (list(xs) + [None, None])[:2]
+    cs = []
+    for f in flags:
+        if name == 'G_ADD' and f == 'nuw':
+            cs.append(z3.Not(z3.BVAddNoOverflow(a, b, False)))
+        elif name == 'G_ADD' and f == 'nsw':
+            cs.append(z3.Not(z3.And(z3.BVAddNoOverflow(a, b, True),
+                                    z3.BVAddNoUnderflow(a, b))))
+        elif name == 'G_SUB' and f == 'nuw':
+            cs.append(z3.Not(z3.BVSubNoUnderflow(a, b, False)))
+        elif name == 'G_SUB' and f == 'nsw':
+            cs.append(z3.Not(z3.And(z3.BVSubNoOverflow(a, b),
+                                    z3.BVSubNoUnderflow(a, b, True))))
+        elif name == 'G_MUL' and f == 'nuw':
+            cs.append(z3.Not(z3.BVMulNoOverflow(a, b, False)))
+        elif name == 'G_MUL' and f == 'nsw':
+            cs.append(z3.Not(z3.And(z3.BVMulNoOverflow(a, b, True),
+                                    z3.BVMulNoUnderflow(a, b))))
+        elif name == 'G_SHL' and f in ('nuw', 'nsw'):
+            back = z3.LShR(a << b, b) if f == 'nuw' else (a << b) >> b
+            cs.append(back != a)
+        elif name in ('G_LSHR', 'G_ASHR') and f == 'exact':
+            cs.append((a & ((z3.BitVecVal(1, a.size()) << b) - 1)) != 0)
+        elif name == 'G_OR' and f == 'disjoint':
+            cs.append((a & b) != 0)
+        else:
+            raise ValueError('no model of the flag %s of %s' % (f, name))
+    return z3.Or(cs) if cs else None
+
+
+def ssa_definitions(enc, defs):
+    """The constraints of the SSA definitions ``defs`` of the instructions
+    of a source region, and the condition that one of them has undefined
+    behaviour. Each definition is (k, e) or (k, e, flags): the variable k
+    is the result of the instruction ``e`` (an operation whose operands
+    are variables, literals and constants), with the flags ``flags``. The
+    variable of an instruction is its identity: two instructions with
+    equal operands are two variables. A G_FREEZE has the value of its
+    operand, or any value if the operand is poison: the variable itself
+    is the choice of that instruction, and it is never poison. Every
+    instruction executes, so the undefined behaviour of one is undefined
+    behaviour of the source."""
+    cons, ubs = [], []
+    for d in defs:
+        k, e = d[0], d[1]
+        flags = d[2] if len(d) > 2 else ()
+        info, _, _ = ops.parse(e[0])
+        if info.freeze:
+            v, p, ub = enc.enc_full(e[2])
+            cons += [z3.Or(p, enc.x[k] == v), z3.Not(enc.xp[k])]
+        else:
+            v, p, ub = enc.enc_full(e)
+            fp_ = flag_poison(info.name, flags,
+                              [enc.enc_full(a)[0] for a in e[2:]])
+            if fp_ is not None:
+                p = z3.Or(p, fp_)
+            cons += [enc.x[k] == v, enc.xp[k] == p]
+        ubs.append(ub)
+    return cons, ubs
+
+
+def joint_violation(enc, pairs, guard, defs=None):
     """The formula of a region with several outputs. ``pairs`` are (source
     value, replacement) of each output; the first source is the root and
     the others are nodes of the root. Satisfiable iff some input that
@@ -683,7 +750,14 @@ def joint_violation(enc, pairs, guard):
 
     One encoder has the terms of every output: a node of the source that
     two outputs have is one value, and so is an instruction that two
-    replacements have."""
+    replacements have.
+
+    ``defs``: the SSA definitions of the instructions of a source region
+    (ssa_definitions). Then a source value is the variable of its
+    instruction, and a replacement can read that variable: an instruction
+    that a rule keeps is one value of the source and of the replacement.
+    Each output is checked on its own (a poison output of the source does
+    not excuse another output)."""
     root = pairs[0][0]
     assert not ir.repeated_freeze(root), 'one G_FREEZE term twice'
     enc.roots = tuple(s for s, _ in pairs)
@@ -691,7 +765,8 @@ def joint_violation(enc, pairs, guard):
     # (which has the nodes below it) or a root next to it.
     for s, _ in pairs:
         enc.mark_source(s)
-    su = z3.Or([enc.enc_full(s)[2] for s, _ in pairs])
+    cons, def_ubs = ssa_definitions(enc, defs or ())
+    su = z3.Or([enc.enc_full(s)[2] for s, _ in pairs] + def_ubs)
     bad, tvs = [], []
     for src, tgt in pairs:
         sv, sp, _ = enc.enc_full(src)
@@ -705,7 +780,7 @@ def joint_violation(enc, pairs, guard):
         bad.append(fe)
     return z3.And(enc.well_formed(), guard,
                   z3.And([enc.recipe_guard(t) for _, t in pairs]),
-                  enc.assumptions(),
+                  enc.assumptions(), *cons,
                   enc.for_all_choices(z3.And(z3.Not(su), z3.Or(bad)), tvs))
 
 

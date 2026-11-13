@@ -22,10 +22,12 @@ class PassRegistry;
 
 void initializeGISynthAMDGPUCombinerLegacyPass(PassRegistry &);
 void initializeGISynthAArch64CombinerLegacyPass(PassRegistry &);
+void initializeGISynthJointCombinerLegacyPass(PassRegistry &);
 
 /// The pass IDs, for TargetPassConfig::insertPass.
 const void *getGISynthAMDGPUCombinerID();
 const void *getGISynthAArch64CombinerID();
+const void *getGISynthJointCombinerID();
 
 } // end namespace llvm
 

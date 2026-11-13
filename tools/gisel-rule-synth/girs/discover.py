@@ -301,7 +301,20 @@ class Bank:
     # (an operator without a kernel) in the evaluation budget.
     GENERIC_WEIGHT = 100
 
-    def __init__(self, var_cls, types, limits, grammar):
+    def __init__(self, var_cls, types, limits, grammar, nonlinear=False,
+                 variant_mask=0):
+        # ``nonlinear``: a term can read a variable more than once (the
+        # joint region search, girs/joint.py, whose rules then guard each
+        # such input with defined(x)). The single-root search has linear
+        # terms only.
+        self.nonlinear = nonlinear
+        # ``variant_mask``: the variables (a bit set) whose use makes two
+        # terms with the same sample values different candidates: of each
+        # value the bank keeps the cheapest term for each set of these
+        # variables that a term reads. joint.py gives the values of a
+        # region that a rule can reuse and the shared helpers: a term that
+        # reads a shared value is kept next to a cheaper one that does not.
+        self.variant_mask = variant_mask
         self.var_cls = tuple(var_cls)
         self.types = tuple(types)
         self.ncls = len(types)
@@ -447,17 +460,31 @@ class Bank:
         first.sort()
         chosen, full, rest = [], False, None
         limit = room if cap is None else min(room, cap)
+        if self.variant_mask:
+            # The variables of the mask that each candidate reads: a value
+            # gets one term per such set (see __init__).
+            used = np.zeros(len(idx[0]), np.int64)
+            for i in idx:
+                used |= self.vars_np[i]
+            used &= self.variant_mask
+            # The hash of the values does not see the reads.
+            _, first = np.unique(np.stack([hkey.astype(np.int64), used]),
+                                 axis=1, return_index=True)
+            first.sort()
         for j, k in zip(first.tolist(), hkey[first].tolist()):
             # Preserve a bounded set of different instruction forms of
             # one sampled function. Generic cost and enumeration order
             # cannot choose the best lowering for a target. Leaves still
             # suppress identities; default 1 preserves the old bank.
-            seen_key = k if self.limits.semantic_variants == 1 else \
-                (k, key, tuple(kas), cost)
+            if self.variant_mask:
+                seen_key = (k, int(used[j]))
+            else:
+                seen_key = k if self.limits.semantic_variants == 1 else \
+                    (k, key, tuple(kas), cost)
             if keep[j] and k not in self._seen and \
                     seen_key not in self._seen and \
-                    self._variant_counts.get(k, 0) < \
-                    self.limits.semantic_variants:
+                    (self.variant_mask or self._variant_counts.get(k, 0) <
+                     self.limits.semantic_variants):
                 if len(chosen) >= limit:
                     full = limit == room
                     rest = [i[j:] for i in idx]
@@ -621,7 +648,10 @@ class Bank:
                     # costs nothing and is not in the grammar.
                     sel = used != 0
                     if sym:
-                        sel &= idx[0] < idx[1]
+                        # (a op a) is a term only if a variable can be
+                        # read twice (nonlinear).
+                        sel &= (idx[0] <= idx[1]) if self.nonlinear \
+                            else (idx[0] < idx[1])
                     todo = [i[sel] for i in idx] if sel.any() else None
                     while todo is not None:
                         if self.limits.deadline is not None and \
@@ -640,7 +670,9 @@ class Bank:
                 yield [a], self.vars_np[a]
             return
         A = parts[0]
-        registers = ~np.int64(self.env_mask)
+        # A nonlinear bank reads a variable as often as a term needs.
+        registers = np.int64(0) if self.nonlinear else \
+            ~np.int64(self.env_mask)
         for rest, rv in self._products(parts[1:], chunk):
             n = len(rest[0])
             step = max(1, chunk // n)
@@ -742,13 +774,20 @@ class Context:
             st = self.op_stats.setdefault(op, {})
             st[what] = st.get(what, 0) + 1
 
-    def bank(self, var_cls, types, max_cost, grammar):
+    def bank(self, var_cls, types, max_cost, grammar, nonlinear=False,
+             variant_mask=0):
         """The bank of a signature (the type class of each variable and
-        the canonical types) and a grammar (operator keys)."""
+        the canonical types) and a grammar (operator keys). ``nonlinear``
+        and ``variant_mask``: see Bank; they are part of the identity of a
+        bank."""
         key = (tuple(var_cls), tuple(types), tuple(grammar))
+        if nonlinear or variant_mask:
+            key += (('nonlinear', bool(nonlinear)),
+                    ('variant_mask', int(variant_mask)))
         b = self.banks.get(key)
         if b is None:
-            b = self.banks[key] = Bank(var_cls, types, self.limits, grammar)
+            b = self.banks[key] = Bank(var_cls, types, self.limits, grammar,
+                                       nonlinear, variant_mask)
         else:
             self.bank_hits += 1
         if len(b.cost_end) <= max_cost:

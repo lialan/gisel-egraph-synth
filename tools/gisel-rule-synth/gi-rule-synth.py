@@ -1668,6 +1668,148 @@ def default_args(cmd, **over):
     return ns
 
 
+# -------------------------------------------------------- joint regions ---
+
+def _joint_extract_one(llc, path, out_dir, target):
+    h = hashlib.sha256(os.path.abspath(path).encode()).hexdigest()[:10]
+    out = os.path.join(out_dir, '%s.%s.regions.jsonl' % (
+        os.path.basename(path), h))
+    tail = ['-gisel-synth-corpus-out=' + os.devnull,
+            '-gisel-synth-region-out=' + out]
+    quiet = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                 timeout=EXTRACT_TIMEOUT)
+    try:
+        if target.corpus_flag:
+            rc = subprocess.run([llc] + target.ll_flags + [
+                target.corpus_flag, path, '-o', os.devnull] + tail,
+                **quiet).returncode
+        else:
+            p1 = subprocess.run([llc] + target.ll_flags + [
+                '-stop-after=' + target.combiner, path, '-o', '-'],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=EXTRACT_TIMEOUT)
+            rc = p1.returncode
+            if rc == 0:
+                rc = subprocess.run([llc] + target.triple_flags + [
+                    '-run-pass=gisel-synth-corpus', '-x', 'mir', '-', '-o',
+                    os.devnull] + tail, input=p1.stdout,
+                    **quiet).returncode
+    except subprocess.TimeoutExpired:
+        rc = -1
+    if rc != 0:
+        if os.path.exists(out):
+            os.remove(out)
+        return path, None
+    return path, out
+
+
+def cmd_joint_extract(args):
+    """Writes the region DAGs (-gisel-synth-region-out) of .ll files."""
+    from girs import targets
+    target = targets.get(args.target)
+    os.makedirs(args.o, exist_ok=True)
+    files = list(args.ll)
+    if args.ll_list:
+        root = args.root or ''
+        with open(args.ll_list) as f:
+            files += [os.path.join(root, l.strip()) for l in f if l.strip()]
+    ok = fail = 0
+    with concurrent.futures.ThreadPoolExecutor(args.j) as ex:
+        for _, out in ex.map(lambda p: _joint_extract_one(
+                args.llc, p, args.o, target), files):
+            ok += out is not None
+            fail += out is None
+    print('joint-extract: %d files, %d failed' % (ok, fail))
+
+
+def _region_files(paths):
+    out = []
+    for p in paths:
+        if os.path.isdir(p):
+            out += sorted(os.path.join(p, f) for f in os.listdir(p)
+                          if f.endswith('.regions.jsonl'))
+        else:
+            out.append(p)
+    return out
+
+
+def cmd_joint_search(args):
+    """Searches joint replacements of the windows of region DAGs, proves
+    them and writes the rules, a record per window and the statistics."""
+    from girs import joint, smt
+    lim = joint.Limits(max_window=args.max_window, max_cost=args.max_cost,
+                       max_outputs=args.max_outputs, time_s=args.time_s,
+                       max_terms=args.max_terms, max_helpers=args.max_helpers)
+    files = _region_files(args.regions)
+    lstats = {}
+    blocks = joint.load_blocks(files, lstats)
+    cstats = {}
+    inst = joint.collect(blocks, lim, cstats,
+                         max_windows_per_block=args.max_windows_per_block)
+    # The most frequent windows first.
+    inst = dict(sorted(inst.items(), key=lambda kv: (-len(kv[1][1]),
+                                                      kv[1][0].text())))
+    backend = smt.Z3Backend(timeout_ms=lim.timeout_ms)
+    log = (lambda m: print(m, flush=True)) if args.verbose else None
+    rules, records, stats = joint.search_windows(
+        inst, lim, backend, log=log, max_windows=args.max_windows)
+    os.makedirs(os.path.join(args.out, 'proofs'), exist_ok=True)
+    for r in rules:
+        for pr in r['proofs']:
+            text = pr.pop('smt2', None)
+            if text is not None:
+                h = hashlib.sha256(text.encode()).hexdigest()[:16]
+                with open(os.path.join(args.out, 'proofs', h + '.smt2'),
+                          'w') as f:
+                    f.write(text)
+                pr['smt2_file'] = 'proofs/%s.smt2' % h
+    stats.update(load=lstats, collect=cstats, files=len(files),
+                 blocks=len(blocks), distinct_windows=len(inst),
+                 limits=lim.identity())
+    with open(os.path.join(args.out, 'rules.json'), 'w') as f:
+        json.dump({'schema': joint.SCHEMA, 'rules': rules}, f, indent=1)
+    with open(os.path.join(args.out, 'search.jsonl'), 'w') as f:
+        for r in records:
+            f.write(json.dumps(r) + '\n')
+    with open(os.path.join(args.out, 'stats.json'), 'w') as f:
+        json.dump(stats, f, indent=1, default=str)
+    print('joint-search: %d files, %d blocks, %d distinct windows, '
+          '%d rules (%s) in %.1fs' % (len(files), len(blocks), len(inst),
+                                      len(rules), stats['status'],
+                                      stats['seconds']))
+
+
+def cmd_joint_emit(args):
+    """Writes the TableGen records and the C++ of joint rules."""
+    from girs import joint_emit
+    with open(args.rules) as f:
+        rules = json.load(f)['rules']
+    if args.ids:
+        want = args.ids.split(',')
+        by = {r['id']: r for r in rules}
+        missing = [i for i in want if i not in by]
+        if missing:
+            raise SystemExit('no rule %s' % ', '.join(missing))
+        rules = [by[i] for i in want]
+    td, inc, info = joint_emit.emit(rules)
+    root = os.path.dirname(os.path.dirname(HERE))
+    td_path = args.td or os.path.join(root, 'td', 'GISynthJointCombines.td')
+    inc_path = args.inc or os.path.join(
+        root, 'include', 'GISelEGraphSynth', 'GISynthJointRules.inc')
+    if args.check:
+        stale = [p for p, t in ((td_path, td), (inc_path, inc))
+                 if not os.path.exists(p) or open(p).read() != t]
+        if stale:
+            print('stale: ' + ', '.join(stale))
+            return 1
+        return 0
+    for p, t in ((td_path, td), (inc_path, inc)):
+        with open(p, 'w') as f:
+            f.write(t)
+    print('joint-emit: %d rules, skipped %s' % (info['rules'],
+                                                info['skipped']))
+
+
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawTextHelpFormatter)
@@ -1934,6 +2076,46 @@ def build_parser():
     p.add_argument('runs', nargs='+', help='run directories')
     p.add_argument('-o', help='JSON output')
     p.set_defaults(fn=cmd_compare_runs)
+
+
+    p = sub.add_parser('joint-extract', help='write the region DAGs of '
+                       '.ll files (joint region search)')
+    p.add_argument('--llc', required=True)
+    p.add_argument('--target', default='AMDGPU')
+    p.add_argument('-o', required=True, help='output directory')
+    p.add_argument('--ll', nargs='*', default=[])
+    p.add_argument('--ll-list', help='file with one .ll path per line')
+    p.add_argument('--root', help='directory of the paths of --ll-list')
+    p.add_argument('-j', type=int, default=os.cpu_count())
+    p.set_defaults(fn=cmd_joint_extract)
+
+    p = sub.add_parser('joint-search', help='search, prove and plan joint '
+                       'replacements of region windows')
+    p.add_argument('--regions', nargs='+', required=True,
+                   help='region files or directories of joint-extract')
+    p.add_argument('--out', required=True)
+    p.add_argument('--max-window', type=int, default=5)
+    p.add_argument('--max-cost', type=int, default=3)
+    p.add_argument('--max-outputs', type=int, default=3)
+    p.add_argument('--max-helpers', type=int, default=256)
+    p.add_argument('--max-terms', type=int, default=200000)
+    p.add_argument('--time-s', type=float, default=60.0,
+                   help='time budget of one window')
+    p.add_argument('--max-windows', type=int, default=0,
+                   help='search only the most frequent windows (0: all)')
+    p.add_argument('--max-windows-per-block', type=int, default=2000)
+    p.add_argument('-v', '--verbose', action='store_true')
+    p.set_defaults(fn=cmd_joint_search)
+
+    p = sub.add_parser('joint-emit', help='generate TableGen and C++ of '
+                       'joint rules')
+    p.add_argument('--rules', required=True, help='rules.json of '
+                   'joint-search')
+    p.add_argument('--ids', help='comma-separated rule ids (default: all)')
+    p.add_argument('--td')
+    p.add_argument('--inc')
+    p.add_argument('--check', action='store_true')
+    p.set_defaults(fn=cmd_joint_emit)
 
     _SUBPARSERS.clear()
     _SUBPARSERS.update(sub.choices)

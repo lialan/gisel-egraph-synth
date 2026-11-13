@@ -23,10 +23,13 @@
 //     -amdgpu-gisel-egraph           the e-graph combiner (legal operations)
 //   AArch64, after aarch64-prelegalizer-combiner:
 //     -aarch64-gisel-synth-combines  the synthesized rules
+//   AMDGPU and AArch64, right after the pre-legalizer combiner:
+//     -gisel-synth-joint-combines    the joint region rules
 //
 // The combiners do not run at -O0. The passes are also available to
 // -run-pass: gisel-egraph-combiner, gisel-synth-corpus,
-// gisynth-amdgpu-combiner and gisynth-aarch64-combiner.
+// gisynth-amdgpu-combiner, gisynth-aarch64-combiner and
+// gisynth-joint-combiner.
 //
 //===----------------------------------------------------------------------===//
 
@@ -66,6 +69,12 @@ static cl::opt<bool> EnableAArch64SynthCombines(
     cl::desc("Run the synthesized GlobalISel combine rules of AArch64 after "
              "the pre-legalizer combiner"));
 
+static cl::opt<bool> EnableJointCombines(
+    "gisel-synth-joint-combines", cl::Hidden, cl::init(false),
+    cl::callback([](const bool &V) { onPipelineOption(V); }),
+    cl::desc("Run the joint region rules of the synthesizer (AMDGPU, "
+             "AArch64) right after the pre-legalizer combiner"));
+
 static cl::opt<bool> EnableAMDGPUEGraph(
     "amdgpu-gisel-egraph", cl::Hidden, cl::init(false),
     cl::callback([](const bool &V) { onPipelineOption(V); }),
@@ -91,6 +100,13 @@ static void addPasses(TargetMachine &TM, PassManagerBase &,
                       TargetPassConfig *PassConfig) {
   bool IsOptNone = TM.getOptLevel() == CodeGenOptLevel::None;
   const Triple &TT = TM.getTargetTriple();
+  // Inserted first, so that it runs right after the pre-legalizer combiner,
+  // before the other passes that this file inserts there.
+  if (EnableJointCombines && !IsOptNone && (TT.isAMDGCN() || TT.isAArch64()))
+    PassConfig->insertPass(getPassIDOrFail(TT.isAMDGCN()
+                                               ? "amdgpu-prelegalizer-combiner"
+                                               : "aarch64-prelegalizer-combiner"),
+                           getGISynthJointCombinerID());
   if (TT.isAMDGCN()) {
     bool Synth = EnableAMDGPUSynthCombines && !IsOptNone;
     bool EGraph = EnableAMDGPUEGraph && !IsOptNone;
@@ -121,6 +137,7 @@ struct PassRegistration {
     initializeGISynthCorpusExtractorPass(Registry);
     initializeGISynthAMDGPUCombinerLegacyPass(Registry);
     initializeGISynthAArch64CombinerLegacyPass(Registry);
+    initializeGISynthJointCombinerLegacyPass(Registry);
   }
 };
 } // end anonymous namespace
