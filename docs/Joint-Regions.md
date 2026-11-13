@@ -22,11 +22,12 @@ real gMIR (after the pre-legalizer combiner)
 | Command | What it does |
 |---|---|
 | `gi-rule-synth.py joint-extract` | runs llc with `-gisel-synth-joint-regions -gisel-synth-region-out=FILE` |
-| `gi-rule-synth.py joint-search` | windows, search, selection, proofs, plans: `rules.json`, `search.jsonl`, `stats.json`, `proofs/` |
+| `gi-rule-synth.py joint-search` | windows, search, selection, proofs, plans: `rules.json`, `search.jsonl`, `stats.json`, `proofs/`; with `--cache`, an incremental run (see [Runs that continue](#runs-that-continue)) |
 | `gi-rule-synth.py joint-recheck` | checks stored rules again, replays and redoes each proof |
 | `gi-rule-synth.py joint-emit` | writes `td/GISynthJointCombines.td` and `include/GISelEGraphSynth/GISynthJointRules.inc` |
 | `eval/joint_validate.py` | full `opt -O2 -> llc` A/B and MIR cases for the difference of squares |
 | `eval/joint_eval.py` | corpus A/B (held-out), per-rule application and matcher counters |
+| `eval/joint_measure.py` | marginal effect of each candidate over a frozen baseline, per-window comparison, measured set (see [Measured selection](#measured-selection)); `--evaluate` for a frozen set |
 
 The existing search paths, `rules.json`, the target profiles and the
 generated `td/GISynthCombines.td` are not changed. The joint rules run in
@@ -157,11 +158,206 @@ For one window:
    instructions.
 6. A candidate whose guards fail on its own instance is dropped, since the
    rule would not fire there.
-7. The best candidates are proved; the first proved one becomes the rule.
+7. The candidates are proved, cheapest first (see [Several
+   implementations](#several-implementations-of-a-window)).
 
 The status is `complete`, or `budget: <what>` when the time, the bank
-(`bank_truncated`), the helpers or the combinations reach their budget.
-`budget` is never reported as "no optimization".
+(`bank_truncated`), the helpers, the combinations or the candidate lists
+(`cands_truncated`, `max_cands`) reach their budget. `budget` is never
+reported as "no optimization". A budget never discards what was found
+before it ended: `Search.run` returns the candidates made so far, with
+`stats['incomplete']` and the reason (`stop`).
+
+## Several implementations of a window
+
+Two options, with the meaning that they have for the single-output search
+(`discover.Limits`), decide which candidates the search may look at:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--cost-slack k` | none | none: a candidate DAG costs less than the window (the historical policy). `k >= -1`: it costs at most the window plus `k` (`0`: equal cost). |
+| `--semantic-variants n` | 1 | proved implementations of different shapes that a window keeps (1: the first proved one). |
+
+The cost bound `max_after` replaces each place where the search assumed a
+cheaper DAG: the cost of the bank terms of an output (`_bank_rows`), the
+room for a helper and the two instructions that read it, the selection,
+`check_rule` (against the cost policy stored in the rule) and the cache
+identity. Shared instructions, kept instructions and the results of one
+instruction still count once, and the cost is that of the whole DAG: an
+output that alone gets more expensive is not dropped.
+
+A search cost is not a target cost. A candidate of equal or higher
+generic cost exists to be measured: `eval/joint_measure.py` decides whether
+it is profitable.
+
+With a slack the window itself is a candidate of its own cost (operands
+commuted, flags dropped): `is_identity` drops it. The proofs then take
+the candidates cheapest first and keep at most one proved candidate of
+each **shape** (the kept instructions, the multiset of new operators with
+their attributes and widths, and the kind of value of each output), so
+that `x+(y+z)` and `(x+y)+z` do not fill the quota. `variant_mask` of the
+bank still keeps the terms that read different shared values. A window
+stops proving when it has `semantic_variants` proved shapes or after
+`max_proofs` proofs; there is no break at the first proof. Each candidate
+gets a state:
+
+| State | Meaning |
+|---|---|
+| `verified` | proved: a rule (stable id `joint_<hash of window and candidate>`) |
+| `refuted` | the solver found a counterexample |
+| `unknown` | the solver did not decide (never a proof) |
+| `not_tried` | the quota, the proof budget or the end of the run came first |
+| `same_shape` | a candidate of a proved shape |
+| `no_plan`, `error` | no match order, or a model gap |
+
+The record of a window (`search.jsonl`) has these counts, the proof
+attempts, the solver calls, the time and the reasons why its work is not
+done (`window_time`, `time`, `terms`, `helpers`, `combos`, `candidates`,
+`proofs`, `unknown`, `variants`). A rule record has its `cost_policy`, its
+`shape`, its `window` (the rules of one window share their source
+pattern), `proof_status` in `semantic_status` and `profitability_status`
+(`unmeasured` until a measurement).
+
+## Termination
+
+A rule that does not make the generic cost smaller can undo another one
+(`x << 1 -> x + x`, `x + x -> x << 1`). The combiner of the joint rules
+runs one iteration in `SinglePass` mode, which still puts the instructions
+that a rule creates back on the worklist, so two such rules would rewrite
+each other forever. Two measures:
+
+* At run time (`GISynthJoint.h`), the plan of such a rule has
+  `original_only` (`RuleDesc::OriginalOnly`): it erases and replaces only
+  instructions whose results are older than the combiner
+  (`MatchEnv::FirstNewVReg`, the number of virtual registers when the
+  combiner started). Each application of such a rule removes one of the
+  instructions that the function had, and every other rule makes the
+  generic cost of the function smaller, so the combiner ends.
+  `unittests/GISynthJointTest.cpp` checks both rules of the example: the
+  second one matches the instruction that the first one created only
+  without the guard.
+* Before a set of rules is selected, `joint.rewrite_graph` looks for the
+  source pattern of each rule in the result of each rule (structurally,
+  without flags, facts and outside users: an over-approximation inside
+  the result, which cannot see the instructions around a match), and
+  `joint.rewrite_cycles` reports the cycles that contain a rule of
+  `original_only`. A rule that closes such a cycle is not selected.
+
+The existing combiners run before the joint combiner (the pre-legalizer
+combiner) or after it (the legalizer and the post-legalizer combiner);
+none of them runs again in this pass, so a joint rule that a later
+combiner undoes costs time but cannot loop. Its measured effect shows it.
+
+## Runs that continue
+
+With `--cache DIR`, `joint-search` makes each canonical window a task of
+the agenda of the single-output search (`girs/agenda.py`, stage `joint`),
+with its proof history (`girs/history.py`) and its process backend
+(`girs/parallel.TaskBackend`): no other database or recovery protocol
+(`girs/joint_tasks.py`). `JointAgenda` only replaces the table of reasons
+(`agenda.py` is part of `known.search_sha`, which keys the rows of the
+single-output search, and is not changed).
+
+| In the cache | What it holds |
+|---|---|
+| `agenda.sqlite3` | per window: complete or partial, the reasons, the budgets it had, and its result: the decided candidates (`verified`, `refuted`), the shapes, the pending candidates (`not_tried`, `unknown`, as records that a later run proves) |
+| `proofs.sqlite3` | SAT and UNSAT of each query, shared by all processes; UNKNOWN is only an attempt of the run |
+| `joint/<domain>/rules/*.json`, `proofs/*.smt2` | the verified rules of the domain |
+
+* **Order.** New windows first (the most frequent first), then the windows
+  that this run can take further, least searched first. With `--priority
+  SELECTION` (the output of `joint_measure.py`), windows whose rules have a
+  measured gain come first, and one place in four goes to a window
+  without a measurement.
+* **What reopens a window.** Each reason names the budgets that take it
+  further (`joint.REASONS`): `window_time` needs a larger `--time-s`,
+  `terms` larger `--max-terms`/`max_evals`, `helpers`, `combos` and
+  `candidates` their limits, `unknown` a larger `--timeout-ms`, `variants`
+  a larger `--semantic-variants`. `time` (the end of the run) and `proofs`
+  (the proof budget of one run) need no larger budget; a window whose
+  proofs decide nothing new twice needs a larger `max_proofs` or
+  `timeout_ms` (the `stalled` rule of the agenda). Only the search reasons
+  search the window again; a window with only proof reasons proves its
+  pending candidates (`mode: prove`).
+* **Decided work.** A decided candidate is never proved again and does not
+  use the proof budget of a later run. A verified rule that a measurement
+  found without a gain (`no_gain`, `regression`) leaves the quota of its
+  window, and its shape stays taken, so that the next run proves another
+  shape there.
+* **Commit order.** As `cmd_synth`: the rules of a window (their proof
+  files, then the rule, each written atomically) before its row; the agenda
+  is committed at checkpoints (`--checkpoint-s`) and at the end. An
+  interrupt (SIGINT/SIGTERM) stops the queue, waits for the running
+  windows and commits what was published. A failed worker or a failed
+  write leaves no row for its window, which a later run searches again
+  (its proofs come from the history).
+* **Identity.** The domain of the rows and of the rule store is the joint
+  proof model (`joint_tasks.semantics_sha`: `known.semantics_sha`, the
+  record schema and the source of the functions of `joint.py` that make
+  formulas, guards and plans), the search (`known.search_sha`,
+  `JOINT_SEARCH_VERSION`) and the limits that decide which candidates
+  exist (window, outputs, `max_cost`, grammar, samples, seed, widths,
+  `cost_slack`). The budgets (`time_s`, `max_terms`, `max_evals`,
+  `max_helpers`, `max_combos`, `max_cands`, `max_proofs`, `timeout_ms`,
+  `semantic_variants`) are the depth inside a domain. A window's key is its
+  canonical form with the boundary (inputs, facts, flags, widths, outside
+  users).
+* **Determinism.** Each window is searched alone, and a term bank depends
+  only on its key and on `max_terms`/`max_evals`, so with budgets that do
+  not end a search the rules do not depend on the number of processes.
+  The time budgets (`--time-s`, `--time-budget-s`) depend on the load of
+  the machine: a run with them is not reproducible bit for bit.
+
+```
+# A first run of at most 20 minutes, then runs that continue it:
+gi-rule-synth.py joint-search --regions R --out OUT1 --cache C --jobs 96 \
+    --cost-slack 0 --semantic-variants 6 --time-budget-s 1200
+gi-rule-synth.py joint-search --regions R --out OUT2 --cache C --jobs 96 \
+    --cost-slack 0 --semantic-variants 6
+# More terms for the windows whose banks were truncated:
+gi-rule-synth.py joint-search ... --cache C --max-terms 400000
+```
+
+## Measured selection
+
+`eval/joint_measure.py` decides which candidates are worth emitting, over
+the frozen baseline (the rules already selected, `joint/rules.json`), on a
+validation corpus. One `llc` has every rule (the baseline first); a
+configuration is a set of enabled rules (`--gisynthjointcombiner-disable-
+rule` for the others), compiled with the target's flags and
+`-verify-machineinstrs`:
+
+1. `control` (no joint combiner), `baseline`, and `screen`: every rule with
+   `-gisel-synth-joint-screen`, where a match is reported and rejected, so
+   no rule hides another and nothing changes.
+2. `solo`: baseline + one candidate, on the files where it screened. This
+   is its marginal effect: no other candidate takes its place, and the
+   gains of the baseline are not counted again.
+3. The candidates of one window are compared by their solo effect; the
+   best one is the window's candidate, the others are
+   `dominated_in_window`. Measuring them one at a time matters: enabled
+   together, the first one in the combiner takes every instance.
+4. A greedy set, largest solo gain first: a candidate joins if baseline +
+   set + it is smaller than baseline + set on its files, no file gets
+   worse, and no rewrite cycle appears. Its gain in the set is recorded
+   next to its solo gain (`overlaps the set`, `enabled by the set`).
+5. `select._loo_in_set` (leave-one-out inside the set) and
+   `select.enforce` (no file of the corpus worse, failing or with other
+   fallbacks than with the baseline) refine and validate the set.
+
+Each candidate has a proof status and a profitability status:
+`never_matched`, `no_application`, `no_gain`, `regression`, `profitable`
+(`not_emittable` if `joint-emit` refused it), and, if profitable, a
+selection status (`selected`, `dominated_in_window`, `no_gain_in_set`,
+`worse_in_set`, `cycle`, `final_set_violation`). The primary metric is the
+number of machine instructions; encoded bytes (`codeLenInByte`), SGPRs,
+VGPRs, spills, scratch and the CPU time of the compilations are recorded.
+These are static counts, not run time. Compilations are cached by
+compiler, flags, file content, enabled rules and metric version.
+
+The screen sees the MIR without joint rules: a candidate that would only
+match after a baseline rule applied is not measured there. The held-out
+corpus is for `--evaluate` of a frozen set only.
 
 Completeness bounds: the search is exhaustive over the windows enumerated
 for a block (at most `max_window` instructions, at most `max_outputs`
@@ -268,8 +464,12 @@ hand.
     instruction, or after the last value they read if that comes later,
     and never after a user of an output in the block. The scan is limited
     to 128 instructions around the anchor.
+  * for a rule with `OriginalOnly`, no erased or replaced instruction was
+    created by this run of the combiner (`reject created`; see
+    [Termination](#termination)).
 
-  The matcher changes nothing.
+  The matcher changes nothing. With `-gisel-synth-joint-screen` it reports
+  a match (`matched`) and returns false (measurement only).
 * **apply** drops the flags of `relax` instructions, builds each new
   instruction once in order with the builder (CSE included), rewrites only
   the *uses* of each replaced output with observer notification, and
