@@ -1,0 +1,2361 @@
+{
+ "schema": "gisel-joint-region/1",
+ "rules": [
+  {
+   "schema": "gisel-joint-region/1",
+   "id": "joint_b421acca3c",
+   "kind": "joint_region",
+   "source": {
+    "inputs": [
+     {
+      "w": 32,
+      "zero": "0xfffffffe",
+      "one": "0x1",
+      "defined": true,
+      "const": "0x1"
+     },
+     {
+      "w": 32,
+      "zero": "0x0",
+      "one": "0x0",
+      "defined": true
+     },
+     {
+      "w": 32,
+      "zero": "0x0",
+      "one": "0x0",
+      "defined": true
+     }
+    ],
+    "instrs": [
+     {
+      "op": "G_ADD",
+      "flags": [],
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     },
+     {
+      "op": "G_MUL",
+      "flags": [],
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        2
+       ],
+       [
+        "n",
+        0,
+        0
+       ]
+      ],
+      "uses": [
+       2
+      ]
+     },
+     {
+      "op": "G_SHL",
+      "flags": [],
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        2
+       ],
+       [
+        "in",
+        0
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     },
+     {
+      "op": "G_SUB",
+      "flags": [],
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "n",
+        1,
+        0
+       ],
+       [
+        "n",
+        2,
+        0
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      1,
+      0
+     ],
+     [
+      3,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_ADD x0, x1; n1 = G_MUL x2, n0; n2 = G_SHL x2, x0; n3 = G_SUB n1, n2; outputs n1, n3",
+   "candidate": {
+    "reused_source_instructions": [],
+    "relax_flags": [],
+    "new_instruction_dag": [
+     {
+      "op": "G_MUL",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "in",
+        2
+       ]
+      ]
+     },
+     {
+      "op": "G_ADD",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        2
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ]
+     },
+     {
+      "op": "G_SUB",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "t",
+        0,
+        0
+       ],
+       [
+        "in",
+        2
+       ]
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     },
+     {
+      "output": [
+       3,
+       0
+      ],
+      "value": [
+       "t",
+       2,
+       0
+      ]
+     }
+    ],
+    "required_guards": {
+     "defined": [
+      1,
+      2
+     ],
+     "distinct": [],
+     "constant": [
+      0
+     ]
+    },
+    "estimated_cost": {
+     "before": 5,
+     "after": 4,
+     "gain": 1,
+     "independent_after": 6
+    },
+    "text": "keep ; t0 = G_MUL x1, x2; t1 = G_ADD x2, t0; t2 = G_SUB t0, x2; n1 -> t1; n3 -> t2"
+   },
+   "plan": {
+    "anchor": 3,
+    "matched_instructions": [
+     {
+      "node": 0,
+      "action": "erase"
+     },
+     {
+      "node": 1,
+      "action": "replace"
+     },
+     {
+      "node": 2,
+      "action": "erase"
+     },
+     {
+      "node": 3,
+      "action": "replace"
+     }
+    ],
+    "match_order": [
+     {
+      "node": 3,
+      "how": "anchor",
+      "via": null
+     },
+     {
+      "node": 1,
+      "how": "def",
+      "via": [
+       3,
+       0
+      ]
+     },
+     {
+      "node": 0,
+      "how": "def",
+      "via": [
+       1,
+       1
+      ]
+     },
+     {
+      "node": 2,
+      "how": "def",
+      "via": [
+       3,
+       1
+      ]
+     }
+    ],
+    "preserved_bindings": [],
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "new_instruction_dag": [
+     {
+      "id": 0,
+      "op": "G_MUL",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "in",
+        2
+       ]
+      ]
+     },
+     {
+      "id": 1,
+      "op": "G_ADD",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        2
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ]
+     },
+     {
+      "id": 2,
+      "op": "G_SUB",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "t",
+        0,
+        0
+       ],
+       [
+        "in",
+        2
+       ]
+      ]
+     }
+    ],
+    "output_replacements": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     },
+     {
+      "output": [
+       3,
+       0
+      ],
+      "value": [
+       "t",
+       2,
+       0
+      ]
+     }
+    ],
+    "erase_candidates": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "guards": {
+     "defined": [
+      1,
+      2
+     ],
+     "distinct": [],
+     "constant": [
+      [
+       0,
+       "0x1"
+      ]
+     ],
+     "width_maps": [
+      [
+       [
+        32,
+        32
+       ]
+      ],
+      [
+       [
+        32,
+        8
+       ]
+      ],
+      [
+       [
+        32,
+        16
+       ]
+      ],
+      [
+       [
+        32,
+        64
+       ]
+      ]
+     ],
+     "same_block": true
+    }
+   },
+   "proofs": [
+    {
+     "width_map": [
+      [
+       32,
+       32
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0533,
+     "smt2_file": "proofs/8d038ad9fe5fba9f.smt2"
+    },
+    {
+     "width_map": [
+      [
+       32,
+       8
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0275,
+     "smt2_file": "proofs/a37adab9a043e55f.smt2"
+    },
+    {
+     "width_map": [
+      [
+       32,
+       16
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0382,
+     "smt2_file": "proofs/76513d2752aa0d28.smt2"
+    },
+    {
+     "width_map": [
+      [
+       32,
+       64
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0596,
+     "smt2_file": "proofs/6dfb736c9182cb20.smt2"
+    }
+   ],
+   "not_proved": [],
+   "search": {
+    "status": "budget: bank_truncated,helper_budget_exhausted",
+    "bank_truncated": true,
+    "helper_budget_exhausted": true
+   },
+   "semantic_status": {
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1",
+    "joint_outputs": 2,
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs"
+   },
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "occurrences": 1,
+    "examples": [
+     [
+      "/home/nod/gisel-joint-regions-20261112/build/scratch/ex-run/regions/helper-amdgpu-O2.ll.62ab4cf1a1.regions.jsonl",
+      "shared_helper",
+      "1",
+      "0",
+      "(3, 4, 5, 6)"
+     ]
+    ]
+   }
+  },
+  {
+   "schema": "gisel-joint-region/1",
+   "id": "joint_f5cef5f7f4",
+   "kind": "joint_region",
+   "source": {
+    "inputs": [
+     {
+      "w": 1,
+      "zero": "0x0",
+      "one": "0x0",
+      "defined": false
+     },
+     {
+      "w": 32,
+      "zero": "0x0",
+      "one": "0x0",
+      "defined": false
+     },
+     {
+      "w": 32,
+      "zero": "0xfffffffe",
+      "one": "0x1",
+      "defined": true,
+      "const": "0x1"
+     }
+    ],
+    "instrs": [
+     {
+      "op": "G_ADD",
+      "flags": [],
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "in",
+        2
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     },
+     {
+      "op": "G_ZEXT",
+      "flags": [],
+      "ws": [
+       64
+      ],
+      "args": [
+       [
+        "n",
+        0,
+        0
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     },
+     {
+      "op": "G_ZEXT",
+      "flags": [],
+      "ws": [
+       64
+      ],
+      "args": [
+       [
+        "in",
+        1
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     },
+     {
+      "op": "G_SELECT",
+      "flags": [],
+      "ws": [
+       64
+      ],
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "n",
+        1,
+        0
+       ],
+       [
+        "n",
+        2,
+        0
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      3,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_ADD x1, x2; n1 = G_ZEXT n0; n2 = G_ZEXT x1; n3 = G_SELECT x0, n1, n2; outputs n3",
+   "candidate": {
+    "reused_source_instructions": [],
+    "relax_flags": [],
+    "new_instruction_dag": [
+     {
+      "op": "G_SELECT",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        2
+       ],
+       [
+        "lit",
+        "0",
+        32
+       ]
+      ]
+     },
+     {
+      "op": "G_ADD",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ]
+     },
+     {
+      "op": "G_ZEXT",
+      "attr": null,
+      "ws": [
+       64
+      ],
+      "args": [
+       [
+        "t",
+        1,
+        0
+       ]
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       3,
+       0
+      ],
+      "value": [
+       "t",
+       2,
+       0
+      ]
+     }
+    ],
+    "required_guards": {
+     "defined": [],
+     "distinct": [
+      0,
+      1
+     ],
+     "constant": [
+      2
+     ]
+    },
+    "estimated_cost": {
+     "before": 4,
+     "after": 3,
+     "gain": 1,
+     "independent_after": 3
+    },
+    "text": "keep ; t0 = G_SELECT x0, x2, 0:lit; t1 = G_ADD x1, t0; t2 = G_ZEXT t1; n3 -> t2"
+   },
+   "plan": {
+    "anchor": 3,
+    "matched_instructions": [
+     {
+      "node": 0,
+      "action": "erase"
+     },
+     {
+      "node": 1,
+      "action": "erase"
+     },
+     {
+      "node": 2,
+      "action": "erase"
+     },
+     {
+      "node": 3,
+      "action": "replace"
+     }
+    ],
+    "match_order": [
+     {
+      "node": 3,
+      "how": "anchor",
+      "via": null
+     },
+     {
+      "node": 1,
+      "how": "def",
+      "via": [
+       3,
+       1
+      ]
+     },
+     {
+      "node": 0,
+      "how": "def",
+      "via": [
+       1,
+       0
+      ]
+     },
+     {
+      "node": 2,
+      "how": "def",
+      "via": [
+       3,
+       2
+      ]
+     }
+    ],
+    "preserved_bindings": [],
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "new_instruction_dag": [
+     {
+      "id": 0,
+      "op": "G_SELECT",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        2
+       ],
+       [
+        "lit",
+        "0",
+        32
+       ]
+      ]
+     },
+     {
+      "id": 1,
+      "op": "G_ADD",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ]
+     },
+     {
+      "id": 2,
+      "op": "G_ZEXT",
+      "attr": null,
+      "ws": [
+       64
+      ],
+      "args": [
+       [
+        "t",
+        1,
+        0
+       ]
+      ]
+     }
+    ],
+    "output_replacements": [
+     {
+      "output": [
+       3,
+       0
+      ],
+      "value": [
+       "t",
+       2,
+       0
+      ]
+     }
+    ],
+    "erase_candidates": [
+     0,
+     1,
+     2,
+     3
+    ],
+    "guards": {
+     "defined": [],
+     "distinct": [
+      0,
+      1
+     ],
+     "constant": [
+      [
+       2,
+       "0x1"
+      ]
+     ],
+     "width_maps": [
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        32
+       ],
+       [
+        64,
+        64
+       ]
+      ]
+     ],
+     "same_block": true
+    }
+   },
+   "proofs": [
+    {
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       32
+      ],
+      [
+       64,
+       64
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0035,
+     "smt2_file": "proofs/5d01a63646a82b35.smt2"
+    }
+   ],
+   "not_proved": [],
+   "search": {
+    "status": "budget: bank_truncated",
+    "bank_truncated": true
+   },
+   "semantic_status": {
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1",
+    "joint_outputs": 1,
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs"
+   },
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "occurrences": 5,
+    "examples": [
+     [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/train-regions/bypass-div.ll.ef6148743b.regions.jsonl",
+      "udiv64_known32",
+      "1",
+      "0",
+      "(31, 32, 33, 34)"
+     ],
+     [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/train-regions/udiv64.ll.e8021ce71f.regions.jsonl",
+      "s_test_udiv24_k_num_i64",
+      "1",
+      "0",
+      "(38, 39, 40, 41)"
+     ],
+     [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/train-regions/udiv64.ll.e8021ce71f.regions.jsonl",
+      "s_test_udiv24_k_den_i64",
+      "1",
+      "0",
+      "(37, 38, 39, 40)"
+     ],
+     [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/train-regions/udiv64.ll.e8021ce71f.regions.jsonl",
+      "v_test_udiv24_k_num_i64",
+      "1",
+      "0",
+      "(36, 37, 38, 39)"
+     ],
+     [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/train-regions/udiv64.ll.e8021ce71f.regions.jsonl",
+      "v_test_udiv24_pow2_k_num_i64",
+      "1",
+      "0",
+      "(36, 37, 38, 39)"
+     ]
+    ]
+   }
+  },
+  {
+   "schema": "gisel-joint-region/1",
+   "id": "joint_743e08a976",
+   "kind": "joint_region",
+   "source": {
+    "inputs": [
+     {
+      "w": 32,
+      "zero": "0x0",
+      "one": "0x0",
+      "defined": true
+     },
+     {
+      "w": 32,
+      "zero": "0x0",
+      "one": "0x0",
+      "defined": true
+     }
+    ],
+    "instrs": [
+     {
+      "op": "G_MUL",
+      "flags": [],
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        0
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     },
+     {
+      "op": "G_SUB",
+      "flags": [],
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     },
+     {
+      "op": "G_ADD",
+      "flags": [],
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     },
+     {
+      "op": "G_MUL",
+      "flags": [],
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "n",
+        1,
+        0
+       ],
+       [
+        "n",
+        2,
+        0
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      0,
+      0
+     ],
+     [
+      3,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_MUL x0, x0; n1 = G_SUB x0, x1; n2 = G_ADD x0, x1; n3 = G_MUL n1, n2; outputs n0, n3",
+   "candidate": {
+    "reused_source_instructions": [
+     0
+    ],
+    "relax_flags": [
+     0
+    ],
+    "new_instruction_dag": [
+     {
+      "op": "G_MUL",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "in",
+        1
+       ]
+      ]
+     },
+     {
+      "op": "G_SUB",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "n",
+        0,
+        0
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       0,
+       0
+      ],
+      "value": [
+       "n",
+       0,
+       0
+      ]
+     },
+     {
+      "output": [
+       3,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "required_guards": {
+     "defined": [
+      0,
+      1
+     ],
+     "distinct": [],
+     "constant": []
+    },
+    "estimated_cost": {
+     "before": 6,
+     "after": 5,
+     "gain": 1,
+     "independent_after": 6
+    },
+    "text": "keep n0; t0 = G_MUL x1, x1; t1 = G_SUB n0, t0; n0 -> n0; n3 -> t1"
+   },
+   "plan": {
+    "anchor": 3,
+    "matched_instructions": [
+     {
+      "node": 0,
+      "action": "relax"
+     },
+     {
+      "node": 1,
+      "action": "erase"
+     },
+     {
+      "node": 2,
+      "action": "erase"
+     },
+     {
+      "node": 3,
+      "action": "replace"
+     }
+    ],
+    "match_order": [
+     {
+      "node": 3,
+      "how": "anchor",
+      "via": null
+     },
+     {
+      "node": 1,
+      "how": "def",
+      "via": [
+       3,
+       0
+      ]
+     },
+     {
+      "node": 2,
+      "how": "def",
+      "via": [
+       3,
+       1
+      ]
+     },
+     {
+      "node": 0,
+      "how": "user",
+      "via": [
+       "in",
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": [
+     {
+      "node": 0,
+      "action": "relax"
+     }
+    ],
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "new_instruction_dag": [
+     {
+      "id": 0,
+      "op": "G_MUL",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "in",
+        1
+       ]
+      ]
+     },
+     {
+      "id": 1,
+      "op": "G_SUB",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "n",
+        0,
+        0
+       ],
+       [
+        "t",
+        0,
+        0
+       ]
+      ]
+     }
+    ],
+    "output_replacements": [
+     {
+      "output": [
+       3,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "erase_candidates": [
+     1,
+     2,
+     3
+    ],
+    "guards": {
+     "defined": [
+      0,
+      1
+     ],
+     "distinct": [],
+     "constant": [],
+     "width_maps": [
+      [
+       [
+        32,
+        32
+       ]
+      ],
+      [
+       [
+        32,
+        8
+       ]
+      ],
+      [
+       [
+        32,
+        16
+       ]
+      ],
+      [
+       [
+        32,
+        64
+       ]
+      ]
+     ],
+     "same_block": true
+    }
+   },
+   "proofs": [
+    {
+     "width_map": [
+      [
+       32,
+       32
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0117,
+     "smt2_file": "proofs/01e6bd8d8974b4d7.smt2"
+    },
+    {
+     "width_map": [
+      [
+       32,
+       8
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0084,
+     "smt2_file": "proofs/01fe0ee804c37f73.smt2"
+    },
+    {
+     "width_map": [
+      [
+       32,
+       16
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0122,
+     "smt2_file": "proofs/7b4b0a368fe71c6a.smt2"
+    },
+    {
+     "width_map": [
+      [
+       32,
+       64
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0236,
+     "smt2_file": "proofs/0c70c04113cae623.smt2"
+    }
+   ],
+   "not_proved": [],
+   "search": {
+    "status": "budget: bank_truncated,helper_budget_exhausted",
+    "bank_truncated": true,
+    "helper_budget_exhausted": true
+   },
+   "semantic_status": {
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1",
+    "joint_outputs": 2,
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs"
+   },
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "occurrences": 1,
+    "examples": [
+     [
+      "/home/nod/gisel-joint-regions-20261112/build/scratch/ex-run/regions/dsq-amdgpu-O2.ll.f5a2f617dc.regions.jsonl",
+      "difference_squares",
+      "1",
+      "0",
+      "(2, 3, 4, 5)"
+     ]
+    ]
+   }
+  },
+  {
+   "schema": "gisel-joint-region/1",
+   "id": "joint_a27cbc14a2",
+   "kind": "joint_region",
+   "source": {
+    "inputs": [
+     {
+      "w": 32,
+      "zero": "0x0",
+      "one": "0x0",
+      "defined": false
+     },
+     {
+      "w": 32,
+      "zero": "0x0",
+      "one": "0x0",
+      "defined": false
+     }
+    ],
+    "instrs": [
+     {
+      "op": "G_TRUNC",
+      "flags": [],
+      "ws": [
+       16
+      ],
+      "args": [
+       [
+        "in",
+        0
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     },
+     {
+      "op": "G_TRUNC",
+      "flags": [],
+      "ws": [
+       16
+      ],
+      "args": [
+       [
+        "in",
+        1
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     },
+     {
+      "op": "G_ADD",
+      "flags": [],
+      "ws": [
+       16
+      ],
+      "args": [
+       [
+        "n",
+        0,
+        0
+       ],
+       [
+        "n",
+        1,
+        0
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      2,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_TRUNC x0; n1 = G_TRUNC x1; n2 = G_ADD n0, n1; outputs n2",
+   "candidate": {
+    "reused_source_instructions": [],
+    "relax_flags": [],
+    "new_instruction_dag": [
+     {
+      "op": "G_ADD",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ]
+     },
+     {
+      "op": "G_TRUNC",
+      "attr": null,
+      "ws": [
+       16
+      ],
+      "args": [
+       [
+        "t",
+        0,
+        0
+       ]
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       2,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "required_guards": {
+     "defined": [],
+     "distinct": [
+      0,
+      1
+     ],
+     "constant": []
+    },
+    "estimated_cost": {
+     "before": 3,
+     "after": 2,
+     "gain": 1,
+     "independent_after": 2
+    },
+    "text": "keep ; t0 = G_ADD x0, x1; t1 = G_TRUNC t0; n2 -> t1"
+   },
+   "plan": {
+    "anchor": 2,
+    "matched_instructions": [
+     {
+      "node": 0,
+      "action": "erase"
+     },
+     {
+      "node": 1,
+      "action": "erase"
+     },
+     {
+      "node": 2,
+      "action": "replace"
+     }
+    ],
+    "match_order": [
+     {
+      "node": 2,
+      "how": "anchor",
+      "via": null
+     },
+     {
+      "node": 0,
+      "how": "def",
+      "via": [
+       2,
+       0
+      ]
+     },
+     {
+      "node": 1,
+      "how": "def",
+      "via": [
+       2,
+       1
+      ]
+     }
+    ],
+    "preserved_bindings": [],
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "new_instruction_dag": [
+     {
+      "id": 0,
+      "op": "G_ADD",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ]
+     },
+     {
+      "id": 1,
+      "op": "G_TRUNC",
+      "attr": null,
+      "ws": [
+       16
+      ],
+      "args": [
+       [
+        "t",
+        0,
+        0
+       ]
+      ]
+     }
+    ],
+    "output_replacements": [
+     {
+      "output": [
+       2,
+       0
+      ],
+      "value": [
+       "t",
+       1,
+       0
+      ]
+     }
+    ],
+    "erase_candidates": [
+     0,
+     1,
+     2
+    ],
+    "guards": {
+     "defined": [],
+     "distinct": [
+      0,
+      1
+     ],
+     "constant": [],
+     "width_maps": [
+      [
+       [
+        16,
+        16
+       ],
+       [
+        32,
+        32
+       ]
+      ]
+     ],
+     "same_block": true
+    }
+   },
+   "proofs": [
+    {
+     "width_map": [
+      [
+       16,
+       16
+      ],
+      [
+       32,
+       32
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0092,
+     "smt2_file": "proofs/396774364d946368.smt2"
+    }
+   ],
+   "not_proved": [],
+   "search": {
+    "status": "complete"
+   },
+   "semantic_status": {
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1",
+    "joint_outputs": 1,
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs"
+   },
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "occurrences": 3,
+    "examples": [
+     [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/train-regions/dpp_combine.ll.a6f3d83bb4.regions.jsonl",
+      "dpp_src1_sgpr",
+      "1",
+      "0",
+      "(6, 9, 10)"
+     ],
+     [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/train-regions/extract-hi16-true16.ll.f015e968e2.regions.jsonl",
+      "no_extract_hi16_multi_use_shift",
+      "1",
+      "0",
+      "(10, 11, 12)"
+     ],
+     [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/train-regions/isel-amdgpu-cs-chain-preserve-cc.ll.0fbf5123c3.regions.jsonl",
+      "amdgpu_cs_chain_preserve_cc_i16",
+      "1",
+      "0",
+      "(1, 3, 5)"
+     ]
+    ]
+   }
+  },
+  {
+   "schema": "gisel-joint-region/1",
+   "id": "joint_66f36e5034",
+   "kind": "joint_region",
+   "source": {
+    "inputs": [
+     {
+      "w": 32,
+      "zero": "0x0",
+      "one": "0x0",
+      "defined": false
+     },
+     {
+      "w": 1,
+      "zero": "0x0",
+      "one": "0x1",
+      "defined": true,
+      "const": "0x1"
+     }
+    ],
+    "instrs": [
+     {
+      "op": "G_TRUNC",
+      "flags": [],
+      "ws": [
+       1
+      ],
+      "args": [
+       [
+        "in",
+        0
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     },
+     {
+      "op": "G_XOR",
+      "flags": [],
+      "ws": [
+       1
+      ],
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "n",
+        0,
+        0
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     },
+     {
+      "op": "G_XOR",
+      "flags": [],
+      "ws": [
+       1
+      ],
+      "args": [
+       [
+        "in",
+        1
+       ],
+       [
+        "n",
+        1,
+        0
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      2,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_TRUNC x0; n1 = G_XOR x1, n0; n2 = G_XOR x1, n1; outputs n2",
+   "candidate": {
+    "reused_source_instructions": [],
+    "relax_flags": [],
+    "new_instruction_dag": [
+     {
+      "op": "G_TRUNC",
+      "attr": null,
+      "ws": [
+       1
+      ],
+      "args": [
+       [
+        "in",
+        0
+       ]
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       2,
+       0
+      ],
+      "value": [
+       "t",
+       0,
+       0
+      ]
+     }
+    ],
+    "required_guards": {
+     "defined": [],
+     "distinct": [
+      0
+     ],
+     "constant": [
+      1
+     ]
+    },
+    "estimated_cost": {
+     "before": 3,
+     "after": 1,
+     "gain": 2,
+     "independent_after": 1
+    },
+    "text": "keep ; t0 = G_TRUNC x0; n2 -> t0"
+   },
+   "plan": {
+    "anchor": 2,
+    "matched_instructions": [
+     {
+      "node": 0,
+      "action": "erase"
+     },
+     {
+      "node": 1,
+      "action": "erase"
+     },
+     {
+      "node": 2,
+      "action": "replace"
+     }
+    ],
+    "match_order": [
+     {
+      "node": 2,
+      "how": "anchor",
+      "via": null
+     },
+     {
+      "node": 1,
+      "how": "def",
+      "via": [
+       2,
+       1
+      ]
+     },
+     {
+      "node": 0,
+      "how": "def",
+      "via": [
+       1,
+       1
+      ]
+     }
+    ],
+    "preserved_bindings": [],
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "new_instruction_dag": [
+     {
+      "id": 0,
+      "op": "G_TRUNC",
+      "attr": null,
+      "ws": [
+       1
+      ],
+      "args": [
+       [
+        "in",
+        0
+       ]
+      ]
+     }
+    ],
+    "output_replacements": [
+     {
+      "output": [
+       2,
+       0
+      ],
+      "value": [
+       "t",
+       0,
+       0
+      ]
+     }
+    ],
+    "erase_candidates": [
+     0,
+     1,
+     2
+    ],
+    "guards": {
+     "defined": [],
+     "distinct": [
+      0
+     ],
+     "constant": [
+      [
+       1,
+       "0x1"
+      ]
+     ],
+     "width_maps": [
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        32
+       ]
+      ],
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        8
+       ]
+      ],
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        16
+       ]
+      ],
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        64
+       ]
+      ]
+     ],
+     "same_block": true
+    }
+   },
+   "proofs": [
+    {
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       32
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0092,
+     "smt2_file": "proofs/075697d95ba0cba7.smt2"
+    },
+    {
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       8
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0088,
+     "smt2_file": "proofs/baa0e2b4ab286fd5.smt2"
+    },
+    {
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       16
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0093,
+     "smt2_file": "proofs/39f1b65c8eca8ef2.smt2"
+    },
+    {
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       64
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0091,
+     "smt2_file": "proofs/f46e367658d2ff10.smt2"
+    }
+   ],
+   "not_proved": [],
+   "search": {
+    "status": "complete"
+   },
+   "semantic_status": {
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1",
+    "joint_outputs": 1,
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs"
+   },
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "occurrences": 1,
+    "examples": [
+     [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/train-regions/llvm.amdgcn.ballot.i64.ll.5e0f8c2284.regions.jsonl",
+      "branch_uniform_ballot_eq_zero_non_compare",
+      "1",
+      "0",
+      "(4, 5, 6)"
+     ]
+    ]
+   }
+  },
+  {
+   "schema": "gisel-joint-region/1",
+   "id": "joint_315c4a0ef9",
+   "kind": "joint_region",
+   "source": {
+    "inputs": [
+     {
+      "w": 1,
+      "zero": "0x0",
+      "one": "0x0",
+      "defined": false
+     },
+     {
+      "w": 1,
+      "zero": "0x0",
+      "one": "0x1",
+      "defined": true,
+      "const": "0x1"
+     }
+    ],
+    "instrs": [
+     {
+      "op": "G_XOR",
+      "flags": [],
+      "ws": [
+       1
+      ],
+      "args": [
+       [
+        "in",
+        0
+       ],
+       [
+        "in",
+        1
+       ]
+      ],
+      "uses": [
+       1
+      ]
+     },
+     {
+      "op": "G_ZEXT",
+      "flags": [],
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "n",
+        0,
+        0
+       ]
+      ],
+      "uses": [
+       2
+      ]
+     }
+    ],
+    "outputs": [
+     [
+      1,
+      0
+     ]
+    ]
+   },
+   "source_text": "n0 = G_XOR x0, x1; n1 = G_ZEXT n0; outputs n1",
+   "candidate": {
+    "reused_source_instructions": [],
+    "relax_flags": [],
+    "new_instruction_dag": [
+     {
+      "op": "G_LSHR",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "lit",
+        "1",
+        32
+       ],
+       [
+        "in",
+        0
+       ]
+      ]
+     }
+    ],
+    "output_mapping": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       0,
+       0
+      ]
+     }
+    ],
+    "required_guards": {
+     "defined": [],
+     "distinct": [
+      0
+     ],
+     "constant": [
+      1
+     ]
+    },
+    "estimated_cost": {
+     "before": 2,
+     "after": 1,
+     "gain": 1,
+     "independent_after": 1
+    },
+    "text": "keep ; t0 = G_LSHR 1:lit, x0; n1 -> t0"
+   },
+   "plan": {
+    "anchor": 1,
+    "matched_instructions": [
+     {
+      "node": 0,
+      "action": "erase"
+     },
+     {
+      "node": 1,
+      "action": "replace"
+     }
+    ],
+    "match_order": [
+     {
+      "node": 1,
+      "how": "anchor",
+      "via": null
+     },
+     {
+      "node": 0,
+      "how": "def",
+      "via": [
+       1,
+       0
+      ]
+     }
+    ],
+    "preserved_bindings": [],
+    "insertion_point": "before the first replaced output, after every value that the new instructions read; checked by the matcher in the block",
+    "new_instruction_dag": [
+     {
+      "id": 0,
+      "op": "G_LSHR",
+      "attr": null,
+      "ws": [
+       32
+      ],
+      "args": [
+       [
+        "lit",
+        "1",
+        32
+       ],
+       [
+        "in",
+        0
+       ]
+      ]
+     }
+    ],
+    "output_replacements": [
+     {
+      "output": [
+       1,
+       0
+      ],
+      "value": [
+       "t",
+       0,
+       0
+      ]
+     }
+    ],
+    "erase_candidates": [
+     0,
+     1
+    ],
+    "guards": {
+     "defined": [],
+     "distinct": [
+      0
+     ],
+     "constant": [
+      [
+       1,
+       "0x1"
+      ]
+     ],
+     "width_maps": [
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        32
+       ]
+      ],
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        8
+       ]
+      ],
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        16
+       ]
+      ],
+      [
+       [
+        1,
+        1
+       ],
+       [
+        32,
+        64
+       ]
+      ]
+     ],
+     "same_block": true
+    }
+   },
+   "proofs": [
+    {
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       32
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0092,
+     "smt2_file": "proofs/9a675c9672f09ad0.smt2"
+    },
+    {
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       8
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0102,
+     "smt2_file": "proofs/68b691aab579e64f.smt2"
+    },
+    {
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       16
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0095,
+     "smt2_file": "proofs/be6f5d2f4384fb6e.smt2"
+    },
+    {
+     "width_map": [
+      [
+       1,
+       1
+      ],
+      [
+       32,
+       64
+      ]
+     ],
+     "result": "unsat",
+     "seconds": 0.0091,
+     "smt2_file": "proofs/addcf83adf81b89b.smt2"
+    }
+   ],
+   "not_proved": [],
+   "search": {
+    "status": "complete"
+   },
+   "semantic_status": {
+    "kind": "verified_refinement",
+    "model": "girs ops",
+    "solver": "z3 5.4.1",
+    "joint_outputs": 1,
+    "flags": "proved without the flags of the source; relaxed instructions lose theirs"
+   },
+   "provenance": {
+    "discovery": "joint-region+smt",
+    "occurrences": 2,
+    "examples": [
+     [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/train-regions/combine-add-zext-xor.ll.6a27445772.regions.jsonl",
+      "combine_add_zext_xor",
+      "4",
+      "0",
+      "(1, 2)"
+     ],
+     [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/train-regions/combine-add-zext-xor.ll.6a27445772.regions.jsonl",
+      "combine_sub_zext_xor",
+      "4",
+      "0",
+      "(1, 2)"
+     ]
+    ]
+   }
+  }
+ ]
+}

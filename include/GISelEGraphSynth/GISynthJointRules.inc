@@ -8,51 +8,267 @@ namespace gisynth {
 namespace joint {
 namespace rules {
 
-/// joint_6e75d1198c: n0 = G_MUL x0, x0; n1 = G_SUB x0, x1; n2 = G_ADD x0, x1; n3 = G_MUL n1, n2; outputs n0, n3
-///   keep n0; t0 = G_MUL x1, x1; t1 = G_SUB n0, t0; n0 -> n0; n3 -> t1
-///   cost 6 -> 5; defined(x0, x1); widths 32; 8; 16; 64
-static const NodeDesc joint_6e75d1198c_Src[] = {
-    {TargetOpcode::G_MUL, -1, 1, 2, true, {{in(0), in(0), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
-    {TargetOpcode::G_SUB, -1, 1, 2, false, {{in(0), in(1), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
-    {TargetOpcode::G_ADD, -1, 1, 2, true, {{in(0), in(1), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
-    {TargetOpcode::G_MUL, -1, 1, 2, true, {{src(1, 0), src(2, 0), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+/// joint_b421acca3c: n0 = G_ADD x0, x1; n1 = G_MUL x2, n0; n2 = G_SHL x2, x0; n3 = G_SUB n1, n2; outputs n1, n3
+///   keep ; t0 = G_MUL x1, x2; t1 = G_ADD x2, t0; t2 = G_SUB t0, x2; n1 -> t1; n3 -> t2
+///   cost 5 -> 4; defined(x1, x2); widths 32; 8; 16; 64
+static const NodeDesc joint_b421acca3c_Src[] = {
+    {TargetOpcode::G_ADD, -1, 1, 2, true, {{lit(1), in(0), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+    {TargetOpcode::G_MUL, -1, 1, 2, true, {{in(1), src(0, 0), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+    {TargetOpcode::G_SHL, -1, 1, 2, false, {{in(1), lit(1), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+    {TargetOpcode::G_SUB, -1, 1, 2, false, {{src(1, 0), src(2, 0), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
 };
-static const MatchStep joint_6e75d1198c_Steps[] = {
+static const MatchStep joint_b421acca3c_Steps[] = {
     {3, Find::Anchor, Ref()},
     {1, Find::DefOf, src(3, 0)},
+    {0, Find::DefOf, src(1, 1)},
     {2, Find::DefOf, src(3, 1)},
-    {0, Find::UserOf, in(0)},
 };
-static const Action joint_6e75d1198c_Actions[] = {
-    Action::Relax,
+static const Action joint_b421acca3c_Actions[] = {
     Action::Erase,
+    Action::Replace,
     Action::Erase,
     Action::Replace,
 };
-static const NodeDesc joint_6e75d1198c_Tgt[] = {
-    {TargetOpcode::G_MUL, -1, 1, 2, true, {{in(1), in(1), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
-    {TargetOpcode::G_SUB, -1, 1, 2, false, {{src(0, 0), tgt(0, 0), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+static const NodeDesc joint_b421acca3c_Tgt[] = {
+    {TargetOpcode::G_MUL, -1, 1, 2, true, {{in(0), in(1), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+    {TargetOpcode::G_ADD, -1, 1, 2, true, {{in(1), tgt(0, 0), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+    {TargetOpcode::G_SUB, -1, 1, 2, false, {{tgt(0, 0), in(1), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
 };
-static const OutputDesc joint_6e75d1198c_Outputs[] = {
-    {3, 0, tgt(1, 0), 0},
+static const OutputDesc joint_b421acca3c_Outputs[] = {
+    {1, 0, tgt(1, 0), 0},
+    {3, 0, tgt(2, 0), 0},
 };
-static const uint8_t joint_6e75d1198c_InputClass[] = {
+static const uint8_t joint_b421acca3c_InputClass[] = {
     0,
     0,
 };
-static const uint16_t joint_6e75d1198c_WidthMaps[] = {
+static const uint16_t joint_b421acca3c_WidthMaps[] = {
     32,
     8,
     16,
     64,
 };
-static const RuleDesc joint_6e75d1198c_Rule = {
-    "joint_6e75d1198c", joint_6e75d1198c_Src, joint_6e75d1198c_Steps, joint_6e75d1198c_Actions, joint_6e75d1198c_Tgt, joint_6e75d1198c_Outputs, 2, joint_6e75d1198c_InputClass, 0x3, 0x0, 1, joint_6e75d1198c_WidthMaps};
-inline bool match_joint_6e75d1198c(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan) {
-  return match(joint_6e75d1198c_Rule, Root, MRI, Plan);
+static const RuleDesc joint_b421acca3c_Rule = {
+    "joint_b421acca3c", joint_b421acca3c_Src, joint_b421acca3c_Steps, joint_b421acca3c_Actions, joint_b421acca3c_Tgt, joint_b421acca3c_Outputs, 2, joint_b421acca3c_InputClass, 0x3, 0x0, 1, joint_b421acca3c_WidthMaps};
+inline bool match_joint_b421acca3c(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan) {
+  return match(joint_b421acca3c_Rule, Root, MRI, Plan);
 }
-inline void apply_joint_6e75d1198c(MachineIRBuilder &B, const JointPlan &Plan) {
-  apply(joint_6e75d1198c_Rule, B, Plan);
+inline void apply_joint_b421acca3c(MachineIRBuilder &B, const JointPlan &Plan) {
+  apply(joint_b421acca3c_Rule, B, Plan);
+}
+
+/// joint_f5cef5f7f4: n0 = G_ADD x1, x2; n1 = G_ZEXT n0; n2 = G_ZEXT x1; n3 = G_SELECT x0, n1, n2; outputs n3
+///   keep ; t0 = G_SELECT x0, x2, 0:lit; t1 = G_ADD x1, t0; t2 = G_ZEXT t1; n3 -> t2
+///   cost 4 -> 3; defined(); widths 1,32,64
+static const NodeDesc joint_f5cef5f7f4_Src[] = {
+    {TargetOpcode::G_ADD, -1, 1, 2, true, {{in(1), lit(1), Ref()}}, {{1, 0}}, {{1, 1, 0}}},
+    {TargetOpcode::G_ZEXT, -1, 1, 1, false, {{src(0, 0), Ref(), Ref()}}, {{2, 0}}, {{1, 0, 0}}},
+    {TargetOpcode::G_ZEXT, -1, 1, 1, false, {{in(1), Ref(), Ref()}}, {{2, 0}}, {{1, 0, 0}}},
+    {TargetOpcode::G_SELECT, -1, 1, 3, false, {{in(0), src(1, 0), src(2, 0)}}, {{2, 0}}, {{0, 2, 2}}},
+};
+static const MatchStep joint_f5cef5f7f4_Steps[] = {
+    {3, Find::Anchor, Ref()},
+    {1, Find::DefOf, src(3, 1)},
+    {0, Find::DefOf, src(1, 0)},
+    {2, Find::DefOf, src(3, 2)},
+};
+static const Action joint_f5cef5f7f4_Actions[] = {
+    Action::Erase,
+    Action::Erase,
+    Action::Erase,
+    Action::Replace,
+};
+static const NodeDesc joint_f5cef5f7f4_Tgt[] = {
+    {TargetOpcode::G_SELECT, -1, 1, 3, false, {{in(0), lit(1), lit(0)}}, {{1, 0}}, {{0, 1, 1}}},
+    {TargetOpcode::G_ADD, -1, 1, 2, true, {{in(1), tgt(0, 0), Ref()}}, {{1, 0}}, {{1, 1, 0}}},
+    {TargetOpcode::G_ZEXT, -1, 1, 1, false, {{tgt(1, 0), Ref(), Ref()}}, {{2, 0}}, {{1, 0, 0}}},
+};
+static const OutputDesc joint_f5cef5f7f4_Outputs[] = {
+    {3, 0, tgt(2, 0), 2},
+};
+static const uint8_t joint_f5cef5f7f4_InputClass[] = {
+    0,
+    1,
+};
+static const uint16_t joint_f5cef5f7f4_WidthMaps[] = {
+    1, 32, 64,
+};
+static const RuleDesc joint_f5cef5f7f4_Rule = {
+    "joint_f5cef5f7f4", joint_f5cef5f7f4_Src, joint_f5cef5f7f4_Steps, joint_f5cef5f7f4_Actions, joint_f5cef5f7f4_Tgt, joint_f5cef5f7f4_Outputs, 2, joint_f5cef5f7f4_InputClass, 0x0, 0x3, 3, joint_f5cef5f7f4_WidthMaps};
+inline bool match_joint_f5cef5f7f4(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan) {
+  return match(joint_f5cef5f7f4_Rule, Root, MRI, Plan);
+}
+inline void apply_joint_f5cef5f7f4(MachineIRBuilder &B, const JointPlan &Plan) {
+  apply(joint_f5cef5f7f4_Rule, B, Plan);
+}
+
+/// joint_743e08a976: n0 = G_MUL x0, x0; n1 = G_SUB x0, x1; n2 = G_ADD x0, x1; n3 = G_MUL n1, n2; outputs n0, n3
+///   keep n0; t0 = G_MUL x1, x1; t1 = G_SUB n0, t0; n0 -> n0; n3 -> t1
+///   cost 6 -> 5; defined(x0, x1); widths 32; 8; 16; 64
+static const NodeDesc joint_743e08a976_Src[] = {
+    {TargetOpcode::G_MUL, -1, 1, 2, true, {{in(0), in(0), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+    {TargetOpcode::G_SUB, -1, 1, 2, false, {{in(0), in(1), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+    {TargetOpcode::G_ADD, -1, 1, 2, true, {{in(0), in(1), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+    {TargetOpcode::G_MUL, -1, 1, 2, true, {{src(1, 0), src(2, 0), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+};
+static const MatchStep joint_743e08a976_Steps[] = {
+    {3, Find::Anchor, Ref()},
+    {1, Find::DefOf, src(3, 0)},
+    {2, Find::DefOf, src(3, 1)},
+    {0, Find::UserOf, in(0)},
+};
+static const Action joint_743e08a976_Actions[] = {
+    Action::Relax,
+    Action::Erase,
+    Action::Erase,
+    Action::Replace,
+};
+static const NodeDesc joint_743e08a976_Tgt[] = {
+    {TargetOpcode::G_MUL, -1, 1, 2, true, {{in(1), in(1), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+    {TargetOpcode::G_SUB, -1, 1, 2, false, {{src(0, 0), tgt(0, 0), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+};
+static const OutputDesc joint_743e08a976_Outputs[] = {
+    {3, 0, tgt(1, 0), 0},
+};
+static const uint8_t joint_743e08a976_InputClass[] = {
+    0,
+    0,
+};
+static const uint16_t joint_743e08a976_WidthMaps[] = {
+    32,
+    8,
+    16,
+    64,
+};
+static const RuleDesc joint_743e08a976_Rule = {
+    "joint_743e08a976", joint_743e08a976_Src, joint_743e08a976_Steps, joint_743e08a976_Actions, joint_743e08a976_Tgt, joint_743e08a976_Outputs, 2, joint_743e08a976_InputClass, 0x3, 0x0, 1, joint_743e08a976_WidthMaps};
+inline bool match_joint_743e08a976(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan) {
+  return match(joint_743e08a976_Rule, Root, MRI, Plan);
+}
+inline void apply_joint_743e08a976(MachineIRBuilder &B, const JointPlan &Plan) {
+  apply(joint_743e08a976_Rule, B, Plan);
+}
+
+/// joint_a27cbc14a2: n0 = G_TRUNC x0; n1 = G_TRUNC x1; n2 = G_ADD n0, n1; outputs n2
+///   keep ; t0 = G_ADD x0, x1; t1 = G_TRUNC t0; n2 -> t1
+///   cost 3 -> 2; defined(); widths 16,32
+static const NodeDesc joint_a27cbc14a2_Src[] = {
+    {TargetOpcode::G_TRUNC, -1, 1, 1, false, {{in(0), Ref(), Ref()}}, {{0, 0}}, {{1, 0, 0}}},
+    {TargetOpcode::G_TRUNC, -1, 1, 1, false, {{in(1), Ref(), Ref()}}, {{0, 0}}, {{1, 0, 0}}},
+    {TargetOpcode::G_ADD, -1, 1, 2, true, {{src(0, 0), src(1, 0), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+};
+static const MatchStep joint_a27cbc14a2_Steps[] = {
+    {2, Find::Anchor, Ref()},
+    {0, Find::DefOf, src(2, 0)},
+    {1, Find::DefOf, src(2, 1)},
+};
+static const Action joint_a27cbc14a2_Actions[] = {
+    Action::Erase,
+    Action::Erase,
+    Action::Replace,
+};
+static const NodeDesc joint_a27cbc14a2_Tgt[] = {
+    {TargetOpcode::G_ADD, -1, 1, 2, true, {{in(0), in(1), Ref()}}, {{1, 0}}, {{1, 1, 0}}},
+    {TargetOpcode::G_TRUNC, -1, 1, 1, false, {{tgt(0, 0), Ref(), Ref()}}, {{0, 0}}, {{1, 0, 0}}},
+};
+static const OutputDesc joint_a27cbc14a2_Outputs[] = {
+    {2, 0, tgt(1, 0), 0},
+};
+static const uint8_t joint_a27cbc14a2_InputClass[] = {
+    1,
+    1,
+};
+static const uint16_t joint_a27cbc14a2_WidthMaps[] = {
+    16, 32,
+};
+static const RuleDesc joint_a27cbc14a2_Rule = {
+    "joint_a27cbc14a2", joint_a27cbc14a2_Src, joint_a27cbc14a2_Steps, joint_a27cbc14a2_Actions, joint_a27cbc14a2_Tgt, joint_a27cbc14a2_Outputs, 2, joint_a27cbc14a2_InputClass, 0x0, 0x3, 2, joint_a27cbc14a2_WidthMaps};
+inline bool match_joint_a27cbc14a2(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan) {
+  return match(joint_a27cbc14a2_Rule, Root, MRI, Plan);
+}
+inline void apply_joint_a27cbc14a2(MachineIRBuilder &B, const JointPlan &Plan) {
+  apply(joint_a27cbc14a2_Rule, B, Plan);
+}
+
+/// joint_66f36e5034: n0 = G_TRUNC x0; n1 = G_XOR x1, n0; n2 = G_XOR x1, n1; outputs n2
+///   keep ; t0 = G_TRUNC x0; n2 -> t0
+///   cost 3 -> 1; defined(); widths 1,32; 1,8; 1,16; 1,64
+static const NodeDesc joint_66f36e5034_Src[] = {
+    {TargetOpcode::G_TRUNC, -1, 1, 1, false, {{in(0), Ref(), Ref()}}, {{0, 0}}, {{1, 0, 0}}},
+    {TargetOpcode::G_XOR, -1, 1, 2, true, {{lit(1), src(0, 0), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+    {TargetOpcode::G_XOR, -1, 1, 2, true, {{lit(1), src(1, 0), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+};
+static const MatchStep joint_66f36e5034_Steps[] = {
+    {2, Find::Anchor, Ref()},
+    {1, Find::DefOf, src(2, 1)},
+    {0, Find::DefOf, src(1, 1)},
+};
+static const Action joint_66f36e5034_Actions[] = {
+    Action::Erase,
+    Action::Erase,
+    Action::Replace,
+};
+static const NodeDesc joint_66f36e5034_Tgt[] = {
+    {TargetOpcode::G_TRUNC, -1, 1, 1, false, {{in(0), Ref(), Ref()}}, {{0, 0}}, {{1, 0, 0}}},
+};
+static const OutputDesc joint_66f36e5034_Outputs[] = {
+    {2, 0, tgt(0, 0), 0},
+};
+static const uint8_t joint_66f36e5034_InputClass[] = {
+    1,
+};
+static const uint16_t joint_66f36e5034_WidthMaps[] = {
+    1, 32,
+    1, 8,
+    1, 16,
+    1, 64,
+};
+static const RuleDesc joint_66f36e5034_Rule = {
+    "joint_66f36e5034", joint_66f36e5034_Src, joint_66f36e5034_Steps, joint_66f36e5034_Actions, joint_66f36e5034_Tgt, joint_66f36e5034_Outputs, 1, joint_66f36e5034_InputClass, 0x0, 0x1, 2, joint_66f36e5034_WidthMaps};
+inline bool match_joint_66f36e5034(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan) {
+  return match(joint_66f36e5034_Rule, Root, MRI, Plan);
+}
+inline void apply_joint_66f36e5034(MachineIRBuilder &B, const JointPlan &Plan) {
+  apply(joint_66f36e5034_Rule, B, Plan);
+}
+
+/// joint_315c4a0ef9: n0 = G_XOR x0, x1; n1 = G_ZEXT n0; outputs n1
+///   keep ; t0 = G_LSHR 1:lit, x0; n1 -> t0
+///   cost 2 -> 1; defined(); widths 1,32; 1,8; 1,16; 1,64
+static const NodeDesc joint_315c4a0ef9_Src[] = {
+    {TargetOpcode::G_XOR, -1, 1, 2, true, {{in(0), lit(1), Ref()}}, {{0, 0}}, {{0, 0, 0}}},
+    {TargetOpcode::G_ZEXT, -1, 1, 1, false, {{src(0, 0), Ref(), Ref()}}, {{1, 0}}, {{0, 0, 0}}},
+};
+static const MatchStep joint_315c4a0ef9_Steps[] = {
+    {1, Find::Anchor, Ref()},
+    {0, Find::DefOf, src(1, 0)},
+};
+static const Action joint_315c4a0ef9_Actions[] = {
+    Action::Erase,
+    Action::Replace,
+};
+static const NodeDesc joint_315c4a0ef9_Tgt[] = {
+    {TargetOpcode::G_LSHR, -1, 1, 2, false, {{lit(1), in(0), Ref()}}, {{1, 0}}, {{1, 0, 0}}},
+};
+static const OutputDesc joint_315c4a0ef9_Outputs[] = {
+    {1, 0, tgt(0, 0), 1},
+};
+static const uint8_t joint_315c4a0ef9_InputClass[] = {
+    0,
+};
+static const uint16_t joint_315c4a0ef9_WidthMaps[] = {
+    1, 32,
+    1, 8,
+    1, 16,
+    1, 64,
+};
+static const RuleDesc joint_315c4a0ef9_Rule = {
+    "joint_315c4a0ef9", joint_315c4a0ef9_Src, joint_315c4a0ef9_Steps, joint_315c4a0ef9_Actions, joint_315c4a0ef9_Tgt, joint_315c4a0ef9_Outputs, 1, joint_315c4a0ef9_InputClass, 0x0, 0x1, 2, joint_315c4a0ef9_WidthMaps};
+inline bool match_joint_315c4a0ef9(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan) {
+  return match(joint_315c4a0ef9_Rule, Root, MRI, Plan);
+}
+inline void apply_joint_315c4a0ef9(MachineIRBuilder &B, const JointPlan &Plan) {
+  apply(joint_315c4a0ef9_Rule, B, Plan);
 }
 
 } // end namespace rules

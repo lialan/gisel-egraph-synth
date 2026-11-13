@@ -1,0 +1,46 @@
+{
+ "llvm_revision": "37a1706d0eac1774701a0a44d9fb4fa542f56fde",
+ "llvm_build": "/home/nod/gisel-egraph-synth/build/llvm (Release, assertions, AMDGPU;AArch64)",
+ "binaries": {
+  "llc-candidates (177 rules)": "fc430b4c167ddeaf3c1d48c14b50b0cff84aec8b6b612c7b29904fac217a316b",
+  "llc-final (6 rules)": "3da9f8d83f4471fc984e7088c2e9f546e69c1714b14d30c1c4e4b5bb6736336f",
+  "opt": "3292e4f54a91a91a9c0e438693310d4ab8c4c85fa13152a74eb3780583865007",
+  "stock llc": "988688efbab861d2fed090698b3e62400f46588fd431d6565ec256272959839a"
+ },
+ "code": {
+  "search and selection": "8a2bae6..d7a358b (joint-search ran at d7a358b + fixes of e3beb7c: per-window errors, shards, bank LRU)",
+  "recheck, final build, validation, held-out": "e3beb7c"
+ },
+ "host": "nod (Shark19), 32 cores, 251 GB",
+ "target_flags": {
+  "AMDGPU": "-mtriple=amdgcn-amd-amdhsa -mcpu=gfx1100 -O2 -global-isel -global-isel-abort=2 -verify-machineinstrs (corpus); -mtriple=amdgpu11.00-amd-amdhsa -mcpu=gfx1100 -O2 -global-isel=1 -global-isel-abort=1 -verify-machineinstrs (pipeline)",
+  "AArch64": "-mtriple=aarch64-linux-gnu -O2 -global-isel=1 -global-isel-abort=1 -verify-machineinstrs (pipeline)"
+ },
+ "manifests": {
+  "training": "manifests/amdgpu-discovery.txt + eval/joint-examples/*.ll (opt -O2, gfx1100)",
+  "validation": "manifests/amdgpu-validation.txt",
+  "held-out": "manifests/amdgpu-heldout-codegen.txt (content-deduplicated against training and validation)"
+ },
+ "commands": [
+  "gi-rule-synth.py joint-extract --llc build/plugin/bin/llc -o build/eval/train-regions --ll-list manifests/amdgpu-discovery.txt --root third_party/llvm-project -j 30",
+  "gi-rule-synth.py joint-search --regions build/eval/train-regions build/scratch/ex-run/regions --out build/eval/train-search --jobs 24 --time-s 30",
+  "gi-rule-synth.py joint-emit --rules build/eval/train-search/rules.json  (177 rules; llc-candidates)",
+  "eval/joint_eval.py --llc llc-candidates --manifest manifests/amdgpu-validation.txt --exclude manifests/amdgpu-discovery.txt --out build/eval/validation -j 24",
+  "eval/joint_select.py --rules train-search/rules.json --validation build/eval/validation --keep joint_b421acca3c,joint_743e08a976 --out selection.json",
+  "gi-rule-synth.py joint-emit --rules train-search/rules.json --ids <selected>  (6 rules; llc-final)",
+  "eval/joint_validate.py --llvm-build build/llvm --llc llc-final --out build/eval/pipeline",
+  "gi-rule-synth.py joint-recheck --rules build/eval/train-search/rules.json",
+  "eval/joint_eval.py --llc llc-final --manifest manifests/amdgpu-heldout-codegen.txt --exclude manifests/amdgpu-discovery.txt --exclude manifests/amdgpu-validation.txt --out build/eval/heldout -j 24"
+ ],
+ "region_facts_training": {
+  "region_inputs_not_constant": 18950,
+  "defined_isStableValue": 92,
+  "defined_llvm_analysis_only": 59,
+  "entry_copy_inputs": 6344,
+  "entry_copy_defined": 3,
+  "inputs_in_functions_with_all_args_noundef": 711,
+  "region_values": 25347,
+  "values_defined": 121,
+  "values_defined_llvm_only": 80
+ }
+}

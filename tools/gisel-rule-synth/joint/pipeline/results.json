@@ -1,0 +1,726 @@
+{
+  "pipeline": {
+    "amdgpu": {
+      "before": [
+        "s_waitcnt vmcnt(0) expcnt(0) lgkmcnt(0)",
+        "v_sub_nc_u32_e32 v2, v0, v1",
+        "v_add_nc_u32_e32 v1, v1, v0",
+        "v_mul_lo_u32 v0, v0, v0",
+        "s_delay_alu instid0(VALU_DEP_2)",
+        "v_mul_lo_u32 v1, v2, v1",
+        "s_setpc_b64 s[30:31]"
+      ],
+      "after": [
+        "s_waitcnt vmcnt(0) expcnt(0) lgkmcnt(0)",
+        "v_mul_lo_u32 v0, v0, v0",
+        "v_mul_lo_u32 v1, v1, v1",
+        "s_delay_alu instid0(VALU_DEP_1)",
+        "v_sub_nc_u32_e32 v1, v0, v1",
+        "s_setpc_b64 s[30:31]"
+      ],
+      "before_count": 7,
+      "after_count": 6,
+      "stock_matches_baseline": true,
+      "joint_debug_counts": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    "aarch64": {
+      "before": [
+        "mul\tw8, w0, w0",
+        "sub\tw9, w0, w1",
+        "add\tw10, w1, w0",
+        "mul\tw1, w9, w10",
+        "mov\tw0, w8",
+        "ret"
+      ],
+      "after": [
+        "mul\tw0, w0, w0",
+        "msub\tw1, w1, w1, w0",
+        "ret"
+      ],
+      "before_count": 6,
+      "after_count": 3,
+      "stock_matches_baseline": true,
+      "joint_debug_counts": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    }
+  },
+  "mir": [
+    {
+      "target": "amdgpu",
+      "case": "positive",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "commuted_mul",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "commuted_add",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "wrong_square",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 4
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "wrong_add",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 4
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "reversed_sub",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 4
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "xor_not_add",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 4
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "square_nsw",
+      "expected": "rewrite-relax",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "root_nsw",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "square_nuw",
+      "expected": "rewrite-relax",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "root_nuw",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "sub_nsw",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "add_nuw",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "unproven_inputs",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 3,
+        "reject defined": 2
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "square_after_root",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 6,
+        "reject pattern": 5,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "square_after_use",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 3,
+        "reject placement": 2
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "multiuse_3",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 5,
+        "reject pattern": 4,
+        "reject boundary": 2
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "multiuse_4",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 5,
+        "reject pattern": 4,
+        "reject boundary": 2
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "square_two_users",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 8,
+        "reject pattern": 7,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "square_other_block",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 4
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "frozen_inputs",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "two_freezes",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 4
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "computed_undef",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 3,
+        "reject defined": 2
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "i16",
+      "expected": "rewrite-width",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 5,
+        "reject boundary": 2,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "amdgpu",
+      "case": "i64",
+      "expected": "rewrite-width",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "positive",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "commuted_mul",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "commuted_add",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "wrong_square",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 4
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "wrong_add",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 4
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "reversed_sub",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 4
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "xor_not_add",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 4
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "square_nsw",
+      "expected": "rewrite-relax",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "root_nsw",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "square_nuw",
+      "expected": "rewrite-relax",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "root_nuw",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "sub_nsw",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "add_nuw",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "unproven_inputs",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 3,
+        "reject defined": 2
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "square_after_root",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 6,
+        "reject pattern": 5,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "square_after_use",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 3,
+        "reject placement": 2
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "multiuse_3",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 5,
+        "reject pattern": 4,
+        "reject boundary": 2
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "multiuse_4",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 5,
+        "reject pattern": 4,
+        "reject boundary": 2
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "square_two_users",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 8,
+        "reject pattern": 7,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "square_other_block",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 4
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "frozen_inputs",
+      "expected": "rewrite",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "two_freezes",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 4
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "computed_undef",
+      "expected": "keep",
+      "rewritten": false,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 4,
+        "reject pattern": 3,
+        "reject defined": 2
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "i16",
+      "expected": "rewrite-width",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 5,
+        "reject boundary": 2,
+        "matched": 1,
+        "applied": 1
+      }
+    },
+    {
+      "target": "aarch64",
+      "case": "i64",
+      "expected": "rewrite-width",
+      "rewritten": true,
+      "llc_ok": true,
+      "passed": true,
+      "debug": {
+        "anchor": 7,
+        "reject pattern": 6,
+        "matched": 1,
+        "applied": 1
+      }
+    }
+  ]
+}

@@ -1,0 +1,171 @@
+{
+ "manifests": [
+  "manifests/amdgpu-heldout-codegen.txt"
+ ],
+ "excluded_manifests": [
+  "manifests/amdgpu-discovery.txt",
+  "manifests/amdgpu-validation.txt"
+ ],
+ "files_listed": 7814,
+ "duplicate_content": 1,
+ "content_in_excluded_sets": 0,
+ "measured": 7813,
+ "compiled_both": 7813,
+ "failed_without_rules": 0,
+ "new_failures": [],
+ "fallback_changes": [],
+ "insns_without": 1750142,
+ "insns_with": 1750099,
+ "files_smaller": 13,
+ "files_larger": 2,
+ "larger": [
+  [
+   "llvm/test/CodeGen/X86/pr35399.ll",
+   13,
+   14
+  ],
+  [
+   "llvm/test/CodeGen/X86/vector-idiv-i64.ll",
+   10060,
+   10061
+  ]
+ ],
+ "smaller": [
+  [
+   "llvm/test/CodeGen/ARM/select_const.ll",
+   139,
+   132
+  ],
+  [
+   "llvm/test/CodeGen/ARM/sub-cmp-peephole.ll",
+   191,
+   188
+  ],
+  [
+   "llvm/test/CodeGen/Generic/2003-07-08-BadCastToBool.ll",
+   48,
+   46
+  ],
+  [
+   "llvm/test/CodeGen/LoongArch/machine-combiner.ll",
+   452,
+   451
+  ],
+  [
+   "llvm/test/CodeGen/PowerPC/select_const.ll",
+   451,
+   441
+  ],
+  [
+   "llvm/test/CodeGen/RISCV/machine-combiner.ll",
+   594,
+   593
+  ],
+  [
+   "llvm/test/CodeGen/RISCV/rv64zbkb.ll",
+   199,
+   198
+  ],
+  [
+   "llvm/test/CodeGen/SystemZ/args-06.ll",
+   48,
+   43
+  ],
+  [
+   "llvm/test/CodeGen/X86/pr236021.ll",
+   20,
+   17
+  ],
+  [
+   "llvm/test/CodeGen/X86/pr46527.ll",
+   55,
+   53
+  ],
+  [
+   "llvm/test/CodeGen/X86/select_const.ll",
+   263,
+   256
+  ],
+  [
+   "llvm/test/CodeGen/X86/setcc.ll",
+   98,
+   96
+  ],
+  [
+   "llvm/test/CodeGen/X86/xor-icmp.ll",
+   159,
+   158
+  ]
+ ],
+ "matcher": {
+  "anchor": 79354,
+  "reject pattern": 79206,
+  "applied": 52,
+  "matched": 52,
+  "reject width": 71,
+  "reject types": 112,
+  "reject boundary": 6
+ },
+ "per_rule": {
+  "joint_315c4a0ef9": {
+   "anchor": 13171,
+   "reject pattern": 13149,
+   "applied": 19,
+   "matched": 19,
+   "reject width": 3
+  },
+  "joint_66f36e5034": {
+   "anchor": 25100,
+   "reject pattern": 25100
+  },
+  "joint_743e08a976": {
+   "anchor": 6950,
+   "reject pattern": 6950
+  },
+  "joint_a27cbc14a2": {
+   "anchor": 17121,
+   "reject pattern": 16997,
+   "applied": 31,
+   "matched": 31,
+   "reject width": 68,
+   "reject types": 112,
+   "reject boundary": 6
+  },
+  "joint_b421acca3c": {
+   "anchor": 7143,
+   "reject pattern": 7143
+  },
+  "joint_f5cef5f7f4": {
+   "anchor": 9869,
+   "reject pattern": 9867,
+   "applied": 2,
+   "matched": 2
+  }
+ },
+ "applied_rules": {
+  "joint_a27cbc14a2": {
+   "files": 21,
+   "insns_saved": 8,
+   "files_smaller": 4,
+   "files_larger": 0
+  },
+  "joint_315c4a0ef9": {
+   "files": 11,
+   "insns_saved": 36,
+   "files_smaller": 9,
+   "files_larger": 1
+  },
+  "joint_f5cef5f7f4": {
+   "files": 1,
+   "insns_saved": -1,
+   "files_smaller": 0,
+   "files_larger": 1
+  }
+ },
+ "cpu_without_s": 647.14,
+ "cpu_with_s": 652.79,
+ "disabled": [],
+ "llc_sha256": "3da9f8d83f4471fc984e7088c2e9f546e69c1714b14d30c1c4e4b5bb6736336f",
+ "debug_run_differs": [],
+ "note": "cpu: the runs without debug output; static instruction counts, not run time"
+}

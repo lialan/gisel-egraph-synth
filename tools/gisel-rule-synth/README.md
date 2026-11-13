@@ -1431,3 +1431,15 @@ the default compiler binary afterwards.
 See [the analysis and Legalizer follow-up register](../../docs/IntegerFP-Conversion-Coverage.md)
 for implemented coverage, missing judgments worth adding and the validation
 results. Generated rules are not promoted based on synthetic MIR savings.
+
+## Joint region rules
+
+`joint-extract`, `joint-search`, `joint-recheck` and `joint-emit` search
+regions of one basic block with several inputs and several outputs: a
+cheaper DAG for all outputs at once, with reused values of the region and
+new shared helpers, proved jointly and emitted as single-root
+`GICombineRule`s with a C++ matcher (`-gisel-synth-joint-combines`). See
+[docs/Joint-Regions.md](../../docs/Joint-Regions.md) and the validation in
+[docs/Joint-Regions-Validation.md](../../docs/Joint-Regions-Validation.md);
+`eval/joint_run.sh` runs the whole flow, and `joint/` has the rules, the
+proofs and the results of the last run.

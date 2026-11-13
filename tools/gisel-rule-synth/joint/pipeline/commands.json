@@ -1,0 +1,971 @@
+[
+  {
+    "command": [
+      "/home/nod/gisel-egraph-synth/build/llvm/bin/opt",
+      "-passes=default<O2>",
+      "-S",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/input.ll",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-O2.ll"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-global-isel=1",
+      "-global-isel-abort=1",
+      "-verify-machineinstrs",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-O2.ll",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-before.s"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-global-isel=1",
+      "-global-isel-abort=1",
+      "-verify-machineinstrs",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-O2.ll",
+      "-stop-after=amdgpu-prelegalizer-combiner",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-before.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-global-isel=1",
+      "-global-isel-abort=1",
+      "-verify-machineinstrs",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-O2.ll",
+      "-gisel-synth-joint-combines",
+      "-debug-only=gisel-synth-joint",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-after.s"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-global-isel=1",
+      "-global-isel-abort=1",
+      "-verify-machineinstrs",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-O2.ll",
+      "-gisel-synth-joint-combines",
+      "-debug-only=gisel-synth-joint",
+      "-stop-after=gisynth-joint-combiner",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-after.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-egraph-synth/build/llvm/bin/llc",
+      "-O2",
+      "-global-isel=1",
+      "-global-isel-abort=1",
+      "-verify-machineinstrs",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-O2.ll",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-stock.s"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-global-isel=1",
+      "-global-isel-abort=1",
+      "-verify-machineinstrs",
+      "-stop-after=amdgpu-prelegalizer-combiner",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-i16.ll",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-i16.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-global-isel=1",
+      "-global-isel-abort=1",
+      "-verify-machineinstrs",
+      "-stop-after=amdgpu-prelegalizer-combiner",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-i64.ll",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-i64.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-positive-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-positive-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-commuted_mul-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-commuted_mul-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-commuted_add-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-commuted_add-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-wrong_square-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-wrong_square-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-wrong_add-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-wrong_add-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-reversed_sub-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-reversed_sub-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-xor_not_add-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-xor_not_add-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-square_nsw-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-square_nsw-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-root_nsw-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-root_nsw-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-square_nuw-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-square_nuw-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-root_nuw-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-root_nuw-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-sub_nsw-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-sub_nsw-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-add_nuw-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-add_nuw-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-unproven_inputs-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-unproven_inputs-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-square_after_root-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-square_after_root-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-square_after_use-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-square_after_use-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-multiuse_3-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-multiuse_3-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-multiuse_4-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-multiuse_4-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-square_two_users-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-square_two_users-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-square_other_block-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-square_other_block-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-frozen_inputs-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-frozen_inputs-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-two_freezes-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-two_freezes-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-computed_undef-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-computed_undef-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-i16-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-i16-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=amdgpu11.00-amd-amdhsa",
+      "-mcpu=gfx1100",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-i64-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/amdgpu-i64-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-egraph-synth/build/llvm/bin/opt",
+      "-passes=default<O2>",
+      "-S",
+      "-mtriple=aarch64-linux-gnu",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/input.ll",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-O2.ll"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-global-isel=1",
+      "-global-isel-abort=1",
+      "-verify-machineinstrs",
+      "-mtriple=aarch64-linux-gnu",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-O2.ll",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-before.s"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-global-isel=1",
+      "-global-isel-abort=1",
+      "-verify-machineinstrs",
+      "-mtriple=aarch64-linux-gnu",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-O2.ll",
+      "-stop-after=aarch64-prelegalizer-combiner",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-before.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-global-isel=1",
+      "-global-isel-abort=1",
+      "-verify-machineinstrs",
+      "-mtriple=aarch64-linux-gnu",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-O2.ll",
+      "-gisel-synth-joint-combines",
+      "-debug-only=gisel-synth-joint",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-after.s"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-global-isel=1",
+      "-global-isel-abort=1",
+      "-verify-machineinstrs",
+      "-mtriple=aarch64-linux-gnu",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-O2.ll",
+      "-gisel-synth-joint-combines",
+      "-debug-only=gisel-synth-joint",
+      "-stop-after=gisynth-joint-combiner",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-after.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-egraph-synth/build/llvm/bin/llc",
+      "-O2",
+      "-global-isel=1",
+      "-global-isel-abort=1",
+      "-verify-machineinstrs",
+      "-mtriple=aarch64-linux-gnu",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-O2.ll",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-stock.s"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-global-isel=1",
+      "-global-isel-abort=1",
+      "-verify-machineinstrs",
+      "-stop-after=aarch64-prelegalizer-combiner",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-i16.ll",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-i16.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-global-isel=1",
+      "-global-isel-abort=1",
+      "-verify-machineinstrs",
+      "-stop-after=aarch64-prelegalizer-combiner",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-i64.ll",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-i64.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-positive-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-positive-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-commuted_mul-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-commuted_mul-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-commuted_add-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-commuted_add-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-wrong_square-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-wrong_square-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-wrong_add-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-wrong_add-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-reversed_sub-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-reversed_sub-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-xor_not_add-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-xor_not_add-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-square_nsw-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-square_nsw-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-root_nsw-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-root_nsw-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-square_nuw-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-square_nuw-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-root_nuw-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-root_nuw-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-sub_nsw-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-sub_nsw-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-add_nuw-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-add_nuw-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-unproven_inputs-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-unproven_inputs-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-square_after_root-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-square_after_root-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-square_after_use-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-square_after_use-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-multiuse_3-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-multiuse_3-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-multiuse_4-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-multiuse_4-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-square_two_users-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-square_two_users-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-square_other_block-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-square_other_block-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-frozen_inputs-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-frozen_inputs-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-two_freezes-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-two_freezes-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-computed_undef-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-computed_undef-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-i16-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-i16-output.mir"
+    ],
+    "returncode": 0
+  },
+  {
+    "command": [
+      "/home/nod/gisel-joint-regions-20261112/build/eval/llc-final",
+      "-O2",
+      "-mtriple=aarch64-linux-gnu",
+      "-verify-machineinstrs",
+      "-run-pass=gisynth-joint-combiner",
+      "-debug-only=gisel-synth-joint",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-i64-input.mir",
+      "-o",
+      "/home/nod/gisel-joint-regions-20261112/build/eval/pipeline/aarch64-i64-output.mir"
+    ],
+    "returncode": 0
+  }
+]

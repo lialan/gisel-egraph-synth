@@ -1,0 +1,16 @@
+; benchmark generated from python API
+(set-info :status unknown)
+(declare-fun x2 () (_ BitVec 32))
+(declare-fun xp2 () Bool)
+(declare-fun xp1 () Bool)
+(declare-fun x1 () (_ BitVec 32))
+(declare-fun x0 () (_ BitVec 32))
+(declare-fun xp0 () Bool)
+(declare-fun ko0 () (_ BitVec 32))
+(declare-fun kz0 () (_ BitVec 32))
+(assert
+ (let (($x45 (and (not (or false (or false false) (or false))) (or (or false (and (not xp2) (or false (not (= (_ bv0 32) x2)))))))))
+(let (($x17 (and true)))
+(let (($x16 (and (and (= (bvand kz0 ko0) (_ bv0 32))) (= (bvand x0 kz0) (_ bv0 32)) (= (bvand x0 ko0) ko0))))
+(and $x16 $x17 $x17 true (= x1 (bvshl x0 x0)) (= xp1 (or xp0 xp0 (bvuge x0 (_ bv32 32)))) (= x2 ((_ sign_extend 31) ((_ extract 0 0) x1))) (= xp2 (or xp1)) $x45)))))
+(check-sat)

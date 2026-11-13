@@ -1,0 +1,68 @@
+{
+ "windows": 7138,
+ "status": {
+  "complete": 3732,
+  "budget: bank_truncated": 1826,
+  "budget: bank_truncated,helper_budget_exhausted": 961,
+  "budget: time": 619
+ },
+ "candidates": 2084,
+ "proved": 177,
+ "refuted": 916,
+ "unknown": 0,
+ "smt_checks": 1234,
+ "rules": 177,
+ "with_helper": 3,
+ "joint_better_than_independent": 2,
+ "seconds": 41136.33,
+ "bank": {
+  "banks": 192,
+  "reuses": 286690,
+  "evicted": 10324,
+  "terms": 20105496,
+  "truncated": 86
+ },
+ "solver_seconds": 12.86,
+ "wall_seconds": 1924.32,
+ "shards": 24,
+ "failed_shards": [],
+ "not_searched": 0,
+ "load": {
+  "records": 9647
+ },
+ "collect": {
+  "distinct": 7138,
+  "windows": 32918,
+  "nonconvex": 138424,
+  "outputs_out_of_range": 10918,
+  "window_budget_exhausted": 53
+ },
+ "files": 1418,
+ "blocks": 9647,
+ "distinct_windows": 7138,
+ "limits": {
+  "max_window": 5,
+  "max_outputs": 3,
+  "max_cost": 3,
+  "samples": 48,
+  "max_reuse": 4,
+  "max_helpers": 256,
+  "helper_cost": 2,
+  "max_cands": 12,
+  "max_combos": 50000,
+  "max_proofs": 6,
+  "time_s": 30.0,
+  "widths": [
+   8,
+   16,
+   32,
+   64
+  ],
+  "max_terms": 200000,
+  "max_evals": 20000000,
+  "seed": 0,
+  "timeout_ms": 10000,
+  "grammar": null,
+  "max_banks": 8
+ }
+}

@@ -1,0 +1,1109 @@
+{
+ "selected": [
+  "joint_b421acca3c",
+  "joint_f5cef5f7f4",
+  "joint_743e08a976",
+  "joint_a27cbc14a2",
+  "joint_66f36e5034",
+  "joint_315c4a0ef9"
+ ],
+ "dropped": {
+  "joint_5c57b219a0": "applied in 1 bad file(s)",
+  "joint_9289907d6e": "never applied on the validation corpus",
+  "joint_2c8355eb2d": "never applied on the validation corpus",
+  "joint_929fab2f2d": "never applied on the validation corpus",
+  "joint_15f1053aa8": "never applied on the validation corpus",
+  "joint_a502ad11dd": "never applied on the validation corpus",
+  "joint_04ea015304": "no measured gain",
+  "joint_89b4ae8736": "never applied on the validation corpus",
+  "joint_138ce0e9e9": "never applied on the validation corpus",
+  "joint_1fc34c122d": "never applied on the validation corpus",
+  "joint_df7f4c1b34": "never applied on the validation corpus",
+  "joint_844a17e734": "never applied on the validation corpus",
+  "joint_414f0bdec8": "never applied on the validation corpus",
+  "joint_60da499e33": "never applied on the validation corpus",
+  "joint_a5912b3859": "never applied on the validation corpus",
+  "joint_e2a6559920": "never applied on the validation corpus",
+  "joint_1e61cee0d1": "never applied on the validation corpus",
+  "joint_23016908f7": "never applied on the validation corpus",
+  "joint_0e4e765d56": "never applied on the validation corpus",
+  "joint_f937e7457f": "never applied on the validation corpus",
+  "joint_936441cb9a": "never applied on the validation corpus",
+  "joint_8e781687b9": "never applied on the validation corpus",
+  "joint_e243c00764": "no measured gain",
+  "joint_2afe93d32f": "never applied on the validation corpus",
+  "joint_d641064f13": "never applied on the validation corpus",
+  "joint_fe92d1df5a": "never applied on the validation corpus",
+  "joint_1aaa9e019a": "never applied on the validation corpus",
+  "joint_3248204f79": "no measured gain",
+  "joint_649f659a0d": "never applied on the validation corpus",
+  "joint_c56e536359": "never applied on the validation corpus",
+  "joint_461a4226b0": "never applied on the validation corpus",
+  "joint_16cdc6ef82": "never applied on the validation corpus",
+  "joint_32bc738180": "never applied on the validation corpus",
+  "joint_ba3b36d01f": "never applied on the validation corpus",
+  "joint_9be3e80cbd": "no measured gain",
+  "joint_910c88182f": "never applied on the validation corpus",
+  "joint_9876e4f4ed": "never applied on the validation corpus",
+  "joint_6c13b42d9d": "never applied on the validation corpus",
+  "joint_77e3bedb1f": "never applied on the validation corpus",
+  "joint_f25e19471b": "no measured gain",
+  "joint_126a4dfaeb": "never applied on the validation corpus",
+  "joint_21f6d4c34c": "never applied on the validation corpus",
+  "joint_4c24570a43": "never applied on the validation corpus",
+  "joint_7fd073c8b0": "never applied on the validation corpus",
+  "joint_9ee9f29520": "never applied on the validation corpus",
+  "joint_33b1321e47": "no measured gain",
+  "joint_d413e46f69": "never applied on the validation corpus",
+  "joint_1076034d2d": "never applied on the validation corpus",
+  "joint_3ee91fb435": "never applied on the validation corpus",
+  "joint_4e009d2b1d": "never applied on the validation corpus",
+  "joint_e154846cce": "never applied on the validation corpus",
+  "joint_4c74d2f1db": "never applied on the validation corpus",
+  "joint_2452cbec3d": "never applied on the validation corpus",
+  "joint_aea4cfc605": "never applied on the validation corpus",
+  "joint_1a1a3dda35": "never applied on the validation corpus",
+  "joint_305c760c18": "never applied on the validation corpus",
+  "joint_d6e7086da7": "never applied on the validation corpus",
+  "joint_9c1aa1412c": "never applied on the validation corpus",
+  "joint_2defb06bc1": "never applied on the validation corpus",
+  "joint_9a92a65213": "never applied on the validation corpus",
+  "joint_03ee989df7": "never applied on the validation corpus",
+  "joint_4eea502da9": "never applied on the validation corpus",
+  "joint_0c3f35de74": "never applied on the validation corpus",
+  "joint_1ff650dea4": "applied in 1 bad file(s)",
+  "joint_122ac780d0": "never applied on the validation corpus",
+  "joint_a5280e7fc7": "never applied on the validation corpus",
+  "joint_727010e58a": "never applied on the validation corpus",
+  "joint_c11cdc4613": "never applied on the validation corpus",
+  "joint_0f66bb0aff": "never applied on the validation corpus",
+  "joint_c5893bf5cf": "no measured gain",
+  "joint_4a0ec82613": "never applied on the validation corpus",
+  "joint_1f3b5d1127": "never applied on the validation corpus",
+  "joint_10fa6c2c5d": "applied in 1 bad file(s)",
+  "joint_cf5baf257f": "never applied on the validation corpus",
+  "joint_4e0bdc81ad": "never applied on the validation corpus",
+  "joint_f71b006fd8": "never applied on the validation corpus",
+  "joint_543792ecea": "never applied on the validation corpus",
+  "joint_99098a0ec1": "never applied on the validation corpus",
+  "joint_bc6faefeb7": "never applied on the validation corpus",
+  "joint_d8de1619f3": "never applied on the validation corpus",
+  "joint_4a87ff2385": "never applied on the validation corpus",
+  "joint_f9c438a74d": "never applied on the validation corpus",
+  "joint_433e3ead1b": "never applied on the validation corpus",
+  "joint_17f7c01212": "never applied on the validation corpus",
+  "joint_e479a0091c": "never applied on the validation corpus",
+  "joint_19d3adbda1": "never applied on the validation corpus",
+  "joint_ad84e1ab0d": "never applied on the validation corpus",
+  "joint_48866ccdde": "never applied on the validation corpus",
+  "joint_b31ef6ff7a": "never applied on the validation corpus",
+  "joint_54def91241": "never applied on the validation corpus",
+  "joint_035765127e": "never applied on the validation corpus",
+  "joint_3c78c04ae5": "never applied on the validation corpus",
+  "joint_b49f620a1f": "never applied on the validation corpus",
+  "joint_b40066289f": "never applied on the validation corpus",
+  "joint_aa3c252f25": "never applied on the validation corpus",
+  "joint_7fad7c9bd9": "never applied on the validation corpus",
+  "joint_bd7fd800dc": "never applied on the validation corpus",
+  "joint_53d99df5d4": "no measured gain",
+  "joint_d63ada6e01": "never applied on the validation corpus",
+  "joint_d30d856275": "never applied on the validation corpus",
+  "joint_9b4fcc94fe": "never applied on the validation corpus",
+  "joint_c0d45e4a8d": "never applied on the validation corpus",
+  "joint_832af20da3": "never applied on the validation corpus",
+  "joint_d942c7f347": "never applied on the validation corpus",
+  "joint_cd3754d646": "never applied on the validation corpus",
+  "joint_80165c7451": "never applied on the validation corpus",
+  "joint_d0ccc37985": "never applied on the validation corpus",
+  "joint_fd7621e3fb": "never applied on the validation corpus",
+  "joint_a1fb2550ee": "applied in 2 bad file(s)",
+  "joint_50a482ae63": "never applied on the validation corpus",
+  "joint_158e2ae7d4": "never applied on the validation corpus",
+  "joint_23645fe21a": "never applied on the validation corpus",
+  "joint_36a8bcc8ce": "never applied on the validation corpus",
+  "joint_435a685e84": "never applied on the validation corpus",
+  "joint_3ae079c346": "no measured gain",
+  "joint_7be9fa0e2c": "never applied on the validation corpus",
+  "joint_db269fe1be": "never applied on the validation corpus",
+  "joint_2158e5a64f": "never applied on the validation corpus",
+  "joint_ab980bcbc5": "never applied on the validation corpus",
+  "joint_d104ff83fc": "no measured gain",
+  "joint_6a8ea6108a": "never applied on the validation corpus",
+  "joint_2f66af023f": "never applied on the validation corpus",
+  "joint_5a379fa8ff": "never applied on the validation corpus",
+  "joint_c1dd781775": "never applied on the validation corpus",
+  "joint_14d1adc0e6": "never applied on the validation corpus",
+  "joint_29fd9fbb8d": "never applied on the validation corpus",
+  "joint_97767aa44f": "never applied on the validation corpus",
+  "joint_627338eaa3": "never applied on the validation corpus",
+  "joint_0de6261da2": "never applied on the validation corpus",
+  "joint_6791c3b492": "never applied on the validation corpus",
+  "joint_49f527d30a": "never applied on the validation corpus",
+  "joint_80b936c852": "no measured gain",
+  "joint_0c0a71722f": "applied in 2 bad file(s)",
+  "joint_02ff77274c": "never applied on the validation corpus",
+  "joint_15159d8d4b": "never applied on the validation corpus",
+  "joint_8cd81a564f": "never applied on the validation corpus",
+  "joint_9190cf659c": "never applied on the validation corpus",
+  "joint_059a1c6b0c": "no measured gain",
+  "joint_ab48096e38": "never applied on the validation corpus",
+  "joint_bb0e3891ba": "never applied on the validation corpus",
+  "joint_09dda0e117": "never applied on the validation corpus",
+  "joint_c6e276caa4": "never applied on the validation corpus",
+  "joint_c2d2b0cfc1": "never applied on the validation corpus",
+  "joint_8b6db8fcb6": "never applied on the validation corpus",
+  "joint_8c13181db9": "never applied on the validation corpus",
+  "joint_451105bbb1": "never applied on the validation corpus",
+  "joint_d12966e7fa": "never applied on the validation corpus",
+  "joint_3186d77ce1": "no measured gain",
+  "joint_f454353162": "never applied on the validation corpus",
+  "joint_a6fc6ca7f4": "never applied on the validation corpus",
+  "joint_bf71c58f9a": "never applied on the validation corpus",
+  "joint_c3ae808135": "never applied on the validation corpus",
+  "joint_566da9e52d": "never applied on the validation corpus",
+  "joint_fc68931a24": "never applied on the validation corpus",
+  "joint_9685b2d21b": "never applied on the validation corpus",
+  "joint_db8d387c40": "never applied on the validation corpus",
+  "joint_b96d6cf05e": "never applied on the validation corpus",
+  "joint_85eec92284": "no measured gain",
+  "joint_369d4377a5": "never applied on the validation corpus",
+  "joint_acdeec6480": "never applied on the validation corpus",
+  "joint_ceeb8aa949": "never applied on the validation corpus",
+  "joint_d968431e7e": "never applied on the validation corpus",
+  "joint_c169f282d3": "never applied on the validation corpus",
+  "joint_8f66e2a4cd": "never applied on the validation corpus",
+  "joint_1d4206c311": "never applied on the validation corpus",
+  "joint_4d8986054a": "never applied on the validation corpus",
+  "joint_6aa8ebef5c": "never applied on the validation corpus",
+  "joint_e5a433a2b2": "never applied on the validation corpus",
+  "joint_ed65a6dab8": "never applied on the validation corpus",
+  "joint_6cf7fcd838": "never applied on the validation corpus",
+  "joint_8f20fd91b0": "never applied on the validation corpus"
+ },
+ "per_rule": {
+  "joint_5c57b219a0": {
+   "files": 1,
+   "insns_saved_in_files": -2,
+   "bad_files": [
+    [
+     "llvm/test/CodeGen/AMDGPU/GlobalISel/urem.i64.ll",
+     "larger"
+    ]
+   ]
+  },
+  "joint_9289907d6e": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_2c8355eb2d": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_b421acca3c": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": [],
+   "why": "kept: validated by its own pipeline"
+  },
+  "joint_929fab2f2d": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_15f1053aa8": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_a502ad11dd": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_04ea015304": {
+   "files": 2,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_89b4ae8736": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_f5cef5f7f4": {
+   "files": 1,
+   "insns_saved_in_files": 1,
+   "bad_files": [],
+   "why": "measured gain"
+  },
+  "joint_138ce0e9e9": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_1fc34c122d": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_df7f4c1b34": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_844a17e734": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_414f0bdec8": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_60da499e33": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_a5912b3859": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_e2a6559920": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_1e61cee0d1": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_23016908f7": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_0e4e765d56": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_f937e7457f": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_936441cb9a": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_8e781687b9": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_e243c00764": {
+   "files": 6,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_2afe93d32f": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_d641064f13": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_fe92d1df5a": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_1aaa9e019a": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_3248204f79": {
+   "files": 1,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_649f659a0d": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_c56e536359": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_461a4226b0": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_16cdc6ef82": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_32bc738180": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_ba3b36d01f": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_9be3e80cbd": {
+   "files": 1,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_743e08a976": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": [],
+   "why": "kept: validated by its own pipeline"
+  },
+  "joint_910c88182f": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_9876e4f4ed": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_6c13b42d9d": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_77e3bedb1f": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_f25e19471b": {
+   "files": 1,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_126a4dfaeb": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_21f6d4c34c": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_4c24570a43": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_7fd073c8b0": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_9ee9f29520": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_a27cbc14a2": {
+   "files": 4,
+   "insns_saved_in_files": 1,
+   "bad_files": [],
+   "why": "measured gain"
+  },
+  "joint_33b1321e47": {
+   "files": 2,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_d413e46f69": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_1076034d2d": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_3ee91fb435": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_4e009d2b1d": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_e154846cce": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_4c74d2f1db": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_2452cbec3d": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_aea4cfc605": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_1a1a3dda35": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_305c760c18": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_d6e7086da7": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_9c1aa1412c": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_2defb06bc1": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_9a92a65213": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_03ee989df7": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_4eea502da9": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_66f36e5034": {
+   "files": 3,
+   "insns_saved_in_files": 9,
+   "bad_files": [],
+   "why": "measured gain"
+  },
+  "joint_0c3f35de74": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_1ff650dea4": {
+   "files": 46,
+   "insns_saved_in_files": -2,
+   "bad_files": [
+    [
+     "llvm/test/CodeGen/AMDGPU/amdgpu-codegenprepare-idiv.ll",
+     "larger"
+    ]
+   ]
+  },
+  "joint_122ac780d0": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_315c4a0ef9": {
+   "files": 1,
+   "insns_saved_in_files": 8,
+   "bad_files": [],
+   "why": "measured gain"
+  },
+  "joint_a5280e7fc7": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_727010e58a": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_c11cdc4613": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_0f66bb0aff": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_c5893bf5cf": {
+   "files": 2,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_4a0ec82613": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_1f3b5d1127": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_10fa6c2c5d": {
+   "files": 3,
+   "insns_saved_in_files": -2,
+   "bad_files": [
+    [
+     "llvm/test/CodeGen/AMDGPU/promote-alloca-vector-to-vector.ll",
+     "larger"
+    ]
+   ]
+  },
+  "joint_cf5baf257f": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_4e0bdc81ad": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_f71b006fd8": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_543792ecea": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_99098a0ec1": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_bc6faefeb7": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_d8de1619f3": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_4a87ff2385": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_f9c438a74d": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_433e3ead1b": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_17f7c01212": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_e479a0091c": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_19d3adbda1": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_ad84e1ab0d": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_48866ccdde": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_b31ef6ff7a": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_54def91241": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_035765127e": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_3c78c04ae5": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_b49f620a1f": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_b40066289f": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_aa3c252f25": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_7fad7c9bd9": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_bd7fd800dc": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_53d99df5d4": {
+   "files": 5,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_d63ada6e01": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_d30d856275": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_9b4fcc94fe": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_c0d45e4a8d": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_832af20da3": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_d942c7f347": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_cd3754d646": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_80165c7451": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_d0ccc37985": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_fd7621e3fb": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_a1fb2550ee": {
+   "files": 2,
+   "insns_saved_in_files": -4,
+   "bad_files": [
+    [
+     "llvm/test/CodeGen/AMDGPU/amdgpu-codegenprepare-idiv.ll",
+     "larger"
+    ],
+    [
+     "llvm/test/CodeGen/AMDGPU/GlobalISel/urem.i64.ll",
+     "larger"
+    ]
+   ]
+  },
+  "joint_50a482ae63": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_158e2ae7d4": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_23645fe21a": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_36a8bcc8ce": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_435a685e84": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_3ae079c346": {
+   "files": 1,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_7be9fa0e2c": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_db269fe1be": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_2158e5a64f": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_ab980bcbc5": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_d104ff83fc": {
+   "files": 1,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_6a8ea6108a": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_2f66af023f": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_5a379fa8ff": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_c1dd781775": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_14d1adc0e6": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_29fd9fbb8d": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_97767aa44f": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_627338eaa3": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_0de6261da2": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_6791c3b492": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_49f527d30a": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_80b936c852": {
+   "files": 1,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_0c0a71722f": {
+   "files": 5,
+   "insns_saved_in_files": -3,
+   "bad_files": [
+    [
+     "llvm/test/CodeGen/AMDGPU/integer-mad-patterns.ll",
+     "larger"
+    ],
+    [
+     "llvm/test/CodeGen/AMDGPU/mad-i16-hi16.ll",
+     "larger"
+    ]
+   ]
+  },
+  "joint_02ff77274c": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_15159d8d4b": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_8cd81a564f": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_9190cf659c": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_059a1c6b0c": {
+   "files": 5,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_ab48096e38": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_bb0e3891ba": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_09dda0e117": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_c6e276caa4": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_c2d2b0cfc1": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_8b6db8fcb6": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_8c13181db9": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_451105bbb1": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_d12966e7fa": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_3186d77ce1": {
+   "files": 1,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_f454353162": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_a6fc6ca7f4": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_bf71c58f9a": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_c3ae808135": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_566da9e52d": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_fc68931a24": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_9685b2d21b": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_db8d387c40": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_b96d6cf05e": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_85eec92284": {
+   "files": 2,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_369d4377a5": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_acdeec6480": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_ceeb8aa949": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_d968431e7e": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_c169f282d3": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_8f66e2a4cd": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_1d4206c311": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_4d8986054a": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_6aa8ebef5c": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_e5a433a2b2": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_ed65a6dab8": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_6cf7fcd838": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  },
+  "joint_8f20fd91b0": {
+   "files": 0,
+   "insns_saved_in_files": 0,
+   "bad_files": []
+  }
+ }
+}
