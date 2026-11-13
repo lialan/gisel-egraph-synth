@@ -551,6 +551,15 @@ class SynthIntegrationTest(unittest.TestCase):
         self.assertEqual(st['views']['instances'], 2)
         self.assertGreaterEqual(st['views']['rules'], 2)
         self.assertIn('seconds', st['views'])
+        # The default search runs in worker processes (parallel.py); the
+        # serial search finds the same rules of the views.
+        serial, sst = self.run_synth(('search_jobs', 0))
+        self.assertEqual(
+            sorted((r['id'], r['provenance']['discovery'])
+                   for r in serial['rules']),
+            sorted((r['id'], r['provenance']['discovery'])
+                   for r in db['rules']))
+        self.assertEqual(sst['views']['rules'], st['views']['rules'])
         db, st = self.run_synth(('views', False))
         self.assertFalse(any(r['provenance']['discovery'].startswith(
             'views') for r in db['rules']))

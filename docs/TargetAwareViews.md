@@ -833,7 +833,10 @@ instructions for the same function and the e-graph combiner 2;
 The synthesizer (`tools/gisel-rule-synth`) reads the same operator
 properties (`gmir_ops.json`) and uses the views and facts in three places.
 Nothing it takes from the e-graph is trusted: every candidate is proved by
-the synthesizer's own SMT model before it is a rule.
+the synthesizer's own SMT model before it is a rule. The views run in the
+worker processes of the parallel search (`girs/parallel.py`) exactly as in
+the serial one (`--search-jobs 0`); `tests/test_views.py` checks that both
+find the same rules.
 
 * **Views as a candidate family** (`girs/views.py`). The AC, linear and
   slice views are computed on the sources of the corpus with the semantics
