@@ -322,8 +322,8 @@ def run(instances, limits, cache=None, jobs=1, time_budget_s=None,
         tasks.append((idx, key, joint.window_key(key), win, prov))
     tkey = {t[2]: agenda.task_key(STAGE, t[1]) for t in tasks}
     new, retry = ag.order(STAGE, tasks, lambda t: tkey[t[2]])
-    # A window whose verified rules were all measured without a gain, with
-    # candidates left by the quota: prove other shapes.
+    # Refill any slots released by measurement, including a window that
+    # still has profitable rules. The old proofs stay in the store.
     queued = {t[2] for t in new + retry}
     for t in tasks:
         if t[2] in queued:
@@ -333,7 +333,9 @@ def run(instances, limits, cache=None, jobs=1, time_budget_s=None,
             res = ag.result(STAGE, tkey[t[2]]) or {}
             ver = [i for i, s in res.get('decided', {}).items()
                    if s == 'verified']
-            if ver and set(ver) <= released_ids and res.get('pending'):
+            if (set(ver) & released_ids and
+                    len(set(ver) - released_ids) < limits.semantic_variants and
+                    res.get('pending')):
                 retry.append(t)
     order = schedule(new, retry, gain)
     if max_tasks is not None:

@@ -6,11 +6,14 @@ another rule, a rule that makes a file worse and a rule with no instance."""
 
 import os
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'eval'))
 
 import joint_measure as jm  # noqa: E402
+from girs import joint_measure as shared, measure  # noqa: E402
 
 BASE = {'f1': 100, 'f2': 50, 'f3': 10}
 
@@ -94,6 +97,58 @@ class AttributionTest(unittest.TestCase):
                       lambda ids: [ids] if 'A2' in ids else [])
         self.assertEqual(S, ['B'])
         self.assertEqual(self.info['A2']['selection'], 'cycle')
+
+    def test_candidate_enabled_by_baseline_is_measured(self):
+        class BaselineModel:
+            def many(self, jobs):
+                out = []
+                for path, enabled, screen, count in jobs:
+                    applied = not screen and 'joint_candidate' in enabled
+                    res = {'rc': 0, 'insns': 10 - applied,
+                           'fallback': [], 'passed': {}, 'matched': {}}
+                    if screen == ('joint_base',):
+                        res['matched'] = {'joint_candidate': 1}
+                    elif applied:
+                        res['passed'] = {'joint_candidate': 1}
+                    out.append(res)
+                return out
+        rules = [rule('joint_candidate', 'w')]
+        info, screened, report = shared.measure_candidates(
+            BaselineModel(), ['f'], rules, ['joint_base'],
+            {'f': {'rc': 0, 'insns': 10, 'fallback': []}})
+        self.assertEqual(screened, {'joint_candidate': ['f']})
+        self.assertEqual(info['joint_candidate']['profitability_status'], 'profitable')
+        self.assertEqual(report['baseline_only'], {'f': ['joint_candidate']})
+
+    def test_screen_failure_falls_back_to_solo_and_rejects_compile_failure(self):
+        class FailingModel:
+            def many(self, jobs):
+                return [{'rc': 1, 'matched': {}, 'passed': {}} for _ in jobs]
+        info, screened, report = shared.measure_candidates(
+            FailingModel(), ['f'], [rule('joint_candidate', 'w')], [],
+            {'f': {'rc': 0, 'insns': 10, 'fallback': []}})
+        self.assertEqual(screened, {'joint_candidate': ['f']})
+        self.assertTrue(report['failed'])
+        self.assertEqual(info['joint_candidate']['profitability_status'], 'regression')
+
+    def test_baseline_screen_has_distinct_flags_and_cache(self):
+        with tempfile.TemporaryDirectory() as d:
+            llc, source = os.path.join(d, 'llc'), os.path.join(d, 'f.ll')
+            for p in (llc, source):
+                with open(p, 'w') as f:
+                    f.write(p)
+            t = jm.joint_target('AMDGPU')
+            M = shared.Measurer(llc, t, ['joint_base', 'joint_candidate'], None, 1)
+            with mock.patch.object(measure, 'compile_ll', return_value={'rc': 0}) as compile:
+                M.one(source, M.all_ids, True)
+                M.one(source, M.all_ids, ('joint_base',))
+                M.one(source, M.all_ids, ('joint_base',))
+            self.assertEqual(compile.call_count, 2)
+            self.assertEqual(compile.call_args_list[0].kwargs['flags'],
+                             [shared.SCREEN_FLAG])
+            self.assertEqual(compile.call_args_list[1].kwargs['flags'],
+                             [shared.SCREEN_FLAG, shared.SCREEN_APPLY_FLAG + 'joint_base'])
+            self.assertEqual(M.hits, 1)
 
 
 if __name__ == '__main__':

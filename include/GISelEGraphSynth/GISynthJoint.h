@@ -45,6 +45,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/CodeGen/GlobalISel/CombinerHelper.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
@@ -60,6 +61,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <array>
 #include <cstdint>
+#include <string>
 
 namespace llvm {
 namespace gisynth {
@@ -285,9 +287,13 @@ struct MatchEnv {
   /// while the combiner ran (by a rule): their instructions are new.
   unsigned FirstNewVReg = ~0u;
   /// Screening (-gisel-synth-joint-screen): a match is reported ("matched")
-  /// and then rejected, so that every rule is tried on every instruction and
-  /// nothing changes. For measurements only.
+  /// and then rejected, except for baseline rules in ScreenApply.
+  /// For measurements only.
   bool ScreenOnly = false;
+  /// During screening these baseline rules may still apply, exposing
+  /// candidates on their results in the same worklist. FirstNewVReg is
+  /// unchanged: screening must not bypass OriginalOnly's termination guard.
+  ArrayRef<std::string> ScreenApply;
 };
 
 //===--- Matching ---------------------------------------------------------===//
@@ -715,8 +721,9 @@ inline bool search(const RuleDesc &R, const MachineRegisterInfo &MRI,
 } // end namespace detail
 
 /// Matches the rule \p R with the anchor \p Root. Fills \p Plan and returns
-/// true if every check holds; changes nothing. With Env.ScreenOnly the match
-/// is reported and false is returned.
+/// true if every check holds; changes nothing. With Env.ScreenOnly a
+/// candidate match is reported and false is returned. ScreenApply baseline
+/// rules return true so the caller can apply them normally.
 inline bool match(const RuleDesc &R, MachineInstr &Root,
                   const MachineRegisterInfo &MRI, JointPlan &Plan,
                   const MatchEnv &Env = MatchEnv()) {
@@ -733,7 +740,7 @@ inline bool match(const RuleDesc &R, MachineInstr &Root,
     return false;
   }
   detail::note(R, "matched");
-  return !Env.ScreenOnly;
+  return !Env.ScreenOnly || llvm::is_contained(Env.ScreenApply, R.Name);
 }
 
 //===--- Applying ---------------------------------------------------------===//

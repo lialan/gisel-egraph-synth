@@ -3,6 +3,33 @@
 Design: [Joint-Regions.md](Joint-Regions.md). Instruction counts are
 static counts of the final assembly, not run time.
 
+## Follow-up: mine integration, quota refill and baseline screening
+
+Starting from `d842e36`, the follow-up connects mine to the persistent joint
+agenda, multi-candidate controls, shared solo/greedy selector and selection
+feedback. Joint worker failures and missing artifacts now fail discovery;
+budget stops remain pending and interrupts stop the driver after saving
+published results. A window can refill one released slot while retaining
+its profitable rules. Screening can apply an explicit baseline allowlist
+and discover matches on its results, with the same termination guard as a
+normal compilation. The previous read-only screen is retained as well.
+
+Focused validation in the implementation workspace:
+
+* `PYTHONPATH=tools/gisel-rule-synth:tools/gisel-rule-synth/tests python3 -m
+  unittest test_joint_measure test_joint_tasks test_mine_joint
+  test_mine_resume test_mine_features -v`: **55 tests pass**, 171.8 seconds.
+  This includes real search/proof/agenda resumption and mine's stage driver;
+  compiler IO in the Python integration tests is simulated.
+* Generated `GISynthJointCombiner.inc` with the pinned LLVM's `llvm-tblgen`;
+  `c++ -std=c++17 -fsyntax-only` passes for `lib/SynthJointCombiner.cpp`
+  (using that generated include) and `unittests/GISynthJointTest.cpp`.
+* Added `test/Joint/joint-screen-baseline.mir` and the C++ test
+  `ScreeningSeesBaselineResults`. Native C++/lit execution and a new corpus
+  evaluation require a full plugin `llc` build and were not run in this
+  workspace. The measurements below belong to the earlier frozen rule set,
+  not to this follow-up.
+
 # 2026-11-13: several implementations, runs that continue, measured selection
 
 Everything ran on `mi350-bg` (128 cores) against the LLVM submodule
@@ -278,7 +305,7 @@ budgets.
 
 ## Limits
 
-* The screen sees the MIR without joint rules: a candidate that matches
+* The screen used for this run saw the MIR without joint rules: a candidate that matches
   only after a baseline rule applied is not measured.
 * A rule of equal cost replaces only instructions that the combiner did
   not create: a chain of such rules (A, then B on A's result) is cut after

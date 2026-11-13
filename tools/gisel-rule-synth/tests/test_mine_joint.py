@@ -28,6 +28,7 @@ class JointMineTest(unittest.TestCase):
         self.r.cfg = copy.deepcopy(mine.DEFAULTS)
         self.r.cfg['jobs'] = 1
         self.r.cfg['joint']['jobs'] = 1
+        self.r.cfg['cache_dir'] = str(self.root / 'cache')
         self.r.target = copy.copy(targets.get('AArch64'))
         self.r.target.joint = True
         self.r.cli = cli
@@ -46,6 +47,8 @@ class JointMineTest(unittest.TestCase):
                 i: {'selection': 'emitted'} for i in pins}})
             self.write('joint/baseline/' + n + '.json', p)
         self.write('joint/library/rules.json', self.db)
+        mine_joint.copy_proofs(self.db, self.r.joint.p('baseline', 'proofs'),
+            [str(Path(mine_joint.catalog_path()).parent / 'proofs')])
 
     def test_joint_is_integrated_by_default_but_respects_vector_only_scope(self):
         self.assertTrue(self.r.joint.enabled())
@@ -170,13 +173,20 @@ class JointMineTest(unittest.TestCase):
         r.library = lambda: {}
         prof = {'rules': {'ordinary': {'selection': 'emitted', 'pinned': True}}}
         names = r.all_names()
+        (self.root / 'build').mkdir(exist_ok=True)
+        (self.root / 'build' / 'llc').write_text('compiler')
         def compile(llc, target, path, synth=True, disabled=(), **kwargs):
             enabled = set(names) - set(disabled)
-            delta, fallback, rc = behavior(enabled, path)
+            delta, fallback, rc = behavior(enabled, os.path.basename(path))
             return {'rc': rc, 'insns': 10 + delta, 'fallback': fallback,
                     'matched': dict.fromkeys(enabled, 1), 'passed': dict.fromkeys(enabled, 1)}
         base = {'rc': 0, 'insns': 10, 'fallback': []}
-        compare = {p: {'base': base, 'synth': base} for p in ('a.ll', 'b.ll')}
+        files = [self.root / p for p in ('a.ll', 'b.ll')]
+        for p in files:
+            p.write_text(p.name)
+        # Each invocation of this helper models a different compiler.
+        (self.root / 'build' / 'llc').write_text(repr(behavior))
+        compare = {str(p): {'base': base, 'synth': base} for p in files}
         with mock.patch.object(measure, 'compile_ll', side_effect=compile), \
                 mock.patch.object(measure, 'failing_rules', return_value=list(names)):
             r.joint.select(prof, compare)
@@ -212,11 +222,62 @@ class JointMineTest(unittest.TestCase):
 
     def test_partial_joint_search_failure_is_not_marked_complete(self):
         self.baseline()
+        for field in ('failed_tasks', 'missing_rules', 'failed_shards'):
+            with self.subTest(field=field):
+                def search(args):
+                    self.write('joint/search/stats.json', {'status': {}, field: ['failure']})
+                with mock.patch.object(cli, 'cmd_joint_search', side_effect=search):
+                    with self.assertRaisesRegex(RuntimeError, 'joint search failed'):
+                        self.r.joint.discover()
+
+    def test_search_controls_and_partial_queue_are_forwarded_and_resumed(self):
+        self.baseline()
+        self.r.cfg = mine._merge(self.r.cfg, {'joint': {
+            'cost_slack': 1, 'semantic_variants': 4, 'max_proofs': 1,
+            'cache': str(self.root / 'persistent'), 'time_budget_s': 2,
+            'priority': str(self.root / 'feedback.json')}})
+        calls = []
         def search(args):
-            self.write('joint/search/stats.json', {'status': {}, 'failed_shards': [0]})
+            calls.append(args)
+            self.write('joint/search/rules.json', {'rules': []})
+            self.write('joint/search/stats.json', {'status': {},
+                'queue': {'not_searched': 1 if len(calls) == 1 else 0}})
+            return 0
         with mock.patch.object(cli, 'cmd_joint_search', side_effect=search):
-            with self.assertRaisesRegex(RuntimeError, 'joint search failed'):
+            first = self.r.joint.discover()
+            second = self.r.joint.discover()
+        self.assertTrue(first['incomplete'])
+        self.assertFalse(second['incomplete'])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0].cache, str(self.root / 'persistent'))
+        self.assertEqual(calls[0].priority, str(self.root / 'feedback.json'))
+        self.assertEqual((calls[0].cost_slack, calls[0].semantic_variants), (1, 4))
+        self.assertEqual(calls[0].max_proofs, 1)
+
+    def test_joint_interruption_keeps_results_and_stops_mine(self):
+        self.baseline()
+        def search(args):
+            self.write('joint/search/rules.json', {'rules': []})
+            self.write('joint/search/stats.json', {'status': {}, 'interrupted': True})
+            return 130
+        with mock.patch.object(cli, 'cmd_joint_search', side_effect=search):
+            with self.assertRaises(SystemExit) as ex:
                 self.r.joint.discover()
+        self.assertEqual(ex.exception.code, 130)
+        self.assertEqual(len(self.r.joint.library()['rules']), len(self.db['rules']))
+
+    def test_same_window_alternatives_are_measured_separately(self):
+        a, b = self.rules
+        for rule in self.db['rules']:
+            rule['window'] = 'shared-window' if rule['id'] in (a['id'], b['id']) else rule['id']
+        def behavior(enabled, path):
+            return (-1 if a['id'] in enabled else -3 if b['id'] in enabled else 0, [], 0)
+        p = self.select_with(behavior)
+        self.assertEqual(p['rules'][b['id']]['selection'], 'emitted')
+        self.assertEqual(p['rules'][a['id']]['selection'], 'dominated_in_window')
+        feedback = mine_joint.load(self.r.joint.feedback())
+        self.assertEqual(feedback['candidates'][a['id']]['marginal']['insns_saved'], 2)
+        self.assertEqual(feedback['candidates'][b['id']]['marginal']['insns_saved'], 6)
 
     def test_frozen_joint_artifacts_detect_profile_and_library_changes(self):
         self.baseline()
@@ -301,8 +362,11 @@ class JointMineTest(unittest.TestCase):
                 self.assertEqual(report['evaluation']['final']['heldout/direct']['files_worse'], 0)
                 self.assertIn('Joint DAG rules', Path(run.p('report.md')).read_text())
                 self.assertIn('joint_profile_sha256', mine._load(run.p('frozen.json')))
-                with mock.patch.object(cli, 'cmd_joint_search', side_effect=AssertionError('searched again')):
-                    run.run()
+                # Feedback is consumed on the next invocation. A pending
+                # budget row remains pending, but its decided work is cached.
+                run.run()
+                stats = mine._load(run.joint.p('search', 'stats.json'))
+                self.assertEqual(stats['searched_in_this_run'], 0)
                 self.assertEqual(builds, ['baseline', 'build'])
         finally:
             os.chdir(cwd)
