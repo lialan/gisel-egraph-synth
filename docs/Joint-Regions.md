@@ -329,7 +329,12 @@ rule` for the others), compiled with the target's flags and
 
 1. `control` (no joint combiner), `baseline`, and `screen`: every rule with
    `-gisel-synth-joint-screen`, where a match is reported and rejected, so
-   no rule hides another and nothing changes.
+   no candidate hides another. A second screen adds
+   `-gisel-synth-joint-screen-apply=BASELINE_IDS`: only baseline rules may
+   apply, so candidates on their results are also tried in the same
+   worklist. The two screens' matches are combined. `FirstNewVReg` is never
+   reset, so equal-cost candidates still obey the termination guard.
+   A failed screen falls back to individual candidate measurements.
 2. `solo`: baseline + one candidate, on the files where it screened. This
    is its marginal effect: no other candidate takes its place, and the
    gains of the baseline are not counted again.
@@ -355,9 +360,43 @@ VGPRs, spills, scratch and the CPU time of the compilations are recorded.
 These are static counts, not run time. Compilations are cached by
 compiler, flags, file content, enabled rules and metric version.
 
-The screen sees the MIR without joint rules: a candidate that would only
-match after a baseline rule applied is not measured there. The held-out
-corpus is for `--evaluate` of a frozen set only.
+`girs/joint_measure.py` is the shared measurement and selection code used by
+the standalone command and by `mine`. In `mine`, the solo comparison keeps
+the selected ordinary rules enabled along with the pinned joint rules;
+the final combined set is checked against the frozen baseline on every
+selection file. The report records both sets. The held-out corpus is for
+evaluation of a frozen set only.
+
+### Incremental mine configuration
+
+`mine` enables joint search with cost slack 0 and six shapes by default.
+The CLI's per-window budgets, run budget, task limit, cache, refresh and
+feedback controls are available in the `joint` configuration, for example:
+
+```json
+{
+  "joint": {
+    "cost_slack": 0,
+    "semantic_variants": 6,
+    "max_proofs": 6,
+    "time_s": 5,
+    "time_budget_s": 1200,
+    "checkpoint_s": 5
+  }
+}
+```
+
+The default cache is mine's persistent `cache_dir`; `joint.cache` overrides
+it. `joint.priority` overrides the automatic feedback from the run's
+`joint/selection.json`. Both explicit paths are relative to the configuration
+file. Re-running mine resumes the agenda, including pending proofs; a
+remaining budget stop is not labeled complete. Even when some verified
+rules remain profitable, releasing another rule's slot reopens a window
+with pending shapes. A new feedback report invalidates discovery's stage
+input without invalidating its proof history. Failed workers and missing
+published rules fail the stage; SIGINT/SIGTERM commits published results
+and stops the driver before measurement. The generated rule set is still
+subject to solo, interaction, cycle and final-set checks before export.
 
 Completeness bounds: the search is exhaustive over the windows enumerated
 for a block (at most `max_window` instructions, at most `max_outputs`
