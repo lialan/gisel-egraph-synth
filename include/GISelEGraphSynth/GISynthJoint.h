@@ -276,7 +276,15 @@ struct JointPlan {
 
 namespace detail {
 
+/// The stage of the last rejection of the current match (debug output).
+inline const char *&lastReject() {
+  static thread_local const char *Why = nullptr;
+  return Why;
+}
+
 inline void note(const RuleDesc &R, const char *What) {
+  if (StringRef(What).starts_with("reject"))
+    lastReject() = What;
   DEBUG_WITH_TYPE("gisel-synth-joint",
                   dbgs() << "gisel-synth-joint: " << What << ": " << R.Name
                          << "\n");
@@ -566,12 +574,20 @@ inline bool finish(const RuleDesc &R, const MachineRegisterInfo &MRI,
   MachineInstr *Insert = const_cast<MachineInstr *>(First);
   if (After) {
     auto Next = std::next(After->getIterator());
+    // Not between two G_PHI (the last value read can be a G_PHI).
+    while (Next != Root.getParent()->end() && Next->isPHI())
+      ++Next;
     if (Next == Root.getParent()->end()) {
       note(R, "reject placement");
       return false;
     }
     Insert = const_cast<MachineInstr *>(&*Next);
-    InsertPos = *PosOf(After) + 1;
+    std::optional<int> P = PosOf(Insert);
+    if (!P) {
+      note(R, "reject distance");
+      return false;
+    }
+    InsertPos = *P;
   }
   for (const OutputDesc &O : R.Outputs) {
     Register Old = S.Src[O.Node]->getOperand(O.Res).getReg();
@@ -669,10 +685,15 @@ inline bool search(const RuleDesc &R, const MachineRegisterInfo &MRI,
 inline bool match(const RuleDesc &R, MachineInstr &Root,
                   const MachineRegisterInfo &MRI, JointPlan &Plan) {
   detail::note(R, "anchor");
+  detail::lastReject() = nullptr;
   JointPlan S;
   unsigned Trials = 0;
   if (!detail::search(R, MRI, Root, S, 0, Plan, Trials)) {
-    detail::note(R, Trials > MaxTrials ? "reject trials" : "reject pattern");
+    // A rejection at a later stage was printed when it happened.
+    if (Trials > MaxTrials)
+      detail::note(R, "reject trials");
+    else if (!detail::lastReject())
+      detail::note(R, "reject pattern");
     return false;
   }
   detail::note(R, "matched");

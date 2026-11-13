@@ -1674,26 +1674,14 @@ def _joint_extract_one(llc, path, out_dir, target):
     h = hashlib.sha256(os.path.abspath(path).encode()).hexdigest()[:10]
     out = os.path.join(out_dir, '%s.%s.regions.jsonl' % (
         os.path.basename(path), h))
-    tail = ['-gisel-synth-corpus-out=' + os.devnull,
-            '-gisel-synth-region-out=' + out]
-    quiet = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                 timeout=EXTRACT_TIMEOUT)
+    # The region pass after the pre-legalizer combiner (AMDGPU, AArch64).
+    cmd = [llc] + target.ll_flags + ['-gisel-synth-joint-regions',
+                                     '-gisel-synth-region-out=' + out, path,
+                                     '-o', os.devnull]
     try:
-        if target.corpus_flag:
-            rc = subprocess.run([llc] + target.ll_flags + [
-                target.corpus_flag, path, '-o', os.devnull] + tail,
-                **quiet).returncode
-        else:
-            p1 = subprocess.run([llc] + target.ll_flags + [
-                '-stop-after=' + target.combiner, path, '-o', '-'],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                timeout=EXTRACT_TIMEOUT)
-            rc = p1.returncode
-            if rc == 0:
-                rc = subprocess.run([llc] + target.triple_flags + [
-                    '-run-pass=gisel-synth-corpus', '-x', 'mir', '-', '-o',
-                    os.devnull] + tail, input=p1.stdout,
-                    **quiet).returncode
+        rc = subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=EXTRACT_TIMEOUT).returncode
     except subprocess.TimeoutExpired:
         rc = -1
     if rc != 0:
@@ -1760,21 +1748,65 @@ def cmd_joint_search(args):
     if args.max_windows:
         items = items[:args.max_windows]
     log = (lambda m: print(m, flush=True)) if args.verbose else None
-    if args.jobs <= 1:
+    t0 = time.monotonic()
+    if args.shard:
+        k, n = map(int, args.shard.split('/'))
+        items = items[k::n]
+    if args.jobs <= 1 or args.shard:
         backend = smt.Z3Backend(timeout_ms=lim.timeout_ms)
         rules, records, stats = joint.search_windows(dict(items), lim,
                                                      backend, log=log)
     else:
-        # Shards of the windows, one process each; each has its own banks
-        # and solver. The result does not depend on the number of jobs.
-        shards = [dict(items[i::args.jobs]) for i in range(args.jobs)]
-        with concurrent.futures.ProcessPoolExecutor(args.jobs) as ex:
-            parts = list(ex.map(_joint_search_shard,
-                                [(sh, lim) for sh in shards]))
+        # Shards of the windows, one process each (a process of its own:
+        # a shard that fails does not stop the others); each has its own
+        # banks and solver. The result does not depend on the number of
+        # jobs.
+        procs = []
+        for k in range(args.jobs):
+            d = os.path.join(args.out, 'shards', str(k))
+            os.makedirs(d, exist_ok=True)
+            cmd = [sys.executable, os.path.abspath(__file__), 'joint-search',
+                   '--shard', '%d/%d' % (k, args.jobs), '--out', d,
+                   '--regions'] + list(args.regions) + [
+                '--max-window', str(args.max_window),
+                '--max-cost', str(args.max_cost),
+                '--max-outputs', str(args.max_outputs),
+                '--max-helpers', str(args.max_helpers),
+                '--max-terms', str(args.max_terms),
+                '--time-s', str(args.time_s),
+                '--max-windows', str(args.max_windows),
+                '--max-windows-per-block', str(args.max_windows_per_block)]
+            log_f = open(os.path.join(d, 'log'), 'w')
+            procs.append((k, d, subprocess.Popen(cmd, stdout=log_f,
+                                                 stderr=subprocess.STDOUT)))
+        parts, failed = [], []
+        for k, d, p in procs:
+            if p.wait() != 0:
+                failed.append(k)
+                continue
+            with open(os.path.join(d, 'rules.json')) as f:
+                rs = json.load(f)['rules']
+            with open(os.path.join(d, 'search.jsonl')) as f:
+                recs = [json.loads(l) for l in f]
+            with open(os.path.join(d, 'stats.json')) as f:
+                st = json.load(f)
+            for x in ('load', 'collect', 'limits', 'files', 'blocks',
+                      'distinct_windows'):
+                st.pop(x, None)
+            parts.append((rs, recs, st))
         rules, records, stats = joint.merge_results(parts)
-        order = {k: i for i, (k, _) in enumerate(items)}
-        records.sort(key=lambda r: order.get(r['_key'], 0))
-        rules.sort(key=lambda r: order.get(r['_key'], 0))
+        stats['failed_shards'] = failed
+        stats['not_searched'] = sum(len(items[k::args.jobs])
+                                    for k in failed)
+        order = {r['key']: i for i, r in enumerate(records)}
+        os.makedirs(os.path.join(args.out, 'proofs'), exist_ok=True)
+        for k, d, _ in procs:
+            pd = os.path.join(d, 'proofs')
+            if os.path.isdir(pd):
+                for f in os.listdir(pd):
+                    os.replace(os.path.join(pd, f),
+                               os.path.join(args.out, 'proofs', f))
+    stats['wall_seconds'] = round(time.monotonic() - t0, 2)
     for x in rules + records:
         x.pop('_key', None)
     os.makedirs(os.path.join(args.out, 'proofs'), exist_ok=True)
@@ -2164,6 +2196,7 @@ def build_parser():
                    help='search only the most frequent windows (0: all)')
     p.add_argument('--max-windows-per-block', type=int, default=2000)
     p.add_argument('--jobs', type=int, default=1)
+    p.add_argument('--shard', help='K/N: search the windows K, K+N, ...')
     p.add_argument('-v', '--verbose', action='store_true')
     p.set_defaults(fn=cmd_joint_search)
 

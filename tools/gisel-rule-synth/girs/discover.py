@@ -756,9 +756,12 @@ class Context:
     """State shared by all instances of one synthesis run: the term banks,
     the counterexample pool and the timers."""
 
-    def __init__(self, limits=None):
+    def __init__(self, limits=None, max_banks=None):
         self.limits = limits or Limits()
         self.banks = {}
+        # The number of banks to keep (least recently used ones go), or
+        # None: all of them.
+        self.max_banks = max_banks
         self.cex = {}     # variable widths -> [input assignment]
         self.seconds = {'bank_build': 0.0, 'bank_eval': 0.0, 'smt': 0.0}
         self.bank_hits = 0
@@ -790,6 +793,11 @@ class Context:
                                        nonlinear, variant_mask)
         else:
             self.bank_hits += 1
+        if self.max_banks:
+            self.banks[key] = self.banks.pop(key)
+            while len(self.banks) > self.max_banks:
+                self.evicted = getattr(self, 'evicted', 0) + 1
+                self.banks.pop(next(iter(self.banks)))
         if len(b.cost_end) <= max_cost:
             t0 = time.monotonic()
             b.ensure(max_cost)

@@ -25,16 +25,18 @@
 //     -aarch64-gisel-synth-combines  the synthesized rules
 //   AMDGPU and AArch64, right after the pre-legalizer combiner:
 //     -gisel-synth-joint-combines    the joint region rules
+//     -gisel-synth-joint-regions     the region DAGs of the joint search
 //
 // The combiners do not run at -O0. The passes are also available to
 // -run-pass: gisel-egraph-combiner, gisel-synth-corpus,
-// gisynth-amdgpu-combiner, gisynth-aarch64-combiner and
-// gisynth-joint-combiner.
+// gisynth-amdgpu-combiner, gisynth-aarch64-combiner, gisynth-joint-combiner
+// and gisel-synth-regions.
 //
 //===----------------------------------------------------------------------===//
 
 #include "GISelEGraphSynth/GIEGraphCombiner.h"
 #include "GISelEGraphSynth/GISynthCorpusExtractor.h"
+#include "GISelEGraphSynth/GISynthRegionExtractor.h"
 #include "GISelEGraphSynth/SynthCombiners.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/PassRegistry.h"
@@ -75,6 +77,13 @@ static cl::opt<bool> EnableJointCombines(
     cl::desc("Run the joint region rules of the synthesizer (AMDGPU, "
              "AArch64) right after the pre-legalizer combiner"));
 
+static cl::opt<bool> EnableJointRegions(
+    "gisel-synth-joint-regions", cl::Hidden, cl::init(false),
+    cl::callback([](const bool &V) { onPipelineOption(V); }),
+    cl::desc("Write the region DAGs of the joint region search (AMDGPU, "
+             "AArch64) after the pre-legalizer combiner (see "
+             "-gisel-synth-region-out)"));
+
 static cl::opt<bool> EnableAMDGPUEGraph(
     "amdgpu-gisel-egraph", cl::Hidden, cl::init(false),
     cl::callback([](const bool &V) { onPipelineOption(V); }),
@@ -107,6 +116,12 @@ static void addPasses(TargetMachine &TM, PassManagerBase &,
                                                ? "amdgpu-prelegalizer-combiner"
                                                : "aarch64-prelegalizer-combiner"),
                            getGISynthJointCombinerID());
+  // Inserted after the joint rules: with both options it sees their result.
+  if (EnableJointRegions && (TT.isAMDGCN() || TT.isAArch64()))
+    PassConfig->insertPass(getPassIDOrFail(TT.isAMDGCN()
+                                               ? "amdgpu-prelegalizer-combiner"
+                                               : "aarch64-prelegalizer-combiner"),
+                           &GISynthRegionExtractor::ID);
   if (TT.isAMDGCN()) {
     bool Synth = EnableAMDGPUSynthCombines && !IsOptNone;
     bool EGraph = EnableAMDGPUEGraph && !IsOptNone;
@@ -138,6 +153,7 @@ struct PassRegistration {
     initializeGISynthAMDGPUCombinerLegacyPass(Registry);
     initializeGISynthAArch64CombinerLegacyPass(Registry);
     initializeGISynthJointCombinerLegacyPass(Registry);
+    initializeGISynthRegionExtractorPass(Registry);
   }
 };
 } // end anonymous namespace

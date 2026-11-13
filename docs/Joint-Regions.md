@@ -9,7 +9,7 @@ applier.
 
 ```
 real gMIR (after the pre-legalizer combiner)
-  -> region DAG of each block            -gisel-synth-region-out   (C++)
+  -> region DAG of each block            -gisel-synth-joint-regions (C++)
   -> windows, canonical keys             girs/joint.py  collect
   -> joint candidates, shared cost       girs/joint.py  Search
   -> joint proof of all outputs          smt.joint_violation(defs=...)
@@ -21,7 +21,7 @@ real gMIR (after the pre-legalizer combiner)
 
 | Command | What it does |
 |---|---|
-| `gi-rule-synth.py joint-extract` | runs llc with the corpus pass and `-gisel-synth-region-out` |
+| `gi-rule-synth.py joint-extract` | runs llc with `-gisel-synth-joint-regions -gisel-synth-region-out=FILE` |
 | `gi-rule-synth.py joint-search` | windows, search, selection, proofs, plans: `rules.json`, `search.jsonl`, `stats.json`, `proofs/` |
 | `gi-rule-synth.py joint-recheck` | checks stored rules again, replays and redoes each proof |
 | `gi-rule-synth.py joint-emit` | writes `td/GISynthJointCombines.td` and `include/GISelEGraphSynth/GISynthJointRules.inc` |
@@ -35,7 +35,9 @@ a combiner that contains only them, so the same `llc` with and without
 
 ## Region DAG (extractor record)
 
-`-gisel-synth-region-out=FILE` (in `lib/GISynthCorpusExtractor.cpp`) writes
+`-gisel-synth-joint-regions -gisel-synth-region-out=FILE` (the pass
+`lib/GISynthRegionExtractor.cpp`, after the pre-legalizer combiner of AMDGPU
+and AArch64; the corpus extractor and its records are not changed) writes
 one JSON line per basic block (at most `-gisel-synth-region-max-instrs`
 instructions per record). It contains the pure scalar integer instructions
 of the block: integer binary operators, shifts, `G_TRUNC`/`G_ZEXT`/`G_SEXT`/
@@ -213,9 +215,15 @@ pipeline.
 
 ## Proof
 
-`smt.joint_violation(enc, pairs, guard, defs)` with SSA definitions.
-Each window instruction has one variable per result, constrained by its
-definition (`ssa_definitions`). A `G_FREEZE` variable is the instruction's
+`joint.joint_violation` calls `smt.joint_violation` with SSA
+definitions. Each window instruction has one variable per result,
+constrained by its definition (`joint.ssa_definitions`). The definitions,
+and the condition that none of them has undefined behaviour, are
+conjuncts of the environment (guard) of the unchanged
+`smt.joint_violation`. That is the same formula as the definitions' UB
+inside the source UB. `smt.py` and the corpus extractor are not changed,
+so the semantic model hash of the rule catalog (`known.semantics_sha`) and
+its existing proofs stay valid. A `G_FREEZE` variable is the instruction's
 own choice. Every source instruction executes, so its undefined behaviour
 is the source's. The query is
 

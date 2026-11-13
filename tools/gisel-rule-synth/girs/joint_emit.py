@@ -78,8 +78,11 @@ def _ref(ref, rule=None):
             x = rule['source']['inputs'][ref[1]]
             if 'const' in x:
                 c = int(x['const'], 16)
-                return 'lit(%d)' % (-1 if c == (1 << x['w']) - 1 and
-                                    x['w'] > 1 else c)
+                if c == (1 << x['w']) - 1 and x['w'] > 1:
+                    return 'lit(-1)'
+                if c >= 1 << 63:
+                    return 'lit(int64_t(%dULL))' % c
+                return 'lit(%d)' % c
             return 'in(%d)' % _input_index(rule)[ref[1]]
         return 'in(%d)' % ref[1]
     if ref[0] == 'n':

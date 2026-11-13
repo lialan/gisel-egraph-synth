@@ -62,6 +62,7 @@ set(GISELEGRAPHSYNTH_SOURCES
   lib/GIEGraphTargetAMDGPU.cpp
   lib/GIEGraphTuples.cpp
   lib/GISynthCorpusExtractor.cpp
+  lib/GISynthRegionExtractor.cpp
   lib/SynthCombinerAMDGPU.cpp
   lib/SynthCombinerAArch64.cpp
   lib/SynthJointCombiner.cpp

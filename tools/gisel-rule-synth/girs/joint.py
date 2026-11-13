@@ -101,6 +101,12 @@ SCHEMA = 'gisel-joint-region/1'
 
 # ------------------------------------------------------------- regions ---
 
+def op_cost(name):
+    """The generic cost of an instruction of the operator ``name`` (the
+    same for each attribute and each result)."""
+    return ops.REGISTRY[name].cost
+
+
 class Input:
     __slots__ = ('w', 'zero', 'one', 'defined', 'const', 'pos', 'reg',
                  'type', 'noundef', 'uses')
@@ -171,7 +177,7 @@ class Region:
 
     def cost(self, ks=None):
         ks = range(len(self.instrs)) if ks is None else ks
-        return sum(ops.cost(self.instrs[k].name) for k in ks)
+        return sum(op_cost(self.instrs[k].name) for k in ks)
 
     def closure(self, k, out=None):
         """The instructions that the instruction ``k`` needs: itself and
@@ -547,7 +553,7 @@ class Limits:
                  max_cands=12, max_combos=50000, max_proofs=6,
                  time_s=60.0, widths=(8, 16, 32, 64), max_terms=200000,
                  max_evals=20000000, seed=0, timeout_ms=10000,
-                 grammar=None):
+                 grammar=None, max_banks=8):
         self.max_window = max_window
         self.max_outputs = max_outputs
         self.max_cost = max_cost
@@ -568,6 +574,8 @@ class Limits:
         # single-root search, ops.ENUMERATED, and the operators of the
         # window).
         self.grammar = grammar
+        # The term banks that one search process keeps (memory).
+        self.max_banks = max_banks
 
     def identity(self):
         return dict(vars(self))
@@ -592,7 +600,7 @@ class Candidate:
         self.terms = terms   # output -> expression over the search vars
 
     def cost_after(self):
-        return self.win.cost(self.kept) + sum(ops.cost(n[0])
+        return self.win.cost(self.kept) + sum(op_cost(n[0])
                                               for n in self.new)
 
     def text(self):
@@ -1230,7 +1238,7 @@ def formula(cand, wmap, flags=False, relax=True):
     for _, t in pairs:
         if not ir.well_typed(t, enc.vw):
             return None, enc
-    f = smt.joint_violation(enc, pairs, guard, defs=defs)
+    f = joint_violation(enc, pairs, guard, defs)
     return f, enc
 
 
@@ -1267,6 +1275,98 @@ def prove(cand, limits, backend, maps=None):
                     proofs, refuted
     return status, proofs, refuted
 
+
+
+# ---------------------------------------------------------------- SMT ---
+#
+# smt.joint_violation with SSA definitions. The definitions and the
+# condition that none of them has undefined behaviour join the guard (the
+# environment) of the unchanged smt.joint_violation: guard and not UB(defs)
+# and not UB(outputs) and (some output differs) is the formula with the UB
+# of the definitions in the UB of the source. smt.py is not changed: the
+# semantic model of the rule catalog (known.semantics_sha) stays the same.
+
+import z3  # noqa: E402
+
+
+def flag_poison(name, flags, xs):
+    """The condition under which the flags ``flags`` (nuw, nsw, exact,
+    disjoint) make the operation ``name`` on the values ``xs`` poison, or
+    None. The search proves its rules for instructions without flags; this
+    is the model of the instructions that keep their flags (relax_flags)."""
+    a, b = (list(xs) + [None, None])[:2]
+    cs = []
+    for f in flags:
+        if name == 'G_ADD' and f == 'nuw':
+            cs.append(z3.Not(z3.BVAddNoOverflow(a, b, False)))
+        elif name == 'G_ADD' and f == 'nsw':
+            cs.append(z3.Not(z3.And(z3.BVAddNoOverflow(a, b, True),
+                                    z3.BVAddNoUnderflow(a, b))))
+        elif name == 'G_SUB' and f == 'nuw':
+            cs.append(z3.Not(z3.BVSubNoUnderflow(a, b, False)))
+        elif name == 'G_SUB' and f == 'nsw':
+            cs.append(z3.Not(z3.And(z3.BVSubNoOverflow(a, b),
+                                    z3.BVSubNoUnderflow(a, b, True))))
+        elif name == 'G_MUL' and f == 'nuw':
+            cs.append(z3.Not(z3.BVMulNoOverflow(a, b, False)))
+        elif name == 'G_MUL' and f == 'nsw':
+            cs.append(z3.Not(z3.And(z3.BVMulNoOverflow(a, b, True),
+                                    z3.BVMulNoUnderflow(a, b))))
+        elif name == 'G_SHL' and f in ('nuw', 'nsw'):
+            back = z3.LShR(a << b, b) if f == 'nuw' else (a << b) >> b
+            cs.append(back != a)
+        elif name in ('G_LSHR', 'G_ASHR') and f == 'exact':
+            cs.append((a & ((z3.BitVecVal(1, a.size()) << b) - 1)) != 0)
+        elif name == 'G_OR' and f == 'disjoint':
+            cs.append((a & b) != 0)
+        else:
+            raise ValueError('no model of the flag %s of %s' % (f, name))
+    return z3.Or(cs) if cs else None
+
+
+def ssa_definitions(enc, defs):
+    """The constraints of the SSA definitions ``defs`` of the instructions
+    of a source region, and the condition that one of them has undefined
+    behaviour. Each definition is (k, e) or (k, e, flags): the variable k
+    is the result of the instruction ``e`` (an operation whose operands
+    are variables, literals and constants), with the flags ``flags``. The
+    variable of an instruction is its identity: two instructions with
+    equal operands are two variables. A G_FREEZE has the value of its
+    operand, or any value if the operand is poison: the variable itself
+    is the choice of that instruction, and it is never poison. Every
+    instruction executes, so the undefined behaviour of one is undefined
+    behaviour of the source."""
+    cons, ubs = [], []
+    for d in defs:
+        k, e = d[0], d[1]
+        flags = d[2] if len(d) > 2 else ()
+        info, _, _ = ops.parse(e[0])
+        if info.freeze:
+            v, p, ub = enc.enc_full(e[2])
+            cons += [z3.Or(p, enc.x[k] == v), z3.Not(enc.xp[k])]
+        else:
+            v, p, ub = enc.enc_full(e)
+            fp_ = flag_poison(info.name, flags,
+                              [enc.enc_full(a)[0] for a in e[2:]])
+            if fp_ is not None:
+                p = z3.Or(p, fp_)
+            cons += [enc.x[k] == v, enc.xp[k] == p]
+        ubs.append(ub)
+    return cons, ubs
+
+
+
+def joint_violation(enc, pairs, guard, defs):
+    """smt.joint_violation of the outputs ``pairs`` of a region whose
+    instructions have the SSA definitions ``defs`` (ssa_definitions): a
+    source value is the variable of its instruction, and a replacement
+    reads that variable for an instruction that the rule keeps. Each output
+    is checked on its own (a poison output of the source does not excuse
+    another one)."""
+    cons, ubs = ssa_definitions(enc, defs)
+    env = z3.And([guard] + cons +
+                 [z3.Not(z3.Or(ubs))] if ubs else [guard] + cons)
+    return smt.joint_violation(enc, pairs, env)
 
 # ----------------------------------------------------------------- plan ---
 
@@ -1394,7 +1494,7 @@ def search_windows(instances, limits, backend, log=None, max_windows=None):
     (rules, records, stats)."""
     dl = discover.Limits(max_terms=limits.max_terms,
                          max_evals=limits.max_evals, seed=limits.seed)
-    ctx = discover.Context(dl)
+    ctx = discover.Context(dl, max_banks=limits.max_banks)
     stats = {'windows': 0, 'status': {}, 'candidates': 0, 'proved': 0,
              'refuted': 0, 'unknown': 0, 'smt_checks': 0, 'rules': 0,
              'with_helper': 0, 'joint_better_than_independent': 0,
@@ -1407,8 +1507,17 @@ def search_windows(instances, limits, backend, log=None, max_windows=None):
     for key, (win, prov) in items:
         stats['windows'] += 1
         st = {}
-        s = Search(win, limits, ctx, backend, st)
-        status, cands, indep = s.run()
+        try:
+            s = Search(win, limits, ctx, backend, st)
+            status, cands, indep = s.run()
+        except Exception as e:   # a model gap of one window
+            status = 'error: %s' % type(e).__name__
+            stats['status'][status] = stats['status'].get(status, 0) + 1
+            records.append({'key': hashlib.sha256(key.encode()).hexdigest()[
+                :16], '_key': key, 'window': win.text(),
+                'occurrences': len(prov), 'status': status,
+                'error': repr(e)[:300]})
+            continue
         stats['status'][status] = stats['status'].get(status, 0) + 1
         rec = {'key': hashlib.sha256(key.encode()).hexdigest()[:16],
                '_key': key,
@@ -1419,11 +1528,17 @@ def search_windows(instances, limits, backend, log=None, max_windows=None):
         stats['candidates'] += len(cands)
         best = None
         for cand in cands[:limits.max_proofs]:
-            p = plan(cand)
-            if p is None:
+            try:
+                p = plan(cand)
+                if p is None:
+                    continue
+                maps = width_maps(cand, limits)
+                st2, proofs, refuted = prove(cand, limits, backend, maps)
+            except Exception as e:   # a model gap of one candidate
+                stats['candidate_errors'] = \
+                    stats.get('candidate_errors', 0) + 1
+                rec.setdefault('errors', []).append(repr(e)[:300])
                 continue
-            maps = width_maps(cand, limits)
-            st2, proofs, refuted = prove(cand, limits, backend, maps)
             stats['smt_checks'] += len(proofs) + len(refuted)
             if st2 == 'invalid':
                 stats['refuted'] += 1
@@ -1473,6 +1588,7 @@ def search_windows(instances, limits, backend, log=None, max_windows=None):
                                  rec.get('rule', '-')))
     stats['seconds'] = round(time.monotonic() - t0, 2)
     stats['bank'] = {'banks': len(ctx.banks), 'reuses': ctx.bank_hits,
+                     'evicted': getattr(ctx, 'evicted', 0),
                      'terms': sum(len(b.op) for b in ctx.banks.values()),
                      'truncated': sum(b.truncated
                                       for b in ctx.banks.values())}
