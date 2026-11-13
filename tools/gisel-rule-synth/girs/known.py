@@ -50,7 +50,7 @@ def search_sha():
     # search strategy (vector_search.py) invalidates the instance
     # checkpoints, not the catalog or a completed proof obligation.
     return _files(('discover.py', 'kernels.py', 'compose.py', 'egraph.py',
-                   'vector_search.py'))
+                   'vector_search.py', 'parallel.py'))
 
 
 def stamp(db):

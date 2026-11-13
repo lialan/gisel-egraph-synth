@@ -262,6 +262,7 @@ class GeneratedCombinerTest(unittest.TestCase):
             command = [sys.executable, cli, 'synth', str(path),
                        '-o', str(database), '--proofs', str(Path(d) / 'proofs'),
                        '--grammar', 'registry', '--regions', '--siblings',
+                       '--search-jobs', '2',
                        '--known', '', '--cache', '']
             p = subprocess.run(command, text=True, capture_output=True,
                                timeout=120)
@@ -304,6 +305,8 @@ class GeneratedCombinerTest(unittest.TestCase):
                 evidence.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, evidence / 'corpus.jsonl')
                 shutil.copy2(database, evidence / 'rules.json')
+                shutil.copy2(database.with_suffix('.stats.json'),
+                             evidence / 'rules.stats.json')
                 shutil.copytree(Path(d) / 'proofs', evidence / 'proofs',
                                 dirs_exist_ok=True)
             cases = [(JOINT, 'G_UADDO', 'AMDGPU'),

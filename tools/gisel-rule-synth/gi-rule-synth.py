@@ -487,6 +487,18 @@ def _schedule(insts, share):
 
 
 def cmd_synth(args):
+    from girs import parallel
+    if args.search_jobs < 0 or args.slow_jobs < 1 or args.search_batch < 1:
+        raise ValueError('search jobs must be nonnegative; slow jobs and batch size positive')
+    if min(args.slow_timeout_ms, args.slow_budget_s, args.slow_total_s) < 0:
+        raise ValueError('slow proof budgets must be nonnegative')
+    if args.search_jobs:
+        with parallel.Session(args) as session:
+            return _cmd_synth(args, session)
+    return _cmd_synth(args)
+
+
+def _cmd_synth(args, session=None):
     from girs import compose, corpus, discover, egraph, ir, ops, region, \
         sibling, smt, synth, vector, vector_search, known, history
 
@@ -539,7 +551,10 @@ def cmd_synth(args):
                            max_proofs=args.max_proofs,
                            max_candidates=args.max_candidates,
                            capability=cap)
-    slim = synth.SynthLimits(max_atoms=args.max_atoms)
+    slim = synth.SynthLimits(max_atoms=args.max_atoms,
+                             slow_timeout_ms=args.slow_timeout_ms,
+                             slow_budget_s=args.slow_budget_s,
+                             slow_total_s=args.slow_total_s)
     ctx = discover.Context(dlim)
     dlim.deadline = backend.deadline
     # A known single-output rewrite may seed a new multi-output rule.
@@ -568,8 +583,14 @@ def cmd_synth(args):
     seconds = {}
     t = time.monotonic()
     t_synth = 0.0
-    for inst in insts:
-        if backend.deadline is not None and time.monotonic() >= backend.deadline:
+    rows = None
+    if session:
+        session.configure(dlim, slim, knowledge, ctx.known is not None,
+                          backend.deadline)
+        rows = session.search(insts, sy)
+    for inst_idx, inst in enumerate(insts):
+        if (session and inst_idx not in rows) or (not session and
+                backend.deadline is not None and time.monotonic() >= backend.deadline):
             # The budget ended the search: these instances have no result.
             dstats['not_searched_time_budget'] += 1
             continue
@@ -582,8 +603,11 @@ def cmd_synth(args):
         if is_vec:
             dstats['vector_instances'] = dstats.get('vector_instances',
                                                     0) + 1
-        hit = cache.get(inst)
-        if hit:
+        hit = None if session else cache.get(inst)
+        if session:
+            row = rows[inst_idx]
+            cands, st, log = row['cands'], row['stats'], row['log']
+        elif hit:
             cands, st, log = hit
         else:
             log = {}
@@ -603,7 +627,7 @@ def cmd_synth(args):
             dstats['with_candidates'] += 1
         ts = time.monotonic()
         rids = []
-        for c in cands:
+        for cand_idx, c in enumerate(cands):
             dstats['candidates'] += 1
             cinst = inst
             if c.get('const_vars'):
@@ -615,7 +639,8 @@ def cmd_synth(args):
                     'computed_constants', 0) + 1
             prov = {'discovery': 'vector-search-%s+smt' % c['family']} \
                 if c.get('family') else None
-            rids.append(sy.add(cinst, c['tgt'], provenance=prov))
+            rids.append(row['rids'][cand_idx] if session else
+                        sy.add(cinst, c['tgt'], provenance=prov))
             if rids[-1]:
                 found.setdefault(inst.key(), []).append(c['tgt'])
             if args.regions and rids[-1] and not is_vec and \
@@ -626,15 +651,17 @@ def cmd_synth(args):
             # computes a value below the root: a candidate that the term
             # bank hides behind a term with the same samples.
             have = {c['tgt'] for c in cands}
-            for alt in region.root_alternatives(inst, dlim, ctx):
+            alternatives = row['alternatives'] if session else \
+                region.root_alternatives(inst, dlim, ctx)
+            for alt_idx, alt in enumerate(alternatives):
                 if alt in have:
                     continue
                 dstats['region_alternatives'] = dstats.get(
                     'region_alternatives', 0) + 1
-                if discover.prove_concrete(inst, alt,
+                if not session and discover.prove_concrete(inst, alt,
                                            backend).status != 'unsat':
                     continue
-                rid = sy.add(inst, alt, provenance={
+                rid = row['alt_ids'][alt_idx] if session else sy.add(inst, alt, provenance={
                     'discovery': 'joint-region-alternative+smt'})
                 if rid:
                     joint.append((inst, alt, rid))
@@ -656,6 +683,9 @@ def cmd_synth(args):
     dstats['cache'] = {'hits': cache.hits, 'stored': cache.stored}
     seconds['discovery'] = round(time.monotonic() - t - t_synth, 2)
     seconds['generalization'] = round(t_synth, 2)
+    if session:
+        seconds['discovery'] = round(session.seconds.get('discover', 0), 2)
+        seconds['generalization'] = round(session.seconds.get('generalize', 0), 2)
 
     # The second candidate source: the rewrites of the e-graph combiner.
     # A candidate goes through the same generalization and proofs.
@@ -762,8 +792,9 @@ def cmd_synth(args):
             seen_instances.add(i.key())
             extra.append(i)
     target_cost_search = args.cost_slack is not None and args.cost_slack >= 0
-    fstats = sy.finalize(insts + extra, preserve_alternatives=(
-        target_cost_search or args.semantic_variants > 1))
+    preserve = target_cost_search or args.semantic_variants > 1
+    fstats = session.finalize(sy, insts + extra, preserve) if session else \
+        sy.finalize(insts + extra, preserve_alternatives=preserve)
     seconds['selection_of_disjuncts'] = round(time.monotonic() - t, 2)
 
     # Rules with several outputs: the same term bank and the same proofs,
@@ -771,7 +802,8 @@ def cmd_synth(args):
     rstats = {}
     if args.regions and (backend.deadline is None or time.monotonic() < backend.deadline):
         t = time.monotonic()
-        rstats = region.extend(sy, joint, backend, dlim, ctx)
+        rstats = session.regions(sy, joint) if session else \
+            region.extend(sy, joint, backend, dlim, ctx)
         seconds['regions'] = round(time.monotonic() - t, 2)
     # Rules for several roots: the root of a tree and other instructions
     # of the permitted straight-line scope that read values of the region.
@@ -796,8 +828,8 @@ def cmd_synth(args):
                 pair_stats['ill_typed_groups'] += 1
             else:
                 scalar_pairs.append(pair)
-        sstats = sibling.extend(sy, scalar_pairs, found, backend, dlim, ctx,
-                                args.max_pairs)
+        sstats = session.siblings(sy, scalar_pairs, found, args.max_pairs) if session else \
+            sibling.extend(sy, scalar_pairs, found, backend, dlim, ctx, args.max_pairs)
         sstats['corpus'] = pair_stats
         seconds['siblings'] = round(time.monotonic() - t, 2)
 
@@ -895,6 +927,16 @@ def cmd_synth(args):
              'disjuncts': fstats, 'regions': rstats, 'siblings': sstats,
              'rules_by_class': by_class,
              'corpus': cstats}
+    if session:
+        stats['parallel'] = dict(session.metrics, search_jobs=args.search_jobs,
+                                 slow_jobs=args.slow_jobs,
+                                 search_batch=args.search_batch)
+        stats['enumeration'] = session.enumeration
+        for stages in session.metrics['stages'].values():
+            for lane in ('fast', 'slow'):
+                m = stages.get(lane, {})
+                stats['solver_calls'] += m.get('solver_calls', 0)
+                stats['solver_seconds'] += m.get('solver_seconds', 0)
     with open(args.stats or os.path.splitext(args.o)[0] + '.stats.json',
               'w') as f:
         json.dump(stats, f, indent=1, sort_keys=True)
@@ -905,7 +947,7 @@ def cmd_synth(args):
           (len(insts), dstats['candidates'], pstats['proved'],
            estats.get('distinct', 0), len(rules),
            ', '.join('%d %s' % (n, c) for c, n in sorted(by_class.items())),
-           len(rejected), time.monotonic() - t0, backend.calls))
+           len(rejected), time.monotonic() - t0, stats['solver_calls']))
 
 
 # --------------------------------------------------------------- emit ---
@@ -1259,6 +1301,18 @@ def build_parser():
     p.add_argument('--proofs', default=DEFAULT_PROOFS)
     p.add_argument('--stats')
     p.add_argument('--timeout-ms', type=int, default=10000)
+    p.add_argument('--search-jobs', type=int, default=0,
+                   help='core search processes; 0 keeps the legacy serial '
+                        'scheduler, 1 is the deterministic process-task reference')
+    p.add_argument('--slow-jobs', type=int, default=1,
+                   help='additional processes reserved for slow proofs')
+    p.add_argument('--search-batch', type=int, default=32,
+                   help='fixed discovery batch size, independent of worker count')
+    p.add_argument('--slow-timeout-ms', type=int, default=120000)
+    p.add_argument('--slow-budget-s', type=float, default=300,
+                   help='wall-time allowance of one slow task')
+    p.add_argument('--slow-total-s', type=float, default=3600,
+                   help='total slow-task allowances, assigned in stable task order')
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--grammar',
                    choices=('base', 'source', 'all', 'registry', 'auto'),

@@ -79,6 +79,9 @@ DEFAULTS = {
     'discovery_pipelines': ['direct'],
     'extract': {'depth': None, 'max_trees': None},
     'search': {'grammar': 'auto', 'seed': 0, 'max_instances': 0,
+               'search_jobs': 0, 'slow_jobs': 1, 'search_batch': 32,
+               'slow_timeout_ms': 120000, 'slow_budget_s': 300,
+               'slow_total_s': 3600,
                'timeout_ms': 10000, 'max_atoms': 2, 'max_terms': 50000,
                'max_evals': 40000000, 'max_proofs': 48,
                'max_candidates': 6, 'time_budget_s': 0,
@@ -657,6 +660,8 @@ class Run:
             legality=self.p('corpus', 'legality.json')
             if os.path.exists(self.p('corpus', 'legality.json')) else None,
             **{k: s[k] for k in ('grammar', 'seed', 'max_instances',
+                                 'search_jobs', 'slow_jobs', 'search_batch',
+                                 'slow_timeout_ms', 'slow_budget_s', 'slow_total_s',
                                  'timeout_ms', 'max_atoms', 'max_terms',
                                  'max_evals', 'max_proofs',
                                  'max_candidates', 'time_budget_s',
@@ -679,6 +684,7 @@ class Run:
             assert not other, 'semantics-only run with other sources'
         st = _load(self.p('library', 'rules.stats.json'))
         incomplete = bool(st['incremental']['deadline_reached'] or
+            st.get('parallel', {}).get('incomplete') or
             st['discovery']['not_searched_time_budget'] or
             st['disjuncts'].get('final_guard_unknown') or
             any(n for stop, n in st['discovery']['stop'].items()
