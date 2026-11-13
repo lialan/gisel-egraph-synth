@@ -18,6 +18,8 @@
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
+#include <algorithm>
+#include <set>
 
 using namespace llvm;
 using namespace llvm::egraph;
@@ -181,6 +183,45 @@ TEST_F(GIEGraphViewsTest, FactRulesCanBeTurnedOff) {
   SaturationStats S = runAll(L);
   EXPECT_FALSE(G.equivalent(Sum, lookup([&] { return op(G_OR, X, cst(1)); })));
   EXPECT_EQ(S.Views.count("facts"), 0u);
+}
+
+TEST_F(GIEGraphViewsTest, DisjointRulesOnlyMatchOperandsWithKnownZeros) {
+  // x | y | (z << 8) | (w & 255): the matcher takes pairs of the leaves of
+  // the AC term. The variable filter of or-disjoint-to-add leaves out x, y
+  // and the sums before the pairs are formed; the matches that the
+  // precondition accepts are the same.
+  EClassId X = in(), Y = in(), Z = in(), W = in();
+  EClassId Hi = op(G_SHL, Z, cst(8));
+  EClassId Lo = op(G_AND, W, cst(255));
+  EClassId Or = op(G_OR, op(G_OR, op(G_OR, X, Y), Hi), Lo);
+  G.rebuild();
+  std::vector<RewriteRule> All = getDefaultIntegerRules();
+  auto It = find_if(All, [](const RewriteRule &R) {
+    return R.getName() == "or-disjoint-to-add";
+  });
+  ASSERT_NE(It, All.end());
+  ASSERT_TRUE(It->getVarFilter());
+  RewriteRule Unfiltered = *It;
+  Unfiltered.setVarFilter(nullptr);
+  SmallVector<RuleMatch, 16> Filtered, Plain;
+  matchRule(G, *It, Filtered);
+  matchRule(G, Unfiltered, Plain);
+  EXPECT_LT(Filtered.size(), Plain.size());
+  auto Accepted = [&](ArrayRef<RuleMatch> Ms) {
+    std::set<std::pair<EClassId, EClassId>> S;
+    for (const RuleMatch &M : Ms)
+      if (It->getFactFn()(G, M))
+        S.insert(std::minmax(G.find(M.Vars[0]), G.find(M.Vars[1])));
+    return S;
+  };
+  std::set<std::pair<EClassId, EClassId>> Expected = {
+      std::minmax(G.find(Hi), G.find(Lo))};
+  EXPECT_EQ(Accepted(Filtered), Expected);
+  EXPECT_EQ(Accepted(Plain), Expected);
+  for (const RuleMatch &M : Filtered)
+    for (EClassId V : M.Vars)
+      EXPECT_TRUE(G.find(V) == G.find(Hi) || G.find(V) == G.find(Lo));
+  (void)Or;
 }
 
 TEST_F(GIEGraphViewsTest, RedundantMaskOfKnownBits) {

@@ -535,6 +535,20 @@ public:
     return *this;
   }
   const FactFn &getFactFn() const { return Facts; }
+  /// Optional necessary condition of FactFn on one variable, which the
+  /// matcher tests when it binds the variable, before it enumerates the
+  /// combinations of the leaves of an AC term: \p Class is the class (a
+  /// canonical id), or RuleMatch::SumBound for an AC sum. A match is only
+  /// produced if the filter holds for each of its variables. It must not
+  /// reject a binding of a match that FactFn accepts: it only saves the
+  /// matches that FactFn would reject (the rewrites are the same).
+  using VarFilterFn =
+      std::function<bool(const EGraph &, unsigned Var, EClassId Class)>;
+  RewriteRule &setVarFilter(VarFilterFn F) {
+    VarFilter = std::move(F);
+    return *this;
+  }
+  const VarFilterFn &getVarFilter() const { return VarFilter; }
 
   /// True if the rule asserts that its sides are poison under exactly the
   /// same conditions. Only such a rule creates a node of an operator with
@@ -572,6 +586,7 @@ private:
   bool PoisonExact = false;
   ApplyFn Fn;
   FactFn Facts;
+  VarFilterFn VarFilter;
 };
 
 //===----------------------------------------------------------------------===//

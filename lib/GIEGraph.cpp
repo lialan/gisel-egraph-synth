@@ -3844,6 +3844,9 @@ private:
   void bindClass(unsigned V, EClassId C, function_ref<void()> K) {
     EClassId &Slot = Cur.Vars[V];
     if (Slot == Unbound) {
+      if (const RewriteRule::VarFilterFn &F = R.getVarFilter())
+        if (!F(G, V, G.find(C)))
+          return;
       Slot = C;
       K();
       Slot = Unbound;
@@ -3870,6 +3873,9 @@ private:
       return;
     }
     if (Slot == Unbound) {
+      if (const RewriteRule::VarFilterFn &F = R.getVarFilter())
+        if (!F(G, V, RuleMatch::SumBound))
+          return;
       Slot = RuleMatch::SumBound;
       Cur.VarSums[V].Opcode = Opc;
       Cur.VarSums[V].Leaves.assign(Leaves.begin(), Leaves.end());

@@ -1073,14 +1073,37 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
     return std::nullopt;
   };
   auto AddFact = [&](StringRef Name, StringRef L, StringRef Rhs,
-                     RewriteRule::FactFn F) {
+                     RewriteRule::FactFn F,
+                     RewriteRule::VarFilterFn Filter) {
     R.emplace_back(Name, L, Rhs);
     R.back().setFactFn(std::move(F));
+    R.back().setVarFilter(std::move(Filter));
+  };
+  // The necessary conditions of the preconditions below on one variable
+  // (RewriteRule::VarFilterFn). The matcher tests them before it enumerates
+  // the pairs of leaves of an AC term, where most leaves have no known bit
+  // (with the disjoint rules, the rule matches grew by three quarters).
+  // Each precondition rejects a variable bound to an AC sum.
+  auto NotASum = [](const EGraph &, unsigned, EClassId C) {
+    return C != RuleMatch::SumBound;
+  };
+  // A disjoint operand that is not 0 has a known zero bit: (A.Zero | B.Zero)
+  // is all ones, and B.Zero is not.
+  auto HasKnownZero = [](const EGraph &G, unsigned, EClassId C) {
+    if (C == RuleMatch::SumBound || G.isAllZero(C))
+      return false;
+    for (FactSource S : {FactSource::Structure, FactSource::Context})
+      if (!G.getKnownBits(C, S).Zero.isZero())
+        return true;
+    return false;
   };
   // No bit is one in both operands: a + b == a | b == a ^ b. One read of
   // each operand on each side.
   auto Disjoint = [FactsHold](const EGraph &G, const RuleMatch &M) {
-    // An operand 0 is left to the identity rules.
+    // An operand 0 is left to the identity rules, and so is an operand whose
+    // bits are all known zero (known-constants relates it to 0). So each
+    // operand has a known zero bit, which the matcher tests first
+    // (HasKnownZero).
     if (M.isSumBound(0) || M.isSumBound(1) || G.isAllZero(M.Vars[0]) ||
         G.isAllZero(M.Vars[1]))
       return std::optional<FactSource>();
@@ -1088,6 +1111,7 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
       const KnownBits &A = G.getKnownBits(M.Vars[0], S);
       const KnownBits &B = G.getKnownBits(M.Vars[1], S);
       return A.getBitWidth() && A.getBitWidth() == B.getBitWidth() &&
+             !A.Zero.isZero() && !B.Zero.isZero() &&
              (A.Zero | B.Zero).isAllOnes();
     });
   };
@@ -1099,9 +1123,12 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
   // extraction keeps the original on a tie and the regions leave out
   // instructions that a dominating block computes already, so those do not
   // cost a CSE (memset-param-combinations.ll, docs/TargetAwareViews.md).
-  AddFact("add-disjoint-to-or", "(G_ADD ?a ?b)", "(G_OR ?a ?b)", Disjoint);
-  AddFact("or-disjoint-to-add", "(G_OR ?a ?b)", "(G_ADD ?a ?b)", Disjoint);
-  AddFact("xor-disjoint-to-or", "(G_XOR ?a ?b)", "(G_OR ?a ?b)", Disjoint);
+  AddFact("add-disjoint-to-or", "(G_ADD ?a ?b)", "(G_OR ?a ?b)", Disjoint,
+          HasKnownZero);
+  AddFact("or-disjoint-to-add", "(G_OR ?a ?b)", "(G_ADD ?a ?b)", Disjoint,
+          HasKnownZero);
+  AddFact("xor-disjoint-to-or", "(G_XOR ?a ?b)", "(G_OR ?a ?b)", Disjoint,
+          HasKnownZero);
   // A mask that keeps every bit that can be one, or sets only bits that
   // are one. #c is the element of a splat for a vector.
   AddFact("and-mask-of-known-zeros", "(G_AND ?a #c)", "?a",
@@ -1114,7 +1141,8 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
               return K.getBitWidth() == C.getBitWidth() &&
                      (C | K.Zero).isAllOnes();
             });
-          });
+          },
+          NotASum);
   AddFact("or-mask-of-known-ones", "(G_OR ?a #c)", "?a",
           [FactsHold](const EGraph &G, const RuleMatch &M) {
             if (M.isSumBound(0))
@@ -1125,6 +1153,7 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
               return K.getBitWidth() == C.getBitWidth() &&
                      C.isSubsetOf(K.One);
             });
-          });
+          },
+          NotASum);
   return R;
 }
