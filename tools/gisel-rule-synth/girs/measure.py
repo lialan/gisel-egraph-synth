@@ -14,6 +14,12 @@ import tempfile
 
 SGPR = re.compile(r'^\s+\.sgpr_count:\s+(\d+)', re.M)
 VGPR = re.compile(r'^\s+\.vgpr_count:\s+(\d+)', re.M)
+SGPR_SPILL = re.compile(r'^\s+\.sgpr_spill_count:\s+(\d+)', re.M)
+VGPR_SPILL = re.compile(r'^\s+\.vgpr_spill_count:\s+(\d+)', re.M)
+# The size of the encoded machine code of each function (AMDGPU prints it
+# as a comment); the length of the assembly text is not a code size.
+CODE_LEN = re.compile(r';\s*codeLenInByte\s*=\s*(\d+)')
+SCRATCH = re.compile(r';\s*ScratchSize:\s*(\d+)')
 MATCHED = re.compile(r'gisel-synth: matched: (\w+)')
 PASSED = re.compile(r'gisel-synth: guard passed: (\w+)')
 FALLBACK = re.compile(r'Instruction selection used fallback path for (\S+)')
@@ -51,10 +57,17 @@ def compile_ll(llc, target, path, flags=(), synth=False, disabled=(),
     with tempfile.NamedTemporaryFile(suffix='.s', delete=False) as tf:
         out = tf.name
     cmd = [llc] + target.ll_flags + ['-verify-machineinstrs'] + list(flags)
+    # The combiner of the rules: the synthesized single-root rules, or
+    # another combiner with its own debug type and counters (a target
+    # object with debug_only, matched_re and passed_re, e.g. the joint
+    # rules of eval/joint_measure.py).
+    debug = getattr(target, 'debug_only', 'gisel-synth')
+    matched_re = getattr(target, 'matched_re', MATCHED)
+    passed_re = getattr(target, 'passed_re', PASSED)
     if synth:
         cmd.append(target.enable_flag)
         if count_rules:
-            cmd.append('-debug-only=gisel-synth')
+            cmd.append('-debug-only=' + debug)
         if disabled:
             cmd.append(target.disable_rule_flag + ','.join(disabled))
     cmd += [path, '-o', out]
@@ -70,8 +83,8 @@ def compile_ll(llc, target, path, flags=(), synth=False, disabled=(),
     # GlobalISel; a change in this set makes two runs incomparable.
     res = {'rc': rc, 'fallback': sorted(set(FALLBACK.findall(stderr)))}
     if synth and count_rules:
-        m = collections.Counter(MATCHED.findall(stderr))
-        g = collections.Counter(PASSED.findall(stderr))
+        m = collections.Counter(matched_re.findall(stderr))
+        g = collections.Counter(passed_re.findall(stderr))
         if m:
             res['matched'] = dict(sorted(m.items()))
         if g:
@@ -83,7 +96,11 @@ def compile_ll(llc, target, path, flags=(), synth=False, disabled=(),
                    bytes=len(s))
         if target.name == 'AMDGPU':
             res.update(sgpr=sum(map(int, SGPR.findall(s))),
-                       vgpr=sum(map(int, VGPR.findall(s))))
+                       vgpr=sum(map(int, VGPR.findall(s))),
+                       code_bytes=sum(map(int, CODE_LEN.findall(s))),
+                       spills=sum(map(int, SGPR_SPILL.findall(s))) +
+                       sum(map(int, VGPR_SPILL.findall(s))),
+                       scratch=sum(map(int, SCRATCH.findall(s))))
     else:
         res['err'] = stderr[-400:]
     if os.path.exists(out):  # llc removes it itself when it fails
@@ -99,9 +116,9 @@ def failing_rules(llc, target, path, seconds=20, loop_passes=50,
     again and again when the compilation does not end (a loop with other
     combines), or the last rule whose guard passed before a crash. With
     ``every``: each rule whose guard passed in the compilation."""
-    cmd = [llc] + target.ll_flags + ['-verify-machineinstrs',
-                                     target.enable_flag,
-                                     '-debug-only=gisel-synth']
+    cmd = [llc] + target.ll_flags + [
+        '-verify-machineinstrs', target.enable_flag,
+        '-debug-only=' + getattr(target, 'debug_only', 'gisel-synth')]
     if disabled:
         cmd.append(target.disable_rule_flag + ','.join(disabled))
     cmd += [path, '-o', os.devnull]
@@ -118,7 +135,7 @@ def failing_rules(llc, target, path, seconds=20, loop_passes=50,
         # The end of the output is enough to see a loop.
         err.seek(max(0, os.fstat(err.fileno()).st_size - (1 << 22)))
         text = err.read().decode(errors='replace')
-    passed = PASSED.findall(text)
+    passed = getattr(target, 'passed_re', PASSED).findall(text)
     if every:
         return sorted(set(passed))
     if looped:
