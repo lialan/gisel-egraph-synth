@@ -1411,6 +1411,7 @@ def search_windows(instances, limits, backend, log=None, max_windows=None):
         status, cands, indep = s.run()
         stats['status'][status] = stats['status'].get(status, 0) + 1
         rec = {'key': hashlib.sha256(key.encode()).hexdigest()[:16],
+               '_key': key,
                'window': win.text(), 'occurrences': len(prov),
                'status': status, 'cost_before': s.cost_before,
                'candidates': len(cands),
@@ -1461,6 +1462,7 @@ def search_windows(instances, limits, backend, log=None, max_windows=None):
                                'examples': [list(map(str, x))
                                             for x in prov[:5]]},
             }
+            rule['_key'] = key
             rules.append(rule)
             rec['rule'] = rid
             rec['after'] = cand.cost_after()
@@ -1594,3 +1596,21 @@ def check_rule(rule):
     if any(m not in proved for m in emitted):
         out.append('a width map without a proof')
     return out
+
+
+def merge_results(parts):
+    """The rules, records and statistics of search_windows of shards."""
+    rules, records, stats = [], [], {}
+    for r, rec, st in parts:
+        rules += r
+        records += rec
+        for k, v in st.items():
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                stats[k] = stats.get(k, 0) + v
+            elif isinstance(v, dict):
+                d = stats.setdefault(k, {})
+                for kk, vv in v.items():
+                    if isinstance(vv, (int, float)):
+                        d[kk] = d.get(kk, 0) + vv
+    stats['shards'] = len(parts)
+    return rules, records, stats

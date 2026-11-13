@@ -1733,6 +1733,13 @@ def _region_files(paths):
     return out
 
 
+def _joint_search_shard(job):
+    from girs import joint, smt
+    shard, lim = job
+    return joint.search_windows(shard, lim,
+                                smt.Z3Backend(timeout_ms=lim.timeout_ms))
+
+
 def cmd_joint_search(args):
     """Searches joint replacements of the windows of region DAGs, proves
     them and writes the rules, a record per window and the statistics."""
@@ -1749,10 +1756,27 @@ def cmd_joint_search(args):
     # The most frequent windows first.
     inst = dict(sorted(inst.items(), key=lambda kv: (-len(kv[1][1]),
                                                       kv[1][0].text())))
-    backend = smt.Z3Backend(timeout_ms=lim.timeout_ms)
+    items = list(inst.items())
+    if args.max_windows:
+        items = items[:args.max_windows]
     log = (lambda m: print(m, flush=True)) if args.verbose else None
-    rules, records, stats = joint.search_windows(
-        inst, lim, backend, log=log, max_windows=args.max_windows)
+    if args.jobs <= 1:
+        backend = smt.Z3Backend(timeout_ms=lim.timeout_ms)
+        rules, records, stats = joint.search_windows(dict(items), lim,
+                                                     backend, log=log)
+    else:
+        # Shards of the windows, one process each; each has its own banks
+        # and solver. The result does not depend on the number of jobs.
+        shards = [dict(items[i::args.jobs]) for i in range(args.jobs)]
+        with concurrent.futures.ProcessPoolExecutor(args.jobs) as ex:
+            parts = list(ex.map(_joint_search_shard,
+                                [(sh, lim) for sh in shards]))
+        rules, records, stats = joint.merge_results(parts)
+        order = {k: i for i, (k, _) in enumerate(items)}
+        records.sort(key=lambda r: order.get(r['_key'], 0))
+        rules.sort(key=lambda r: order.get(r['_key'], 0))
+    for x in rules + records:
+        x.pop('_key', None)
     os.makedirs(os.path.join(args.out, 'proofs'), exist_ok=True)
     for r in rules:
         for pr in r['proofs']:
@@ -1777,6 +1801,41 @@ def cmd_joint_search(args):
           '%d rules (%s) in %.1fs' % (len(files), len(blocks), len(inst),
                                       len(rules), stats['status'],
                                       stats['seconds']))
+
+
+def cmd_joint_recheck(args):
+    """Checks stored joint rules again: their consistency (check_rule),
+    each saved SMT-LIB2 proof with z3, and a new proof of each width map
+    from the source and the candidate. UNKNOWN is a failure."""
+    import z3
+    from girs import joint, smt
+    with open(args.rules) as f:
+        rules = json.load(f)['rules']
+    base = os.path.dirname(os.path.abspath(args.rules))
+    backend = smt.Z3Backend()
+    lim = joint.Limits()
+    out, bad = [], 0
+    for r in rules:
+        rec = {'id': r['id'], 'check': joint.check_rule(r), 'replayed': [],
+               'reproved': []}
+        for pr in r['proofs']:
+            if 'smt2_file' in pr:
+                s_ = z3.Solver()
+                with open(os.path.join(base, pr['smt2_file'])) as f:
+                    s_.from_string(f.read())
+                rec['replayed'].append(str(s_.check()))
+        cand = joint.candidate_from_json(r)
+        for m in r['plan']['guards']['width_maps']:
+            st, proofs, refuted = joint.prove(cand, lim, backend,
+                                              [dict(map(tuple, m))])
+            rec['reproved'].append(st)
+        ok = not rec['check'] and all(x == 'unsat' for x in rec['replayed']) \
+            and all(x == 'valid' for x in rec['reproved'])
+        rec['ok'] = ok
+        bad += not ok
+        out.append(rec)
+    print(json.dumps(out, indent=1))
+    return 1 if bad else 0
 
 
 def cmd_joint_emit(args):
@@ -2104,8 +2163,14 @@ def build_parser():
     p.add_argument('--max-windows', type=int, default=0,
                    help='search only the most frequent windows (0: all)')
     p.add_argument('--max-windows-per-block', type=int, default=2000)
+    p.add_argument('--jobs', type=int, default=1)
     p.add_argument('-v', '--verbose', action='store_true')
     p.set_defaults(fn=cmd_joint_search)
+
+    p = sub.add_parser('joint-recheck', help='check stored joint rules and '
+                       'their proofs again')
+    p.add_argument('--rules', required=True)
+    p.set_defaults(fn=cmd_joint_recheck)
 
     p = sub.add_parser('joint-emit', help='generate TableGen and C++ of '
                        'joint rules')
