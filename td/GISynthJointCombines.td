@@ -6,7 +6,7 @@
 def joint_b421acca3c : GICombineRule<
   (defs root:$root, gisynth_joint_plan:$plan),
   (match (G_SUB $d0, $o0, $o1):$root,
-         [{ return gisynth::joint::rules::match_joint_b421acca3c(*${root}, MRI, ${plan}); }]),
+         [{ return gisynth::joint::rules::match_joint_b421acca3c(*${root}, MRI, ${plan}, JointEnv); }]),
   (apply [{ gisynth::joint::rules::apply_joint_b421acca3c(B, ${plan}); }])>;
 
 // joint_f5cef5f7f4: n0 = G_ADD x1, x2; n1 = G_ZEXT n0; n2 = G_ZEXT x1; n3 = G_SELECT x0, n1, n2; outputs n3
@@ -14,7 +14,7 @@ def joint_b421acca3c : GICombineRule<
 def joint_f5cef5f7f4 : GICombineRule<
   (defs root:$root, gisynth_joint_plan:$plan),
   (match (G_SELECT $d0, $o0, $o1, $o2):$root,
-         [{ return gisynth::joint::rules::match_joint_f5cef5f7f4(*${root}, MRI, ${plan}); }]),
+         [{ return gisynth::joint::rules::match_joint_f5cef5f7f4(*${root}, MRI, ${plan}, JointEnv); }]),
   (apply [{ gisynth::joint::rules::apply_joint_f5cef5f7f4(B, ${plan}); }])>;
 
 // joint_743e08a976: n0 = G_MUL x0, x0; n1 = G_SUB x0, x1; n2 = G_ADD x0, x1; n3 = G_MUL n1, n2; outputs n0, n3
@@ -22,7 +22,7 @@ def joint_f5cef5f7f4 : GICombineRule<
 def joint_743e08a976 : GICombineRule<
   (defs root:$root, gisynth_joint_plan:$plan),
   (match (G_MUL $d0, $o0, $o1):$root,
-         [{ return gisynth::joint::rules::match_joint_743e08a976(*${root}, MRI, ${plan}); }]),
+         [{ return gisynth::joint::rules::match_joint_743e08a976(*${root}, MRI, ${plan}, JointEnv); }]),
   (apply [{ gisynth::joint::rules::apply_joint_743e08a976(B, ${plan}); }])>;
 
 // joint_a27cbc14a2: n0 = G_TRUNC x0; n1 = G_TRUNC x1; n2 = G_ADD n0, n1; outputs n2
@@ -30,7 +30,7 @@ def joint_743e08a976 : GICombineRule<
 def joint_a27cbc14a2 : GICombineRule<
   (defs root:$root, gisynth_joint_plan:$plan),
   (match (G_ADD $d0, $o0, $o1):$root,
-         [{ return gisynth::joint::rules::match_joint_a27cbc14a2(*${root}, MRI, ${plan}); }]),
+         [{ return gisynth::joint::rules::match_joint_a27cbc14a2(*${root}, MRI, ${plan}, JointEnv); }]),
   (apply [{ gisynth::joint::rules::apply_joint_a27cbc14a2(B, ${plan}); }])>;
 
 // joint_66f36e5034: n0 = G_TRUNC x0; n1 = G_XOR x1, n0; n2 = G_XOR x1, n1; outputs n2
@@ -38,7 +38,7 @@ def joint_a27cbc14a2 : GICombineRule<
 def joint_66f36e5034 : GICombineRule<
   (defs root:$root, gisynth_joint_plan:$plan),
   (match (G_XOR $d0, $o0, $o1):$root,
-         [{ return gisynth::joint::rules::match_joint_66f36e5034(*${root}, MRI, ${plan}); }]),
+         [{ return gisynth::joint::rules::match_joint_66f36e5034(*${root}, MRI, ${plan}, JointEnv); }]),
   (apply [{ gisynth::joint::rules::apply_joint_66f36e5034(B, ${plan}); }])>;
 
 // joint_315c4a0ef9: n0 = G_XOR x0, x1; n1 = G_ZEXT n0; outputs n1
@@ -46,7 +46,7 @@ def joint_66f36e5034 : GICombineRule<
 def joint_315c4a0ef9 : GICombineRule<
   (defs root:$root, gisynth_joint_plan:$plan),
   (match (G_ZEXT $d0, $o0):$root,
-         [{ return gisynth::joint::rules::match_joint_315c4a0ef9(*${root}, MRI, ${plan}); }]),
+         [{ return gisynth::joint::rules::match_joint_315c4a0ef9(*${root}, MRI, ${plan}, JointEnv); }]),
   (apply [{ gisynth::joint::rules::apply_joint_315c4a0ef9(B, ${plan}); }])>;
 
 def gi_synth_joint_combines : GICombineGroup<[

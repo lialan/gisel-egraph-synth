@@ -1721,20 +1721,26 @@ def _region_files(paths):
     return out
 
 
-def _joint_search_shard(job):
-    from girs import joint, smt
-    shard, lim = job
-    return joint.search_windows(shard, lim,
-                                smt.Z3Backend(timeout_ms=lim.timeout_ms))
+def _joint_limits(args):
+    from girs import joint
+    return joint.Limits(max_window=args.max_window, max_cost=args.max_cost,
+                        max_outputs=args.max_outputs, time_s=args.time_s,
+                        max_terms=args.max_terms, max_helpers=args.max_helpers,
+                        max_cands=args.max_cands, max_combos=args.max_combos,
+                        max_proofs=args.max_proofs, timeout_ms=args.timeout_ms,
+                        cost_slack=args.cost_slack,
+                        semantic_variants=args.semantic_variants,
+                        seed=args.seed)
 
 
 def cmd_joint_search(args):
     """Searches joint replacements of the windows of region DAGs, proves
-    them and writes the rules, a record per window and the statistics."""
-    from girs import joint, smt
-    lim = joint.Limits(max_window=args.max_window, max_cost=args.max_cost,
-                       max_outputs=args.max_outputs, time_s=args.time_s,
-                       max_terms=args.max_terms, max_helpers=args.max_helpers)
+    them and writes the rules, a record per window and the statistics.
+    Each window is a task of the agenda of --cache (girs/joint_tasks.py):
+    a later run with the same cache searches only what is new or what its
+    budgets take further, and keeps the rules of the earlier runs."""
+    from girs import joint, joint_tasks
+    lim = _joint_limits(args)
     files = _region_files(args.regions)
     lstats = {}
     blocks = joint.load_blocks(files, lstats)
@@ -1748,70 +1754,15 @@ def cmd_joint_search(args):
     if args.max_windows:
         items = items[:args.max_windows]
     log = (lambda m: print(m, flush=True)) if args.verbose else None
-    t0 = time.monotonic()
-    if args.shard:
-        k, n = map(int, args.shard.split('/'))
-        items = items[k::n]
-    if args.jobs <= 1 or args.shard:
-        backend = smt.Z3Backend(timeout_ms=lim.timeout_ms)
-        rules, records, stats = joint.search_windows(dict(items), lim,
-                                                     backend, log=log)
-    else:
-        # Shards of the windows, one process each (a process of its own:
-        # a shard that fails does not stop the others); each has its own
-        # banks and solver. The result does not depend on the number of
-        # jobs.
-        procs = []
-        for k in range(args.jobs):
-            d = os.path.join(args.out, 'shards', str(k))
-            os.makedirs(d, exist_ok=True)
-            cmd = [sys.executable, os.path.abspath(__file__), 'joint-search',
-                   '--shard', '%d/%d' % (k, args.jobs), '--out', d,
-                   '--regions'] + list(args.regions) + [
-                '--max-window', str(args.max_window),
-                '--max-cost', str(args.max_cost),
-                '--max-outputs', str(args.max_outputs),
-                '--max-helpers', str(args.max_helpers),
-                '--max-terms', str(args.max_terms),
-                '--time-s', str(args.time_s),
-                '--max-windows', str(args.max_windows),
-                '--max-windows-per-block', str(args.max_windows_per_block)]
-            log_f = open(os.path.join(d, 'log'), 'w')
-            procs.append((k, d, subprocess.Popen(cmd, stdout=log_f,
-                                                 stderr=subprocess.STDOUT)))
-        parts, failed = [], []
-        for k, d, p in procs:
-            if p.wait() != 0:
-                failed.append(k)
-                continue
-            with open(os.path.join(d, 'rules.json')) as f:
-                rs = json.load(f)['rules']
-            with open(os.path.join(d, 'search.jsonl')) as f:
-                recs = [json.loads(l) for l in f]
-            with open(os.path.join(d, 'stats.json')) as f:
-                st = json.load(f)
-            for x in ('load', 'collect', 'limits', 'files', 'blocks',
-                      'distinct_windows'):
-                st.pop(x, None)
-            parts.append((rs, recs, st))
-        rules, records, stats = joint.merge_results(parts)
-        stats['failed_shards'] = failed
-        stats['not_searched'] = sum(len(items[k::args.jobs])
-                                    for k in failed)
-        order = {r['key']: i for i, r in enumerate(records)}
-        os.makedirs(os.path.join(args.out, 'proofs'), exist_ok=True)
-        for k, d, _ in procs:
-            pd = os.path.join(d, 'proofs')
-            if os.path.isdir(pd):
-                for f in os.listdir(pd):
-                    os.replace(os.path.join(pd, f),
-                               os.path.join(args.out, 'proofs', f))
-    stats['wall_seconds'] = round(time.monotonic() - t0, 2)
-    for x in rules + records:
-        x.pop('_key', None)
+    rules, records, stats = joint_tasks.run(
+        dict(items), lim, cache=args.cache, jobs=args.jobs,
+        time_budget_s=args.time_budget_s, reopen=args.refresh_search,
+        feedback=args.priority, checkpoint_s=args.checkpoint_s, log=log,
+        max_tasks=args.max_tasks)
     os.makedirs(os.path.join(args.out, 'proofs'), exist_ok=True)
     for r in rules:
         for pr in r['proofs']:
+            # The proofs of a rule are next to its rules.json.
             text = pr.pop('smt2', None)
             if text is not None:
                 h = hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -1830,9 +1781,13 @@ def cmd_joint_search(args):
     with open(os.path.join(args.out, 'stats.json'), 'w') as f:
         json.dump(stats, f, indent=1, default=str)
     print('joint-search: %d files, %d blocks, %d distinct windows, '
-          '%d rules (%s) in %.1fs' % (len(files), len(blocks), len(inst),
-                                      len(rules), stats['status'],
-                                      stats['seconds']))
+          '%d searched, %d rules (%s) in %.1fs%s' % (
+              len(files), len(blocks), len(inst),
+              stats['searched_in_this_run'], len(rules), stats['status'],
+              stats['wall_seconds'],
+              ' (interrupted)' if stats['interrupted'] else ''))
+    return 130 if stats['interrupted'] else (1 if stats['failed_tasks']
+                                             else 0)
 
 
 def cmd_joint_recheck(args):
@@ -2195,8 +2150,37 @@ def build_parser():
     p.add_argument('--max-windows', type=int, default=0,
                    help='search only the most frequent windows (0: all)')
     p.add_argument('--max-windows-per-block', type=int, default=2000)
+    p.add_argument('--max-cands', type=int, default=12,
+                   help='candidates of each output in the selection')
+    p.add_argument('--max-combos', type=int, default=50000)
+    p.add_argument('--max-proofs', type=int, default=6,
+                   help='proofs of one window in one run')
+    p.add_argument('--timeout-ms', type=int, default=10000)
+    p.add_argument('--seed', type=int, default=0)
+    p.add_argument('--cost-slack', type=int, default=None,
+                   help='None: a candidate is cheaper than its window '
+                        '(the historical policy); k >= -1: its generic '
+                        'cost is at most that of the window plus k')
+    p.add_argument('--semantic-variants', type=int, default=1,
+                   help='proved implementations of different shapes '
+                        'that a window keeps (1: the first one)')
     p.add_argument('--jobs', type=int, default=1)
-    p.add_argument('--shard', help='K/N: search the windows K, K+N, ...')
+    p.add_argument('--cache', help='the directory of the agenda, the proof '
+                   'history and the rule store; a later run continues')
+    p.add_argument('--time-budget-s', type=float, default=None,
+                   help='the time of the run; unfinished windows stay '
+                        'pending')
+    p.add_argument('--max-tasks', type=int, default=None,
+                   help='search at most this many windows in this run')
+    p.add_argument('--checkpoint-s', type=float, default=60.0,
+                   help='commit the agenda this often')
+    p.add_argument('--refresh-search', action='store_true',
+                   help='search every window again (proofs from the '
+                        'history)')
+    p.add_argument('--priority', help='a selection of '
+                   'eval/joint_measure.py: windows with a measured gain '
+                   'first, and rules measured without a gain leave the '
+                   'quota of their window')
     p.add_argument('-v', '--verbose', action='store_true')
     p.set_defaults(fn=cmd_joint_search)
 

@@ -3,9 +3,12 @@
 The regions are built here; the search has no template of any of them.
 """
 
+import json
 import os
 import sys
+import types
 import unittest
+from unittest import mock
 
 import z3
 
@@ -345,6 +348,217 @@ class JointTest(unittest.TestCase):
         self.assertNotIn(sq, exprs)
         self.assertTrue(all(ir.is_linear(e) for e in exprs))
 
+
+def shl_region():
+    """n0 = x << 1 (1 a constant input), read outside."""
+    return region([(32, True), (32, True, 1)], [
+        ('G_SHL', None, (32,), [X, Y], [1])])
+
+
+def add_self_region():
+    """n0 = x + x, read outside."""
+    return region([(32, True)], [
+        ('G_ADD', None, (32,), [X, X], [1])])
+
+
+class JointCandidatesTest(unittest.TestCase):
+    """Several implementations of one window, the cost policy, budgets that
+    keep what was found, and rules that undo each other."""
+
+    @classmethod
+    def setUpClass(cls):
+        # The shared helper window has a cheaper implementation (with the
+        # helper x*y, found in the helper round) and one of equal cost
+        # (x << 1 as x + x).
+        cls.limits = joint.Limits(time_s=300, cost_slack=0,
+                                  semantic_variants=4)
+        cls.ctx = discover.Context(discover.Limits(
+            max_terms=cls.limits.max_terms, max_evals=cls.limits.max_evals))
+        cls.backend = smt.Z3Backend()
+
+    def window(self, win):
+        key, c = joint.canonical(win)
+        return key, c, list(win.prov)
+
+    def test_equal_cost_implementations_are_kept_and_emitted(self):
+        """The shared helper window keeps its cheaper rule and gets an
+        implementation of equal generic cost of another shape; both are
+        proved, consistent and emittable, and only the equal-cost one has
+        the termination guard."""
+        key, c, prov = self.window(helper_region())
+        out = joint.search_window(key, c, prov, self.limits, self.ctx,
+                                  self.backend)
+        rules = out['rules']
+        gains = sorted(r['candidate']['estimated_cost']['gain']
+                       for r in rules)
+        self.assertGreaterEqual(len(rules), 2)
+        self.assertEqual(gains[-1], 1)
+        self.assertIn(0, gains)
+        self.assertEqual(len({r['shape'] for r in rules}), len(rules))
+        self.assertEqual(len({r['window'] for r in rules}), 1)
+        for r in rules:
+            self.assertEqual(joint.check_rule(r), [], r['id'])
+            self.assertEqual(r['plan']['original_only'],
+                             r['candidate']['estimated_cost']['gain'] <= 0)
+            self.assertEqual(r['profitability_status'], 'unmeasured')
+        td, inc, info = joint_emit.emit(rules)
+        self.assertEqual(info['rules'], len(rules))
+        self.assertIn('JointEnv', td)
+        self.assertEqual(inc.count(', true};'), gains.count(0))
+        # The historical policy finds the cheaper rule only.
+        old = joint.search_window(key, c, prov, joint.Limits(time_s=120),
+                                  self.ctx, self.backend)
+        self.assertEqual([r['id'] for r in old['rules']],
+                         [r['id'] for r in rules
+                          if r['candidate']['estimated_cost']['gain'] == 1])
+
+    def test_identity_is_not_an_implementation(self):
+        """With a slack, the window itself (operands commuted) has the
+        cost of the window; it is never a candidate."""
+        key, c, prov = self.window(dsq())
+        s = joint.Search(c, self.limits, self.ctx, self.backend, {})
+        status, cands, indep = s.run()
+        self.assertTrue(cands)
+        self.assertFalse(any(joint.is_identity(x) for x in cands))
+        # The window again, built by hand: x*x and (y + x) * (x - y).
+        ident = joint.Candidate(c, set(), {o: ('n',) + o for o in c.outputs},
+                                [], {})
+        self.assertTrue(joint.is_identity(ident))
+
+    def test_cost_policy_is_checked(self):
+        key, c, prov = self.window(helper_region())
+        out = joint.search_window(key, c, prov, self.limits, self.ctx,
+                                  self.backend)
+        eq = next(r for r in out['rules']
+                  if r['candidate']['estimated_cost']['gain'] == 0)
+        self.assertEqual(eq['cost_policy']['cost_slack'], 0)
+        # Without its policy the rule must be cheaper than its window.
+        r = json.loads(json.dumps(eq))
+        del r['cost_policy']
+        self.assertIn('cost', joint.check_rule(r))
+        r = json.loads(json.dumps(eq))
+        r['plan']['original_only'] = False
+        self.assertIn('termination', joint.check_rule(r))
+        td, inc, info = joint_emit.emit([r])
+        self.assertEqual(info['rules'], 0)
+
+    def test_a_budget_keeps_the_candidates_made_before(self):
+        """The helper round ends on the time budget: the candidates of the
+        first round are returned, and the status says the search is not
+        complete."""
+        key, c, prov = self.window(helper_region())
+        s = joint.Search(c, self.limits, self.ctx, self.backend, {})
+        real = s.helpers
+
+        def helpers(leaves):
+            hs = real(leaves)
+            s.deadline = 0   # the time ends after the first helper
+            return hs
+        s.helpers = helpers
+        status, cands, indep = s.run()
+        self.assertEqual(status, 'budget: time')
+        self.assertTrue(s.stats['incomplete'])
+        self.assertTrue(cands)
+
+    def test_pending_candidates_are_proved_later(self):
+        """The run ends after the search of a window and before its
+        proofs: its candidates are pending, a later run proves them without
+        searching the window again, and does not prove a decided candidate
+        again."""
+        key, c, prov = self.window(helper_region())
+        # A clock that stands still during the search and jumps past the
+        # end of the run when the search returns.
+        clock = [0.0]
+        run = joint.Search.run
+
+        def search_then_late(s):
+            out = run(s)
+            clock[0] = 1e9
+            return out
+        with mock.patch.object(joint, 'time', types.SimpleNamespace(
+                monotonic=lambda: clock[0])), \
+                mock.patch.object(joint.Search, 'run', search_then_late):
+            first = joint.search_window(key, c, prov, self.limits,
+                                        self.ctx, self.backend,
+                                        deadline=1000.0)
+        self.assertTrue(first['record']['candidates'])
+        self.assertEqual(first['rules'], [])
+        self.assertIn('time', first['reasons'])
+        self.assertTrue(first['result']['pending'])
+        again = joint.search_window(key, c, prov, self.limits, self.ctx,
+                                    self.backend, prior=first['result'],
+                                    mode='prove')
+        self.assertTrue(again['rules'])
+        self.assertEqual(again['record']['mode'], 'prove')
+        decided = again['result']['decided']
+        self.assertTrue(set(r['id'] for r in again['rules']) <= set(decided))
+        third = joint.search_window(key, c, prov, self.limits, self.ctx,
+                                    self.backend, prior=again['result'],
+                                    mode='prove')
+        self.assertFalse({r['id'] for r in third['rules']} & set(decided))
+        self.assertLessEqual(third['record']['proof_attempts'],
+                             len(again['result']['pending']))
+
+    def test_released_rules_leave_the_quota(self):
+        """With a quota of one, the window keeps one rule and the other
+        shapes wait ('variants'). A rule measured without a gain leaves the
+        quota: the next run proves another shape."""
+        lim = joint.Limits(time_s=300, cost_slack=0, semantic_variants=1)
+        key, c, prov = self.window(helper_region())
+        first = joint.search_window(key, c, prov, lim, self.ctx,
+                                    self.backend)
+        self.assertEqual(len(first['rules']), 1)
+        self.assertIn('variants', first['reasons'])
+        rid = first['rules'][0]['id']
+        again = joint.search_window(key, c, prov, lim, self.ctx,
+                                    self.backend, prior=first['result'],
+                                    mode='prove', released={rid})
+        self.assertEqual(len(again['rules']), 1)
+        self.assertNotEqual(again['rules'][0]['id'], rid)
+        self.assertNotEqual(again['rules'][0]['shape'],
+                            first['rules'][0]['shape'])
+
+    def proved_rule(self, win, new, outputs):
+        """The rule record of a candidate given by hand (proved, planned
+        and recorded as the search does)."""
+        key, c, prov = self.window(win)
+        cand = joint.Candidate(c, set(), outputs, new, {})
+        st, proofs, refuted = joint.prove(cand, self.limits, self.backend)
+        self.assertEqual(st, 'valid')
+        return joint.make_rule(key, c, prov, cand, joint.plan(cand), proofs,
+                               refuted, None, c.cost(), 'complete', {},
+                               self.limits, self.backend, 0)
+
+    def test_rules_that_undo_each_other_are_a_cycle(self):
+        """x << 1 -> x + x (found by the search, equal cost) and x + x ->
+        x << 1 (the bank of x + x has no shift by a literal, so it is
+        given here) undo each other; the difference of squares makes the
+        cost smaller and is in no cycle."""
+        key, c, prov = self.window(shl_region())
+        found = joint.search_window(key, c, prov, self.limits, self.ctx,
+                                    self.backend)['rules']
+        shl_add = [r for r in found if any(
+            n['op'] == 'G_ADD' for n in r['plan']['new_instruction_dag'])]
+        self.assertTrue(shl_add, [r['candidate']['text'] for r in found])
+        add_shl = self.proved_rule(
+            add_self_region(),
+            [('G_SHL', None, (32,), (('in', 0), ('lit', '1', 32)))],
+            {(0, 0): ('t', 0, 0)})
+        self.assertEqual(joint.check_rule(add_shl), [])
+        self.assertTrue(add_shl['plan']['original_only'])
+        pair = [shl_add[0], add_shl]
+        g = joint.rewrite_graph(pair)
+        self.assertEqual(g[shl_add[0]['id']], [add_shl['id']])
+        self.assertEqual(g[add_shl['id']], [shl_add[0]['id']])
+        cyc = joint.rewrite_cycles(pair, g)
+        self.assertEqual(cyc, [sorted(r['id'] for r in pair)])
+        self.assertEqual(joint.rewrite_cycles([shl_add[0]]), [])
+        self.assertEqual(joint.rewrite_cycles([add_shl]), [])
+        key, c, prov = self.window(dsq())
+        dsq_rules = joint.search_window(key, c, prov, joint.Limits(time_s=120),
+                                        self.ctx, self.backend)['rules']
+        self.assertTrue(dsq_rules)
+        self.assertEqual(joint.rewrite_cycles(dsq_rules), [])
 
 if __name__ == '__main__':
     unittest.main()

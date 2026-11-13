@@ -192,13 +192,17 @@ def cpp_rule(rule):
     defined = sum(1 << index[i] for i in plan['guards']['defined'])
     distinct = sum(1 << index[i] for i in plan['guards']['distinct'])
     out.append('static const RuleDesc %s_Rule = {' % rid)
-    out.append('    "%s", %s, %s, %s, %s, %s, %d, %s, 0x%x, 0x%x, %d, %s};' % (
-        rid, names['Src'], names['Steps'], names['Actions'], names['Tgt'],
-        names['Outputs'], len(index), names['InputClass'], defined,
-        distinct, len(cls), names['WidthMaps']))
+    out.append('    "%s", %s, %s, %s, %s, %s, %d, %s, 0x%x, 0x%x, %d, %s, '
+               '%s};' % (
+                   rid, names['Src'], names['Steps'], names['Actions'],
+                   names['Tgt'], names['Outputs'], len(index),
+                   names['InputClass'], defined, distinct, len(cls),
+                   names['WidthMaps'],
+                   'true' if plan.get('original_only') else 'false'))
     out.append('inline bool match_%s(MachineInstr &Root, '
-               'const MachineRegisterInfo &MRI, JointPlan &Plan) {' % rid)
-    out.append('  return match(%s_Rule, Root, MRI, Plan);' % rid)
+               'const MachineRegisterInfo &MRI, JointPlan &Plan, '
+               'const MatchEnv &Env) {' % rid)
+    out.append('  return match(%s_Rule, Root, MRI, Plan, Env);' % rid)
     out.append('}')
     out.append('inline void apply_%s(MachineIRBuilder &B, '
                'const JointPlan &Plan) {' % rid)
@@ -226,7 +230,7 @@ def td_rule(rule):
         '  (defs root:$root, gisynth_joint_plan:$plan),',
         '  (match %s,' % pat,
         '         [{ return gisynth::joint::rules::match_%s(*${root}, MRI, '
-        '${plan}); }]),' % rid,
+        '${plan}, JointEnv); }]),' % rid,
         '  (apply [{ gisynth::joint::rules::apply_%s(B, ${plan}); }])>;' %
         rid,
         '']
