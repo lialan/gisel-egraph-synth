@@ -1,20 +1,21 @@
 # Multiprocess rule search
 
-`--search-jobs N` enables process tasks for enumeration and concrete proofs,
+`synth` and `mine` default to 16 search processes plus one additional slow
+proof process. `--search-jobs N` controls process tasks for enumeration and concrete proofs,
 rule generalization, final guard proofs, joint regions and sibling regions.
 The coordinator alone deduplicates rule families and publishes the library.
 The generated rules still require the existing proofs and emission checks.
 
 ```sh
 python tools/gisel-rule-synth/gi-rule-synth.py synth corpus.jsonl \
-  --search-jobs 8 --slow-jobs 1 --search-batch 32 \
+  --search-jobs 16 --slow-jobs 1 --search-batch 32 \
   --regions --siblings -o rules.json
 ```
 
-For `mine`, put these options in the `search` object of its configuration:
+For `mine`, these defaults can be overridden in the `search` configuration:
 
 ```json
-{"search": {"search_jobs": 8, "slow_jobs": 1, "search_batch": 32}}
+{"search": {"search_jobs": 16, "slow_jobs": 1, "search_batch": 32}}
 ```
 
 The top-level `mine.jobs` continues to control compiler processes. It does
@@ -67,7 +68,7 @@ the run before the new library is published.
 
 ## Reproducibility and limits
 
-`--search-jobs 0` (the default) preserves the original serial scheduler.
+`--search-jobs 0` explicitly selects the original serial scheduler.
 `--search-jobs 1` is the single-process reference for the new task plan.
 Compare 1 and N with identical corpus, knowledge, seed, batch size, and
 budgets. Fixed batches have task-local counterexamples; the old scheduler

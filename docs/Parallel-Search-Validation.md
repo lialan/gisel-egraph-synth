@@ -80,3 +80,23 @@ Evidence and the frozen input are retained under
 `/home/nod/gisel-parallel-search-20261112/build/validation/`.
 [Parallel-Search.md](Parallel-Search.md) documents activation, slow-budget
 allocation, task-local sharing, and the remaining serial hybrid phases.
+
+## Main landing and default of 16 processes
+
+Before landing, rebased onto `origin/main` at `1228cc7`, preserving its
+scalar sibling input checks in both the serial and parallel paths.
+`synth` and `mine` now default to 16 search processes, with one additional
+slow-proof process. Explicit `--search-jobs 0` still selects legacy serial.
+
+- Full suite after integration: **634 tests passed**, including the latest
+  sibling routing regressions and generated AMDGPU/AArch64 cross-block rules.
+- The CLI parity regression now also omits `--search-jobs` and checks that
+  the recorded process count is 16 and the complete rules remain identical.
+- Replayed all 515 frozen instances without `--search-jobs`: 93 rules,
+  complete rule and generated-code equality with the legacy reference,
+  no unresolved parallel work. This additional single run took 19.92 seconds;
+  the repeated timing comparison above remains the measured benchmark.
+- Default `emit --check` and `git diff --check` passed.
+
+Landing evidence is under `build/validation/landing-16/` in the same nod
+worktree; the accompanying JSON includes the exact default-run command.

@@ -965,5 +965,44 @@
       "AArch64"
     ],
     "default_emit_check": true
+  },
+  "landing_default_16": {
+    "upstream_base": "1228cc73c53469797eae43b592786b97d3ff4337",
+    "search_jobs_option_omitted": true,
+    "search_jobs": 16,
+    "slow_jobs": 1,
+    "corpus_instances": 515,
+    "rules": 93,
+    "full_rule_parity_with_legacy": true,
+    "generated_parity": true,
+    "unresolved": false,
+    "wall_s": 19.924385076388717,
+    "command": [
+      "/home/nod/gisel-straight-line-regions-20261112/build/venv/bin/python",
+      "tools/gisel-rule-synth/gi-rule-synth.py",
+      "synth",
+      "build/validation/benchmark-corpus.jsonl",
+      "--known",
+      "",
+      "--cache",
+      "",
+      "--search-batch",
+      "16",
+      "--grammar",
+      "auto",
+      "--max-evals",
+      "1000000",
+      "--max-terms",
+      "10000",
+      "--max-rhs-cost",
+      "2",
+      "--regions",
+      "--siblings",
+      "--proofs",
+      "build/validation/landing-16/proofs",
+      "-o",
+      "build/validation/landing-16/rules.json"
+    ],
+    "full_python_tests_passed": 634
   }
 }

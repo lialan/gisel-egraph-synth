@@ -79,7 +79,7 @@ DEFAULTS = {
     'discovery_pipelines': ['direct'],
     'extract': {'depth': None, 'max_trees': None},
     'search': {'grammar': 'auto', 'seed': 0, 'max_instances': 0,
-               'search_jobs': 0, 'slow_jobs': 1, 'search_batch': 32,
+               'search_jobs': 16, 'slow_jobs': 1, 'search_batch': 32,
                'slow_timeout_ms': 120000, 'slow_budget_s': 300,
                'slow_total_s': 3600,
                'timeout_ms': 10000, 'max_atoms': 2, 'max_terms': 50000,

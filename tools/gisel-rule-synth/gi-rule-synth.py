@@ -1301,8 +1301,8 @@ def build_parser():
     p.add_argument('--proofs', default=DEFAULT_PROOFS)
     p.add_argument('--stats')
     p.add_argument('--timeout-ms', type=int, default=10000)
-    p.add_argument('--search-jobs', type=int, default=0,
-                   help='core search processes; 0 keeps the legacy serial '
+    p.add_argument('--search-jobs', type=int, default=16,
+                   help='core search processes (default: 16); 0 keeps the legacy serial '
                         'scheduler, 1 is the deterministic process-task reference')
     p.add_argument('--slow-jobs', type=int, default=1,
                    help='additional processes reserved for slow proofs')

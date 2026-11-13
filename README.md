@@ -149,14 +149,15 @@ agreement with the compiler. UNKNOWN is never accepted as a proof.
 
 ### Parallel search
 
-`synth --search-jobs 8 --slow-jobs 1` runs core search in eight processes,
+`synth` and `mine` run core search in 16 processes by default,
 with an additional process for slow proof retries. Discovery, generalization,
 final guard proofs and multi-output region search use stable task groups;
 the coordinator merges and deduplicates their results. For `mine`, set
 `search.search_jobs` and `search.slow_jobs` in the configuration.
 
-The default remains the legacy serial scheduler (`--search-jobs 0`). Use
-`--search-jobs 1` as the serial reference for the process task plan. See
+Use `--search-jobs N` to change the search process count,
+`--search-jobs 0` for the legacy serial scheduler, or `--search-jobs 1` as
+the serial reference for the process task plan. See
 [Parallel-Search.md](docs/Parallel-Search.md) for budgets, reproducibility,
 remaining serial work, and the timing comparison tool.
 

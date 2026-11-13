@@ -188,14 +188,15 @@ class CLITest(unittest.TestCase):
             results = []
             for name, jobs, cache in [('one', 1, ''), ('many', 3, str(d/'cache')),
                                       ('warm', 2, str(d/'cache')),
-                                      ('slow', 3, '')]:
+                                      ('slow', 3, ''), ('default', None, '')]:
                 out = d / (name + '.json')
+                workers = [] if jobs is None else ['--search-jobs', str(jobs)]
                 retry = ['--timeout-ms', '0', '--slow-timeout-ms', '10000',
                          '--slow-budget-s', '10', '--slow-total-s', '1000'] \
                     if name == 'slow' else []
                 p = subprocess.run([
                     sys.executable, str(ROOT/'gi-rule-synth.py'), 'synth',
-                    str(source), '--search-jobs', str(jobs), '--search-batch', '2',
+                    str(source), *workers, '--search-batch', '2',
                     '--known', '', '--cache', cache, '--refresh-search',
                     '--grammar', 'registry', '--regions', '--siblings',
                     '-o', str(out), '--proofs', str(d/(name+'-proofs')), *retry],
@@ -204,6 +205,8 @@ class CLITest(unittest.TestCase):
                 db = json.loads(out.read_text())
                 st = json.loads(out.with_suffix('.stats.json').read_text())
                 self.assertFalse(st['parallel']['incomplete'])
+                self.assertEqual(st['parallel']['search_jobs'],
+                                 16 if jobs is None else jobs)
                 if name == 'slow':
                     self.assertGreater(st['parallel']['slow_admitted'], 0)
                 self.assertGreater(st['discovery']['vector_instances'], 0)
@@ -214,6 +217,7 @@ class CLITest(unittest.TestCase):
             # not just the number or names of rules.
             self.assertEqual(results[0]['rules'], results[1]['rules'])
             self.assertEqual(results[0]['rules'], results[3]['rules'])
+            self.assertEqual(results[0]['rules'], results[4]['rules'])
             # A learned catalog can retain the first equivalent revision;
             # compare semantic revisions and emitted code for a warm run.
             self.assertEqual([known.revision(r) for r in results[0]['rules']],
