@@ -772,7 +772,11 @@ class Search:
         self._check_time()
         bank = self.ctx.bank(var_cls, canon, cost, keys, nonlinear=True,
                              variant_mask=mask)
-        if bank.truncated:
+        # A bank is shared by the windows of a process: it was cut short
+        # for this window only if it ended at a cost this window reads (as
+        # discover.discover). Otherwise the label would depend on which
+        # windows a process searched before.
+        if bank.truncated and bank.truncated_at[0] <= cost:
             self.stats['bank_truncated'] = True
         cols = [np.array([env[i] for env in self.envs], U64)
                 for i in range(self.n)]
