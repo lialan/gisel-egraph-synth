@@ -257,6 +257,12 @@ static constexpr unsigned ExportVersion = 3;
 
 static const char *TimerGroupName = "gisel-egraph";
 static const char *TimerGroupDesc = "GlobalISel e-graph combiner";
+// The analyses that the pass computes again after a rewrite. They run inside
+// the phases of the group above, so they have their own group: its total is
+// part of those phases, not in addition to them.
+static const char *AnalysisTimerGroupName = "gisel-egraph-analyses";
+static const char *AnalysisTimerGroupDesc =
+    "GlobalISel e-graph combiner analyses";
 
 static const std::vector<RewriteRule> &getRules() {
   static const std::vector<RewriteRule> Rules = getDefaultIntegerRules();
@@ -935,6 +941,9 @@ private:
         MCI.emplace();
         MCI->compute(MF);
       }
+      NamedRegionTimer T("uniformity", "Uniformity analysis",
+                         AnalysisTimerGroupName, AnalysisTimerGroupDesc,
+                         TimePassesIsEnabled);
       MUI.emplace(computeMachineUniformityInfo(MF, *MCI, getDomTree(),
                                                /*HasBranchDivergence=*/true));
     }

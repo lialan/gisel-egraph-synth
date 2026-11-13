@@ -12,6 +12,13 @@ target's flags of girs/targets.py, AMDGPU gfx1100 by default):
   all      + the e-graph pass with all features (the default)
   no-X     all features but X (facts, linear, slice, tuples, patterns,
            banks, dag), for ablations
+  f:X+Y    exactly the features X and Y (f: alone is the same as none), to
+           measure combinations directly: an ablation hides features that
+           only pay off together
+
+`--define 'NAME=BASE FLAG...'` (repeatable) names a configuration that is
+BASE (one of the above) with extra llc flags, e.g. an experimental switch:
+`--define 'ordis=all -gisel-egraph-or-disjoint-to-add' --configs all,ordis`.
 
 Per file and configuration it records: the instruction count of the
 assembly, the encoded code size (sum of `; codeLenInByte`), SGPRs and
@@ -22,12 +29,17 @@ that fell back to SelectionDAG, and the -stats counters of the e-graph pass
 (an assertions build has them). A file whose fallback set differs between
 configurations is not comparable and is reported separately.
 
+With --time-passes it also records the timers of the e-graph pass
+(-time-passes: building, saturating, extracting and rewriting, the
+uniformity analysis computed again after a rewrite) and the time of the
+pass itself, in seconds per file.
+
 The instruction count and the code size are static measures of the
 generated code; nothing here runs the code.
 
   views_eval.py --llc build/plugin/bin/llc --list FILES -o OUT.json
                 [--root DIR] [--configs stock,none,all] [--mcpu gfx1100]
-                [-j N]
+                [--define 'NAME=BASE FLAG...'] [--time-passes] [-j N]
 """
 
 import argparse
@@ -36,6 +48,7 @@ import concurrent.futures
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -57,9 +70,21 @@ MNEMONICS = ('v_mov_b32', 's_mov_b32', 'v_readfirstlane_b32', 'v_add3_u32',
              's_mul_i32', 'v_lshlrev_b32', 'v_and_b32', 'v_or_b32',
              'v_cndmask_b32', 'v_cmp_gt_u32', 'v_cmp_lt_u32')
 STAT = re.compile(r'^\s*(\d+)\s+(\S+)\s+-\s+(.*)$', re.M)
+# -time-passes: the title of a timer group, and a row of times
+# ("0.0123 ( 45.6%)" per column) followed by the name of the timer.
+TIMER_TITLE = re.compile(r'^\s{2,}(\S.*\S)\s*\n=+-+=+\s*$', re.M)
+TIMER_COLUMN = re.compile(r'(\d+\.\d+)\s+\(\s*[\d.]+%\)')
+EGRAPH_TIMERS = ('GlobalISel e-graph combiner',
+                 'GlobalISel e-graph combiner analyses')
+# The pass in the report of the legacy pass manager: one row per instance
+# (before and after the legalizer), 'GIEGraphCombiner #2' for the second.
+EGRAPH_PASS = re.compile(r'^GIEGraphCombiner(?: #\d+)?$')
 
 
-def flags_of(config):
+def flags_of(config, defines=None):
+    if defines and config in defines:
+        base, extra = defines[config]
+        return flags_of(base) + extra
     if config == 'stock':
         return []
     if config == 'none':
@@ -68,7 +93,61 @@ def flags_of(config):
         return list(EGRAPH)
     if config.startswith('no-') and config[3:] in FEATURES:
         return EGRAPH + ['-gisel-egraph-features=all,' + config]
+    if config.startswith('f:'):
+        feats = [f for f in config[2:].split('+') if f]
+        bad = [f for f in feats if f not in FEATURES]
+        if bad:
+            raise SystemExit('unknown feature %s in %s' % (bad[0], config))
+        return EGRAPH + ['-gisel-egraph-features=' + ','.join(['none'] +
+                                                              feats)]
     raise SystemExit('unknown configuration ' + config)
+
+
+def parse_defines(specs):
+    """--define 'NAME=BASE FLAG...' -> {NAME: (BASE, [FLAG...])}."""
+    defines = {}
+    for spec in specs:
+        name, _, rest = spec.partition('=')
+        words = shlex.split(rest)
+        if not name or not words:
+            raise SystemExit('--define: expected NAME=BASE FLAG..., got ' +
+                             spec)
+        flags_of(words[0])  # The base must be a known configuration.
+        defines[name] = (words[0], words[1:])
+    return defines
+
+
+def parse_timers(stderr):
+    """The e-graph timers of -time-passes output, in seconds of process
+    time (user + system; wall time if that is all there is): the phases
+    of the pass (build, saturate, extract and rewrite), the uniformity
+    analysis (computed again after each rewrite; it runs inside those
+    phases) and the pass itself from the report of the legacy pass manager
+    ('pass')."""
+    timers = {}
+    titles = list(TIMER_TITLE.finditer(stderr))
+    for i, m in enumerate(titles):
+        end = titles[i + 1].start() if i + 1 < len(titles) else len(stderr)
+        body = stderr[m.end():end]
+        header = next((l for l in body.splitlines() if '--- Name ---' in l),
+                      None)
+        if header is None:
+            continue
+        cols = re.findall(r'-+\s*([A-Za-z+ ]+?)\s*-+', header)
+        cols = [c.replace(' Time', '') for c in cols if c != 'Name']
+        pick = (cols.index('User+System') if 'User+System' in cols else
+                cols.index('Wall') if 'Wall' in cols else 0)
+        for line in body.splitlines():
+            times = TIMER_COLUMN.findall(line)
+            if len(times) != len(cols):
+                continue
+            name = TIMER_COLUMN.sub('', line).strip()
+            secs = float(times[pick])
+            if m.group(1) in EGRAPH_TIMERS and name != 'Total':
+                timers[name] = timers.get(name, 0.0) + secs
+            elif EGRAPH_PASS.match(name):
+                timers['pass'] = timers.get('pass', 0.0) + secs
+    return timers
 
 
 def run(cmd, timeout):
@@ -88,7 +167,8 @@ def run(cmd, timeout):
     return rc, text, ru.ru_utime + ru.ru_stime, ru.ru_maxrss
 
 
-def compile_one(llc, target, mcpu, path, config, timeout):
+def compile_one(llc, target, mcpu, path, config, timeout, defines=None,
+                time_passes=False):
     with tempfile.NamedTemporaryFile(suffix='.s', delete=False) as tf:
         out = tf.name
     # The CPU of the target (gfx1100 for AMDGPU) unless --mcpu is given.
@@ -97,7 +177,8 @@ def compile_one(llc, target, mcpu, path, config, timeout):
         ll_flags = [f for f in ll_flags if not f.startswith('-mcpu=')]
         ll_flags.append('-mcpu=' + mcpu)
     cmd = ([llc] + ll_flags + ['-verify-machineinstrs', '-stats'] +
-           flags_of(config) + [path, '-o', out])
+           (['-time-passes'] if time_passes else []) +
+           flags_of(config, defines) + [path, '-o', out])
     rc, stderr, cpu, rss = run(cmd, timeout)
     res = {'rc': rc, 'user': cpu, 'rss_kib': rss,
            'fallback': sorted(set(measure.FALLBACK.findall(stderr)))}
@@ -121,6 +202,8 @@ def compile_one(llc, target, mcpu, path, config, timeout):
                 stats[desc.strip()] = stats.get(desc.strip(), 0) + int(n)
         if stats:
             res['stats'] = stats
+        if time_passes:
+            res['timers'] = parse_timers(stderr)
     else:
         res['err'] = stderr[-400:]
     if os.path.exists(out):
@@ -177,6 +260,13 @@ def summarize(res, configs, out=sys.stdout):
         if st:
             print('%s e-graph stats: %s' % (c, json.dumps(dict(sorted(
                 st.items())))), file=out)
+    for c in configs:
+        tm = collections.Counter()
+        for p in comparable:
+            tm.update(res[p][c].get('timers', {}))
+        if tm:
+            print('%s e-graph timers (s): %s' % (c, json.dumps(
+                {k: round(v, 3) for k, v in sorted(tm.items())})), file=out)
     return comparable
 
 
@@ -188,6 +278,11 @@ def main():
     ap.add_argument('--root', default=paths.LLVM_ROOT,
                     help='directory of the relative paths of the list')
     ap.add_argument('--configs', default='stock,none,all')
+    ap.add_argument('--define', action='append', default=[],
+                    metavar='NAME=BASE FLAG...',
+                    help='a configuration BASE with extra llc flags')
+    ap.add_argument('--time-passes', action='store_true',
+                    help='record the timers of the e-graph pass')
     ap.add_argument('--target', default='AMDGPU')
     ap.add_argument('--mcpu', default='')
     ap.add_argument('--timeout', type=int, default=measure.TIMEOUT)
@@ -197,11 +292,15 @@ def main():
     files = [l.strip() for l in open(a.list)
              if l.strip() and not l.startswith('#')]
     configs = a.configs.split(',')
+    defines = parse_defines(a.define)
+    for c in configs:
+        flags_of(c, defines)  # Fail before compiling anything.
     llc = os.path.abspath(a.llc)
 
     def one(rel):
         path = rel if os.path.isabs(rel) else os.path.join(a.root, rel)
-        return rel, {c: compile_one(llc, target, a.mcpu, path, c, a.timeout)
+        return rel, {c: compile_one(llc, target, a.mcpu, path, c, a.timeout,
+                                    defines, a.time_passes)
                      for c in configs}
     res = {}
     with concurrent.futures.ThreadPoolExecutor(a.j) as ex:
@@ -209,6 +308,7 @@ def main():
             res[rel] = r
     with open(a.o, 'w') as f:
         json.dump({'llc': llc, 'mcpu': a.mcpu, 'configs': configs,
+                   'defines': {k: [b] + e for k, (b, e) in defines.items()},
                    'files': res}, f, indent=0, sort_keys=True)
     summarize(res, configs)
 
