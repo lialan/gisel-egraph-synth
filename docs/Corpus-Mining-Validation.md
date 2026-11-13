@@ -7,11 +7,12 @@ the experiments do not measure hardware execution time.
 
 ## Source and environment
 
-- Main baseline: `d842e366366d0ead9c0ac7fc9aa57741684ce4b4`.
-- Experiment implementation: `58c65c2`. Subsequent commit `6306724` adds
-  stage-cache invalidation for changed measurement/selection/report code
-  and a regression test. It does not change fresh-run search, selection
-  or measurement logic; the experiment stays on its frozen source.
+- Integrated upstream main: `8afac892841b4c2637ef82424944412e7efd0a55`.
+- Experiment implementation: `18dc03dcad921c8b62ca3a8dc76f5d70d74cebac`.
+  This includes main's incremental joint queue and baseline-aware
+  screening changes, plus the measured campaign, objectives and corpus.
+  The source stayed frozen throughout all six arms and the resume check.
+  Later changes only record documentation and evidence.
 - LLVM backend: `37a1706d0eac1774701a0a44d9fb4fa542f56fde`.
 - Clang frontend: 23.0.0git, `0721d8e7768c011b8cf2d4d223ca6eca3392b1f9`.
 - Validation host: nod, 32 logical CPUs, 16 search workers. Work was
@@ -47,7 +48,7 @@ arms finish selection before any arm evaluates held-out machine code.
 ```sh
 python tools/gisel-rule-synth/eval/mine_experiment.py \
   --config tools/gisel-rule-synth/configs/real-corpus.json \
-  --out build/experiment-final-180 --budget-s 180 --seeds 17 29 --jobs 16
+  --out build/experiment-integrated-180 --budget-s 180 --seeds 17 29 --jobs 16
 ```
 
 Development smoke runs and an interrupted earlier implementation run
@@ -64,12 +65,12 @@ exported into the maintained catalogs or target profiles.
 
 | Seed | Policy | Rounds | Actual search s | Selection wall s | Added rules | Validation instruction / code-byte delta | Held-out instruction / code-byte delta |
 |---|---|---:|---:|---:|---:|---|---|
-| 17 | single, instructions | 1 | 133.2 | 211.0 | 0 | 0 / 0 | 0 / 0 |
-| 17 | feedback, instructions | 3 | 163.3 | 316.9 | 0 | 0 / 0 | 0 / 0 |
-| 17 | feedback, code bytes | 3 | 166.0 | 320.8 | 0 | 0 / 0 | 0 / 0 |
-| 29 | single, instructions | 1 | 137.8 | 217.7 | 0 | 0 / 0 | 0 / 0 |
-| 29 | feedback, instructions | 3 | 163.5 | 298.2 | 0 | 0 / 0 | 0 / 0 |
-| 29 | feedback, code bytes | 3 | 162.8 | 291.4 | 0 | 0 / 0 | 0 / 0 |
+| 17 | single, instructions | 1 | 131.0 | 212.6 | 0 | 0 / 0 | 0 / 0 |
+| 17 | feedback, instructions | 3 | 162.8 | 314.7 | 0 | 0 / 0 | 0 / 0 |
+| 17 | feedback, code bytes | 3 | 163.6 | 314.5 | 0 | 0 / 0 | 0 / 0 |
+| 29 | single, instructions | 1 | 131.4 | 206.9 | 0 | 0 / 0 | 0 / 0 |
+| 29 | feedback, instructions | 3 | 162.3 | 290.3 | 0 | 0 / 0 | 0 / 0 |
+| 29 | feedback, code bytes | 3 | 165.7 | 302.7 | 0 | 0 / 0 | 0 / 0 |
 
 Selection wall time includes search, builds, measurements and verification;
 it excludes the final evaluation phase. Each arm receives the same
@@ -85,12 +86,18 @@ SelectionDAG fallback in the baseline; this was unchanged in every arm.
 No held-out function used fallback. The 13 discovery units supplied the
 search inputs and are not part of this final evaluation total.
 
-In the seed-17 single-round arm, 289 joint candidates were measured:
-272 did not apply to validation programs, 12 applied without a gain,
+In the seed-17 single-round arm, 310 joint candidates were measured:
+293 did not apply to validation programs, 12 applied without a gain,
 and 5 regressed. The feedback arms continued their queues and tested
 retained and additional candidates, but none passed selection either.
 Candidate counts and truncated-queue reasons for every round are in
-[the machine-readable evidence](Corpus-Mining-Validation.json).
+[the integrated machine-readable evidence](Corpus-Mining-Integrated-Validation.json).
+
+For example, the seed-17 instruction feedback arm searched 276, 109 and
+79 joint agenda tasks in successive rounds. It ended with 154 tasks not
+yet searched; the single-round arm visited all 618 tasks, though many
+remained incomplete at their depth/term/time limits. Feedback reallocation
+does not guarantee broader task coverage within a fixed allowance.
 
 The harness completed all six selections before the first held-out
 evaluation, and each frozen report records zero previous held-out
@@ -106,12 +113,30 @@ which of corpus coverage, search limits or candidate forms is the main
 bottleneck. Further tuning must use fresh held-out programs for another
 independent acceptance claim.
 
+## Earlier frozen run
+
+The same protocol was first completed at `58c65c2`, based on main
+`d842e366366d0ead9c0ac7fc9aa57741684ce4b4`. All six arms also selected no
+additional rule, with zero instruction and code-size deltas. Its original
+measurements and provenance remain in
+[Corpus-Mining-Validation.json](Corpus-Mining-Validation.json).
+Commit `6306724` then added cache invalidation and a regression test.
+
+Main advanced while this work was being validated. After integrating it,
+the full regression suite and all six arms were rerun at `18dc03d`; the
+table above reports this integrated run. The corpus, split, seeds,
+objectives and allowance were not tuned from the earlier held-out result.
+This repeats a previously evaluated corpus and is **not** a fresh unseen
+held-out acceptance experiment. The per-run ordering checks do not erase
+that history.
+
 ## Regression checks
 
-On the experiment implementation, the full Python suite ran 802 tests
-and passed with 2 skips. The C++ suite passed 275 tests. The MIR suite
-passed 26 tests with 2 unsupported cases. `emit --check` found the
-maintained generated files current.
+On the integrated experiment implementation, the full Python suite ran
+812 tests and passed with 2 skips. The C++ suite passed 276 tests. The MIR
+suite passed 27 tests with 2 unsupported cases. Both `emit --check` and
+`joint-emit --check` passed. Log hashes and counts are included in the
+integrated evidence.
 
 The new coverage checks objective conflicts, per-file regressions,
 guardrails, missing metrics, changed fallback sets, candidate overlap,
@@ -119,9 +144,11 @@ baseline-enabled matches, cycles, feedback quotas, encoded ELF sections,
 corpus grouping and hashes, budget splitting, CLI status, local promotion,
 candidate retention, final-only evaluation, original-baseline comparison,
 completed resume, export baseline identity and artifact tampering.
+The integration also checks that measured and legacy selection route the
+correct feedback to the next round.
 
 A real completed three-round campaign was invoked again after evaluation:
 its campaign/report, per-round states, catalogs, profiles, joint search
 statistics and final freeze record were byte-for-byte unchanged (21
-artifacts, 0.57 seconds). No completed search or held-out measurement ran
+artifacts, 0.56 seconds). No completed search or held-out measurement ran
 again. The resume artifact hashes are included in the evidence.

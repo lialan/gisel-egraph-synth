@@ -1,0 +1,4361 @@
+{
+  "schema": 1,
+  "tool_revision": "18dc03dcad921c8b62ca3a8dc76f5d70d74cebac",
+  "base_main": "8afac892841b4c2637ef82424944412e7efd0a55",
+  "protocol": {
+    "budget_s": 180.0,
+    "seeds": [
+      17,
+      29
+    ],
+    "jobs": 16,
+    "harness_sha256": "12938147ec4905ebe9e5e44d77fdbb3a2b710a3be99312473aad160a03eaf771",
+    "arms": [
+      "single-insns-seed17",
+      "loop-insns-seed17",
+      "loop-bytes-seed17",
+      "single-insns-seed29",
+      "loop-insns-seed29",
+      "loop-bytes-seed29"
+    ],
+    "comparison": "same engine and candidate policy; single round vs feedback rounds",
+    "heldout_policy": "all selections frozen before any heldout evaluation"
+  },
+  "configuration": {
+    "name": "mibench-aarch64",
+    "mode": "semantics-only",
+    "target": "AArch64",
+    "llc": "/home/nod/gisel-mine-loop-20261113/build/experiment-integrated-180/reference-llc",
+    "opt": "/home/nod/gisel-egraph-synth/build/llvm/bin/opt",
+    "build_dir": "/home/nod/gisel-mine-loop-20261113/build/plugin",
+    "cache_dir": "/home/nod/gisel-mine-loop-20261113/.cache/girs",
+    "refresh_search": false,
+    "manifests": {
+      "discovery": "/home/nod/gisel-mine-loop-20261113/tools/gisel-rule-synth/configs/../../../build/real-corpus/discovery.txt",
+      "validation": "/home/nod/gisel-mine-loop-20261113/tools/gisel-rule-synth/configs/../../../build/real-corpus/validation.txt",
+      "heldout": "/home/nod/gisel-mine-loop-20261113/tools/gisel-rule-synth/configs/../../../build/real-corpus/heldout.txt"
+    },
+    "corpus_metadata": "/home/nod/gisel-mine-loop-20261113/tools/gisel-rule-synth/configs/../../../build/real-corpus/metadata.json",
+    "roles": {
+      "discovery": [
+        "discovery"
+      ],
+      "selection": [
+        "validation"
+      ],
+      "heldout": [
+        "heldout"
+      ]
+    },
+    "pipelines": [
+      "direct"
+    ],
+    "discovery_pipelines": [
+      "direct"
+    ],
+    "extract": {
+      "depth": null,
+      "max_trees": null
+    },
+    "search": {
+      "grammar": "auto",
+      "seed": 17,
+      "max_instances": 0,
+      "search_jobs": 16,
+      "slow_jobs": 1,
+      "search_batch": 32,
+      "slow_timeout_ms": 120000,
+      "slow_budget_s": 300,
+      "slow_total_s": 0,
+      "timeout_ms": 10000,
+      "max_atoms": 2,
+      "max_terms": 50000,
+      "max_evals": 40000000,
+      "max_proofs": 48,
+      "max_candidates": 6,
+      "time_budget_s": 0,
+      "cost_slack": null,
+      "max_rhs_cost": 0,
+      "semantic_variants": 1,
+      "expand_types": false,
+      "legalizer_stage": "pre-legalizer",
+      "explore_share": 0.2,
+      "regions": true,
+      "siblings": true,
+      "max_pairs": 0,
+      "multi_share": 0.3,
+      "views": true,
+      "views_max_proposals": 8,
+      "only_vectors": false
+    },
+    "hybrid": {
+      "egraph_stages": "pre-legalizer",
+      "egraph_max_cost": 8,
+      "compose_depth": 3,
+      "compose_steps": 3,
+      "compose_axioms": false
+    },
+    "joint": {
+      "enabled": true,
+      "max_window": 5,
+      "max_cost": 3,
+      "max_outputs": 3,
+      "max_helpers": 256,
+      "max_terms": 200000,
+      "time_s": 5.0,
+      "max_windows": 0,
+      "max_windows_per_block": 2000,
+      "jobs": 16,
+      "cost_slack": 0,
+      "semantic_variants": 6,
+      "max_cands": 12,
+      "max_combos": 50000,
+      "max_proofs": 6,
+      "helper_cost": 2,
+      "max_reuse": 4,
+      "samples": 48,
+      "max_evals": 20000000,
+      "timeout_ms": 10000,
+      "seed": 17,
+      "time_budget_s": 0,
+      "max_tasks": null,
+      "checkpoint_s": 30,
+      "cache": null,
+      "priority": null,
+      "refresh_search": false
+    },
+    "select": {
+      "no_regressions": true,
+      "keep_unmeasured": false,
+      "strategy": "measured",
+      "metric": "insns",
+      "guardrails": {}
+    },
+    "loop": {
+      "rounds": 3,
+      "search_budget_s": 300,
+      "joint_share": 0.5,
+      "growth": 2,
+      "max_growth": 4
+    },
+    "references": {},
+    "restore_build": false,
+    "jobs": 16
+  },
+  "generator_sha256": "fe09969f1ee850085568600b22b81679459edf566c2bf4e756deb8424f0d503f",
+  "protocol_sha256": "5758f4481257117937a3ec98847a42642f369876a4a75e6e000a576b0685b34c",
+  "corpus": {
+    "recipe": {
+      "schema": 1,
+      "repository": "https://github.com/llvm/llvm-test-suite.git",
+      "revision": "19b349c5aa391729e688f9b4b53ded177e1531cb",
+      "target": "aarch64-unknown-linux-gnu",
+      "flags": [
+        "-O2",
+        "-std=gnu89",
+        "-Wno-implicit-function-declaration",
+        "-Wno-implicit-int"
+      ],
+      "groups": {
+        "discovery": [
+          "automotive-bitcount",
+          "security-sha",
+          "network-patricia"
+        ],
+        "validation": [
+          "office-stringsearch",
+          "security-blowfish",
+          "telecomm-adpcm"
+        ],
+        "heldout": [
+          "security-rijndael",
+          "telecomm-CRC32",
+          "automotive-basicmath"
+        ]
+      },
+      "directory": "MultiSource/Benchmarks/MiBench"
+    },
+    "recipe_sha256": "62320f307e7429f425f15ee19ddf3956a2acf95d07455311ce4bc0f778f20e68",
+    "source_revision": "19b349c5aa391729e688f9b4b53ded177e1531cb",
+    "compiler_sha256": "d691965fbdc64f19e7ca217155c0a5769e35d7e8ca8a662389ef0751edb632b1",
+    "compiler_version": "clang version 23.0.0git (https://github.com/llvm/llvm-project.git 0721d8e7768c011b8cf2d4d223ca6eca3392b1f9)\nTarget: x86_64-unknown-linux-gnu\nThread model: posix\nInstalledDir: /home/nod/llvm-project/build/bin\nBuild config: +assertions\n",
+    "role_units": {
+      "discovery": 13,
+      "validation": 13,
+      "heldout": 7
+    },
+    "units": [
+      {
+        "role": "discovery",
+        "project": "automotive-bitcount",
+        "source": "MultiSource/Benchmarks/MiBench/automotive-bitcount/bitarray.c",
+        "source_sha256": "85f5082e2dbb439c7ed7f8d68923605adb68d5d33a0a7b05ce833321789dc522",
+        "sha256": "8d228d251dc8fca2e99898dc7d7507ae49203610faaac7683878cbd9d5e698d6"
+      },
+      {
+        "role": "discovery",
+        "project": "automotive-bitcount",
+        "source": "MultiSource/Benchmarks/MiBench/automotive-bitcount/bitcnt_1.c",
+        "source_sha256": "3457fb88f0e29eaade73d6b42658478c43de1079329f04429dc35a835abeb152",
+        "sha256": "eb66c911e7b3c3440c9c812c275d74791cb71baeac4e8a44f485d053b3c0bb65"
+      },
+      {
+        "role": "discovery",
+        "project": "automotive-bitcount",
+        "source": "MultiSource/Benchmarks/MiBench/automotive-bitcount/bitcnt_2.c",
+        "source_sha256": "f63c05091096521c52b832a3f94e113845828964fa6f2571388aad9f5592793f",
+        "sha256": "7d9bbc81f4dd3967c22d682c1c26d434ae4bb47d6b5741031afabb5c9b17702d"
+      },
+      {
+        "role": "discovery",
+        "project": "automotive-bitcount",
+        "source": "MultiSource/Benchmarks/MiBench/automotive-bitcount/bitcnt_3.c",
+        "source_sha256": "7a4ce682a1599f186a57facbe0c51944928d294b017df6ec5711b70cf74b5940",
+        "sha256": "08318f12ec3e4d1e5c2d6bd118d3d7cbecd864afa5b14335faed689eefcbab88"
+      },
+      {
+        "role": "discovery",
+        "project": "automotive-bitcount",
+        "source": "MultiSource/Benchmarks/MiBench/automotive-bitcount/bitcnt_4.c",
+        "source_sha256": "cf5c3f945f5908ad759f71847960ca90b92987242ffdaf926502a1325600b4a5",
+        "sha256": "62891a4e970f007e6b013727fe43fb53653e683f94742ce5a38416d16b17b07a"
+      },
+      {
+        "role": "discovery",
+        "project": "automotive-bitcount",
+        "source": "MultiSource/Benchmarks/MiBench/automotive-bitcount/bitcnts.c",
+        "source_sha256": "9fe67182026036858488a4123d6f562573a56dc061ef23eff2a2d48c95b2f0e4",
+        "sha256": "a0de877af49181c350598547ff6e42a9732bffbcee9d13f5589d3da72b322f85"
+      },
+      {
+        "role": "discovery",
+        "project": "automotive-bitcount",
+        "source": "MultiSource/Benchmarks/MiBench/automotive-bitcount/bitfiles.c",
+        "source_sha256": "25c170d87d932fac68ac1779b1eef4a05fcf9c2a5e62013984de08a1f4e1684b",
+        "sha256": "58db13a004242dc563434a2cf19a63951df64eabc03058df4fe8e063a63e0501"
+      },
+      {
+        "role": "discovery",
+        "project": "automotive-bitcount",
+        "source": "MultiSource/Benchmarks/MiBench/automotive-bitcount/bitstrng.c",
+        "source_sha256": "cb23cfdbfae3f5311f187a21507fce3460ec3bfe58dbbdf3e85f6d1bc9492bf1",
+        "sha256": "d836565ed5566ca103f87a629dc9176464d241556390e35e3823ad74481a7035"
+      },
+      {
+        "role": "discovery",
+        "project": "automotive-bitcount",
+        "source": "MultiSource/Benchmarks/MiBench/automotive-bitcount/bstr_i.c",
+        "source_sha256": "883695aec138ed0ce456c7c2d173f2eb521f60b54ffbeef599a61bb74b60116c",
+        "sha256": "6be5c82ea852ea40a61b8c23b24f20acd4406261c32bdefe0f5edd337e866ebc"
+      },
+      {
+        "role": "discovery",
+        "project": "security-sha",
+        "source": "MultiSource/Benchmarks/MiBench/security-sha/sha.c",
+        "source_sha256": "993e287b1d9bca219ab7d54a53dadc3cf9dcfa3abfe126c22e7dcef93bae96d9",
+        "sha256": "f4040698744771c7bc60b354eb0180e3ba24ea6815d37e2e095005bae253d916"
+      },
+      {
+        "role": "discovery",
+        "project": "security-sha",
+        "source": "MultiSource/Benchmarks/MiBench/security-sha/sha_driver.c",
+        "source_sha256": "8561eec407059960a43041f46f9619bfb8e3c04b1af5eda7dd8f59ae446ab6fc",
+        "sha256": "f9b9563dd1f01fc6fb8054beb5c52bb9f3cac1bc25258821e5e918e975802b68"
+      },
+      {
+        "role": "discovery",
+        "project": "network-patricia",
+        "source": "MultiSource/Benchmarks/MiBench/network-patricia/patricia.c",
+        "source_sha256": "3902b0513942f17b5ca7e22afa1f8f728e1a9a5eb5f24b1fc98d57d72abf13e5",
+        "sha256": "a62c0c173bea0fbc39c18bbca18ee7412b78ac0445352759ed98a689365cceb8"
+      },
+      {
+        "role": "discovery",
+        "project": "network-patricia",
+        "source": "MultiSource/Benchmarks/MiBench/network-patricia/patricia_test.c",
+        "source_sha256": "d4172bfc5634f9ac4bdb10fb8b574d92817cb224fd312091554f3100c851ddaa",
+        "sha256": "b185bfee468cf08b9dd50f0c194ec3e1cc6e3c15a2359f0b397e07d348318fda"
+      },
+      {
+        "role": "validation",
+        "project": "office-stringsearch",
+        "source": "MultiSource/Benchmarks/MiBench/office-stringsearch/bmhasrch.c",
+        "source_sha256": "24c5d0353ff27f815cfc4661920b16a93a1407cc582e58bf9a64dace19b77b55",
+        "sha256": "4599b0d1e7a6d497ab32b0256380504fc712eaf993b93641b3cce882a5cc1ad0"
+      },
+      {
+        "role": "validation",
+        "project": "office-stringsearch",
+        "source": "MultiSource/Benchmarks/MiBench/office-stringsearch/bmhisrch.c",
+        "source_sha256": "7ee7712b7aa4381abcc0625c1a0b09985de31eb841a9a86c3d9746f0e6d2e979",
+        "sha256": "5f062f52bdaa8db0c91946cdfb0dea7fcddff571319da003f3fcd1ecc0a9f7c6"
+      },
+      {
+        "role": "validation",
+        "project": "office-stringsearch",
+        "source": "MultiSource/Benchmarks/MiBench/office-stringsearch/bmhsrch.c",
+        "source_sha256": "352d4fe4baf0469f417c26c480df1a82fe56a2b32bedb1327a4cfb6b9e16df8b",
+        "sha256": "a88e7392370dc1726fe89957270bb3df7b807cf8a2e3a1a896e1ffce47c45112"
+      },
+      {
+        "role": "validation",
+        "project": "office-stringsearch",
+        "source": "MultiSource/Benchmarks/MiBench/office-stringsearch/pbmsrch.c",
+        "source_sha256": "efa917c110f15ea2e1e7366aad24de668d67bb48ac7eb930bb21786a922ec2fd",
+        "sha256": "e4e4076c6cb5da99900ca42b5c3164fe483f6b5de60847cb9803a1f2159466f8"
+      },
+      {
+        "role": "validation",
+        "project": "security-blowfish",
+        "source": "MultiSource/Benchmarks/MiBench/security-blowfish/bf_cbc.c",
+        "source_sha256": "6adb7b2881a1703e3c403595a5fafdae05be9d8ac5666e19ac5bd310b1128158",
+        "sha256": "0b747a9f2c57fb115006ffe3fe246aaa89bc573e4252b7b9c3552b264fef5109"
+      },
+      {
+        "role": "validation",
+        "project": "security-blowfish",
+        "source": "MultiSource/Benchmarks/MiBench/security-blowfish/bf_cfb64.c",
+        "source_sha256": "41cd5098e2c33246cdecb981edaa7555240a6677ef5b14851be78230ba9b2b14",
+        "sha256": "eaaf411d689ce040eab85ef91c4034b51303eeddfadc789e5cde810c3e24ee43"
+      },
+      {
+        "role": "validation",
+        "project": "security-blowfish",
+        "source": "MultiSource/Benchmarks/MiBench/security-blowfish/bf_ecb.c",
+        "source_sha256": "ee8a26743db8ca33a8906ec9e54831a7e5668102be6bef577919a0e26467d75a",
+        "sha256": "526b8490ef151c96a9356972b086691aa10f86e21cb9874be300d3c6a9497110"
+      },
+      {
+        "role": "validation",
+        "project": "security-blowfish",
+        "source": "MultiSource/Benchmarks/MiBench/security-blowfish/bf_enc.c",
+        "source_sha256": "99a949ae6624ce3f501a5633485f4d3fe8b443932fa16807ef34e11f467742ee",
+        "sha256": "7802892c028c02ad2dccdba610552b09318f24a03c5748848b78c3139c9a6c4c"
+      },
+      {
+        "role": "validation",
+        "project": "security-blowfish",
+        "source": "MultiSource/Benchmarks/MiBench/security-blowfish/bf_ofb64.c",
+        "source_sha256": "0a7a393829235af922141f28cdcc11bdd44dee3d5c5c9659e4d0123dac8d721d",
+        "sha256": "bc0440952b3acb807c67cc3f399b1288229bd55b0a7a183c0d3a8b15e118985a"
+      },
+      {
+        "role": "validation",
+        "project": "security-blowfish",
+        "source": "MultiSource/Benchmarks/MiBench/security-blowfish/bf_skey.c",
+        "source_sha256": "f5f7c14440aedb5bca8a22a18e574f55ddd0b98239a5b73485fae70c4d1cf7e9",
+        "sha256": "70af8d1d54e4fba15c755c87e579cbf1f81d6c3dbcea4724105ea230c8a0a890"
+      },
+      {
+        "role": "validation",
+        "project": "security-blowfish",
+        "source": "MultiSource/Benchmarks/MiBench/security-blowfish/bftest.c",
+        "source_sha256": "2ddb36577400233299130516e47c14f5614645bfc87af50124b6d0cd7411b7c1",
+        "sha256": "6720d6e560d43e22435678f353ea45938a2e3c17440f1635370a67b6dc0de316"
+      },
+      {
+        "role": "validation",
+        "project": "telecomm-adpcm",
+        "source": "MultiSource/Benchmarks/MiBench/telecomm-adpcm/adpcm.c",
+        "source_sha256": "318b5636c0df6861a37f5a900c54283b7ff455c64804f6b256b123c310b3b207",
+        "sha256": "5d36e9fbcb139418213bb7cd104d74654753661227e62e7feed6dc46c1aa6252"
+      },
+      {
+        "role": "validation",
+        "project": "telecomm-adpcm",
+        "source": "MultiSource/Benchmarks/MiBench/telecomm-adpcm/rawdaudio.c",
+        "source_sha256": "ee04258e18bed0588f4bf5fe30e6ce727012b8b626f1040443cf86255bbae4e4",
+        "sha256": "bb1c61c69f98d35ada15bf71f7957cc096274ec2d6e383b97ecca9bb4212dc0f"
+      },
+      {
+        "role": "heldout",
+        "project": "security-rijndael",
+        "source": "MultiSource/Benchmarks/MiBench/security-rijndael/aes.c",
+        "source_sha256": "fa9223ad87f203e51fac865b1db030f09f6b138142a62883957428f1bb68a7dd",
+        "sha256": "99bb28925f43f586a777141771e119b524af01a6a7c03e6949cb0d32f854bcdc"
+      },
+      {
+        "role": "heldout",
+        "project": "security-rijndael",
+        "source": "MultiSource/Benchmarks/MiBench/security-rijndael/aesxam.c",
+        "source_sha256": "c6427aa0937783614bc63bcfb564bbfa9940c2ba37b975a6e939c9159db7520e",
+        "sha256": "2dd1499ff181f6991f7dd7873c1cc0c0bea76791a772b7df64fa3e76ec07f4c6"
+      },
+      {
+        "role": "heldout",
+        "project": "telecomm-CRC32",
+        "source": "MultiSource/Benchmarks/MiBench/telecomm-CRC32/crc_32.c",
+        "source_sha256": "0be838a2913047ae8482c4220edff97476ad373600bfff11e2c46b431720afd4",
+        "sha256": "2d51e45ae5aae0817242af71c7fc6a29c0b9137fc2a3ceb79423e092fee7f9b0"
+      },
+      {
+        "role": "heldout",
+        "project": "automotive-basicmath",
+        "source": "MultiSource/Benchmarks/MiBench/automotive-basicmath/basicmath.c",
+        "source_sha256": "376353e264b170ce91ee3634d7a219cbbf495e04f8ddba1ef3f90773af726c9c",
+        "sha256": "20a60a8354177e926fd40dd7488476cdb704e261d1fe7703900ef47f94c21d91"
+      },
+      {
+        "role": "heldout",
+        "project": "automotive-basicmath",
+        "source": "MultiSource/Benchmarks/MiBench/automotive-basicmath/cubic.c",
+        "source_sha256": "53aff63e5aeea2309e329cade93ce17011d6a738584634b9aa0b1abdeebe225d",
+        "sha256": "72364ffd5e9110966c40b36a118ce15171cae86f5c9121aa554be81678ab2108"
+      },
+      {
+        "role": "heldout",
+        "project": "automotive-basicmath",
+        "source": "MultiSource/Benchmarks/MiBench/automotive-basicmath/isqrt.c",
+        "source_sha256": "2ad681a09d95cd50d3bb790cbcb972aae66fe493ef5924c52b188986ff16007d",
+        "sha256": "6a604c3b21af247b65767c48481e7cd3a14ad20e12973b0b0018ae7daa41bfe6"
+      },
+      {
+        "role": "heldout",
+        "project": "automotive-basicmath",
+        "source": "MultiSource/Benchmarks/MiBench/automotive-basicmath/rad2deg.c",
+        "source_sha256": "2dd4c177c344eb271035d534e71c7130e21ebeacd1cf2f4c84f75ed78dbd343c",
+        "sha256": "58b1503abd06962ae6c955b0adc1655a01f48b1be60a05cc38e4fcdb43cce36c"
+      }
+    ],
+    "metadata_sha256": "e4dbc18904d4e1420e2942604eb63b5953f7b85f5aa20451698825d5a8ed8d6b"
+  },
+  "arms": {
+    "single-insns-seed17": {
+      "search_elapsed_s": 131.0,
+      "search_budget_s": 180.0,
+      "original_baseline": [
+        "synth_xor_66308b8b",
+        "synth_sub_c1235ab0_1u",
+        "synth_and_83abd1ae_1u",
+        "synth_lshr_c497647d",
+        "synth_select_4cdb868a",
+        "synth_select_4f35dc63",
+        "synth_shl_a7bba6d0_1u",
+        "synth_shl_edbd16af_1u",
+        "synth_smax_d4d1ff0e_1u",
+        "synth_trunc_110bd23a_1u",
+        "synth_or_ecb7e28d",
+        "synth_icmp_7274715e",
+        "synth_icmp_8f303343"
+      ],
+      "new_selected": [],
+      "newly_discovered_selected": [],
+      "known_rules_newly_selected": [],
+      "stop": "round_limit",
+      "objective": {
+        "guardrail_scope": "per compilation unit",
+        "guardrails": {},
+        "kind": "static",
+        "metric": "insns"
+      },
+      "evaluation": {
+        "heldout/direct": {
+          "base_fails": 0,
+          "bytes_delta": 0,
+          "changes": [],
+          "code_bytes_compared": 7,
+          "code_bytes_delta": 0,
+          "compared": 7,
+          "compile_failures": [],
+          "cpu": 0.2,
+          "cpu_base": 0.2,
+          "fallback_changed": [],
+          "files": 7,
+          "files_better": 0,
+          "files_worse": 0,
+          "guardrail_violations": [],
+          "insns_base": 3088,
+          "insns_delta": 0,
+          "objective": {
+            "guardrail_scope": "per compilation unit",
+            "guardrails": {},
+            "kind": "static",
+            "metric": "insns"
+          },
+          "objective_delta": 0
+        },
+        "validation/direct": {
+          "base_fails": 0,
+          "bytes_delta": 0,
+          "changes": [],
+          "code_bytes_compared": 13,
+          "code_bytes_delta": 0,
+          "compared": 13,
+          "compile_failures": [],
+          "cpu": 0.3,
+          "cpu_base": 0.3,
+          "fallback_changed": [],
+          "files": 13,
+          "files_better": 0,
+          "files_worse": 0,
+          "guardrail_violations": [],
+          "insns_base": 3384,
+          "insns_delta": 0,
+          "objective": {
+            "guardrail_scope": "per compilation unit",
+            "guardrails": {},
+            "kind": "static",
+            "metric": "insns"
+          },
+          "objective_delta": 0
+        }
+      },
+      "selection": {
+        "rc": 0,
+        "wall_s": 212.6308507109061
+      },
+      "evaluation_execution": {
+        "rc": 0,
+        "wall_s": 1.2263458361849189
+      },
+      "rounds": [
+        {
+          "search_elapsed_s": 131.0,
+          "ordinary_allowance_s": 90.0,
+          "joint_allowance_s": 90.0,
+          "new_selected": [],
+          "selection": {
+            "failed_baseline": 0,
+            "files_better": 0,
+            "files_compiled": 13,
+            "files_worse": 0,
+            "insns_delta": 0,
+            "objective": {
+              "guardrail_scope": "per compilation unit",
+              "guardrails": {},
+              "kind": "static",
+              "metric": "insns"
+            },
+            "objective_gain": 0,
+            "regressions": []
+          },
+          "ordinary_statuses": {
+            "emitted": 13,
+            "no_application": 24,
+            "regression": 2
+          },
+          "joint_statuses": {
+            "no_application": 293,
+            "no_gain": 12,
+            "regression": 5
+          },
+          "joint_candidates": 310,
+          "joint_queue": {
+            "tasks": 618,
+            "complete": 149,
+            "not_searched": 0,
+            "open": 33,
+            "closed_at_this_depth": 436,
+            "searched_in_this_run": 618,
+            "completed_in_this_run": 149,
+            "reasons": {
+              "candidates": 222,
+              "helpers": 196,
+              "proofs": 25,
+              "terms": 436,
+              "time": 8,
+              "variants": 10,
+              "window_time": 147
+            }
+          },
+          "joint_search_statuses": {
+            "complete": 149,
+            "budget: cands_truncated": 33,
+            "budget: bank_truncated": 161,
+            "budget: bank_truncated,cands_truncated": 70,
+            "budget: bank_truncated,helper_budget_exhausted": 21,
+            "budget: bank_truncated,helper_budget_exhausted,cands_truncated": 29,
+            "budget: time": 155
+          },
+          "joint_budget": {
+            "cache": null,
+            "checkpoint_s": 30,
+            "cost_slack": 0,
+            "enabled": true,
+            "helper_cost": 2,
+            "jobs": 16,
+            "max_cands": 12,
+            "max_combos": 50000,
+            "max_cost": 3,
+            "max_evals": 20000000,
+            "max_helpers": 256,
+            "max_outputs": 3,
+            "max_proofs": 6,
+            "max_reuse": 4,
+            "max_tasks": null,
+            "max_terms": 200000,
+            "max_window": 5,
+            "max_windows": 0,
+            "max_windows_per_block": 2000,
+            "priority": null,
+            "refresh_search": false,
+            "samples": 48,
+            "seed": 17,
+            "semantic_variants": 6,
+            "time_budget_s": 90.0,
+            "time_s": 5.0,
+            "timeout_ms": 10000
+          },
+          "ordinary_search": {
+            "alts": {
+              "closed_at_this_depth": 0,
+              "complete": 61,
+              "completed_in_this_run": 61,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {},
+              "searched_in_this_run": 61,
+              "tasks": 61
+            },
+            "left": 0,
+            "region": {
+              "closed_at_this_depth": 1,
+              "complete": 18,
+              "completed_in_this_run": 18,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "terms": 1
+              },
+              "searched_in_this_run": 19,
+              "tasks": 19
+            },
+            "sibling": {
+              "closed_at_this_depth": 11,
+              "complete": 755,
+              "completed_in_this_run": 755,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "terms": 11
+              },
+              "searched_in_this_run": 766,
+              "tasks": 766
+            },
+            "single": {
+              "closed_at_this_depth": 27,
+              "complete": 441,
+              "completed_in_this_run": 441,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "candidates": 1,
+                "terms": 26
+              },
+              "searched_in_this_run": 468,
+              "tasks": 468
+            }
+          },
+          "stages": {
+            "baseline": {
+              "status": "done",
+              "seconds": 5.5
+            },
+            "build": {
+              "status": "done",
+              "seconds": 8.3
+            },
+            "discover": {
+              "status": "pending",
+              "seconds": 131.0
+            },
+            "extract": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "freeze": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "heldout": {
+              "status": "done",
+              "seconds": 0.6
+            },
+            "identity": {
+              "status": "done",
+              "seconds": 0.5
+            },
+            "measure": {
+              "status": "done",
+              "seconds": 0.3
+            },
+            "prepare": {
+              "status": "done",
+              "seconds": 0.0
+            },
+            "report": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "select": {
+              "status": "done",
+              "seconds": 65.9
+            },
+            "verify": {
+              "status": "done",
+              "seconds": 0.3
+            }
+          },
+          "profile_sha256": "516e3ed4083a0739b890ea64a63548b18321489003822aab4442cc52bedeec0f",
+          "joint_profile_sha256": "8506195ab613df79d6a94869ba264aa04819f0ffb7690514a3f83f29d53f5f79",
+          "joint_feedback_sha256": "6b5c5bc9f047fecce268dc40cc33530b1445ac2513e0fe3b5624e5c9ffd55ed5"
+        }
+      ],
+      "freeze": {
+        "compiler_sha256": "b5bbcd0630fa4a363e0d763c7869e40f5e5c6ca78da4287dff05a042457a2193",
+        "config_sha256": "e4dba60d024079afe47e4456f48b968a6a744a72489b639b197b6711804b0cc9",
+        "corpus_metadata_sha256": "e4dbc18904d4e1420e2942604eb63b5953f7b85f5aa20451698825d5a8ed8d6b",
+        "evaluation_baseline": [
+          "synth_xor_66308b8b",
+          "synth_sub_c1235ab0_1u",
+          "synth_and_83abd1ae_1u",
+          "synth_lshr_c497647d",
+          "synth_select_4cdb868a",
+          "synth_select_4f35dc63",
+          "synth_shl_a7bba6d0_1u",
+          "synth_shl_edbd16af_1u",
+          "synth_smax_d4d1ff0e_1u",
+          "synth_trunc_110bd23a_1u",
+          "synth_or_ecb7e28d",
+          "synth_icmp_7274715e",
+          "synth_icmp_8f303343"
+        ],
+        "generator_sha256": "fe09969f1ee850085568600b22b81679459edf566c2bf4e756deb8424f0d503f",
+        "heldout_evaluations_before": 0,
+        "history": [],
+        "joint_library_sha256": "d1a3cf32184a46eade8a3a1f254b15bd5755d65e6263168a3a2cdf614c619bf0",
+        "joint_profile_sha256": "8506195ab613df79d6a94869ba264aa04819f0ffb7690514a3f83f29d53f5f79",
+        "library_sha256": "6595feac7c5bc5b88b86f3cdf0d511f33bcea6522bbcd6683f2c4d55e891fee9",
+        "manifests": {
+          "discovery": "9ac6e040f6c59a2f78caef2a0e491ac7d48d9f3b59a5134a333754a4405c8e47",
+          "heldout": "e74f3a627e226cbc4d2991c32b4b3bcef2fdf71cf4dc3d43169361cab7998910",
+          "validation": "c3d763d4335a8bd7fc35e1d26c42a7cd4605113f52a9b207db8d6fb039d3a00c"
+        },
+        "model_sha256": "c0efef4a9a2c4de6bfa459eddb95e3617888dfd87bd18ab6f5a6c6806065299d",
+        "objective": {
+          "guardrail_scope": "per compilation unit",
+          "guardrails": {},
+          "kind": "static",
+          "metric": "insns"
+        },
+        "profile_sha256": "516e3ed4083a0739b890ea64a63548b18321489003822aab4442cc52bedeec0f",
+        "rules": [
+          "synth_and_83abd1ae_1u",
+          "synth_icmp_7274715e",
+          "synth_icmp_8f303343",
+          "synth_lshr_c497647d",
+          "synth_or_ecb7e28d",
+          "synth_select_4cdb868a",
+          "synth_select_4f35dc63",
+          "synth_shl_a7bba6d0_1u",
+          "synth_shl_edbd16af_1u",
+          "synth_smax_d4d1ff0e_1u",
+          "synth_sub_c1235ab0_1u",
+          "synth_trunc_110bd23a_1u",
+          "synth_xor_66308b8b"
+        ],
+        "source_files": {
+          "discovery": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitarray.ll": "8d228d251dc8fca2e99898dc7d7507ae49203610faaac7683878cbd9d5e698d6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_1.ll": "eb66c911e7b3c3440c9c812c275d74791cb71baeac4e8a44f485d053b3c0bb65",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_2.ll": "7d9bbc81f4dd3967c22d682c1c26d434ae4bb47d6b5741031afabb5c9b17702d",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_3.ll": "08318f12ec3e4d1e5c2d6bd118d3d7cbecd864afa5b14335faed689eefcbab88",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_4.ll": "62891a4e970f007e6b013727fe43fb53653e683f94742ce5a38416d16b17b07a",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnts.ll": "a0de877af49181c350598547ff6e42a9732bffbcee9d13f5589d3da72b322f85",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitfiles.ll": "58db13a004242dc563434a2cf19a63951df64eabc03058df4fe8e063a63e0501",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitstrng.ll": "d836565ed5566ca103f87a629dc9176464d241556390e35e3823ad74481a7035",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bstr_i.ll": "6be5c82ea852ea40a61b8c23b24f20acd4406261c32bdefe0f5edd337e866ebc",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/network-patricia/patricia.ll": "a62c0c173bea0fbc39c18bbca18ee7412b78ac0445352759ed98a689365cceb8",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/network-patricia/patricia_test.ll": "b185bfee468cf08b9dd50f0c194ec3e1cc6e3c15a2359f0b397e07d348318fda",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/security-sha/sha.ll": "f4040698744771c7bc60b354eb0180e3ba24ea6815d37e2e095005bae253d916",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/security-sha/sha_driver.ll": "f9b9563dd1f01fc6fb8054beb5c52bb9f3cac1bc25258821e5e918e975802b68"
+          },
+          "heldout": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/basicmath.ll": "20a60a8354177e926fd40dd7488476cdb704e261d1fe7703900ef47f94c21d91",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/cubic.ll": "72364ffd5e9110966c40b36a118ce15171cae86f5c9121aa554be81678ab2108",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/isqrt.ll": "6a604c3b21af247b65767c48481e7cd3a14ad20e12973b0b0018ae7daa41bfe6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/rad2deg.ll": "58b1503abd06962ae6c955b0adc1655a01f48b1be60a05cc38e4fcdb43cce36c",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/security-rijndael/aes.ll": "99bb28925f43f586a777141771e119b524af01a6a7c03e6949cb0d32f854bcdc",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/security-rijndael/aesxam.ll": "2dd1499ff181f6991f7dd7873c1cc0c0bea76791a772b7df64fa3e76ec07f4c6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/telecomm-CRC32/crc_32.ll": "2d51e45ae5aae0817242af71c7fc6a29c0b9137fc2a3ceb79423e092fee7f9b0"
+          },
+          "validation": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhasrch.ll": "4599b0d1e7a6d497ab32b0256380504fc712eaf993b93641b3cce882a5cc1ad0",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhisrch.ll": "5f062f52bdaa8db0c91946cdfb0dea7fcddff571319da003f3fcd1ecc0a9f7c6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhsrch.ll": "a88e7392370dc1726fe89957270bb3df7b807cf8a2e3a1a896e1ffce47c45112",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/pbmsrch.ll": "e4e4076c6cb5da99900ca42b5c3164fe483f6b5de60847cb9803a1f2159466f8",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_cbc.ll": "0b747a9f2c57fb115006ffe3fe246aaa89bc573e4252b7b9c3552b264fef5109",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_cfb64.ll": "eaaf411d689ce040eab85ef91c4034b51303eeddfadc789e5cde810c3e24ee43",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_ecb.ll": "526b8490ef151c96a9356972b086691aa10f86e21cb9874be300d3c6a9497110",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_enc.ll": "7802892c028c02ad2dccdba610552b09318f24a03c5748848b78c3139c9a6c4c",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_ofb64.ll": "bc0440952b3acb807c67cc3f399b1288229bd55b0a7a183c0d3a8b15e118985a",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_skey.ll": "70af8d1d54e4fba15c755c87e579cbf1f81d6c3dbcea4724105ea230c8a0a890",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bftest.ll": "6720d6e560d43e22435678f353ea45938a2e3c17440f1635370a67b6dc0de316",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/telecomm-adpcm/adpcm.ll": "5d36e9fbcb139418213bb7cd104d74654753661227e62e7feed6dc46c1aa6252",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/telecomm-adpcm/rawdaudio.ll": "bb1c61c69f98d35ada15bf71f7957cc096274ec2d6e383b97ecca9bb4212dc0f"
+          }
+        },
+        "statement": "The held-out files were not compiled with a candidate and were not read by a search, a precondition synthesis or a selection before this record.",
+        "time": "2026-11-13T11:37:03-0800"
+      },
+      "report_sha256": "f75ced401375162903d82c4932162e632f616c5ed21ba1d34e6ec425322c52d5",
+      "baseline_fallbacks": {
+        "MultiSource/Benchmarks/MiBench/office-stringsearch/bmhisrch.c": [
+          "bmhi_init"
+        ],
+        "MultiSource/Benchmarks/MiBench/office-stringsearch/bmhsrch.c": [
+          "bmh_init"
+        ]
+      },
+      "recomputed_from_per_file_measurements": {
+        "validation/direct": {
+          "compared": 13,
+          "insns_delta": 0,
+          "code_bytes_delta": 0
+        },
+        "heldout/direct": {
+          "compared": 7,
+          "insns_delta": 0,
+          "code_bytes_delta": 0
+        }
+      }
+    },
+    "loop-insns-seed17": {
+      "search_elapsed_s": 162.8,
+      "search_budget_s": 180.0,
+      "original_baseline": [
+        "synth_xor_66308b8b",
+        "synth_sub_c1235ab0_1u",
+        "synth_and_83abd1ae_1u",
+        "synth_lshr_c497647d",
+        "synth_select_4cdb868a",
+        "synth_select_4f35dc63",
+        "synth_shl_a7bba6d0_1u",
+        "synth_shl_edbd16af_1u",
+        "synth_smax_d4d1ff0e_1u",
+        "synth_trunc_110bd23a_1u",
+        "synth_or_ecb7e28d",
+        "synth_icmp_7274715e",
+        "synth_icmp_8f303343"
+      ],
+      "new_selected": [],
+      "newly_discovered_selected": [],
+      "known_rules_newly_selected": [],
+      "stop": "round_limit",
+      "objective": {
+        "guardrail_scope": "per compilation unit",
+        "guardrails": {},
+        "kind": "static",
+        "metric": "insns"
+      },
+      "evaluation": {
+        "heldout/direct": {
+          "base_fails": 0,
+          "bytes_delta": 0,
+          "changes": [],
+          "code_bytes_compared": 7,
+          "code_bytes_delta": 0,
+          "compared": 7,
+          "compile_failures": [],
+          "cpu": 0.2,
+          "cpu_base": 0.2,
+          "fallback_changed": [],
+          "files": 7,
+          "files_better": 0,
+          "files_worse": 0,
+          "guardrail_violations": [],
+          "insns_base": 3088,
+          "insns_delta": 0,
+          "objective": {
+            "guardrail_scope": "per compilation unit",
+            "guardrails": {},
+            "kind": "static",
+            "metric": "insns"
+          },
+          "objective_delta": 0
+        },
+        "validation/direct": {
+          "base_fails": 0,
+          "bytes_delta": 0,
+          "changes": [],
+          "code_bytes_compared": 13,
+          "code_bytes_delta": 0,
+          "compared": 13,
+          "compile_failures": [],
+          "cpu": 0.3,
+          "cpu_base": 0.3,
+          "fallback_changed": [],
+          "files": 13,
+          "files_better": 0,
+          "files_worse": 0,
+          "guardrail_violations": [],
+          "insns_base": 3384,
+          "insns_delta": 0,
+          "objective": {
+            "guardrail_scope": "per compilation unit",
+            "guardrails": {},
+            "kind": "static",
+            "metric": "insns"
+          },
+          "objective_delta": 0
+        }
+      },
+      "selection": {
+        "rc": 0,
+        "wall_s": 314.65114057343453
+      },
+      "evaluation_execution": {
+        "rc": 0,
+        "wall_s": 1.642796952277422
+      },
+      "rounds": [
+        {
+          "search_elapsed_s": 62.7,
+          "ordinary_allowance_s": 30.0,
+          "joint_allowance_s": 30.0,
+          "new_selected": [],
+          "selection": {
+            "failed_baseline": 0,
+            "files_better": 0,
+            "files_compiled": 13,
+            "files_worse": 0,
+            "insns_delta": 0,
+            "objective": {
+              "guardrail_scope": "per compilation unit",
+              "guardrails": {},
+              "kind": "static",
+              "metric": "insns"
+            },
+            "objective_gain": 0,
+            "regressions": []
+          },
+          "ordinary_statuses": {
+            "emitted": 13,
+            "no_application": 24,
+            "regression": 2
+          },
+          "joint_statuses": {
+            "no_application": 107,
+            "no_gain": 10,
+            "regression": 5
+          },
+          "joint_candidates": 122,
+          "joint_queue": {
+            "tasks": 618,
+            "complete": 70,
+            "not_searched": 342,
+            "open": 33,
+            "closed_at_this_depth": 173,
+            "searched_in_this_run": 276,
+            "completed_in_this_run": 70,
+            "reasons": {
+              "candidates": 61,
+              "helpers": 59,
+              "proofs": 2,
+              "terms": 180,
+              "time": 31,
+              "variants": 6,
+              "window_time": 38
+            }
+          },
+          "joint_search_statuses": {
+            "complete": 70,
+            "budget: cands_truncated": 10,
+            "budget: bank_truncated": 86,
+            "budget: bank_truncated,cands_truncated": 22,
+            "budget: bank_truncated,helper_budget_exhausted,cands_truncated": 10,
+            "budget: time": 69,
+            "budget: bank_truncated,helper_budget_exhausted": 9
+          },
+          "joint_budget": {
+            "cache": null,
+            "checkpoint_s": 30,
+            "cost_slack": 0,
+            "enabled": true,
+            "helper_cost": 2,
+            "jobs": 16,
+            "max_cands": 12,
+            "max_combos": 50000,
+            "max_cost": 3,
+            "max_evals": 20000000,
+            "max_helpers": 256,
+            "max_outputs": 3,
+            "max_proofs": 6,
+            "max_reuse": 4,
+            "max_tasks": null,
+            "max_terms": 200000,
+            "max_window": 5,
+            "max_windows": 0,
+            "max_windows_per_block": 2000,
+            "priority": null,
+            "refresh_search": false,
+            "samples": 48,
+            "seed": 17,
+            "semantic_variants": 6,
+            "time_budget_s": 30.0,
+            "time_s": 5.0,
+            "timeout_ms": 10000
+          },
+          "ordinary_search": {
+            "alts": {
+              "closed_at_this_depth": 0,
+              "complete": 61,
+              "completed_in_this_run": 61,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {},
+              "searched_in_this_run": 61,
+              "tasks": 61
+            },
+            "left": 12,
+            "region": {
+              "closed_at_this_depth": 0,
+              "complete": 18,
+              "completed_in_this_run": 18,
+              "not_searched": 0,
+              "open": 1,
+              "reasons": {
+                "terms": 1,
+                "time": 1
+              },
+              "searched_in_this_run": 19,
+              "tasks": 19
+            },
+            "sibling": {
+              "closed_at_this_depth": 0,
+              "complete": 755,
+              "completed_in_this_run": 755,
+              "not_searched": 0,
+              "open": 11,
+              "reasons": {
+                "terms": 11,
+                "time": 11
+              },
+              "searched_in_this_run": 766,
+              "tasks": 766
+            },
+            "single": {
+              "closed_at_this_depth": 27,
+              "complete": 441,
+              "completed_in_this_run": 441,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "candidates": 1,
+                "terms": 26
+              },
+              "searched_in_this_run": 468,
+              "tasks": 468
+            }
+          },
+          "stages": {
+            "baseline": {
+              "status": "done",
+              "seconds": 7.2
+            },
+            "build": {
+              "status": "done",
+              "seconds": 8.0
+            },
+            "discover": {
+              "status": "pending",
+              "seconds": 62.7
+            },
+            "extract": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "identity": {
+              "status": "done",
+              "seconds": 0.5
+            },
+            "measure": {
+              "status": "done",
+              "seconds": 0.3
+            },
+            "prepare": {
+              "status": "done",
+              "seconds": 0.0
+            },
+            "select": {
+              "status": "done",
+              "seconds": 28.5
+            },
+            "verify": {
+              "status": "done",
+              "seconds": 0.3
+            }
+          },
+          "profile_sha256": "516e3ed4083a0739b890ea64a63548b18321489003822aab4442cc52bedeec0f",
+          "joint_profile_sha256": "40b31c9fd7e8442f2ba6f7ee0aa8a914f0c9e8f7cb29fb5b369f9c68b44fa48e",
+          "joint_feedback_sha256": "9512198a11058c91e9a3cede440d3850c1011a2713e337757bb3242f04c577f7"
+        },
+        {
+          "search_elapsed_s": 45.4,
+          "ordinary_allowance_s": 29.325,
+          "joint_allowance_s": 29.325,
+          "new_selected": [],
+          "selection": {
+            "failed_baseline": 0,
+            "files_better": 0,
+            "files_compiled": 13,
+            "files_worse": 0,
+            "insns_delta": 0,
+            "objective": {
+              "guardrail_scope": "per compilation unit",
+              "guardrails": {},
+              "kind": "static",
+              "metric": "insns"
+            },
+            "objective_gain": 0,
+            "regressions": []
+          },
+          "ordinary_statuses": {
+            "emitted": 13,
+            "no_application": 24,
+            "regression": 2
+          },
+          "joint_statuses": {
+            "no_application": 165,
+            "no_gain": 10,
+            "regression": 5
+          },
+          "joint_candidates": 180,
+          "joint_queue": {
+            "tasks": 618,
+            "complete": 84,
+            "not_searched": 233,
+            "open": 253,
+            "closed_at_this_depth": 48,
+            "searched_in_this_run": 109,
+            "completed_in_this_run": 14,
+            "reasons": {
+              "candidates": 108,
+              "helpers": 94,
+              "proofs": 17,
+              "terms": 249,
+              "time": 63,
+              "variants": 6,
+              "window_time": 56
+            }
+          },
+          "joint_search_statuses": {
+            "complete": 14,
+            "budget: bank_truncated": 9,
+            "budget: bank_truncated,cands_truncated": 15,
+            "budget: bank_truncated,helper_budget_exhausted,cands_truncated": 6,
+            "budget: time": 50,
+            "budget: cands_truncated": 10,
+            "budget: bank_truncated,helper_budget_exhausted": 5
+          },
+          "joint_budget": {
+            "cache": null,
+            "checkpoint_s": 30,
+            "cost_slack": 0,
+            "enabled": true,
+            "helper_cost": 2,
+            "jobs": 16,
+            "max_cands": 24,
+            "max_combos": 50000,
+            "max_cost": 3,
+            "max_evals": 40000000,
+            "max_helpers": 512,
+            "max_outputs": 3,
+            "max_proofs": 6,
+            "max_reuse": 4,
+            "max_tasks": null,
+            "max_terms": 400000,
+            "max_window": 5,
+            "max_windows": 0,
+            "max_windows_per_block": 2000,
+            "priority": "/home/nod/gisel-mine-loop-20261113/build/experiment-integrated-180/loop-insns-seed17/run/rounds/000/joint/feedback.json",
+            "refresh_search": false,
+            "samples": 48,
+            "seed": 17,
+            "semantic_variants": 12,
+            "time_budget_s": 29.325,
+            "time_s": 10.0,
+            "timeout_ms": 10000
+          },
+          "ordinary_search": {
+            "alts": {
+              "closed_at_this_depth": 0,
+              "complete": 61,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {},
+              "searched_in_this_run": 0,
+              "tasks": 61
+            },
+            "left": 12,
+            "region": {
+              "closed_at_this_depth": 0,
+              "complete": 18,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 1,
+              "reasons": {
+                "terms": 1,
+                "time": 1
+              },
+              "searched_in_this_run": 1,
+              "tasks": 19
+            },
+            "sibling": {
+              "closed_at_this_depth": 0,
+              "complete": 755,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 11,
+              "reasons": {
+                "terms": 11,
+                "time": 11
+              },
+              "searched_in_this_run": 11,
+              "tasks": 766
+            },
+            "single": {
+              "closed_at_this_depth": 27,
+              "complete": 441,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "candidates": 1,
+                "terms": 26
+              },
+              "searched_in_this_run": 0,
+              "tasks": 468
+            }
+          },
+          "stages": {
+            "baseline": {
+              "status": "done",
+              "seconds": 0.2
+            },
+            "build": {
+              "status": "done",
+              "seconds": 8.3
+            },
+            "discover": {
+              "status": "pending",
+              "seconds": 45.4
+            },
+            "extract": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "identity": {
+              "status": "done",
+              "seconds": 0.6
+            },
+            "measure": {
+              "status": "done",
+              "seconds": 0.3
+            },
+            "prepare": {
+              "status": "done",
+              "seconds": 0.0
+            },
+            "select": {
+              "status": "done",
+              "seconds": 40.8
+            },
+            "verify": {
+              "status": "done",
+              "seconds": 0.4
+            }
+          },
+          "profile_sha256": "516e3ed4083a0739b890ea64a63548b18321489003822aab4442cc52bedeec0f",
+          "joint_profile_sha256": "389ff9ffff1d678a1fd4589be4dc023cd6c00f37705505c7079250cc6a003c96",
+          "joint_feedback_sha256": "214bfff0b526af608bd191392e195e8ee73b43879e4ce888426edffdee9fcae2"
+        },
+        {
+          "search_elapsed_s": 54.7,
+          "ordinary_allowance_s": 35.95,
+          "joint_allowance_s": 35.95,
+          "new_selected": [],
+          "selection": {
+            "failed_baseline": 0,
+            "files_better": 0,
+            "files_compiled": 13,
+            "files_worse": 0,
+            "insns_delta": 0,
+            "objective": {
+              "guardrail_scope": "per compilation unit",
+              "guardrails": {},
+              "kind": "static",
+              "metric": "insns"
+            },
+            "objective_gain": 0,
+            "regressions": []
+          },
+          "ordinary_statuses": {
+            "emitted": 13,
+            "no_application": 24,
+            "regression": 2
+          },
+          "joint_statuses": {
+            "no_application": 177,
+            "no_gain": 10,
+            "regression": 5
+          },
+          "joint_candidates": 192,
+          "joint_queue": {
+            "tasks": 618,
+            "complete": 111,
+            "not_searched": 154,
+            "open": 333,
+            "closed_at_this_depth": 20,
+            "searched_in_this_run": 79,
+            "completed_in_this_run": 27,
+            "reasons": {
+              "candidates": 125,
+              "combos": 2,
+              "helpers": 119,
+              "proofs": 17,
+              "terms": 284,
+              "time": 95,
+              "variants": 6,
+              "window_time": 63
+            }
+          },
+          "joint_search_statuses": {
+            "complete": 27,
+            "budget: bank_truncated,cands_truncated": 1,
+            "budget: bank_truncated,helper_budget_exhausted,cands_truncated": 6,
+            "budget: bank_truncated,helper_budget_exhausted": 2,
+            "budget: time": 39,
+            "budget: cands_truncated": 1,
+            "budget: bank_truncated": 1,
+            "budget: bank_truncated,combo_budget_exhausted,cands_truncated": 2
+          },
+          "joint_budget": {
+            "cache": null,
+            "checkpoint_s": 30,
+            "cost_slack": 0,
+            "enabled": true,
+            "helper_cost": 2,
+            "jobs": 16,
+            "max_cands": 48,
+            "max_combos": 50000,
+            "max_cost": 3,
+            "max_evals": 80000000,
+            "max_helpers": 1024,
+            "max_outputs": 3,
+            "max_proofs": 6,
+            "max_reuse": 4,
+            "max_tasks": null,
+            "max_terms": 800000,
+            "max_window": 5,
+            "max_windows": 0,
+            "max_windows_per_block": 2000,
+            "priority": "/home/nod/gisel-mine-loop-20261113/build/experiment-integrated-180/loop-insns-seed17/run/rounds/001/joint/feedback.json",
+            "refresh_search": false,
+            "samples": 48,
+            "seed": 17,
+            "semantic_variants": 24,
+            "time_budget_s": 35.95,
+            "time_s": 20.0,
+            "timeout_ms": 10000
+          },
+          "ordinary_search": {
+            "alts": {
+              "closed_at_this_depth": 0,
+              "complete": 61,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {},
+              "searched_in_this_run": 0,
+              "tasks": 61
+            },
+            "left": 10,
+            "region": {
+              "closed_at_this_depth": 1,
+              "complete": 18,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "terms": 1
+              },
+              "searched_in_this_run": 1,
+              "tasks": 19
+            },
+            "sibling": {
+              "closed_at_this_depth": 1,
+              "complete": 755,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 10,
+              "reasons": {
+                "terms": 11,
+                "time": 10
+              },
+              "searched_in_this_run": 11,
+              "tasks": 766
+            },
+            "single": {
+              "closed_at_this_depth": 27,
+              "complete": 441,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "candidates": 1,
+                "terms": 26
+              },
+              "searched_in_this_run": 0,
+              "tasks": 468
+            }
+          },
+          "stages": {
+            "baseline": {
+              "status": "done",
+              "seconds": 0.2
+            },
+            "build": {
+              "status": "done",
+              "seconds": 8.3
+            },
+            "discover": {
+              "status": "pending",
+              "seconds": 54.7
+            },
+            "extract": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "freeze": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "heldout": {
+              "status": "done",
+              "seconds": 0.6
+            },
+            "identity": {
+              "status": "done",
+              "seconds": 0.6
+            },
+            "measure": {
+              "status": "done",
+              "seconds": 0.4
+            },
+            "prepare": {
+              "status": "done",
+              "seconds": 0.0
+            },
+            "report": {
+              "status": "done",
+              "seconds": 0.3
+            },
+            "select": {
+              "status": "done",
+              "seconds": 44.0
+            },
+            "verify": {
+              "status": "done",
+              "seconds": 0.5
+            }
+          },
+          "profile_sha256": "516e3ed4083a0739b890ea64a63548b18321489003822aab4442cc52bedeec0f",
+          "joint_profile_sha256": "0b672b8e944bceee7923f4776f9165e509f8f6893dcd91fb9c547b5f6118eff7",
+          "joint_feedback_sha256": "0d5afa0594f605f1d8ed1afa24de050d4b08a3adb92a3ac60fb160c0e9ab62ec"
+        }
+      ],
+      "freeze": {
+        "compiler_sha256": "23d3601ebdc2cf8513ff69fb443e2f168aaab02c3c1ee77f7f7e513074772d88",
+        "config_sha256": "4b5199080d1f148829ce43ab25e640bed4d04ce82926e0853c8d57cbf1966827",
+        "corpus_metadata_sha256": "e4dbc18904d4e1420e2942604eb63b5953f7b85f5aa20451698825d5a8ed8d6b",
+        "evaluation_baseline": [
+          "synth_xor_66308b8b",
+          "synth_sub_c1235ab0_1u",
+          "synth_and_83abd1ae_1u",
+          "synth_lshr_c497647d",
+          "synth_select_4cdb868a",
+          "synth_select_4f35dc63",
+          "synth_shl_a7bba6d0_1u",
+          "synth_shl_edbd16af_1u",
+          "synth_smax_d4d1ff0e_1u",
+          "synth_trunc_110bd23a_1u",
+          "synth_or_ecb7e28d",
+          "synth_icmp_7274715e",
+          "synth_icmp_8f303343"
+        ],
+        "generator_sha256": "fe09969f1ee850085568600b22b81679459edf566c2bf4e756deb8424f0d503f",
+        "heldout_evaluations_before": 0,
+        "history": [],
+        "joint_library_sha256": "db23e3ee573da0983bc03df7ea781e2993f3d6dabee8154f3b94f6c9437db3e6",
+        "joint_profile_sha256": "0b672b8e944bceee7923f4776f9165e509f8f6893dcd91fb9c547b5f6118eff7",
+        "library_sha256": "9a542b88f834f8ccbcc0256c7226a9968514bc6c817728c4e7aab3a8a0997369",
+        "manifests": {
+          "discovery": "9ac6e040f6c59a2f78caef2a0e491ac7d48d9f3b59a5134a333754a4405c8e47",
+          "heldout": "e74f3a627e226cbc4d2991c32b4b3bcef2fdf71cf4dc3d43169361cab7998910",
+          "validation": "c3d763d4335a8bd7fc35e1d26c42a7cd4605113f52a9b207db8d6fb039d3a00c"
+        },
+        "model_sha256": "c0efef4a9a2c4de6bfa459eddb95e3617888dfd87bd18ab6f5a6c6806065299d",
+        "objective": {
+          "guardrail_scope": "per compilation unit",
+          "guardrails": {},
+          "kind": "static",
+          "metric": "insns"
+        },
+        "profile_sha256": "516e3ed4083a0739b890ea64a63548b18321489003822aab4442cc52bedeec0f",
+        "rules": [
+          "synth_and_83abd1ae_1u",
+          "synth_icmp_7274715e",
+          "synth_icmp_8f303343",
+          "synth_lshr_c497647d",
+          "synth_or_ecb7e28d",
+          "synth_select_4cdb868a",
+          "synth_select_4f35dc63",
+          "synth_shl_a7bba6d0_1u",
+          "synth_shl_edbd16af_1u",
+          "synth_smax_d4d1ff0e_1u",
+          "synth_sub_c1235ab0_1u",
+          "synth_trunc_110bd23a_1u",
+          "synth_xor_66308b8b"
+        ],
+        "source_files": {
+          "discovery": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitarray.ll": "8d228d251dc8fca2e99898dc7d7507ae49203610faaac7683878cbd9d5e698d6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_1.ll": "eb66c911e7b3c3440c9c812c275d74791cb71baeac4e8a44f485d053b3c0bb65",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_2.ll": "7d9bbc81f4dd3967c22d682c1c26d434ae4bb47d6b5741031afabb5c9b17702d",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_3.ll": "08318f12ec3e4d1e5c2d6bd118d3d7cbecd864afa5b14335faed689eefcbab88",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_4.ll": "62891a4e970f007e6b013727fe43fb53653e683f94742ce5a38416d16b17b07a",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnts.ll": "a0de877af49181c350598547ff6e42a9732bffbcee9d13f5589d3da72b322f85",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitfiles.ll": "58db13a004242dc563434a2cf19a63951df64eabc03058df4fe8e063a63e0501",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitstrng.ll": "d836565ed5566ca103f87a629dc9176464d241556390e35e3823ad74481a7035",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bstr_i.ll": "6be5c82ea852ea40a61b8c23b24f20acd4406261c32bdefe0f5edd337e866ebc",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/network-patricia/patricia.ll": "a62c0c173bea0fbc39c18bbca18ee7412b78ac0445352759ed98a689365cceb8",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/network-patricia/patricia_test.ll": "b185bfee468cf08b9dd50f0c194ec3e1cc6e3c15a2359f0b397e07d348318fda",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/security-sha/sha.ll": "f4040698744771c7bc60b354eb0180e3ba24ea6815d37e2e095005bae253d916",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/security-sha/sha_driver.ll": "f9b9563dd1f01fc6fb8054beb5c52bb9f3cac1bc25258821e5e918e975802b68"
+          },
+          "heldout": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/basicmath.ll": "20a60a8354177e926fd40dd7488476cdb704e261d1fe7703900ef47f94c21d91",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/cubic.ll": "72364ffd5e9110966c40b36a118ce15171cae86f5c9121aa554be81678ab2108",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/isqrt.ll": "6a604c3b21af247b65767c48481e7cd3a14ad20e12973b0b0018ae7daa41bfe6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/rad2deg.ll": "58b1503abd06962ae6c955b0adc1655a01f48b1be60a05cc38e4fcdb43cce36c",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/security-rijndael/aes.ll": "99bb28925f43f586a777141771e119b524af01a6a7c03e6949cb0d32f854bcdc",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/security-rijndael/aesxam.ll": "2dd1499ff181f6991f7dd7873c1cc0c0bea76791a772b7df64fa3e76ec07f4c6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/telecomm-CRC32/crc_32.ll": "2d51e45ae5aae0817242af71c7fc6a29c0b9137fc2a3ceb79423e092fee7f9b0"
+          },
+          "validation": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhasrch.ll": "4599b0d1e7a6d497ab32b0256380504fc712eaf993b93641b3cce882a5cc1ad0",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhisrch.ll": "5f062f52bdaa8db0c91946cdfb0dea7fcddff571319da003f3fcd1ecc0a9f7c6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhsrch.ll": "a88e7392370dc1726fe89957270bb3df7b807cf8a2e3a1a896e1ffce47c45112",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/pbmsrch.ll": "e4e4076c6cb5da99900ca42b5c3164fe483f6b5de60847cb9803a1f2159466f8",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_cbc.ll": "0b747a9f2c57fb115006ffe3fe246aaa89bc573e4252b7b9c3552b264fef5109",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_cfb64.ll": "eaaf411d689ce040eab85ef91c4034b51303eeddfadc789e5cde810c3e24ee43",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_ecb.ll": "526b8490ef151c96a9356972b086691aa10f86e21cb9874be300d3c6a9497110",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_enc.ll": "7802892c028c02ad2dccdba610552b09318f24a03c5748848b78c3139c9a6c4c",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_ofb64.ll": "bc0440952b3acb807c67cc3f399b1288229bd55b0a7a183c0d3a8b15e118985a",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_skey.ll": "70af8d1d54e4fba15c755c87e579cbf1f81d6c3dbcea4724105ea230c8a0a890",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bftest.ll": "6720d6e560d43e22435678f353ea45938a2e3c17440f1635370a67b6dc0de316",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/telecomm-adpcm/adpcm.ll": "5d36e9fbcb139418213bb7cd104d74654753661227e62e7feed6dc46c1aa6252",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/telecomm-adpcm/rawdaudio.ll": "bb1c61c69f98d35ada15bf71f7957cc096274ec2d6e383b97ecca9bb4212dc0f"
+          }
+        },
+        "statement": "The held-out files were not compiled with a candidate and were not read by a search, a precondition synthesis or a selection before this record.",
+        "time": "2026-11-13T11:37:04-0800"
+      },
+      "report_sha256": "adbb328589875ad6694fb59efb1b14136698d389b89a02ffd3698756a59857be",
+      "baseline_fallbacks": {
+        "MultiSource/Benchmarks/MiBench/office-stringsearch/bmhisrch.c": [
+          "bmhi_init"
+        ],
+        "MultiSource/Benchmarks/MiBench/office-stringsearch/bmhsrch.c": [
+          "bmh_init"
+        ]
+      },
+      "recomputed_from_per_file_measurements": {
+        "validation/direct": {
+          "compared": 13,
+          "insns_delta": 0,
+          "code_bytes_delta": 0
+        },
+        "heldout/direct": {
+          "compared": 7,
+          "insns_delta": 0,
+          "code_bytes_delta": 0
+        }
+      }
+    },
+    "loop-bytes-seed17": {
+      "search_elapsed_s": 163.6,
+      "search_budget_s": 180.0,
+      "original_baseline": [
+        "synth_xor_66308b8b",
+        "synth_sub_c1235ab0_1u",
+        "synth_and_83abd1ae_1u",
+        "synth_lshr_c497647d",
+        "synth_select_4cdb868a",
+        "synth_select_4f35dc63",
+        "synth_shl_a7bba6d0_1u",
+        "synth_shl_edbd16af_1u",
+        "synth_smax_d4d1ff0e_1u",
+        "synth_trunc_110bd23a_1u",
+        "synth_or_ecb7e28d",
+        "synth_icmp_7274715e",
+        "synth_icmp_8f303343"
+      ],
+      "new_selected": [],
+      "newly_discovered_selected": [],
+      "known_rules_newly_selected": [],
+      "stop": "round_limit",
+      "objective": {
+        "guardrail_scope": "per compilation unit",
+        "guardrails": {},
+        "kind": "static",
+        "metric": "code_bytes"
+      },
+      "evaluation": {
+        "heldout/direct": {
+          "base_fails": 0,
+          "bytes_delta": 0,
+          "changes": [],
+          "code_bytes_compared": 7,
+          "code_bytes_delta": 0,
+          "compared": 7,
+          "compile_failures": [],
+          "cpu": 0.2,
+          "cpu_base": 0.2,
+          "fallback_changed": [],
+          "files": 7,
+          "files_better": 0,
+          "files_worse": 0,
+          "guardrail_violations": [],
+          "insns_base": 3088,
+          "insns_delta": 0,
+          "objective": {
+            "guardrail_scope": "per compilation unit",
+            "guardrails": {},
+            "kind": "static",
+            "metric": "code_bytes"
+          },
+          "objective_delta": 0
+        },
+        "validation/direct": {
+          "base_fails": 0,
+          "bytes_delta": 0,
+          "changes": [],
+          "code_bytes_compared": 13,
+          "code_bytes_delta": 0,
+          "compared": 13,
+          "compile_failures": [],
+          "cpu": 0.3,
+          "cpu_base": 0.3,
+          "fallback_changed": [],
+          "files": 13,
+          "files_better": 0,
+          "files_worse": 0,
+          "guardrail_violations": [],
+          "insns_base": 3384,
+          "insns_delta": 0,
+          "objective": {
+            "guardrail_scope": "per compilation unit",
+            "guardrails": {},
+            "kind": "static",
+            "metric": "code_bytes"
+          },
+          "objective_delta": 0
+        }
+      },
+      "selection": {
+        "rc": 0,
+        "wall_s": 314.4537391792983
+      },
+      "evaluation_execution": {
+        "rc": 0,
+        "wall_s": 1.6615140279754996
+      },
+      "rounds": [
+        {
+          "search_elapsed_s": 62.8,
+          "ordinary_allowance_s": 30.0,
+          "joint_allowance_s": 30.0,
+          "new_selected": [],
+          "selection": {
+            "failed_baseline": 0,
+            "files_better": 0,
+            "files_compiled": 13,
+            "files_worse": 0,
+            "insns_delta": 0,
+            "objective": {
+              "guardrail_scope": "per compilation unit",
+              "guardrails": {},
+              "kind": "static",
+              "metric": "code_bytes"
+            },
+            "objective_gain": 0,
+            "regressions": []
+          },
+          "ordinary_statuses": {
+            "emitted": 13,
+            "no_application": 24,
+            "regression": 2
+          },
+          "joint_statuses": {
+            "no_application": 107,
+            "no_gain": 10,
+            "regression": 5
+          },
+          "joint_candidates": 122,
+          "joint_queue": {
+            "tasks": 618,
+            "complete": 70,
+            "not_searched": 341,
+            "open": 34,
+            "closed_at_this_depth": 173,
+            "searched_in_this_run": 277,
+            "completed_in_this_run": 70,
+            "reasons": {
+              "candidates": 61,
+              "helpers": 59,
+              "proofs": 2,
+              "terms": 180,
+              "time": 32,
+              "variants": 6,
+              "window_time": 36
+            }
+          },
+          "joint_search_statuses": {
+            "complete": 70,
+            "budget: cands_truncated": 10,
+            "budget: bank_truncated": 86,
+            "budget: bank_truncated,cands_truncated": 23,
+            "budget: bank_truncated,helper_budget_exhausted,cands_truncated": 11,
+            "budget: time": 68,
+            "budget: bank_truncated,helper_budget_exhausted": 9
+          },
+          "joint_budget": {
+            "cache": null,
+            "checkpoint_s": 30,
+            "cost_slack": 0,
+            "enabled": true,
+            "helper_cost": 2,
+            "jobs": 16,
+            "max_cands": 12,
+            "max_combos": 50000,
+            "max_cost": 3,
+            "max_evals": 20000000,
+            "max_helpers": 256,
+            "max_outputs": 3,
+            "max_proofs": 6,
+            "max_reuse": 4,
+            "max_tasks": null,
+            "max_terms": 200000,
+            "max_window": 5,
+            "max_windows": 0,
+            "max_windows_per_block": 2000,
+            "priority": null,
+            "refresh_search": false,
+            "samples": 48,
+            "seed": 17,
+            "semantic_variants": 6,
+            "time_budget_s": 30.0,
+            "time_s": 5.0,
+            "timeout_ms": 10000
+          },
+          "ordinary_search": {
+            "alts": {
+              "closed_at_this_depth": 0,
+              "complete": 61,
+              "completed_in_this_run": 61,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {},
+              "searched_in_this_run": 61,
+              "tasks": 61
+            },
+            "left": 12,
+            "region": {
+              "closed_at_this_depth": 0,
+              "complete": 18,
+              "completed_in_this_run": 18,
+              "not_searched": 0,
+              "open": 1,
+              "reasons": {
+                "terms": 1,
+                "time": 1
+              },
+              "searched_in_this_run": 19,
+              "tasks": 19
+            },
+            "sibling": {
+              "closed_at_this_depth": 0,
+              "complete": 755,
+              "completed_in_this_run": 755,
+              "not_searched": 0,
+              "open": 11,
+              "reasons": {
+                "terms": 11,
+                "time": 11
+              },
+              "searched_in_this_run": 766,
+              "tasks": 766
+            },
+            "single": {
+              "closed_at_this_depth": 27,
+              "complete": 441,
+              "completed_in_this_run": 441,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "candidates": 1,
+                "terms": 26
+              },
+              "searched_in_this_run": 468,
+              "tasks": 468
+            }
+          },
+          "stages": {
+            "baseline": {
+              "status": "done",
+              "seconds": 7.2
+            },
+            "build": {
+              "status": "done",
+              "seconds": 8.0
+            },
+            "discover": {
+              "status": "pending",
+              "seconds": 62.8
+            },
+            "extract": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "identity": {
+              "status": "done",
+              "seconds": 0.5
+            },
+            "measure": {
+              "status": "done",
+              "seconds": 0.3
+            },
+            "prepare": {
+              "status": "done",
+              "seconds": 0.0
+            },
+            "select": {
+              "status": "done",
+              "seconds": 28.3
+            },
+            "verify": {
+              "status": "done",
+              "seconds": 0.3
+            }
+          },
+          "profile_sha256": "74cb2969856bd3bac77d269a144d90f7e30cdd23d37537a54a399c9fc6469b0c",
+          "joint_profile_sha256": "a64ba6624597301bcf28ba8bfdac15a0aaece60b2b5ceb517074c652eac7bae3",
+          "joint_feedback_sha256": "e7addd2f0bc9be23887852965b1bf2851d6225703e94cd2083d9563ee11ff176"
+        },
+        {
+          "search_elapsed_s": 44.5,
+          "ordinary_allowance_s": 29.3,
+          "joint_allowance_s": 29.3,
+          "new_selected": [],
+          "selection": {
+            "failed_baseline": 0,
+            "files_better": 0,
+            "files_compiled": 13,
+            "files_worse": 0,
+            "insns_delta": 0,
+            "objective": {
+              "guardrail_scope": "per compilation unit",
+              "guardrails": {},
+              "kind": "static",
+              "metric": "code_bytes"
+            },
+            "objective_gain": 0,
+            "regressions": []
+          },
+          "ordinary_statuses": {
+            "emitted": 13,
+            "no_application": 24,
+            "regression": 2
+          },
+          "joint_statuses": {
+            "no_application": 165,
+            "no_gain": 10,
+            "regression": 5
+          },
+          "joint_candidates": 180,
+          "joint_queue": {
+            "tasks": 618,
+            "complete": 83,
+            "not_searched": 234,
+            "open": 254,
+            "closed_at_this_depth": 47,
+            "searched_in_this_run": 107,
+            "completed_in_this_run": 13,
+            "reasons": {
+              "candidates": 106,
+              "helpers": 93,
+              "proofs": 17,
+              "terms": 248,
+              "time": 64,
+              "variants": 6,
+              "window_time": 53
+            }
+          },
+          "joint_search_statuses": {
+            "complete": 13,
+            "budget: bank_truncated,cands_truncated": 14,
+            "budget: bank_truncated": 9,
+            "budget: bank_truncated,helper_budget_exhausted,cands_truncated": 7,
+            "budget: bank_truncated,helper_budget_exhausted": 5,
+            "budget: time": 49,
+            "budget: cands_truncated": 10
+          },
+          "joint_budget": {
+            "cache": null,
+            "checkpoint_s": 30,
+            "cost_slack": 0,
+            "enabled": true,
+            "helper_cost": 2,
+            "jobs": 16,
+            "max_cands": 24,
+            "max_combos": 50000,
+            "max_cost": 3,
+            "max_evals": 40000000,
+            "max_helpers": 512,
+            "max_outputs": 3,
+            "max_proofs": 6,
+            "max_reuse": 4,
+            "max_tasks": null,
+            "max_terms": 400000,
+            "max_window": 5,
+            "max_windows": 0,
+            "max_windows_per_block": 2000,
+            "priority": "/home/nod/gisel-mine-loop-20261113/build/experiment-integrated-180/loop-bytes-seed17/run/rounds/000/joint/feedback.json",
+            "refresh_search": false,
+            "samples": 48,
+            "seed": 17,
+            "semantic_variants": 12,
+            "time_budget_s": 29.3,
+            "time_s": 10.0,
+            "timeout_ms": 10000
+          },
+          "ordinary_search": {
+            "alts": {
+              "closed_at_this_depth": 0,
+              "complete": 61,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {},
+              "searched_in_this_run": 0,
+              "tasks": 61
+            },
+            "left": 12,
+            "region": {
+              "closed_at_this_depth": 0,
+              "complete": 18,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 1,
+              "reasons": {
+                "terms": 1,
+                "time": 1
+              },
+              "searched_in_this_run": 1,
+              "tasks": 19
+            },
+            "sibling": {
+              "closed_at_this_depth": 0,
+              "complete": 755,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 11,
+              "reasons": {
+                "terms": 11,
+                "time": 11
+              },
+              "searched_in_this_run": 11,
+              "tasks": 766
+            },
+            "single": {
+              "closed_at_this_depth": 27,
+              "complete": 441,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "candidates": 1,
+                "terms": 26
+              },
+              "searched_in_this_run": 0,
+              "tasks": 468
+            }
+          },
+          "stages": {
+            "baseline": {
+              "status": "done",
+              "seconds": 0.2
+            },
+            "build": {
+              "status": "done",
+              "seconds": 8.2
+            },
+            "discover": {
+              "status": "pending",
+              "seconds": 44.5
+            },
+            "extract": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "identity": {
+              "status": "done",
+              "seconds": 0.6
+            },
+            "measure": {
+              "status": "done",
+              "seconds": 0.3
+            },
+            "prepare": {
+              "status": "done",
+              "seconds": 0.0
+            },
+            "select": {
+              "status": "done",
+              "seconds": 40.7
+            },
+            "verify": {
+              "status": "done",
+              "seconds": 0.4
+            }
+          },
+          "profile_sha256": "74cb2969856bd3bac77d269a144d90f7e30cdd23d37537a54a399c9fc6469b0c",
+          "joint_profile_sha256": "3d63a8a503cbc69e015f6d46336098d1c4294adba9be5cd12b344b59dd8bc5de",
+          "joint_feedback_sha256": "585c9910472532239fa227a71ae403ffe896b18d239b0981313f2f80b84cb2e6"
+        },
+        {
+          "search_elapsed_s": 56.3,
+          "ordinary_allowance_s": 36.35,
+          "joint_allowance_s": 36.35,
+          "new_selected": [],
+          "selection": {
+            "failed_baseline": 0,
+            "files_better": 0,
+            "files_compiled": 13,
+            "files_worse": 0,
+            "insns_delta": 0,
+            "objective": {
+              "guardrail_scope": "per compilation unit",
+              "guardrails": {},
+              "kind": "static",
+              "metric": "code_bytes"
+            },
+            "objective_gain": 0,
+            "regressions": []
+          },
+          "ordinary_statuses": {
+            "emitted": 13,
+            "no_application": 24,
+            "regression": 2
+          },
+          "joint_statuses": {
+            "no_application": 178,
+            "no_gain": 10,
+            "regression": 5
+          },
+          "joint_candidates": 193,
+          "joint_queue": {
+            "tasks": 618,
+            "complete": 111,
+            "not_searched": 152,
+            "open": 333,
+            "closed_at_this_depth": 22,
+            "searched_in_this_run": 82,
+            "completed_in_this_run": 28,
+            "reasons": {
+              "candidates": 123,
+              "combos": 2,
+              "helpers": 118,
+              "proofs": 17,
+              "terms": 285,
+              "time": 96,
+              "variants": 6,
+              "window_time": 62
+            }
+          },
+          "joint_search_statuses": {
+            "complete": 28,
+            "budget: bank_truncated,cands_truncated": 1,
+            "budget: bank_truncated,helper_budget_exhausted,cands_truncated": 6,
+            "budget: bank_truncated,helper_budget_exhausted": 2,
+            "budget: time": 41,
+            "budget: cands_truncated": 1,
+            "budget: bank_truncated,combo_budget_exhausted,cands_truncated": 2,
+            "budget: bank_truncated": 1
+          },
+          "joint_budget": {
+            "cache": null,
+            "checkpoint_s": 30,
+            "cost_slack": 0,
+            "enabled": true,
+            "helper_cost": 2,
+            "jobs": 16,
+            "max_cands": 48,
+            "max_combos": 50000,
+            "max_cost": 3,
+            "max_evals": 80000000,
+            "max_helpers": 1024,
+            "max_outputs": 3,
+            "max_proofs": 6,
+            "max_reuse": 4,
+            "max_tasks": null,
+            "max_terms": 800000,
+            "max_window": 5,
+            "max_windows": 0,
+            "max_windows_per_block": 2000,
+            "priority": "/home/nod/gisel-mine-loop-20261113/build/experiment-integrated-180/loop-bytes-seed17/run/rounds/001/joint/feedback.json",
+            "refresh_search": false,
+            "samples": 48,
+            "seed": 17,
+            "semantic_variants": 24,
+            "time_budget_s": 36.35,
+            "time_s": 20.0,
+            "timeout_ms": 10000
+          },
+          "ordinary_search": {
+            "alts": {
+              "closed_at_this_depth": 0,
+              "complete": 61,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {},
+              "searched_in_this_run": 0,
+              "tasks": 61
+            },
+            "left": 10,
+            "region": {
+              "closed_at_this_depth": 1,
+              "complete": 18,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "terms": 1
+              },
+              "searched_in_this_run": 1,
+              "tasks": 19
+            },
+            "sibling": {
+              "closed_at_this_depth": 1,
+              "complete": 755,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 10,
+              "reasons": {
+                "terms": 11,
+                "time": 10
+              },
+              "searched_in_this_run": 11,
+              "tasks": 766
+            },
+            "single": {
+              "closed_at_this_depth": 27,
+              "complete": 441,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "candidates": 1,
+                "terms": 26
+              },
+              "searched_in_this_run": 0,
+              "tasks": 468
+            }
+          },
+          "stages": {
+            "baseline": {
+              "status": "done",
+              "seconds": 0.2
+            },
+            "build": {
+              "status": "done",
+              "seconds": 8.3
+            },
+            "discover": {
+              "status": "pending",
+              "seconds": 56.3
+            },
+            "extract": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "freeze": {
+              "status": "done",
+              "seconds": 0.2
+            },
+            "heldout": {
+              "status": "done",
+              "seconds": 0.6
+            },
+            "identity": {
+              "status": "done",
+              "seconds": 0.6
+            },
+            "measure": {
+              "status": "done",
+              "seconds": 0.4
+            },
+            "prepare": {
+              "status": "done",
+              "seconds": 0.0
+            },
+            "report": {
+              "status": "done",
+              "seconds": 0.3
+            },
+            "select": {
+              "status": "done",
+              "seconds": 43.5
+            },
+            "verify": {
+              "status": "done",
+              "seconds": 0.5
+            }
+          },
+          "profile_sha256": "74cb2969856bd3bac77d269a144d90f7e30cdd23d37537a54a399c9fc6469b0c",
+          "joint_profile_sha256": "54784d526ed7f575236295c7f2963b5a785b9a870d795cbf0e22b03922b78855",
+          "joint_feedback_sha256": "2a61e0e81491d1df6c6293f4de7593087e857a8fbd2c4cb3fa19d2da29cd4782"
+        }
+      ],
+      "freeze": {
+        "compiler_sha256": "0c87ce48e17ba533725740d0beeb5a015ac2b06cd3201bdf536990f90ef066bd",
+        "config_sha256": "6d86c493a6d1a61c8fe9bbba02dd65552d1896e61e8e900f3870716a88a19d52",
+        "corpus_metadata_sha256": "e4dbc18904d4e1420e2942604eb63b5953f7b85f5aa20451698825d5a8ed8d6b",
+        "evaluation_baseline": [
+          "synth_xor_66308b8b",
+          "synth_sub_c1235ab0_1u",
+          "synth_and_83abd1ae_1u",
+          "synth_lshr_c497647d",
+          "synth_select_4cdb868a",
+          "synth_select_4f35dc63",
+          "synth_shl_a7bba6d0_1u",
+          "synth_shl_edbd16af_1u",
+          "synth_smax_d4d1ff0e_1u",
+          "synth_trunc_110bd23a_1u",
+          "synth_or_ecb7e28d",
+          "synth_icmp_7274715e",
+          "synth_icmp_8f303343"
+        ],
+        "generator_sha256": "fe09969f1ee850085568600b22b81679459edf566c2bf4e756deb8424f0d503f",
+        "heldout_evaluations_before": 0,
+        "history": [],
+        "joint_library_sha256": "7619c77531aae234b7d0f2a8f7f07625d0666731e52d618b847317b42cbde004",
+        "joint_profile_sha256": "54784d526ed7f575236295c7f2963b5a785b9a870d795cbf0e22b03922b78855",
+        "library_sha256": "9a542b88f834f8ccbcc0256c7226a9968514bc6c817728c4e7aab3a8a0997369",
+        "manifests": {
+          "discovery": "9ac6e040f6c59a2f78caef2a0e491ac7d48d9f3b59a5134a333754a4405c8e47",
+          "heldout": "e74f3a627e226cbc4d2991c32b4b3bcef2fdf71cf4dc3d43169361cab7998910",
+          "validation": "c3d763d4335a8bd7fc35e1d26c42a7cd4605113f52a9b207db8d6fb039d3a00c"
+        },
+        "model_sha256": "c0efef4a9a2c4de6bfa459eddb95e3617888dfd87bd18ab6f5a6c6806065299d",
+        "objective": {
+          "guardrail_scope": "per compilation unit",
+          "guardrails": {},
+          "kind": "static",
+          "metric": "code_bytes"
+        },
+        "profile_sha256": "74cb2969856bd3bac77d269a144d90f7e30cdd23d37537a54a399c9fc6469b0c",
+        "rules": [
+          "synth_and_83abd1ae_1u",
+          "synth_icmp_7274715e",
+          "synth_icmp_8f303343",
+          "synth_lshr_c497647d",
+          "synth_or_ecb7e28d",
+          "synth_select_4cdb868a",
+          "synth_select_4f35dc63",
+          "synth_shl_a7bba6d0_1u",
+          "synth_shl_edbd16af_1u",
+          "synth_smax_d4d1ff0e_1u",
+          "synth_sub_c1235ab0_1u",
+          "synth_trunc_110bd23a_1u",
+          "synth_xor_66308b8b"
+        ],
+        "source_files": {
+          "discovery": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitarray.ll": "8d228d251dc8fca2e99898dc7d7507ae49203610faaac7683878cbd9d5e698d6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_1.ll": "eb66c911e7b3c3440c9c812c275d74791cb71baeac4e8a44f485d053b3c0bb65",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_2.ll": "7d9bbc81f4dd3967c22d682c1c26d434ae4bb47d6b5741031afabb5c9b17702d",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_3.ll": "08318f12ec3e4d1e5c2d6bd118d3d7cbecd864afa5b14335faed689eefcbab88",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_4.ll": "62891a4e970f007e6b013727fe43fb53653e683f94742ce5a38416d16b17b07a",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnts.ll": "a0de877af49181c350598547ff6e42a9732bffbcee9d13f5589d3da72b322f85",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitfiles.ll": "58db13a004242dc563434a2cf19a63951df64eabc03058df4fe8e063a63e0501",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitstrng.ll": "d836565ed5566ca103f87a629dc9176464d241556390e35e3823ad74481a7035",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bstr_i.ll": "6be5c82ea852ea40a61b8c23b24f20acd4406261c32bdefe0f5edd337e866ebc",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/network-patricia/patricia.ll": "a62c0c173bea0fbc39c18bbca18ee7412b78ac0445352759ed98a689365cceb8",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/network-patricia/patricia_test.ll": "b185bfee468cf08b9dd50f0c194ec3e1cc6e3c15a2359f0b397e07d348318fda",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/security-sha/sha.ll": "f4040698744771c7bc60b354eb0180e3ba24ea6815d37e2e095005bae253d916",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/security-sha/sha_driver.ll": "f9b9563dd1f01fc6fb8054beb5c52bb9f3cac1bc25258821e5e918e975802b68"
+          },
+          "heldout": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/basicmath.ll": "20a60a8354177e926fd40dd7488476cdb704e261d1fe7703900ef47f94c21d91",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/cubic.ll": "72364ffd5e9110966c40b36a118ce15171cae86f5c9121aa554be81678ab2108",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/isqrt.ll": "6a604c3b21af247b65767c48481e7cd3a14ad20e12973b0b0018ae7daa41bfe6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/rad2deg.ll": "58b1503abd06962ae6c955b0adc1655a01f48b1be60a05cc38e4fcdb43cce36c",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/security-rijndael/aes.ll": "99bb28925f43f586a777141771e119b524af01a6a7c03e6949cb0d32f854bcdc",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/security-rijndael/aesxam.ll": "2dd1499ff181f6991f7dd7873c1cc0c0bea76791a772b7df64fa3e76ec07f4c6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/telecomm-CRC32/crc_32.ll": "2d51e45ae5aae0817242af71c7fc6a29c0b9137fc2a3ceb79423e092fee7f9b0"
+          },
+          "validation": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhasrch.ll": "4599b0d1e7a6d497ab32b0256380504fc712eaf993b93641b3cce882a5cc1ad0",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhisrch.ll": "5f062f52bdaa8db0c91946cdfb0dea7fcddff571319da003f3fcd1ecc0a9f7c6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhsrch.ll": "a88e7392370dc1726fe89957270bb3df7b807cf8a2e3a1a896e1ffce47c45112",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/pbmsrch.ll": "e4e4076c6cb5da99900ca42b5c3164fe483f6b5de60847cb9803a1f2159466f8",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_cbc.ll": "0b747a9f2c57fb115006ffe3fe246aaa89bc573e4252b7b9c3552b264fef5109",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_cfb64.ll": "eaaf411d689ce040eab85ef91c4034b51303eeddfadc789e5cde810c3e24ee43",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_ecb.ll": "526b8490ef151c96a9356972b086691aa10f86e21cb9874be300d3c6a9497110",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_enc.ll": "7802892c028c02ad2dccdba610552b09318f24a03c5748848b78c3139c9a6c4c",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_ofb64.ll": "bc0440952b3acb807c67cc3f399b1288229bd55b0a7a183c0d3a8b15e118985a",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_skey.ll": "70af8d1d54e4fba15c755c87e579cbf1f81d6c3dbcea4724105ea230c8a0a890",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bftest.ll": "6720d6e560d43e22435678f353ea45938a2e3c17440f1635370a67b6dc0de316",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/telecomm-adpcm/adpcm.ll": "5d36e9fbcb139418213bb7cd104d74654753661227e62e7feed6dc46c1aa6252",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/telecomm-adpcm/rawdaudio.ll": "bb1c61c69f98d35ada15bf71f7957cc096274ec2d6e383b97ecca9bb4212dc0f"
+          }
+        },
+        "statement": "The held-out files were not compiled with a candidate and were not read by a search, a precondition synthesis or a selection before this record.",
+        "time": "2026-11-13T11:37:06-0800"
+      },
+      "report_sha256": "47b07730f2bab9e55abc7207980956e51d4de4952e560fdbcfa76fc08a16c310",
+      "baseline_fallbacks": {
+        "MultiSource/Benchmarks/MiBench/office-stringsearch/bmhisrch.c": [
+          "bmhi_init"
+        ],
+        "MultiSource/Benchmarks/MiBench/office-stringsearch/bmhsrch.c": [
+          "bmh_init"
+        ]
+      },
+      "recomputed_from_per_file_measurements": {
+        "validation/direct": {
+          "compared": 13,
+          "insns_delta": 0,
+          "code_bytes_delta": 0
+        },
+        "heldout/direct": {
+          "compared": 7,
+          "insns_delta": 0,
+          "code_bytes_delta": 0
+        }
+      }
+    },
+    "single-insns-seed29": {
+      "search_elapsed_s": 131.4,
+      "search_budget_s": 180.0,
+      "original_baseline": [
+        "synth_xor_66308b8b",
+        "synth_sub_c1235ab0_1u",
+        "synth_and_83abd1ae_1u",
+        "synth_lshr_c497647d",
+        "synth_select_4cdb868a",
+        "synth_select_4f35dc63",
+        "synth_shl_a7bba6d0_1u",
+        "synth_shl_edbd16af_1u",
+        "synth_smax_d4d1ff0e_1u",
+        "synth_trunc_110bd23a_1u",
+        "synth_or_ecb7e28d",
+        "synth_icmp_7274715e",
+        "synth_icmp_8f303343"
+      ],
+      "new_selected": [],
+      "newly_discovered_selected": [],
+      "known_rules_newly_selected": [],
+      "stop": "round_limit",
+      "objective": {
+        "guardrail_scope": "per compilation unit",
+        "guardrails": {},
+        "kind": "static",
+        "metric": "insns"
+      },
+      "evaluation": {
+        "heldout/direct": {
+          "base_fails": 0,
+          "bytes_delta": 0,
+          "changes": [],
+          "code_bytes_compared": 7,
+          "code_bytes_delta": 0,
+          "compared": 7,
+          "compile_failures": [],
+          "cpu": 0.2,
+          "cpu_base": 0.2,
+          "fallback_changed": [],
+          "files": 7,
+          "files_better": 0,
+          "files_worse": 0,
+          "guardrail_violations": [],
+          "insns_base": 3088,
+          "insns_delta": 0,
+          "objective": {
+            "guardrail_scope": "per compilation unit",
+            "guardrails": {},
+            "kind": "static",
+            "metric": "insns"
+          },
+          "objective_delta": 0
+        },
+        "validation/direct": {
+          "base_fails": 0,
+          "bytes_delta": 0,
+          "changes": [],
+          "code_bytes_compared": 13,
+          "code_bytes_delta": 0,
+          "compared": 13,
+          "compile_failures": [],
+          "cpu": 0.3,
+          "cpu_base": 0.3,
+          "fallback_changed": [],
+          "files": 13,
+          "files_better": 0,
+          "files_worse": 0,
+          "guardrail_violations": [],
+          "insns_base": 3384,
+          "insns_delta": 0,
+          "objective": {
+            "guardrail_scope": "per compilation unit",
+            "guardrails": {},
+            "kind": "static",
+            "metric": "insns"
+          },
+          "objective_delta": 0
+        }
+      },
+      "selection": {
+        "rc": 0,
+        "wall_s": 206.90692182257771
+      },
+      "evaluation_execution": {
+        "rc": 0,
+        "wall_s": 1.198558502830565
+      },
+      "rounds": [
+        {
+          "search_elapsed_s": 131.4,
+          "ordinary_allowance_s": 90.0,
+          "joint_allowance_s": 90.0,
+          "new_selected": [],
+          "selection": {
+            "failed_baseline": 0,
+            "files_better": 0,
+            "files_compiled": 13,
+            "files_worse": 0,
+            "insns_delta": 0,
+            "objective": {
+              "guardrail_scope": "per compilation unit",
+              "guardrails": {},
+              "kind": "static",
+              "metric": "insns"
+            },
+            "objective_gain": 0,
+            "regressions": []
+          },
+          "ordinary_statuses": {
+            "emitted": 13,
+            "no_application": 24,
+            "regression": 2
+          },
+          "joint_statuses": {
+            "no_application": 264,
+            "no_gain": 10,
+            "regression": 2
+          },
+          "joint_candidates": 276,
+          "joint_queue": {
+            "tasks": 618,
+            "complete": 139,
+            "not_searched": 15,
+            "open": 51,
+            "closed_at_this_depth": 413,
+            "searched_in_this_run": 603,
+            "completed_in_this_run": 139,
+            "reasons": {
+              "candidates": 207,
+              "helpers": 192,
+              "proofs": 19,
+              "terms": 418,
+              "time": 32,
+              "variants": 10,
+              "window_time": 155
+            }
+          },
+          "joint_search_statuses": {
+            "complete": 139,
+            "budget: cands_truncated": 30,
+            "budget: bank_truncated": 146,
+            "budget: bank_truncated,helper_budget_exhausted,cands_truncated": 21,
+            "budget: time": 187,
+            "budget: bank_truncated,cands_truncated": 65,
+            "budget: bank_truncated,helper_budget_exhausted": 15
+          },
+          "joint_budget": {
+            "cache": null,
+            "checkpoint_s": 30,
+            "cost_slack": 0,
+            "enabled": true,
+            "helper_cost": 2,
+            "jobs": 16,
+            "max_cands": 12,
+            "max_combos": 50000,
+            "max_cost": 3,
+            "max_evals": 20000000,
+            "max_helpers": 256,
+            "max_outputs": 3,
+            "max_proofs": 6,
+            "max_reuse": 4,
+            "max_tasks": null,
+            "max_terms": 200000,
+            "max_window": 5,
+            "max_windows": 0,
+            "max_windows_per_block": 2000,
+            "priority": null,
+            "refresh_search": false,
+            "samples": 48,
+            "seed": 29,
+            "semantic_variants": 6,
+            "time_budget_s": 90.0,
+            "time_s": 5.0,
+            "timeout_ms": 10000
+          },
+          "ordinary_search": {
+            "alts": {
+              "closed_at_this_depth": 0,
+              "complete": 61,
+              "completed_in_this_run": 61,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {},
+              "searched_in_this_run": 61,
+              "tasks": 61
+            },
+            "left": 0,
+            "region": {
+              "closed_at_this_depth": 1,
+              "complete": 18,
+              "completed_in_this_run": 18,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "terms": 1
+              },
+              "searched_in_this_run": 19,
+              "tasks": 19
+            },
+            "sibling": {
+              "closed_at_this_depth": 11,
+              "complete": 755,
+              "completed_in_this_run": 755,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "terms": 11
+              },
+              "searched_in_this_run": 766,
+              "tasks": 766
+            },
+            "single": {
+              "closed_at_this_depth": 27,
+              "complete": 441,
+              "completed_in_this_run": 441,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "candidates": 1,
+                "terms": 26
+              },
+              "searched_in_this_run": 468,
+              "tasks": 468
+            }
+          },
+          "stages": {
+            "baseline": {
+              "status": "done",
+              "seconds": 7.2
+            },
+            "build": {
+              "status": "done",
+              "seconds": 8.1
+            },
+            "discover": {
+              "status": "pending",
+              "seconds": 131.4
+            },
+            "extract": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "freeze": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "heldout": {
+              "status": "done",
+              "seconds": 0.6
+            },
+            "identity": {
+              "status": "done",
+              "seconds": 0.5
+            },
+            "measure": {
+              "status": "done",
+              "seconds": 0.3
+            },
+            "prepare": {
+              "status": "done",
+              "seconds": 0.0
+            },
+            "report": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "select": {
+              "status": "done",
+              "seconds": 58.2
+            },
+            "verify": {
+              "status": "done",
+              "seconds": 0.3
+            }
+          },
+          "profile_sha256": "516e3ed4083a0739b890ea64a63548b18321489003822aab4442cc52bedeec0f",
+          "joint_profile_sha256": "bc983a23e75825f1cd81d691d3b032eeb7ed4a8f2594df57f07471173a5b1c3e",
+          "joint_feedback_sha256": "8b6e8bb2838cbd161cb6fbc9b493e5c940d84e21d0247b11ffe0c54957b3d9f1"
+        }
+      ],
+      "freeze": {
+        "compiler_sha256": "59c7475b556a3486e5e8d16b570798155296dfc7fd56ef7b07c4cfe92910941c",
+        "config_sha256": "4e1d77babaa14a8a9ba589b6a572249d725b5a0db716356732f78ffc3e73e887",
+        "corpus_metadata_sha256": "e4dbc18904d4e1420e2942604eb63b5953f7b85f5aa20451698825d5a8ed8d6b",
+        "evaluation_baseline": [
+          "synth_xor_66308b8b",
+          "synth_sub_c1235ab0_1u",
+          "synth_and_83abd1ae_1u",
+          "synth_lshr_c497647d",
+          "synth_select_4cdb868a",
+          "synth_select_4f35dc63",
+          "synth_shl_a7bba6d0_1u",
+          "synth_shl_edbd16af_1u",
+          "synth_smax_d4d1ff0e_1u",
+          "synth_trunc_110bd23a_1u",
+          "synth_or_ecb7e28d",
+          "synth_icmp_7274715e",
+          "synth_icmp_8f303343"
+        ],
+        "generator_sha256": "fe09969f1ee850085568600b22b81679459edf566c2bf4e756deb8424f0d503f",
+        "heldout_evaluations_before": 0,
+        "history": [],
+        "joint_library_sha256": "1132c3e1aeef46d3774cac9e2159d685f407a4b87c9ce724c4651463c52022bb",
+        "joint_profile_sha256": "bc983a23e75825f1cd81d691d3b032eeb7ed4a8f2594df57f07471173a5b1c3e",
+        "library_sha256": "1b9b650aef0d941073a496cb7a507fc767d31883cba5a8145de0d3c40dc1a5af",
+        "manifests": {
+          "discovery": "9ac6e040f6c59a2f78caef2a0e491ac7d48d9f3b59a5134a333754a4405c8e47",
+          "heldout": "e74f3a627e226cbc4d2991c32b4b3bcef2fdf71cf4dc3d43169361cab7998910",
+          "validation": "c3d763d4335a8bd7fc35e1d26c42a7cd4605113f52a9b207db8d6fb039d3a00c"
+        },
+        "model_sha256": "c0efef4a9a2c4de6bfa459eddb95e3617888dfd87bd18ab6f5a6c6806065299d",
+        "objective": {
+          "guardrail_scope": "per compilation unit",
+          "guardrails": {},
+          "kind": "static",
+          "metric": "insns"
+        },
+        "profile_sha256": "516e3ed4083a0739b890ea64a63548b18321489003822aab4442cc52bedeec0f",
+        "rules": [
+          "synth_and_83abd1ae_1u",
+          "synth_icmp_7274715e",
+          "synth_icmp_8f303343",
+          "synth_lshr_c497647d",
+          "synth_or_ecb7e28d",
+          "synth_select_4cdb868a",
+          "synth_select_4f35dc63",
+          "synth_shl_a7bba6d0_1u",
+          "synth_shl_edbd16af_1u",
+          "synth_smax_d4d1ff0e_1u",
+          "synth_sub_c1235ab0_1u",
+          "synth_trunc_110bd23a_1u",
+          "synth_xor_66308b8b"
+        ],
+        "source_files": {
+          "discovery": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitarray.ll": "8d228d251dc8fca2e99898dc7d7507ae49203610faaac7683878cbd9d5e698d6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_1.ll": "eb66c911e7b3c3440c9c812c275d74791cb71baeac4e8a44f485d053b3c0bb65",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_2.ll": "7d9bbc81f4dd3967c22d682c1c26d434ae4bb47d6b5741031afabb5c9b17702d",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_3.ll": "08318f12ec3e4d1e5c2d6bd118d3d7cbecd864afa5b14335faed689eefcbab88",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_4.ll": "62891a4e970f007e6b013727fe43fb53653e683f94742ce5a38416d16b17b07a",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnts.ll": "a0de877af49181c350598547ff6e42a9732bffbcee9d13f5589d3da72b322f85",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitfiles.ll": "58db13a004242dc563434a2cf19a63951df64eabc03058df4fe8e063a63e0501",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitstrng.ll": "d836565ed5566ca103f87a629dc9176464d241556390e35e3823ad74481a7035",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bstr_i.ll": "6be5c82ea852ea40a61b8c23b24f20acd4406261c32bdefe0f5edd337e866ebc",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/network-patricia/patricia.ll": "a62c0c173bea0fbc39c18bbca18ee7412b78ac0445352759ed98a689365cceb8",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/network-patricia/patricia_test.ll": "b185bfee468cf08b9dd50f0c194ec3e1cc6e3c15a2359f0b397e07d348318fda",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/security-sha/sha.ll": "f4040698744771c7bc60b354eb0180e3ba24ea6815d37e2e095005bae253d916",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/security-sha/sha_driver.ll": "f9b9563dd1f01fc6fb8054beb5c52bb9f3cac1bc25258821e5e918e975802b68"
+          },
+          "heldout": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/basicmath.ll": "20a60a8354177e926fd40dd7488476cdb704e261d1fe7703900ef47f94c21d91",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/cubic.ll": "72364ffd5e9110966c40b36a118ce15171cae86f5c9121aa554be81678ab2108",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/isqrt.ll": "6a604c3b21af247b65767c48481e7cd3a14ad20e12973b0b0018ae7daa41bfe6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/rad2deg.ll": "58b1503abd06962ae6c955b0adc1655a01f48b1be60a05cc38e4fcdb43cce36c",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/security-rijndael/aes.ll": "99bb28925f43f586a777141771e119b524af01a6a7c03e6949cb0d32f854bcdc",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/security-rijndael/aesxam.ll": "2dd1499ff181f6991f7dd7873c1cc0c0bea76791a772b7df64fa3e76ec07f4c6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/telecomm-CRC32/crc_32.ll": "2d51e45ae5aae0817242af71c7fc6a29c0b9137fc2a3ceb79423e092fee7f9b0"
+          },
+          "validation": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhasrch.ll": "4599b0d1e7a6d497ab32b0256380504fc712eaf993b93641b3cce882a5cc1ad0",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhisrch.ll": "5f062f52bdaa8db0c91946cdfb0dea7fcddff571319da003f3fcd1ecc0a9f7c6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhsrch.ll": "a88e7392370dc1726fe89957270bb3df7b807cf8a2e3a1a896e1ffce47c45112",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/pbmsrch.ll": "e4e4076c6cb5da99900ca42b5c3164fe483f6b5de60847cb9803a1f2159466f8",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_cbc.ll": "0b747a9f2c57fb115006ffe3fe246aaa89bc573e4252b7b9c3552b264fef5109",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_cfb64.ll": "eaaf411d689ce040eab85ef91c4034b51303eeddfadc789e5cde810c3e24ee43",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_ecb.ll": "526b8490ef151c96a9356972b086691aa10f86e21cb9874be300d3c6a9497110",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_enc.ll": "7802892c028c02ad2dccdba610552b09318f24a03c5748848b78c3139c9a6c4c",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_ofb64.ll": "bc0440952b3acb807c67cc3f399b1288229bd55b0a7a183c0d3a8b15e118985a",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_skey.ll": "70af8d1d54e4fba15c755c87e579cbf1f81d6c3dbcea4724105ea230c8a0a890",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bftest.ll": "6720d6e560d43e22435678f353ea45938a2e3c17440f1635370a67b6dc0de316",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/telecomm-adpcm/adpcm.ll": "5d36e9fbcb139418213bb7cd104d74654753661227e62e7feed6dc46c1aa6252",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/telecomm-adpcm/rawdaudio.ll": "bb1c61c69f98d35ada15bf71f7957cc096274ec2d6e383b97ecca9bb4212dc0f"
+          }
+        },
+        "statement": "The held-out files were not compiled with a candidate and were not read by a search, a precondition synthesis or a selection before this record.",
+        "time": "2026-11-13T11:37:07-0800"
+      },
+      "report_sha256": "e9ef2f9df3eba4f0d7c096a54413701f3c4103bafed1d8a176000bdb6ccf2dcd",
+      "baseline_fallbacks": {
+        "MultiSource/Benchmarks/MiBench/office-stringsearch/bmhisrch.c": [
+          "bmhi_init"
+        ],
+        "MultiSource/Benchmarks/MiBench/office-stringsearch/bmhsrch.c": [
+          "bmh_init"
+        ]
+      },
+      "recomputed_from_per_file_measurements": {
+        "validation/direct": {
+          "compared": 13,
+          "insns_delta": 0,
+          "code_bytes_delta": 0
+        },
+        "heldout/direct": {
+          "compared": 7,
+          "insns_delta": 0,
+          "code_bytes_delta": 0
+        }
+      }
+    },
+    "loop-insns-seed29": {
+      "search_elapsed_s": 162.3,
+      "search_budget_s": 180.0,
+      "original_baseline": [
+        "synth_xor_66308b8b",
+        "synth_sub_c1235ab0_1u",
+        "synth_and_83abd1ae_1u",
+        "synth_lshr_c497647d",
+        "synth_select_4cdb868a",
+        "synth_select_4f35dc63",
+        "synth_shl_a7bba6d0_1u",
+        "synth_shl_edbd16af_1u",
+        "synth_smax_d4d1ff0e_1u",
+        "synth_trunc_110bd23a_1u",
+        "synth_or_ecb7e28d",
+        "synth_icmp_7274715e",
+        "synth_icmp_8f303343"
+      ],
+      "new_selected": [],
+      "newly_discovered_selected": [],
+      "known_rules_newly_selected": [],
+      "stop": "round_limit",
+      "objective": {
+        "guardrail_scope": "per compilation unit",
+        "guardrails": {},
+        "kind": "static",
+        "metric": "insns"
+      },
+      "evaluation": {
+        "heldout/direct": {
+          "base_fails": 0,
+          "bytes_delta": 0,
+          "changes": [],
+          "code_bytes_compared": 7,
+          "code_bytes_delta": 0,
+          "compared": 7,
+          "compile_failures": [],
+          "cpu": 0.2,
+          "cpu_base": 0.2,
+          "fallback_changed": [],
+          "files": 7,
+          "files_better": 0,
+          "files_worse": 0,
+          "guardrail_violations": [],
+          "insns_base": 3088,
+          "insns_delta": 0,
+          "objective": {
+            "guardrail_scope": "per compilation unit",
+            "guardrails": {},
+            "kind": "static",
+            "metric": "insns"
+          },
+          "objective_delta": 0
+        },
+        "validation/direct": {
+          "base_fails": 0,
+          "bytes_delta": 0,
+          "changes": [],
+          "code_bytes_compared": 13,
+          "code_bytes_delta": 0,
+          "compared": 13,
+          "compile_failures": [],
+          "cpu": 0.3,
+          "cpu_base": 0.3,
+          "fallback_changed": [],
+          "files": 13,
+          "files_better": 0,
+          "files_worse": 0,
+          "guardrail_violations": [],
+          "insns_base": 3384,
+          "insns_delta": 0,
+          "objective": {
+            "guardrail_scope": "per compilation unit",
+            "guardrails": {},
+            "kind": "static",
+            "metric": "insns"
+          },
+          "objective_delta": 0
+        }
+      },
+      "selection": {
+        "rc": 0,
+        "wall_s": 290.2613898348063
+      },
+      "evaluation_execution": {
+        "rc": 0,
+        "wall_s": 1.6023776531219482
+      },
+      "rounds": [
+        {
+          "search_elapsed_s": 62.9,
+          "ordinary_allowance_s": 30.0,
+          "joint_allowance_s": 30.0,
+          "new_selected": [],
+          "selection": {
+            "failed_baseline": 0,
+            "files_better": 0,
+            "files_compiled": 13,
+            "files_worse": 0,
+            "insns_delta": 0,
+            "objective": {
+              "guardrail_scope": "per compilation unit",
+              "guardrails": {},
+              "kind": "static",
+              "metric": "insns"
+            },
+            "objective_gain": 0,
+            "regressions": []
+          },
+          "ordinary_statuses": {
+            "emitted": 13,
+            "no_application": 24,
+            "regression": 2
+          },
+          "joint_statuses": {
+            "no_application": 80,
+            "no_gain": 10,
+            "regression": 2
+          },
+          "joint_candidates": 92,
+          "joint_queue": {
+            "tasks": 618,
+            "complete": 68,
+            "not_searched": 354,
+            "open": 34,
+            "closed_at_this_depth": 162,
+            "searched_in_this_run": 264,
+            "completed_in_this_run": 68,
+            "reasons": {
+              "candidates": 51,
+              "helpers": 56,
+              "proofs": 2,
+              "terms": 170,
+              "time": 32,
+              "variants": 2,
+              "window_time": 39
+            }
+          },
+          "joint_search_statuses": {
+            "complete": 68,
+            "budget: cands_truncated": 10,
+            "budget: bank_truncated": 85,
+            "budget: bank_truncated,helper_budget_exhausted,cands_truncated": 7,
+            "budget: time": 71,
+            "budget: bank_truncated,cands_truncated": 17,
+            "budget: bank_truncated,helper_budget_exhausted": 6
+          },
+          "joint_budget": {
+            "cache": null,
+            "checkpoint_s": 30,
+            "cost_slack": 0,
+            "enabled": true,
+            "helper_cost": 2,
+            "jobs": 16,
+            "max_cands": 12,
+            "max_combos": 50000,
+            "max_cost": 3,
+            "max_evals": 20000000,
+            "max_helpers": 256,
+            "max_outputs": 3,
+            "max_proofs": 6,
+            "max_reuse": 4,
+            "max_tasks": null,
+            "max_terms": 200000,
+            "max_window": 5,
+            "max_windows": 0,
+            "max_windows_per_block": 2000,
+            "priority": null,
+            "refresh_search": false,
+            "samples": 48,
+            "seed": 29,
+            "semantic_variants": 6,
+            "time_budget_s": 30.0,
+            "time_s": 5.0,
+            "timeout_ms": 10000
+          },
+          "ordinary_search": {
+            "alts": {
+              "closed_at_this_depth": 0,
+              "complete": 61,
+              "completed_in_this_run": 61,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {},
+              "searched_in_this_run": 61,
+              "tasks": 61
+            },
+            "left": 12,
+            "region": {
+              "closed_at_this_depth": 0,
+              "complete": 18,
+              "completed_in_this_run": 18,
+              "not_searched": 0,
+              "open": 1,
+              "reasons": {
+                "terms": 1,
+                "time": 1
+              },
+              "searched_in_this_run": 19,
+              "tasks": 19
+            },
+            "sibling": {
+              "closed_at_this_depth": 0,
+              "complete": 755,
+              "completed_in_this_run": 755,
+              "not_searched": 0,
+              "open": 11,
+              "reasons": {
+                "terms": 11,
+                "time": 11
+              },
+              "searched_in_this_run": 766,
+              "tasks": 766
+            },
+            "single": {
+              "closed_at_this_depth": 27,
+              "complete": 441,
+              "completed_in_this_run": 441,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "candidates": 1,
+                "terms": 26
+              },
+              "searched_in_this_run": 468,
+              "tasks": 468
+            }
+          },
+          "stages": {
+            "baseline": {
+              "status": "done",
+              "seconds": 7.1
+            },
+            "build": {
+              "status": "done",
+              "seconds": 8.1
+            },
+            "discover": {
+              "status": "pending",
+              "seconds": 62.9
+            },
+            "extract": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "identity": {
+              "status": "done",
+              "seconds": 0.5
+            },
+            "measure": {
+              "status": "done",
+              "seconds": 0.3
+            },
+            "prepare": {
+              "status": "done",
+              "seconds": 0.0
+            },
+            "select": {
+              "status": "done",
+              "seconds": 22.6
+            },
+            "verify": {
+              "status": "done",
+              "seconds": 0.2
+            }
+          },
+          "profile_sha256": "516e3ed4083a0739b890ea64a63548b18321489003822aab4442cc52bedeec0f",
+          "joint_profile_sha256": "fe30ce054fe81cc4baa9b74a4272de097a8c57335b3b4aa979ac844c4b713a3e",
+          "joint_feedback_sha256": "1f35382cfc581f40cc4c130530375f2050d8f520781cb7ff55c34271b24b703c"
+        },
+        {
+          "search_elapsed_s": 43.2,
+          "ordinary_allowance_s": 29.275,
+          "joint_allowance_s": 29.275,
+          "new_selected": [],
+          "selection": {
+            "failed_baseline": 0,
+            "files_better": 0,
+            "files_compiled": 13,
+            "files_worse": 0,
+            "insns_delta": 0,
+            "objective": {
+              "guardrail_scope": "per compilation unit",
+              "guardrails": {},
+              "kind": "static",
+              "metric": "insns"
+            },
+            "objective_gain": 0,
+            "regressions": []
+          },
+          "ordinary_statuses": {
+            "emitted": 13,
+            "no_application": 24,
+            "regression": 2
+          },
+          "joint_statuses": {
+            "no_application": 119,
+            "no_gain": 10,
+            "regression": 2
+          },
+          "joint_candidates": 131,
+          "joint_queue": {
+            "tasks": 618,
+            "complete": 90,
+            "not_searched": 244,
+            "open": 237,
+            "closed_at_this_depth": 47,
+            "searched_in_this_run": 110,
+            "completed_in_this_run": 22,
+            "reasons": {
+              "candidates": 89,
+              "helpers": 88,
+              "proofs": 11,
+              "terms": 235,
+              "time": 64,
+              "variants": 2,
+              "window_time": 58
+            }
+          },
+          "joint_search_statuses": {
+            "complete": 22,
+            "budget: bank_truncated": 12,
+            "budget: bank_truncated,cands_truncated": 12,
+            "budget: bank_truncated,helper_budget_exhausted,cands_truncated": 5,
+            "budget: time": 51,
+            "budget: cands_truncated": 6,
+            "budget: bank_truncated,helper_budget_exhausted": 2
+          },
+          "joint_budget": {
+            "cache": null,
+            "checkpoint_s": 30,
+            "cost_slack": 0,
+            "enabled": true,
+            "helper_cost": 2,
+            "jobs": 16,
+            "max_cands": 24,
+            "max_combos": 50000,
+            "max_cost": 3,
+            "max_evals": 40000000,
+            "max_helpers": 512,
+            "max_outputs": 3,
+            "max_proofs": 6,
+            "max_reuse": 4,
+            "max_tasks": null,
+            "max_terms": 400000,
+            "max_window": 5,
+            "max_windows": 0,
+            "max_windows_per_block": 2000,
+            "priority": "/home/nod/gisel-mine-loop-20261113/build/experiment-integrated-180/loop-insns-seed29/run/rounds/000/joint/feedback.json",
+            "refresh_search": false,
+            "samples": 48,
+            "seed": 29,
+            "semantic_variants": 12,
+            "time_budget_s": 29.275,
+            "time_s": 10.0,
+            "timeout_ms": 10000
+          },
+          "ordinary_search": {
+            "alts": {
+              "closed_at_this_depth": 0,
+              "complete": 61,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {},
+              "searched_in_this_run": 0,
+              "tasks": 61
+            },
+            "left": 12,
+            "region": {
+              "closed_at_this_depth": 0,
+              "complete": 18,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 1,
+              "reasons": {
+                "terms": 1,
+                "time": 1
+              },
+              "searched_in_this_run": 1,
+              "tasks": 19
+            },
+            "sibling": {
+              "closed_at_this_depth": 0,
+              "complete": 755,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 11,
+              "reasons": {
+                "terms": 11,
+                "time": 11
+              },
+              "searched_in_this_run": 11,
+              "tasks": 766
+            },
+            "single": {
+              "closed_at_this_depth": 27,
+              "complete": 441,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "candidates": 1,
+                "terms": 26
+              },
+              "searched_in_this_run": 0,
+              "tasks": 468
+            }
+          },
+          "stages": {
+            "baseline": {
+              "status": "done",
+              "seconds": 0.2
+            },
+            "build": {
+              "status": "done",
+              "seconds": 8.1
+            },
+            "discover": {
+              "status": "pending",
+              "seconds": 43.2
+            },
+            "extract": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "identity": {
+              "status": "done",
+              "seconds": 0.6
+            },
+            "measure": {
+              "status": "done",
+              "seconds": 0.3
+            },
+            "prepare": {
+              "status": "done",
+              "seconds": 0.0
+            },
+            "select": {
+              "status": "done",
+              "seconds": 30.9
+            },
+            "verify": {
+              "status": "done",
+              "seconds": 0.4
+            }
+          },
+          "profile_sha256": "516e3ed4083a0739b890ea64a63548b18321489003822aab4442cc52bedeec0f",
+          "joint_profile_sha256": "0995dca1676996af20a071fd129b33864310ee7855b94dd4557dbf0f622d4571",
+          "joint_feedback_sha256": "34b0fe94da0ae8d1f108c32b33ed608b90a7894810687503bb37fd654acbe4bb"
+        },
+        {
+          "search_elapsed_s": 56.2,
+          "ordinary_allowance_s": 36.95,
+          "joint_allowance_s": 36.95,
+          "new_selected": [],
+          "selection": {
+            "failed_baseline": 0,
+            "files_better": 0,
+            "files_compiled": 13,
+            "files_worse": 0,
+            "insns_delta": 0,
+            "objective": {
+              "guardrail_scope": "per compilation unit",
+              "guardrails": {},
+              "kind": "static",
+              "metric": "insns"
+            },
+            "objective_gain": 0,
+            "regressions": []
+          },
+          "ordinary_statuses": {
+            "emitted": 13,
+            "no_application": 24,
+            "regression": 2
+          },
+          "joint_statuses": {
+            "no_application": 142,
+            "no_gain": 10,
+            "regression": 2
+          },
+          "joint_candidates": 154,
+          "joint_queue": {
+            "tasks": 618,
+            "complete": 126,
+            "not_searched": 155,
+            "open": 316,
+            "closed_at_this_depth": 21,
+            "searched_in_this_run": 89,
+            "completed_in_this_run": 36,
+            "reasons": {
+              "candidates": 104,
+              "combos": 1,
+              "helpers": 114,
+              "proofs": 11,
+              "terms": 270,
+              "time": 96,
+              "variants": 2,
+              "window_time": 66
+            }
+          },
+          "joint_search_statuses": {
+            "complete": 36,
+            "budget: cands_truncated": 2,
+            "budget: bank_truncated,cands_truncated": 1,
+            "budget: bank_truncated,helper_budget_exhausted,cands_truncated": 3,
+            "budget: bank_truncated,helper_budget_exhausted": 5,
+            "budget: time": 40,
+            "budget: bank_truncated": 1,
+            "budget: bank_truncated,combo_budget_exhausted,cands_truncated": 1
+          },
+          "joint_budget": {
+            "cache": null,
+            "checkpoint_s": 30,
+            "cost_slack": 0,
+            "enabled": true,
+            "helper_cost": 2,
+            "jobs": 16,
+            "max_cands": 48,
+            "max_combos": 50000,
+            "max_cost": 3,
+            "max_evals": 80000000,
+            "max_helpers": 1024,
+            "max_outputs": 3,
+            "max_proofs": 6,
+            "max_reuse": 4,
+            "max_tasks": null,
+            "max_terms": 800000,
+            "max_window": 5,
+            "max_windows": 0,
+            "max_windows_per_block": 2000,
+            "priority": "/home/nod/gisel-mine-loop-20261113/build/experiment-integrated-180/loop-insns-seed29/run/rounds/001/joint/feedback.json",
+            "refresh_search": false,
+            "samples": 48,
+            "seed": 29,
+            "semantic_variants": 24,
+            "time_budget_s": 36.95,
+            "time_s": 20.0,
+            "timeout_ms": 10000
+          },
+          "ordinary_search": {
+            "alts": {
+              "closed_at_this_depth": 0,
+              "complete": 61,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {},
+              "searched_in_this_run": 0,
+              "tasks": 61
+            },
+            "left": 10,
+            "region": {
+              "closed_at_this_depth": 1,
+              "complete": 18,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "terms": 1
+              },
+              "searched_in_this_run": 1,
+              "tasks": 19
+            },
+            "sibling": {
+              "closed_at_this_depth": 1,
+              "complete": 755,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 10,
+              "reasons": {
+                "terms": 11,
+                "time": 10
+              },
+              "searched_in_this_run": 11,
+              "tasks": 766
+            },
+            "single": {
+              "closed_at_this_depth": 27,
+              "complete": 441,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "candidates": 1,
+                "terms": 26
+              },
+              "searched_in_this_run": 0,
+              "tasks": 468
+            }
+          },
+          "stages": {
+            "baseline": {
+              "status": "done",
+              "seconds": 0.2
+            },
+            "build": {
+              "status": "done",
+              "seconds": 8.3
+            },
+            "discover": {
+              "status": "pending",
+              "seconds": 56.2
+            },
+            "extract": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "freeze": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "heldout": {
+              "status": "done",
+              "seconds": 0.6
+            },
+            "identity": {
+              "status": "done",
+              "seconds": 0.6
+            },
+            "measure": {
+              "status": "done",
+              "seconds": 0.4
+            },
+            "prepare": {
+              "status": "done",
+              "seconds": 0.0
+            },
+            "report": {
+              "status": "done",
+              "seconds": 0.3
+            },
+            "select": {
+              "status": "done",
+              "seconds": 36.5
+            },
+            "verify": {
+              "status": "done",
+              "seconds": 0.4
+            }
+          },
+          "profile_sha256": "516e3ed4083a0739b890ea64a63548b18321489003822aab4442cc52bedeec0f",
+          "joint_profile_sha256": "d088ccbae334c19c5f1e577b81e661ac0b561d67cda1751a199984b94368f19c",
+          "joint_feedback_sha256": "e26d67dadc0bc4afdd247ecba656dae96e9e75b6f6df96e83c396c91c1ced691"
+        }
+      ],
+      "freeze": {
+        "compiler_sha256": "e96144f7a3950f846ae390d99c1d5ca4346b26f15675609b3b5c32c805b82bdf",
+        "config_sha256": "05c0c3c64962c9c16e1c7b400786aa059784d4097cc504957f3bcfb66227ac22",
+        "corpus_metadata_sha256": "e4dbc18904d4e1420e2942604eb63b5953f7b85f5aa20451698825d5a8ed8d6b",
+        "evaluation_baseline": [
+          "synth_xor_66308b8b",
+          "synth_sub_c1235ab0_1u",
+          "synth_and_83abd1ae_1u",
+          "synth_lshr_c497647d",
+          "synth_select_4cdb868a",
+          "synth_select_4f35dc63",
+          "synth_shl_a7bba6d0_1u",
+          "synth_shl_edbd16af_1u",
+          "synth_smax_d4d1ff0e_1u",
+          "synth_trunc_110bd23a_1u",
+          "synth_or_ecb7e28d",
+          "synth_icmp_7274715e",
+          "synth_icmp_8f303343"
+        ],
+        "generator_sha256": "fe09969f1ee850085568600b22b81679459edf566c2bf4e756deb8424f0d503f",
+        "heldout_evaluations_before": 0,
+        "history": [],
+        "joint_library_sha256": "4f4a782454a7115796a398495fff34c0b3c76e5ba4ff4261414462310bc1e63e",
+        "joint_profile_sha256": "d088ccbae334c19c5f1e577b81e661ac0b561d67cda1751a199984b94368f19c",
+        "library_sha256": "ec423a8be8dae2c51652bec80367e008b1080393912e7ba1243155317d51940a",
+        "manifests": {
+          "discovery": "9ac6e040f6c59a2f78caef2a0e491ac7d48d9f3b59a5134a333754a4405c8e47",
+          "heldout": "e74f3a627e226cbc4d2991c32b4b3bcef2fdf71cf4dc3d43169361cab7998910",
+          "validation": "c3d763d4335a8bd7fc35e1d26c42a7cd4605113f52a9b207db8d6fb039d3a00c"
+        },
+        "model_sha256": "c0efef4a9a2c4de6bfa459eddb95e3617888dfd87bd18ab6f5a6c6806065299d",
+        "objective": {
+          "guardrail_scope": "per compilation unit",
+          "guardrails": {},
+          "kind": "static",
+          "metric": "insns"
+        },
+        "profile_sha256": "516e3ed4083a0739b890ea64a63548b18321489003822aab4442cc52bedeec0f",
+        "rules": [
+          "synth_and_83abd1ae_1u",
+          "synth_icmp_7274715e",
+          "synth_icmp_8f303343",
+          "synth_lshr_c497647d",
+          "synth_or_ecb7e28d",
+          "synth_select_4cdb868a",
+          "synth_select_4f35dc63",
+          "synth_shl_a7bba6d0_1u",
+          "synth_shl_edbd16af_1u",
+          "synth_smax_d4d1ff0e_1u",
+          "synth_sub_c1235ab0_1u",
+          "synth_trunc_110bd23a_1u",
+          "synth_xor_66308b8b"
+        ],
+        "source_files": {
+          "discovery": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitarray.ll": "8d228d251dc8fca2e99898dc7d7507ae49203610faaac7683878cbd9d5e698d6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_1.ll": "eb66c911e7b3c3440c9c812c275d74791cb71baeac4e8a44f485d053b3c0bb65",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_2.ll": "7d9bbc81f4dd3967c22d682c1c26d434ae4bb47d6b5741031afabb5c9b17702d",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_3.ll": "08318f12ec3e4d1e5c2d6bd118d3d7cbecd864afa5b14335faed689eefcbab88",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_4.ll": "62891a4e970f007e6b013727fe43fb53653e683f94742ce5a38416d16b17b07a",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnts.ll": "a0de877af49181c350598547ff6e42a9732bffbcee9d13f5589d3da72b322f85",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitfiles.ll": "58db13a004242dc563434a2cf19a63951df64eabc03058df4fe8e063a63e0501",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitstrng.ll": "d836565ed5566ca103f87a629dc9176464d241556390e35e3823ad74481a7035",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bstr_i.ll": "6be5c82ea852ea40a61b8c23b24f20acd4406261c32bdefe0f5edd337e866ebc",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/network-patricia/patricia.ll": "a62c0c173bea0fbc39c18bbca18ee7412b78ac0445352759ed98a689365cceb8",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/network-patricia/patricia_test.ll": "b185bfee468cf08b9dd50f0c194ec3e1cc6e3c15a2359f0b397e07d348318fda",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/security-sha/sha.ll": "f4040698744771c7bc60b354eb0180e3ba24ea6815d37e2e095005bae253d916",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/security-sha/sha_driver.ll": "f9b9563dd1f01fc6fb8054beb5c52bb9f3cac1bc25258821e5e918e975802b68"
+          },
+          "heldout": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/basicmath.ll": "20a60a8354177e926fd40dd7488476cdb704e261d1fe7703900ef47f94c21d91",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/cubic.ll": "72364ffd5e9110966c40b36a118ce15171cae86f5c9121aa554be81678ab2108",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/isqrt.ll": "6a604c3b21af247b65767c48481e7cd3a14ad20e12973b0b0018ae7daa41bfe6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/rad2deg.ll": "58b1503abd06962ae6c955b0adc1655a01f48b1be60a05cc38e4fcdb43cce36c",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/security-rijndael/aes.ll": "99bb28925f43f586a777141771e119b524af01a6a7c03e6949cb0d32f854bcdc",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/security-rijndael/aesxam.ll": "2dd1499ff181f6991f7dd7873c1cc0c0bea76791a772b7df64fa3e76ec07f4c6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/telecomm-CRC32/crc_32.ll": "2d51e45ae5aae0817242af71c7fc6a29c0b9137fc2a3ceb79423e092fee7f9b0"
+          },
+          "validation": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhasrch.ll": "4599b0d1e7a6d497ab32b0256380504fc712eaf993b93641b3cce882a5cc1ad0",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhisrch.ll": "5f062f52bdaa8db0c91946cdfb0dea7fcddff571319da003f3fcd1ecc0a9f7c6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhsrch.ll": "a88e7392370dc1726fe89957270bb3df7b807cf8a2e3a1a896e1ffce47c45112",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/pbmsrch.ll": "e4e4076c6cb5da99900ca42b5c3164fe483f6b5de60847cb9803a1f2159466f8",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_cbc.ll": "0b747a9f2c57fb115006ffe3fe246aaa89bc573e4252b7b9c3552b264fef5109",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_cfb64.ll": "eaaf411d689ce040eab85ef91c4034b51303eeddfadc789e5cde810c3e24ee43",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_ecb.ll": "526b8490ef151c96a9356972b086691aa10f86e21cb9874be300d3c6a9497110",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_enc.ll": "7802892c028c02ad2dccdba610552b09318f24a03c5748848b78c3139c9a6c4c",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_ofb64.ll": "bc0440952b3acb807c67cc3f399b1288229bd55b0a7a183c0d3a8b15e118985a",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_skey.ll": "70af8d1d54e4fba15c755c87e579cbf1f81d6c3dbcea4724105ea230c8a0a890",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bftest.ll": "6720d6e560d43e22435678f353ea45938a2e3c17440f1635370a67b6dc0de316",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/telecomm-adpcm/adpcm.ll": "5d36e9fbcb139418213bb7cd104d74654753661227e62e7feed6dc46c1aa6252",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/telecomm-adpcm/rawdaudio.ll": "bb1c61c69f98d35ada15bf71f7957cc096274ec2d6e383b97ecca9bb4212dc0f"
+          }
+        },
+        "statement": "The held-out files were not compiled with a candidate and were not read by a search, a precondition synthesis or a selection before this record.",
+        "time": "2026-11-13T11:37:09-0800"
+      },
+      "report_sha256": "568315bfd68bd2f3fff1c3223ca9cc85c7b4ea25289787b95fed262f546d916b",
+      "baseline_fallbacks": {
+        "MultiSource/Benchmarks/MiBench/office-stringsearch/bmhisrch.c": [
+          "bmhi_init"
+        ],
+        "MultiSource/Benchmarks/MiBench/office-stringsearch/bmhsrch.c": [
+          "bmh_init"
+        ]
+      },
+      "recomputed_from_per_file_measurements": {
+        "validation/direct": {
+          "compared": 13,
+          "insns_delta": 0,
+          "code_bytes_delta": 0
+        },
+        "heldout/direct": {
+          "compared": 7,
+          "insns_delta": 0,
+          "code_bytes_delta": 0
+        }
+      }
+    },
+    "loop-bytes-seed29": {
+      "search_elapsed_s": 165.7,
+      "search_budget_s": 180.0,
+      "original_baseline": [
+        "synth_xor_66308b8b",
+        "synth_sub_c1235ab0_1u",
+        "synth_and_83abd1ae_1u",
+        "synth_lshr_c497647d",
+        "synth_select_4cdb868a",
+        "synth_select_4f35dc63",
+        "synth_shl_a7bba6d0_1u",
+        "synth_shl_edbd16af_1u",
+        "synth_smax_d4d1ff0e_1u",
+        "synth_trunc_110bd23a_1u",
+        "synth_or_ecb7e28d",
+        "synth_icmp_7274715e",
+        "synth_icmp_8f303343"
+      ],
+      "new_selected": [],
+      "newly_discovered_selected": [],
+      "known_rules_newly_selected": [],
+      "stop": "round_limit",
+      "objective": {
+        "guardrail_scope": "per compilation unit",
+        "guardrails": {},
+        "kind": "static",
+        "metric": "code_bytes"
+      },
+      "evaluation": {
+        "heldout/direct": {
+          "base_fails": 0,
+          "bytes_delta": 0,
+          "changes": [],
+          "code_bytes_compared": 7,
+          "code_bytes_delta": 0,
+          "compared": 7,
+          "compile_failures": [],
+          "cpu": 0.2,
+          "cpu_base": 0.2,
+          "fallback_changed": [],
+          "files": 7,
+          "files_better": 0,
+          "files_worse": 0,
+          "guardrail_violations": [],
+          "insns_base": 3088,
+          "insns_delta": 0,
+          "objective": {
+            "guardrail_scope": "per compilation unit",
+            "guardrails": {},
+            "kind": "static",
+            "metric": "code_bytes"
+          },
+          "objective_delta": 0
+        },
+        "validation/direct": {
+          "base_fails": 0,
+          "bytes_delta": 0,
+          "changes": [],
+          "code_bytes_compared": 13,
+          "code_bytes_delta": 0,
+          "compared": 13,
+          "compile_failures": [],
+          "cpu": 0.3,
+          "cpu_base": 0.3,
+          "fallback_changed": [],
+          "files": 13,
+          "files_better": 0,
+          "files_worse": 0,
+          "guardrail_violations": [],
+          "insns_base": 3384,
+          "insns_delta": 0,
+          "objective": {
+            "guardrail_scope": "per compilation unit",
+            "guardrails": {},
+            "kind": "static",
+            "metric": "code_bytes"
+          },
+          "objective_delta": 0
+        }
+      },
+      "selection": {
+        "rc": 0,
+        "wall_s": 302.6971381828189
+      },
+      "evaluation_execution": {
+        "rc": 0,
+        "wall_s": 1.6316821416839957
+      },
+      "rounds": [
+        {
+          "search_elapsed_s": 63.0,
+          "ordinary_allowance_s": 30.0,
+          "joint_allowance_s": 30.0,
+          "new_selected": [],
+          "selection": {
+            "failed_baseline": 0,
+            "files_better": 0,
+            "files_compiled": 13,
+            "files_worse": 0,
+            "insns_delta": 0,
+            "objective": {
+              "guardrail_scope": "per compilation unit",
+              "guardrails": {},
+              "kind": "static",
+              "metric": "code_bytes"
+            },
+            "objective_gain": 0,
+            "regressions": []
+          },
+          "ordinary_statuses": {
+            "emitted": 13,
+            "no_application": 24,
+            "regression": 2
+          },
+          "joint_statuses": {
+            "no_application": 87,
+            "no_gain": 10,
+            "regression": 2
+          },
+          "joint_candidates": 99,
+          "joint_queue": {
+            "tasks": 618,
+            "complete": 69,
+            "not_searched": 348,
+            "open": 34,
+            "closed_at_this_depth": 167,
+            "searched_in_this_run": 270,
+            "completed_in_this_run": 69,
+            "reasons": {
+              "candidates": 53,
+              "helpers": 56,
+              "proofs": 3,
+              "terms": 174,
+              "time": 32,
+              "variants": 2,
+              "window_time": 38
+            }
+          },
+          "joint_search_statuses": {
+            "complete": 69,
+            "budget: cands_truncated": 11,
+            "budget: bank_truncated": 85,
+            "budget: bank_truncated,helper_budget_exhausted,cands_truncated": 9,
+            "budget: time": 69,
+            "budget: bank_truncated,helper_budget_exhausted": 9,
+            "budget: bank_truncated,cands_truncated": 18
+          },
+          "joint_budget": {
+            "cache": null,
+            "checkpoint_s": 30,
+            "cost_slack": 0,
+            "enabled": true,
+            "helper_cost": 2,
+            "jobs": 16,
+            "max_cands": 12,
+            "max_combos": 50000,
+            "max_cost": 3,
+            "max_evals": 20000000,
+            "max_helpers": 256,
+            "max_outputs": 3,
+            "max_proofs": 6,
+            "max_reuse": 4,
+            "max_tasks": null,
+            "max_terms": 200000,
+            "max_window": 5,
+            "max_windows": 0,
+            "max_windows_per_block": 2000,
+            "priority": null,
+            "refresh_search": false,
+            "samples": 48,
+            "seed": 29,
+            "semantic_variants": 6,
+            "time_budget_s": 30.0,
+            "time_s": 5.0,
+            "timeout_ms": 10000
+          },
+          "ordinary_search": {
+            "alts": {
+              "closed_at_this_depth": 0,
+              "complete": 0,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 61,
+              "reasons": {
+                "time": 61
+              },
+              "searched_in_this_run": 61,
+              "tasks": 61
+            },
+            "left": 541,
+            "region": {
+              "closed_at_this_depth": 0,
+              "complete": 18,
+              "completed_in_this_run": 18,
+              "not_searched": 0,
+              "open": 1,
+              "reasons": {
+                "terms": 1,
+                "time": 1
+              },
+              "searched_in_this_run": 19,
+              "tasks": 19
+            },
+            "sibling": {
+              "closed_at_this_depth": 0,
+              "complete": 755,
+              "completed_in_this_run": 755,
+              "not_searched": 0,
+              "open": 11,
+              "reasons": {
+                "terms": 11,
+                "time": 11
+              },
+              "searched_in_this_run": 766,
+              "tasks": 766
+            },
+            "single": {
+              "closed_at_this_depth": 0,
+              "complete": 0,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 468,
+              "reasons": {
+                "candidates": 1,
+                "terms": 26,
+                "time": 468
+              },
+              "searched_in_this_run": 468,
+              "tasks": 468
+            }
+          },
+          "stages": {
+            "baseline": {
+              "status": "done",
+              "seconds": 7.6
+            },
+            "build": {
+              "status": "done",
+              "seconds": 8.0
+            },
+            "discover": {
+              "status": "pending",
+              "seconds": 63.0
+            },
+            "extract": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "identity": {
+              "status": "done",
+              "seconds": 0.5
+            },
+            "measure": {
+              "status": "done",
+              "seconds": 0.3
+            },
+            "prepare": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "select": {
+              "status": "done",
+              "seconds": 24.0
+            },
+            "verify": {
+              "status": "done",
+              "seconds": 0.3
+            }
+          },
+          "profile_sha256": "74cb2969856bd3bac77d269a144d90f7e30cdd23d37537a54a399c9fc6469b0c",
+          "joint_profile_sha256": "bc29593462166a47f89e845a4c38a969cb03c015f82c75987209e5ecf7befab4",
+          "joint_feedback_sha256": "52b8ff6f8f3739ea25db7ec59cb134a9758fa93508e851d90384d58b57ead6e8"
+        },
+        {
+          "search_elapsed_s": 50.6,
+          "ordinary_allowance_s": 29.25,
+          "joint_allowance_s": 29.25,
+          "new_selected": [],
+          "selection": {
+            "failed_baseline": 0,
+            "files_better": 0,
+            "files_compiled": 13,
+            "files_worse": 0,
+            "insns_delta": 0,
+            "objective": {
+              "guardrail_scope": "per compilation unit",
+              "guardrails": {},
+              "kind": "static",
+              "metric": "code_bytes"
+            },
+            "objective_gain": 0,
+            "regressions": []
+          },
+          "ordinary_statuses": {
+            "emitted": 13,
+            "no_application": 24,
+            "regression": 2
+          },
+          "joint_statuses": {
+            "no_application": 141,
+            "no_gain": 10,
+            "regression": 2
+          },
+          "joint_candidates": 153,
+          "joint_queue": {
+            "tasks": 618,
+            "complete": 90,
+            "not_searched": 238,
+            "open": 246,
+            "closed_at_this_depth": 44,
+            "searched_in_this_run": 110,
+            "completed_in_this_run": 21,
+            "reasons": {
+              "candidates": 92,
+              "helpers": 90,
+              "proofs": 16,
+              "terms": 240,
+              "time": 64,
+              "variants": 2,
+              "window_time": 54
+            }
+          },
+          "joint_search_statuses": {
+            "complete": 21,
+            "budget: bank_truncated": 12,
+            "budget: bank_truncated,cands_truncated": 12,
+            "budget: bank_truncated,helper_budget_exhausted,cands_truncated": 6,
+            "budget: bank_truncated,helper_budget_exhausted": 4,
+            "budget: time": 48,
+            "budget: cands_truncated": 7
+          },
+          "joint_budget": {
+            "cache": null,
+            "checkpoint_s": 30,
+            "cost_slack": 0,
+            "enabled": true,
+            "helper_cost": 2,
+            "jobs": 16,
+            "max_cands": 24,
+            "max_combos": 50000,
+            "max_cost": 3,
+            "max_evals": 40000000,
+            "max_helpers": 512,
+            "max_outputs": 3,
+            "max_proofs": 6,
+            "max_reuse": 4,
+            "max_tasks": null,
+            "max_terms": 400000,
+            "max_window": 5,
+            "max_windows": 0,
+            "max_windows_per_block": 2000,
+            "priority": "/home/nod/gisel-mine-loop-20261113/build/experiment-integrated-180/loop-bytes-seed29/run/rounds/000/joint/feedback.json",
+            "refresh_search": false,
+            "samples": 48,
+            "seed": 29,
+            "semantic_variants": 12,
+            "time_budget_s": 29.25,
+            "time_s": 10.0,
+            "timeout_ms": 10000
+          },
+          "ordinary_search": {
+            "alts": {
+              "closed_at_this_depth": 0,
+              "complete": 61,
+              "completed_in_this_run": 61,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {},
+              "searched_in_this_run": 61,
+              "tasks": 61
+            },
+            "left": 12,
+            "region": {
+              "closed_at_this_depth": 0,
+              "complete": 18,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 1,
+              "reasons": {
+                "terms": 1,
+                "time": 1
+              },
+              "searched_in_this_run": 1,
+              "tasks": 19
+            },
+            "sibling": {
+              "closed_at_this_depth": 0,
+              "complete": 755,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 11,
+              "reasons": {
+                "terms": 11,
+                "time": 11
+              },
+              "searched_in_this_run": 11,
+              "tasks": 766
+            },
+            "single": {
+              "closed_at_this_depth": 27,
+              "complete": 441,
+              "completed_in_this_run": 441,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "candidates": 1,
+                "terms": 26
+              },
+              "searched_in_this_run": 468,
+              "tasks": 468
+            }
+          },
+          "stages": {
+            "baseline": {
+              "status": "done",
+              "seconds": 0.2
+            },
+            "build": {
+              "status": "done",
+              "seconds": 8.2
+            },
+            "discover": {
+              "status": "pending",
+              "seconds": 50.6
+            },
+            "extract": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "identity": {
+              "status": "done",
+              "seconds": 0.6
+            },
+            "measure": {
+              "status": "done",
+              "seconds": 0.3
+            },
+            "prepare": {
+              "status": "done",
+              "seconds": 0.0
+            },
+            "select": {
+              "status": "done",
+              "seconds": 35.1
+            },
+            "verify": {
+              "status": "done",
+              "seconds": 0.4
+            }
+          },
+          "profile_sha256": "74cb2969856bd3bac77d269a144d90f7e30cdd23d37537a54a399c9fc6469b0c",
+          "joint_profile_sha256": "246f31f517477f651aed44d262e5b43a933194b9cf56aac76089c480caf44e8b",
+          "joint_feedback_sha256": "9378db082b640ac02f17b1595eb25cc9ff678d16d897aae95670950b2371cf63"
+        },
+        {
+          "search_elapsed_s": 52.1,
+          "ordinary_allowance_s": 33.2,
+          "joint_allowance_s": 33.2,
+          "new_selected": [],
+          "selection": {
+            "failed_baseline": 0,
+            "files_better": 0,
+            "files_compiled": 13,
+            "files_worse": 0,
+            "insns_delta": 0,
+            "objective": {
+              "guardrail_scope": "per compilation unit",
+              "guardrails": {},
+              "kind": "static",
+              "metric": "code_bytes"
+            },
+            "objective_gain": 0,
+            "regressions": []
+          },
+          "ordinary_statuses": {
+            "emitted": 13,
+            "no_application": 24,
+            "regression": 2
+          },
+          "joint_statuses": {
+            "no_application": 158,
+            "no_gain": 10,
+            "regression": 2
+          },
+          "joint_candidates": 170,
+          "joint_queue": {
+            "tasks": 618,
+            "complete": 121,
+            "not_searched": 157,
+            "open": 322,
+            "closed_at_this_depth": 18,
+            "searched_in_this_run": 81,
+            "completed_in_this_run": 31,
+            "reasons": {
+              "candidates": 105,
+              "combos": 1,
+              "helpers": 113,
+              "proofs": 16,
+              "terms": 273,
+              "time": 96,
+              "variants": 2,
+              "window_time": 62
+            }
+          },
+          "joint_search_statuses": {
+            "complete": 31,
+            "budget: bank_truncated,cands_truncated": 1,
+            "budget: bank_truncated,helper_budget_exhausted,cands_truncated": 3,
+            "budget: bank_truncated,helper_budget_exhausted": 5,
+            "budget: time": 40,
+            "budget: cands_truncated": 1
+          },
+          "joint_budget": {
+            "cache": null,
+            "checkpoint_s": 30,
+            "cost_slack": 0,
+            "enabled": true,
+            "helper_cost": 2,
+            "jobs": 16,
+            "max_cands": 48,
+            "max_combos": 50000,
+            "max_cost": 3,
+            "max_evals": 80000000,
+            "max_helpers": 1024,
+            "max_outputs": 3,
+            "max_proofs": 6,
+            "max_reuse": 4,
+            "max_tasks": null,
+            "max_terms": 800000,
+            "max_window": 5,
+            "max_windows": 0,
+            "max_windows_per_block": 2000,
+            "priority": "/home/nod/gisel-mine-loop-20261113/build/experiment-integrated-180/loop-bytes-seed29/run/rounds/001/joint/feedback.json",
+            "refresh_search": false,
+            "samples": 48,
+            "seed": 29,
+            "semantic_variants": 24,
+            "time_budget_s": 33.2,
+            "time_s": 20.0,
+            "timeout_ms": 10000
+          },
+          "ordinary_search": {
+            "alts": {
+              "closed_at_this_depth": 0,
+              "complete": 61,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {},
+              "searched_in_this_run": 0,
+              "tasks": 61
+            },
+            "left": 10,
+            "region": {
+              "closed_at_this_depth": 1,
+              "complete": 18,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "terms": 1
+              },
+              "searched_in_this_run": 1,
+              "tasks": 19
+            },
+            "sibling": {
+              "closed_at_this_depth": 1,
+              "complete": 755,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 10,
+              "reasons": {
+                "terms": 11,
+                "time": 10
+              },
+              "searched_in_this_run": 11,
+              "tasks": 766
+            },
+            "single": {
+              "closed_at_this_depth": 27,
+              "complete": 441,
+              "completed_in_this_run": 0,
+              "not_searched": 0,
+              "open": 0,
+              "reasons": {
+                "candidates": 1,
+                "terms": 26
+              },
+              "searched_in_this_run": 0,
+              "tasks": 468
+            }
+          },
+          "stages": {
+            "baseline": {
+              "status": "done",
+              "seconds": 0.2
+            },
+            "build": {
+              "status": "done",
+              "seconds": 8.2
+            },
+            "discover": {
+              "status": "pending",
+              "seconds": 52.1
+            },
+            "extract": {
+              "status": "done",
+              "seconds": 0.1
+            },
+            "freeze": {
+              "status": "done",
+              "seconds": 0.2
+            },
+            "heldout": {
+              "status": "done",
+              "seconds": 0.6
+            },
+            "identity": {
+              "status": "done",
+              "seconds": 0.6
+            },
+            "measure": {
+              "status": "done",
+              "seconds": 0.4
+            },
+            "prepare": {
+              "status": "done",
+              "seconds": 0.0
+            },
+            "report": {
+              "status": "done",
+              "seconds": 0.3
+            },
+            "select": {
+              "status": "done",
+              "seconds": 39.3
+            },
+            "verify": {
+              "status": "done",
+              "seconds": 0.4
+            }
+          },
+          "profile_sha256": "74cb2969856bd3bac77d269a144d90f7e30cdd23d37537a54a399c9fc6469b0c",
+          "joint_profile_sha256": "c65862f76a00c54035a2f1282c6507293c4ab9a77f87a22e3c80e82c2009ae26",
+          "joint_feedback_sha256": "dcd044efbe7cfe0fe3fe832eba100183a0e1bc3763915699ca300dbdf56379f5"
+        }
+      ],
+      "freeze": {
+        "compiler_sha256": "bcf90572c16e77828572d1a637233a39d15f9089511db4abfcd74085a64a7711",
+        "config_sha256": "d3ec4e12052df4a456e2a0d028c01036335818a14af4581dfb1d975c3030fbbc",
+        "corpus_metadata_sha256": "e4dbc18904d4e1420e2942604eb63b5953f7b85f5aa20451698825d5a8ed8d6b",
+        "evaluation_baseline": [
+          "synth_xor_66308b8b",
+          "synth_sub_c1235ab0_1u",
+          "synth_and_83abd1ae_1u",
+          "synth_lshr_c497647d",
+          "synth_select_4cdb868a",
+          "synth_select_4f35dc63",
+          "synth_shl_a7bba6d0_1u",
+          "synth_shl_edbd16af_1u",
+          "synth_smax_d4d1ff0e_1u",
+          "synth_trunc_110bd23a_1u",
+          "synth_or_ecb7e28d",
+          "synth_icmp_7274715e",
+          "synth_icmp_8f303343"
+        ],
+        "generator_sha256": "fe09969f1ee850085568600b22b81679459edf566c2bf4e756deb8424f0d503f",
+        "heldout_evaluations_before": 0,
+        "history": [],
+        "joint_library_sha256": "e7523f07a24a84dda688e0d72414b0a55367dddae3ffe03b53d25c5911072458",
+        "joint_profile_sha256": "c65862f76a00c54035a2f1282c6507293c4ab9a77f87a22e3c80e82c2009ae26",
+        "library_sha256": "ec423a8be8dae2c51652bec80367e008b1080393912e7ba1243155317d51940a",
+        "manifests": {
+          "discovery": "9ac6e040f6c59a2f78caef2a0e491ac7d48d9f3b59a5134a333754a4405c8e47",
+          "heldout": "e74f3a627e226cbc4d2991c32b4b3bcef2fdf71cf4dc3d43169361cab7998910",
+          "validation": "c3d763d4335a8bd7fc35e1d26c42a7cd4605113f52a9b207db8d6fb039d3a00c"
+        },
+        "model_sha256": "c0efef4a9a2c4de6bfa459eddb95e3617888dfd87bd18ab6f5a6c6806065299d",
+        "objective": {
+          "guardrail_scope": "per compilation unit",
+          "guardrails": {},
+          "kind": "static",
+          "metric": "code_bytes"
+        },
+        "profile_sha256": "74cb2969856bd3bac77d269a144d90f7e30cdd23d37537a54a399c9fc6469b0c",
+        "rules": [
+          "synth_and_83abd1ae_1u",
+          "synth_icmp_7274715e",
+          "synth_icmp_8f303343",
+          "synth_lshr_c497647d",
+          "synth_or_ecb7e28d",
+          "synth_select_4cdb868a",
+          "synth_select_4f35dc63",
+          "synth_shl_a7bba6d0_1u",
+          "synth_shl_edbd16af_1u",
+          "synth_smax_d4d1ff0e_1u",
+          "synth_sub_c1235ab0_1u",
+          "synth_trunc_110bd23a_1u",
+          "synth_xor_66308b8b"
+        ],
+        "source_files": {
+          "discovery": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitarray.ll": "8d228d251dc8fca2e99898dc7d7507ae49203610faaac7683878cbd9d5e698d6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_1.ll": "eb66c911e7b3c3440c9c812c275d74791cb71baeac4e8a44f485d053b3c0bb65",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_2.ll": "7d9bbc81f4dd3967c22d682c1c26d434ae4bb47d6b5741031afabb5c9b17702d",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_3.ll": "08318f12ec3e4d1e5c2d6bd118d3d7cbecd864afa5b14335faed689eefcbab88",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnt_4.ll": "62891a4e970f007e6b013727fe43fb53653e683f94742ce5a38416d16b17b07a",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitcnts.ll": "a0de877af49181c350598547ff6e42a9732bffbcee9d13f5589d3da72b322f85",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitfiles.ll": "58db13a004242dc563434a2cf19a63951df64eabc03058df4fe8e063a63e0501",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bitstrng.ll": "d836565ed5566ca103f87a629dc9176464d241556390e35e3823ad74481a7035",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/automotive-bitcount/bstr_i.ll": "6be5c82ea852ea40a61b8c23b24f20acd4406261c32bdefe0f5edd337e866ebc",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/network-patricia/patricia.ll": "a62c0c173bea0fbc39c18bbca18ee7412b78ac0445352759ed98a689365cceb8",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/network-patricia/patricia_test.ll": "b185bfee468cf08b9dd50f0c194ec3e1cc6e3c15a2359f0b397e07d348318fda",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/security-sha/sha.ll": "f4040698744771c7bc60b354eb0180e3ba24ea6815d37e2e095005bae253d916",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/discovery/security-sha/sha_driver.ll": "f9b9563dd1f01fc6fb8054beb5c52bb9f3cac1bc25258821e5e918e975802b68"
+          },
+          "heldout": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/basicmath.ll": "20a60a8354177e926fd40dd7488476cdb704e261d1fe7703900ef47f94c21d91",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/cubic.ll": "72364ffd5e9110966c40b36a118ce15171cae86f5c9121aa554be81678ab2108",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/isqrt.ll": "6a604c3b21af247b65767c48481e7cd3a14ad20e12973b0b0018ae7daa41bfe6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/automotive-basicmath/rad2deg.ll": "58b1503abd06962ae6c955b0adc1655a01f48b1be60a05cc38e4fcdb43cce36c",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/security-rijndael/aes.ll": "99bb28925f43f586a777141771e119b524af01a6a7c03e6949cb0d32f854bcdc",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/security-rijndael/aesxam.ll": "2dd1499ff181f6991f7dd7873c1cc0c0bea76791a772b7df64fa3e76ec07f4c6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/heldout/telecomm-CRC32/crc_32.ll": "2d51e45ae5aae0817242af71c7fc6a29c0b9137fc2a3ceb79423e092fee7f9b0"
+          },
+          "validation": {
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhasrch.ll": "4599b0d1e7a6d497ab32b0256380504fc712eaf993b93641b3cce882a5cc1ad0",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhisrch.ll": "5f062f52bdaa8db0c91946cdfb0dea7fcddff571319da003f3fcd1ecc0a9f7c6",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/bmhsrch.ll": "a88e7392370dc1726fe89957270bb3df7b807cf8a2e3a1a896e1ffce47c45112",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/office-stringsearch/pbmsrch.ll": "e4e4076c6cb5da99900ca42b5c3164fe483f6b5de60847cb9803a1f2159466f8",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_cbc.ll": "0b747a9f2c57fb115006ffe3fe246aaa89bc573e4252b7b9c3552b264fef5109",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_cfb64.ll": "eaaf411d689ce040eab85ef91c4034b51303eeddfadc789e5cde810c3e24ee43",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_ecb.ll": "526b8490ef151c96a9356972b086691aa10f86e21cb9874be300d3c6a9497110",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_enc.ll": "7802892c028c02ad2dccdba610552b09318f24a03c5748848b78c3139c9a6c4c",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_ofb64.ll": "bc0440952b3acb807c67cc3f399b1288229bd55b0a7a183c0d3a8b15e118985a",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bf_skey.ll": "70af8d1d54e4fba15c755c87e579cbf1f81d6c3dbcea4724105ea230c8a0a890",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/security-blowfish/bftest.ll": "6720d6e560d43e22435678f353ea45938a2e3c17440f1635370a67b6dc0de316",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/telecomm-adpcm/adpcm.ll": "5d36e9fbcb139418213bb7cd104d74654753661227e62e7feed6dc46c1aa6252",
+            "/home/nod/gisel-mine-loop-20261113/build/real-corpus/validation/telecomm-adpcm/rawdaudio.ll": "bb1c61c69f98d35ada15bf71f7957cc096274ec2d6e383b97ecca9bb4212dc0f"
+          }
+        },
+        "statement": "The held-out files were not compiled with a candidate and were not read by a search, a precondition synthesis or a selection before this record.",
+        "time": "2026-11-13T11:37:10-0800"
+      },
+      "report_sha256": "3fd85698161c91fa6cae61f9d853f82f8130a657fe5fdbb98fd83bd302a4ba31",
+      "baseline_fallbacks": {
+        "MultiSource/Benchmarks/MiBench/office-stringsearch/bmhisrch.c": [
+          "bmhi_init"
+        ],
+        "MultiSource/Benchmarks/MiBench/office-stringsearch/bmhsrch.c": [
+          "bmh_init"
+        ]
+      },
+      "recomputed_from_per_file_measurements": {
+        "validation/direct": {
+          "compared": 13,
+          "insns_delta": 0,
+          "code_bytes_delta": 0
+        },
+        "heldout/direct": {
+          "compared": 7,
+          "insns_delta": 0,
+          "code_bytes_delta": 0
+        }
+      }
+    }
+  },
+  "artifacts": {
+    "python-integrated.log": {
+      "sha256": "bff635bfc2791d919baf9445e31207025cec3d4a6a9342674930e80ac6842e43",
+      "remote_path": "/home/nod/gisel-mine-loop-20261113/build/validation/python-integrated.log"
+    },
+    "backend-integrated.log": {
+      "sha256": "3ef8eff9e841cf9f1612720c9ee2310efa2ebefad25449852eb7cf146001eee7",
+      "remote_path": "/home/nod/gisel-mine-loop-20261113/build/validation/backend-integrated.log"
+    },
+    "emit-integrated.log": {
+      "sha256": "29305cde17cde1ed8f504a3c3541acad015ea380885e3b8322739edc362fcf7c",
+      "remote_path": "/home/nod/gisel-mine-loop-20261113/build/validation/emit-integrated.log"
+    },
+    "joint-emit-integrated.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "remote_path": "/home/nod/gisel-mine-loop-20261113/build/validation/joint-emit-integrated.log"
+    },
+    "experiment-integrated.log": {
+      "sha256": "7743c040aea691e322c5824f12407b56edd3d06ba8b6268d819d2d88262b0ea6",
+      "remote_path": "/home/nod/gisel-mine-loop-20261113/build/validation/experiment-integrated.log"
+    }
+  },
+  "regression_checks": {
+    "source": "18dc03dcad921c8b62ca3a8dc76f5d70d74cebac",
+    "python": {
+      "run": 812,
+      "passed": 810,
+      "skipped": 2
+    },
+    "cpp": {
+      "passed": 276
+    },
+    "mir": {
+      "run": 29,
+      "passed": 27,
+      "unsupported": 2
+    },
+    "emit_check": "passed",
+    "joint_emit_check": "passed"
+  },
+  "heldout_history": {
+    "same_corpus_previously_evaluated_at": "58c65c2267ff63b1e5af2a69422f3186bcc2877e",
+    "purpose": "repeat the frozen protocol after integrating newer main; not a fresh unseen corpus"
+  },
+  "heldout_ordering": {
+    "last_selection_finished_epoch": 1794598622.982905,
+    "first_evaluation_started_epoch": 1794598623.3892972,
+    "all_selection_completed_first": true
+  },
+  "resume_verification": {
+    "unchanged": true,
+    "wall_s": 0.5648217517882586,
+    "artifacts": {
+      "build/experiment-integrated-180/loop-insns-seed17/run/campaign.json": "89a35ede8f063ab20552c0cf3a0b66fbd65f6034f538dbb3a0e55c097b3eecfc",
+      "build/experiment-integrated-180/loop-insns-seed17/run/report.json": "adbb328589875ad6694fb59efb1b14136698d389b89a02ffd3698756a59857be",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/000/state.json": "f9e2154a28bbd348783e4291ffaaeef91009d517a8a4ed40c229a13f8db7637e",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/000/profile/AArch64.json": "516e3ed4083a0739b890ea64a63548b18321489003822aab4442cc52bedeec0f",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/000/joint/AArch64.json": "40b31c9fd7e8442f2ba6f7ee0aa8a914f0c9e8f7cb29fb5b369f9c68b44fa48e",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/000/library/rules.json": "89fb054cbe4519fd7e3ec856e2e4aedf8cef7156691c08a70193697168231280",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/000/joint/library/rules.json": "137df1581ca3777065bdbb5c371f04691f552a45f345c4934446a37b17e2e4e3",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/000/joint/search/stats.json": "0df53be6ad5dc0c9fea78a8ebb699c2b6555d63d4f8fc766e042632bafd050e2",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/001/state.json": "c662d21aff7bc1e0ce8a33fa2ed1fca1a5dae9ce63739e391669f2f6184826a4",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/001/profile/AArch64.json": "516e3ed4083a0739b890ea64a63548b18321489003822aab4442cc52bedeec0f",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/001/joint/AArch64.json": "389ff9ffff1d678a1fd4589be4dc023cd6c00f37705505c7079250cc6a003c96",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/001/library/rules.json": "9a542b88f834f8ccbcc0256c7226a9968514bc6c817728c4e7aab3a8a0997369",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/001/joint/library/rules.json": "dcbef3724de0fd9637e7a9daf2167a3df29386410777add0ed000adb68b33fb8",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/001/joint/search/stats.json": "ad97b020d33bd4021e31ffd26d94f93d8be5ddb31a1deaa17d38114ecaa4e4d8",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/002/state.json": "6d2b83d7d4bff5f1f45998f4880b401c18c1a5352314ded8f08b9769d584f497",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/002/profile/AArch64.json": "516e3ed4083a0739b890ea64a63548b18321489003822aab4442cc52bedeec0f",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/002/joint/AArch64.json": "0b672b8e944bceee7923f4776f9165e509f8f6893dcd91fb9c547b5f6118eff7",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/002/library/rules.json": "9a542b88f834f8ccbcc0256c7226a9968514bc6c817728c4e7aab3a8a0997369",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/002/joint/library/rules.json": "db23e3ee573da0983bc03df7ea781e2993f3d6dabee8154f3b94f6c9437db3e6",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/002/joint/search/stats.json": "fc094e17e7df0aa9d710d0f174727e89eb84fe43031dd0ffaa420df3e5cdacdb",
+      "build/experiment-integrated-180/loop-insns-seed17/run/rounds/002/frozen.json": "55dd3866a531f344ce4f5882ce00f46513f57cdc18d2d68173895e9dfbb8ce5c"
+    }
+  }
+}
