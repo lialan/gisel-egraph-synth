@@ -369,6 +369,10 @@ def run(instances, limits, cache=None, jobs=1, time_budget_s=None,
         out['record'].pop('_key', None)
         records[wk] = out['record']
         joint.add_window_stats(stats, out)
+        # A peak is a maximum, not a sum.
+        rss = out['metrics'].pop('peak_rss_mb', 0)
+        metrics['peak_rss_mb_worker'] = max(
+            metrics.get('peak_rss_mb_worker', 0), rss)
         parallel.add_stats(metrics, out['metrics'])
         done += 1
         if log:
