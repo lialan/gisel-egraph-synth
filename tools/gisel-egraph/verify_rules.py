@@ -886,7 +886,8 @@ def computed_constants(name, t, lhs, left, lhs_value):
     # Rules with a precondition on known bits (RewriteRule::FactFn): the
     # facts hold for each value that is not poison, so the precondition is
     # the property of the values that the facts establish.
-    if name in ("add-disjoint-to-or", "xor-disjoint-to-or"):
+    if name in ("add-disjoint-to-or", "or-disjoint-to-add",
+                "xor-disjoint-to-or"):
         a, b = var("?a"), var("?b")
         return (a & b) == 0, []
     if name == "and-mask-of-known-zeros":

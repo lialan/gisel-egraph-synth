@@ -1091,11 +1091,16 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
              (A.Zero | B.Zero).isAllOnes();
     });
   };
-  // Only towards G_OR: the opposite direction feeds bit operations into the
-  // arithmetic rules, which then trade shifts and ors that the selector
-  // fuses (v_lshl_or_b32, v_or3_b32 on AMDGPU) for a multiplication
-  // (measured on memset of a variable byte: + 14 instructions).
+  // Both directions. The add form of an or of packed fields lets the
+  // arithmetic rules and the target patterns reach fused adds
+  // (v_lshl_add_u32, v_add3_u32 on AMDGPU; amdgcn.bitcast.512bit.ll -164
+  // instructions). It also reaches multiplications and equal-cost forms of
+  // a byte splat that other regions compute in the original form; the
+  // extraction keeps the original on a tie and the regions leave out
+  // instructions that a dominating block computes already, so those do not
+  // cost a CSE (memset-param-combinations.ll, docs/TargetAwareViews.md).
   AddFact("add-disjoint-to-or", "(G_ADD ?a ?b)", "(G_OR ?a ?b)", Disjoint);
+  AddFact("or-disjoint-to-add", "(G_OR ?a ?b)", "(G_ADD ?a ?b)", Disjoint);
   AddFact("xor-disjoint-to-or", "(G_XOR ?a ?b)", "(G_OR ?a ?b)", Disjoint);
   // A mask that keeps every bit that can be one, or sets only bits that
   // are one. #c is the element of a splat for a vector.

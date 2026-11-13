@@ -9,9 +9,10 @@
 ; ("Using an undefined physical register" in a V_PERM_B32). Reduced from
 ; llvm/test/CodeGen/AMDGPU/permute_i8.ll.
 
+; The test is that the function compiles and verifies; the instructions
+; around the stores depend on the rest of the rules.
 ; CHECK-LABEL: zext_store_div:
 ; CHECK: v_and_or_b32
-; CHECK: v_or3_b32
 ; CHECK: global_store_b64
 ; CHECK: s_setpc_b64
 define hidden void @zext_store_div(ptr addrspace(1) %in0, ptr addrspace(1) %in1, i8 %elt, ptr addrspace(1) %out0, ptr addrspace(1) %out1) {
