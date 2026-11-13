@@ -184,8 +184,10 @@ body: |
     ; CHECK-NEXT: {{  $}}
     ; CHECK-NEXT: %a:_(s32) = COPY $vgpr0
     ; CHECK-NEXT: %b:_(s32) = COPY $vgpr1
-    ; CHECK-NEXT: [[SUB:%[0-9]+]]:_(s32) = G_SUB %b, %a
-    ; CHECK-NEXT: $vgpr0 = COPY [[SUB]](s32)
+    ; CHECK-NEXT: %m:_(s64) = G_MERGE_VALUES %a(s32), %b(s32)
+    ; CHECK-NEXT: %lo:_(s32), %hi:_(s32) = G_UNMERGE_VALUES %m(s64)
+    ; CHECK-NEXT: %r:_(s32) = G_SUB %hi, %lo
+    ; CHECK-NEXT: $vgpr0 = COPY %r(s32)
     ; CHECK-NEXT: SI_RETURN implicit $vgpr0
     %a:_(s32) = COPY $vgpr0
     %b:_(s32) = COPY $vgpr1

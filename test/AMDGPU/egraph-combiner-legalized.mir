@@ -91,8 +91,9 @@ body: |
     ; POST-NEXT: {{  $}}
     ; POST-NEXT: %a:_(s64) = COPY $vgpr0_vgpr1
     ; POST-NEXT: %lo:_(s32), %hi:_(s32) = G_UNMERGE_VALUES %a(s64)
-    ; POST-NEXT: [[ADD:%[0-9]+]]:_(s32) = G_ADD %lo, %hi
-    ; POST-NEXT: $vgpr0 = COPY [[ADD]](s32)
+    ; POST-NEXT: %lo2:_(s32), %hi2:_(s32) = G_UNMERGE_VALUES %a(s64)
+    ; POST-NEXT: %s:_(s32) = G_ADD %lo, %hi2
+    ; POST-NEXT: $vgpr0 = COPY %s(s32)
     ; POST-NEXT: SI_RETURN implicit $vgpr0
     ;
     ; PRE-LABEL: name: two_unmerges

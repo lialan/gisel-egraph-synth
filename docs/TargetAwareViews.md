@@ -664,7 +664,30 @@ VGPR, SGPR, inline and literal sources of each pattern on gfx803, gfx900 and
 gfx1100. The model also counts 64-bit `and`/`or`/`xor` of uniform values and
 64-bit shifts as one instruction (`s_and_b64`, `s_lshl_b64`,
 `v_lshlrev_b64`; the default counts two), so that splitting them into 32-bit
-halves does not look free.
+halves does not look free. A uniform 64-bit `and`/`or`/`xor` with a constant
+that a 32-bit literal holds (0 to 2^31 - 1, where the zero and the sign
+extension agree) is one instruction of 8 bytes as well
+(`s_and_b64 s[0:1], s[2:3], 0xff`), and a uniform bit-field extract is 8
+bytes: `s_bfe_u32` takes the offset and the width packed in one operand,
+which is a literal for any width (`test/AMDGPU/egraph-combiner-salu64.*`).
+A uniform 64-bit select is one `s_cselect_b64`.
+
+The parts of a register tuple take no instruction: the 32-bit halves of a
+64-bit value and the 32-bit (or 64-bit) elements of a vector are registers
+of a tuple, so `G_UNMERGE_VALUES` into such parts and a truncation from 64
+to 32 bits are subregisters, and `G_MERGE_VALUES`, `G_BUILD_VECTOR` and
+`G_CONCAT_VECTORS` of such parts and an any-extension from 32 to 64 bits
+are a `REG_SEQUENCE`; a constant part is one move into its register. A
+zero or sign extension from 32 to 64 bits is one move or shift for the
+high half, and a uniform one from `s1` one `s_cselect_b64`
+(`test/AMDGPU/egraph-combiner-tuples.ll`). The default counts one
+instruction per 32 bits for each of them, so that splitting a 64-bit
+operation into its halves looked like a saving and keeping it whole looked
+expensive. That made the slice view replace the 64-bit masks of the lanes
+of a zero-extending load by 32-bit extracts and zero high halves
+(`load-local-i8.ll`), the facts set the low half of `x << (s | 32)` to a
+separate constant 0 (`shl64_reduce.ll`), and the carry of a 64-bit add
+sign-extended in 32 bits and copied into the high half (`addsub64_carry.ll`).
 
 Not modelled: the `V_MAD_U64_U32_gfx11` variant on subtargets with
 `mad-intra-fwd-bug` (two or three instructions), `V_LSHL_ADD_U64`, SDWA
@@ -1007,33 +1030,42 @@ final assembly):
 | regions leave out instructions that a dominating block computes | -1015 | -495 | 92 / 30 |
 | `or-disjoint-to-add` | -1301 | -495 | 103 / 29 |
 | the fact preconditions tested before the AC pairs | -1301 (the same code in every file) | -495 | 103 / 29 |
+| AMDGPU costs of register tuples and 64-bit SALU forms | -1368 | -495 | 105 / 14 |
 
-Against the previous main, all features now save 410 instructions and 800
-bytes more (28 files better, 4 worse by one instruction each). With all
-features (`all` minus `no-<f>`): slice 484, patterns 388, facts 300, dag
-288, banks 162, tuples 0, linear -1 (the previous round: 373, 11, 17, 29,
-10, 0, 0). The facts, the pattern costs and the DAG extraction now pay off
-mostly together, as the add form of an or meets the fused adds of the
-target; measured directly, `f:facts+patterns+dag` alone saves 765
-instructions against stock (`none` 495).
+Against the previous main, all features now save 477 instructions and
+1856 bytes more, and 14 files are worse than stock instead of 32. With all
+features (`all` minus `no-<f>`): slice 507, patterns (the target model,
+which now includes the costs of register tuples) 455, facts 319, dag 285,
+banks 2, linear 1, tuples 0 (the previous round: 373, 11, 17, 29, 10, 0,
+0). The facts, the pattern costs and the DAG extraction pay off mostly
+together, as the add form of an or meets the fused adds of the target;
+measured directly before the costs of register tuples,
+`f:facts+patterns+dag` alone saved 765 instructions against stock (`none`
+495).
 
 | Configuration | Instructions | vs stock | Code bytes vs stock | Files better / worse than stock |
 |---|---|---|---|---|
 | stock | 296564 | | | |
 | none | 296069 | -495 | -2528 | 67 / 18 |
-| all | 295263 | -1301 | -5948 | 103 / 29 |
-| all but facts | 295563 | -1001 | -5852 | 89 / 26 |
-| all but linear | 295262 | -1302 | -5968 | 103 / 29 |
-| all but slice | 295747 | -817 | -3156 | 86 / 22 |
-| all but tuples | 295263 | -1301 | -5948 | 103 / 29 |
+| all | 295196 | -1368 | -7004 | 105 / 14 |
+| all but facts | 295515 | -1049 | -6832 | 91 / 14 |
+| all but linear | 295197 | -1367 | -7008 | 105 / 14 |
+| all but slice | 295703 | -861 | -3984 | 88 / 14 |
+| all but tuples | 295196 | -1368 | -7004 | 105 / 14 |
 | all but patterns | 295651 | -913 | -4796 | 89 / 31 |
-| all but banks | 295425 | -1139 | -5572 | 99 / 33 |
-| all but dag | 295551 | -1013 | -5484 | 89 / 26 |
-| facts, patterns and dag only | 295799 | -765 | -3520 | 83 / 24 |
+| all but banks | 295198 | -1366 | -6692 | 103 / 18 |
+| all but dag | 295481 | -1083 | -5904 | 90 / 11 |
 
-`memset-param-combinations.ll` is 551 instructions (557 before, 501
-stock); `amdgcn.bitcast.512bit.ll` 15485 (15649 before and stock), with
-349 more `v_lshl_add_u32` and 634 fewer `v_lshlrev_b32` over the corpus.
+The files that stay worse than stock: 9 of the 14 are as worse with `none`
+(the engine before these features: `uaddsat.ll` +7, where the e-graph
+scalarizes a `<3 x i16>` saturating add before the legalizer, `udivrem.ll`
++4, `bfm.ll` +3, ...), and of the others `extract_vector_elt-i64.ll` +4
+and `-f64.ll` +2 come from addressing modes (Limitations).
+
+With `or-disjoint-to-add`, `memset-param-combinations.ll` is 551
+instructions (557 before, 501 stock) and `amdgcn.bitcast.512bit.ll` 15485
+(15649 before and stock), with 349 more `v_lshl_add_u32` and 634 fewer
+`v_lshlrev_b32` over the corpus.
 
 The fact rules with both directions of the disjoint or matched 1.93M
 times over the corpus; testing the necessary condition of the
@@ -1073,6 +1105,27 @@ configurations of one or two runs file by file.
 * `or-disjoint-to-add` costs about a quarter of the time of the pass
   (saturation +50%): every or with disjoint operands gets an add form that
   the arithmetic rules then rewrite further.
+* The model does not see register pressure. With the costs of register
+  tuples, the 64-lane zero extension of `load-global-i1.ll` is a tie
+  between the 64-bit masks of the stock code and 32-bit extracts with zero
+  high halves (two instructions per lane either way); the stock form keeps
+  more SGPR pairs live and spills 24 of them to VGPR lanes, so the old
+  model, which overcounted the 64-bit form, gained 63 instructions there by
+  accident and the new one does not take them (`load-global-i1.ll` +51
+  against the previous commit, still 100 below stock). Pricing only the
+  casts as halves of a pair, without the merges and unmerges, lost 29
+  instructions on the corpus: the tuple costs have to change together.
+* A constant that a candidate returns (a root) is a move in a register that
+  the model does not count; counting it gained nothing on the corpus (+2).
+* Before the legalizer, the e-graph can scalarize a vector of 16-bit lanes
+  (`<3 x i16>` saturating add in `uaddsat.ll`, +7 already without the
+  features): the model counts the `G_BUILD_VECTOR`s of the lanes of the
+  inputs, which are the packed argument registers, and not the unpacking,
+  the `v_readfirstlane`s and the repacking that the scalar form takes.
+* Addressing modes are not modelled: a pointer addition of a constant that
+  the memory instruction folds into its offset counts as a 64-bit add, so
+  `ptradd-assoc` moving the constant into an or of the index looks like a
+  saving and costs an instruction (`extract_vector_elt-i64.ll` +4).
 * The cost model is a static proxy: instruction count first, encoded size
   second, depth only reported. It does not model latency, register pressure
   or scheduling, SALU fusions (`s_lshl{1-4}_add_u32`), `v_readfirstlane` for

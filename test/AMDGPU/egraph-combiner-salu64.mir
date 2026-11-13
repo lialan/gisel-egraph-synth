@@ -1,0 +1,117 @@
+# RUN: llc -mtriple=amdgpu11.00-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-report %s -o /dev/null 2>&1 | FileCheck %s
+
+# The AMDGPU costs of SALU forms with a literal (the instructions that the
+# selector makes are in egraph-combiner-salu64.ll):
+# - a uniform 64-bit and/or/xor with a constant that a 32-bit literal holds
+#   (0 to 2^31 - 1) is one s_and_b64 with the literal (8 bytes); a larger
+#   constant, or a divergent value, is two 32-bit instructions;
+# - a uniform 64-bit select is one s_cselect_b64 (the condition in SCC), a
+#   divergent one two v_cndmask_b32;
+# - a uniform bit-field extract is s_bfe_u32 with the offset and the width
+#   packed in one literal operand (8 bytes); the divergent v_bfe_u32 is VOP3
+#   (8 bytes) with inline operands.
+
+# CHECK: and64_literal: %bb.0: legalized instrs=1 {{.*}} cost=1->1 not-profitable bytes=8->8 {{.*}} uniform-roots=1
+# CHECK: and64_wide_literal: %bb.0: legalized instrs=1 {{.*}} cost=2->2 not-profitable
+# CHECK: and64_divergent: %bb.0: legalized instrs=1 {{.*}} cost=2->2 not-profitable {{.*}} uniform-roots=0
+# CHECK: select64_uniform: %bb.0: legalized instrs=2 {{.*}} cost=2->2 not-profitable {{.*}} uniform-roots=1
+# CHECK: select64_divergent: %bb.0: legalized instrs=2 {{.*}} cost=3->3 not-profitable {{.*}} uniform-roots=0
+# CHECK: bfe_uniform: %bb.0: legalized instrs=1 {{.*}} cost=1->1 not-profitable bytes=8->8 {{.*}} uniform-roots=1
+# CHECK: bfe_divergent: %bb.0: legalized instrs=1 {{.*}} cost=1->1 not-profitable bytes=8->8 {{.*}} uniform-roots=0
+---
+name: and64_literal
+legalized: true
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $sgpr0_sgpr1
+    %x:_(s64) = COPY $sgpr0_sgpr1
+    %k:_(s64) = G_CONSTANT i64 255
+    %r:_(s64) = G_AND %x, %k
+    $sgpr0_sgpr1 = COPY %r(s64)
+    SI_RETURN implicit $sgpr0_sgpr1
+...
+---
+name: and64_wide_literal
+legalized: true
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $sgpr0_sgpr1
+    %x:_(s64) = COPY $sgpr0_sgpr1
+    %k:_(s64) = G_CONSTANT i64 2147483648
+    %r:_(s64) = G_AND %x, %k
+    $sgpr0_sgpr1 = COPY %r(s64)
+    SI_RETURN implicit $sgpr0_sgpr1
+...
+---
+name: and64_divergent
+legalized: true
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0_vgpr1
+    %x:_(s64) = COPY $vgpr0_vgpr1
+    %k:_(s64) = G_CONSTANT i64 255
+    %r:_(s64) = G_AND %x, %k
+    $vgpr0_vgpr1 = COPY %r(s64)
+    SI_RETURN implicit $vgpr0_vgpr1
+...
+---
+name: select64_uniform
+legalized: true
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $sgpr0, $sgpr1
+    %a:_(s32) = COPY $sgpr0
+    %b:_(s32) = COPY $sgpr1
+    %c:_(s1) = G_ICMP intpred(eq), %a(s32), %b
+    %m:_(s64) = G_CONSTANT i64 -1
+    %z:_(s64) = G_CONSTANT i64 0
+    %r:_(s64) = G_SELECT %c(s1), %m, %z
+    $sgpr0_sgpr1 = COPY %r(s64)
+    SI_RETURN implicit $sgpr0_sgpr1
+...
+---
+name: select64_divergent
+legalized: true
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0, $vgpr1
+    %a:_(s32) = COPY $vgpr0
+    %b:_(s32) = COPY $vgpr1
+    %c:_(s1) = G_ICMP intpred(eq), %a(s32), %b
+    %m:_(s64) = G_CONSTANT i64 -1
+    %z:_(s64) = G_CONSTANT i64 0
+    %r:_(s64) = G_SELECT %c(s1), %m, %z
+    $vgpr0_vgpr1 = COPY %r(s64)
+    SI_RETURN implicit $vgpr0_vgpr1
+...
+---
+name: bfe_uniform
+legalized: true
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $sgpr0
+    %x:_(s32) = COPY $sgpr0
+    %c8:_(s32) = G_CONSTANT i32 8
+    %r:_(s32) = G_UBFX %x, %c8(s32), %c8
+    $sgpr0 = COPY %r(s32)
+    SI_RETURN implicit $sgpr0
+...
+---
+name: bfe_divergent
+legalized: true
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $vgpr0
+    %x:_(s32) = COPY $vgpr0
+    %c8:_(s32) = G_CONSTANT i32 8
+    %r:_(s32) = G_UBFX %x, %c8(s32), %c8
+    $vgpr0 = COPY %r(s32)
+    SI_RETURN implicit $vgpr0
+...

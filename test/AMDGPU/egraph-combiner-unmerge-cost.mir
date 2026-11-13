@@ -1,11 +1,17 @@
-# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-report %s -o /dev/null 2>&1 | FileCheck %s
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-report -gisel-egraph-features=all,no-patterns %s -o /dev/null 2>&1 | FileCheck %s
+# RUN: llc -mtriple=amdgcn-amd-amdhsa -run-pass=gisel-egraph-combiner -gisel-egraph-report %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=AMDGPU
 
 # Two unmerges of one value into parts of different types are two
 # instructions. The DAG cost counts them as two, as the emission builds
-# them, so the region has no gain.
+# them, so the region has no gain (the default costs, one instruction per
+# unmerge).
 
 # CHECK: two_unmerges: {{.*}} cost=4->4 not-profitable
 # CHECK: one_unmerge: {{.*}} cost=2->2 not-profitable
+
+# The AMDGPU costs take an unmerge into 32-bit parts as subregisters, no
+# instruction.
+# AMDGPU: one_unmerge: {{.*}} cost=1->1 not-profitable
 
 ---
 name: two_unmerges

@@ -317,11 +317,88 @@ CostVector AMDGPUTargetCosts::getItemCost(const EGraph &G, const CostDag &D,
                                           const CostVector &Default) const {
   const CostDag::Item &It = D.Items[I];
   const ENode &N = *It.N;
-  // 64-bit logic and shifts: the default counts two instructions (one per
-  // 32 bits), but s_and_b64 and friends are one SALU instruction, and
-  // v_lshlrev_b64 and friends one VALU instruction (measured on gfx900 and
-  // gfx1100). A divergent 64-bit and/or/xor stays two v_*_b32. Only without
-  // a literal (a 64-bit literal needs moves first).
+  // Register tuples: the 32-bit parts of a 64-bit value or of a vector of
+  // 32-bit (or 64-bit) elements are registers of a tuple. Splitting and
+  // assembling them is subregisters and REG_SEQUENCE, no instruction; a
+  // constant part takes a move into its register. The default counts one
+  // instruction per 32 bits for each of them, so that splitting a 64-bit
+  // operation into halves looked like a saving, and keeping the 64-bit form
+  // (one s_and_b64, s_cselect_b64, ...) looked expensive.
+  if (N.isOperation()) {
+    auto TyOf = [&](unsigned Op) { return G.getType(D.Items[Op].Class); };
+    auto Is32Parts = [](LLT Ty) {
+      return Ty.isValid() && Ty.getSizeInBits() % 32 == 0 &&
+             (!Ty.isVector() || Ty.getScalarSizeInBits() % 32 == 0);
+    };
+    switch (N.Opcode) {
+    case G_UNMERGE_VALUES:
+      // The parts are subregisters.
+      if (Is32Parts(N.Ty))
+        return {0, 0, 0};
+      break;
+    case G_MERGE_VALUES:
+    case G_BUILD_VECTOR:
+    case G_CONCAT_VECTORS: {
+      // REG_SEQUENCE: no instruction, but a constant part is a move into
+      // its register of the tuple.
+      if (!all_of(It.Ops, [&](unsigned Op) { return Is32Parts(TyOf(Op)); }))
+        break;
+      unsigned Moves = count_if(
+          It.Ops, [&](unsigned Op) { return D.Items[Op].N->isConstant(); });
+      return {Moves, 4u * Moves, Moves ? 1u : 0u};
+    }
+    case G_TRUNC:
+      // The low half of a pair.
+      if (!It.Ops.empty() && N.Ty.isScalar() &&
+          N.Ty.getSizeInBits() == 32 && TyOf(It.Ops[0]).isScalar() &&
+          TyOf(It.Ops[0]).getSizeInBits() == 64)
+        return {0, 0, 0};
+      break;
+    case G_ANYEXT:
+    case G_ZEXT:
+    case G_SEXT: {
+      if (It.Ops.empty() || !N.Ty.isScalar() || N.Ty.getSizeInBits() != 64)
+        break;
+      unsigned From = TyOf(It.Ops[0]).getSizeInBits();
+      if (From == 32)
+        // The high half undefined, or one move or shift.
+        return N.Opcode == G_ANYEXT ? CostVector{0, 0, 0}
+                                    : CostVector{1, 4, 1};
+      if (From == 1 && It.Bank == BankState::Uniform)
+        // s_cselect_b64 s[0:1], -1, 0 (or 1, 0).
+        return {1, 4, 1};
+      break;
+    }
+    default:
+      break;
+    }
+  }
+  // A uniform 64-bit and/or/xor with a constant that a 32-bit literal holds
+  // (the same zero or sign extended: 0 to 2^31 - 1) is one SALU instruction
+  // with the literal (s_and_b64 s[0:1], s[2:3], 0xff).
+  if (N.isOperation() && is64BitInt(N.Ty) &&
+      It.Bank == BankState::Uniform &&
+      (N.Opcode == G_AND || N.Opcode == G_OR || N.Opcode == G_XOR) &&
+      It.Ops.size() == 2) {
+    unsigned Literals = 0;
+    bool Fits = true;
+    for (unsigned Op : It.Ops) {
+      const ENode &O = *D.Items[Op].N;
+      if (!O.isConstant() || isInlineConstant64(O.Imm))
+        continue;
+      ++Literals;
+      Fits &= O.Imm.getBitWidth() <= 64 && O.Imm.isNonNegative() &&
+              O.Imm.getActiveBits() <= 31;
+    }
+    if (Literals == 1 && Fits)
+      return {1, 8, 1};
+  }
+  // 64-bit logic, shifts and selects: the default counts two instructions
+  // (one per 32 bits), but s_and_b64, s_cselect_b64 and friends are one
+  // SALU instruction, and v_lshlrev_b64 and friends one VALU instruction
+  // (measured on gfx900 and gfx1100). A divergent 64-bit and/or/xor/select
+  // stays two v_*_b32. Only without a literal (a 64-bit literal needs moves
+  // first).
   if (N.isOperation() && is64BitInt(N.Ty) && none_of(It.Ops, [&](unsigned Op) {
         return D.Items[Op].N->isConstant() &&
                !isInlineConstant64(D.Items[Op].N->Imm);
@@ -338,6 +415,12 @@ CostVector AMDGPUTargetCosts::getItemCost(const EGraph &G, const CostDag &D,
     case G_LSHR:
     case G_ASHR:
       return {1, Uniform ? 4u : 8u, 1};
+    case G_SELECT:
+      // s_cselect_b64 with the condition in SCC (a uniform select has a
+      // uniform condition); a divergent one stays two v_cndmask_b32.
+      if (Uniform)
+        return {1, 4, 1};
+      return Default;
     default:
       return Default;
     }
@@ -351,7 +434,12 @@ CostVector AMDGPUTargetCosts::getItemCost(const EGraph &G, const CostDag &D,
   bool Literal = any_of(
       It.Ops, [&](unsigned Op) { return getKind(D, Op) == SrcKind::Literal; });
   CostVector C = Default;
-  if (It.Bank == BankState::Uniform || hasShortVALUEncoding(N.Opcode))
+  // s_bfe_u32 and s_bfe_i32 take the offset and the width packed in one
+  // operand (offset | width << 16), a literal for any width.
+  if (It.Bank == BankState::Uniform &&
+      (N.Opcode == G_UBFX || N.Opcode == G_SBFX))
+    C.Bytes = 8;
+  else if (It.Bank == BankState::Uniform || hasShortVALUEncoding(N.Opcode))
     C.Bytes = Literal ? 8 : 4;
   else if (hasOnlyVOP3Encoding(N.Opcode))
     C.Bytes = Literal && VOP3Literal ? 12 : 8;
