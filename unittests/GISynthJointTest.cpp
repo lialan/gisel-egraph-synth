@@ -107,4 +107,34 @@ TEST_F(AArch64GISelMITest, ScreeningChangesNothing) {
   EXPECT_EQ(findOpcode(*MF, TargetOpcode::G_SHL), Shl);
 }
 
+TEST_F(AArch64GISelMITest, ScreeningSeesBaselineResults) {
+  setUp(ShlByOne);
+  if (!TM)
+    GTEST_SKIP();
+  RuleDesc Base = rule("baseline", ShlSrc, AddOfX, true);
+  RuleDesc Candidate = rule("candidate", AddOfX, ShlSrc, false);
+  MatchEnv Env;
+  Env.FirstNewVReg = MRI->getNumVirtRegs();
+  Env.ScreenOnly = true;
+  const std::string Allowed[] = {"baseline"};
+  Env.ScreenApply = Allowed;
+  MachineInstr *Shl = findOpcode(*MF, TargetOpcode::G_SHL);
+  JointPlan Plan;
+  ASSERT_TRUE(match(Base, *Shl, *MRI, Plan, Env));
+  apply(Base, B, Plan);
+  MachineInstr *Add = findOpcode(*MF, TargetOpcode::G_ADD);
+  ASSERT_TRUE(Add);
+  JointPlan Screened;
+  // The candidate is discovered on the new instruction, but cannot apply.
+  EXPECT_FALSE(match(Candidate, *Add, *MRI, Screened, Env));
+  EXPECT_EQ(Screened.Src[0], Add);
+  EXPECT_EQ(findOpcode(*MF, TargetOpcode::G_ADD), Add);
+  EXPECT_FALSE(findOpcode(*MF, TargetOpcode::G_SHL));
+  // An equal-cost candidate must still reject the baseline's new result.
+  Candidate.OriginalOnly = true;
+  JointPlan Rejected;
+  EXPECT_FALSE(match(Candidate, *Add, *MRI, Rejected, Env));
+  EXPECT_EQ(Rejected.Src[0], nullptr);
+}
+
 } // namespace
