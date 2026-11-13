@@ -364,13 +364,23 @@ manual step between the stages:
 - **Joint DAG integration.** `joint.enabled` defaults to true. Its budgets
   are separate from `search.time_budget_s`: by default 16 jobs, 5 seconds per
   window, at most 5 instructions and 3 outputs, with no total window-count
-  cap (`max_windows: 0`). Other limits are in `girs/mine_joint.py`. Budgets
-  bound the search; a budget-truncated result does not claim exhaustion.
-  Completed joint search artifacts resume with the same inputs; failed
-  shards fail the stage and are retried. The existing standalone joint
+  cap (`max_windows: 0`). Equal-cost implementations are considered by
+  default (`joint.cost_slack: 0`, `joint.semantic_variants: 6`); use
+  `null` and `1` for the historical policy. Other limits are in
+  `girs/mine_joint.py`. The joint agenda uses `cache_dir` unless
+  `joint.cache` overrides it, and retains partial work across invocations.
+  Budget-truncated discovery stays pending; failed tasks or missing rule
+  artifacts fail the stage. An interrupt saves published work and stops
+  mine with exit code 130. The existing standalone joint
   catalog starts as candidate knowledge, with no automatic target promotion.
   Joint rules need marginal measured instruction-count gain in the combined
   selected set, with no per-file regression, crash or fallback change.
+  Each candidate is first measured alone over the selected ordinary rules
+  and pinned joint baseline, using the same selector as `joint_measure.py`.
+  `joint/selection.json` records those measurements and automatically feeds
+  the next discovery invocation. `joint.priority` can instead name another
+  selection report. Only selection data drives this feedback, never held-out
+  results. Releasing even one unprofitable quota slot resumes pending shapes.
   Vector-only runs retain pinned joint baseline rules but do not search or
   select new scalar joint rules. The current scalar, single-block, definedness,
   placement and fanout guards remain in force.
