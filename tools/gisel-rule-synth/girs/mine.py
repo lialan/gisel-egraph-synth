@@ -33,6 +33,7 @@ of a finished run there.
 
 import concurrent.futures
 import contextlib
+import copy
 import fcntl
 import hashlib
 import json
@@ -52,6 +53,7 @@ from . import ops
 from . import select
 from . import targets
 from . import known
+from . import mine_joint
 
 STAGES = ('identity', 'baseline', 'prepare', 'extract', 'discover', 'build', 'measure',
           'select', 'verify', 'freeze', 'heldout', 'report')
@@ -88,8 +90,8 @@ DEFAULTS = {
                'cost_slack': None, 'max_rhs_cost': 0,
                'semantic_variants': 1, 'expand_types': False,
                'legalizer_stage': 'pre-legalizer',
-               'explore_share': 0.2, 'regions': False,
-               'siblings': False, 'max_pairs': 0, 'multi_share': 0.3,
+               'explore_share': 0.2, 'regions': True,
+               'siblings': True, 'max_pairs': 0, 'multi_share': 0.3,
                'views': True, 'views_max_proposals': 8,
                # Search only the sources that the corpus read from vectors
                # (lifted lane by lane, or with vector operators), and only
@@ -98,6 +100,7 @@ DEFAULTS = {
     'hybrid': {'egraph_stages': 'pre-legalizer', 'egraph_max_cost': 8,
                'compose_depth': 3, 'compose_steps': 3,
                'compose_axioms': False},
+    'joint': mine_joint.DEFAULTS,
     'select': {'no_regressions': True, 'keep_unmeasured': False},
     # name -> {'llc': path, 'synth': bool, 'flags': [...]}: other rule
     # sets that the report compares with, each with its own compiler.
@@ -205,7 +208,8 @@ class Run:
                 p = here if os.path.exists(here) else \
                     os.path.join(self.root, p)
             c['manifests'][role] = p
-        self.target = targets.get(c['target'])
+        self.target = copy.copy(targets.get(c['target']))
+        self.target.joint = self.joint.enabled()
         self.dir = os.path.abspath(run_dir)
         os.makedirs(self.dir, exist_ok=True)
         self.state_path = self.p('state.json')
@@ -219,9 +223,45 @@ class Run:
     def p(self, *parts):
         return os.path.join(self.dir, *parts)
 
+    @property
+    def joint(self):
+        return mine_joint.Joint(self)
+
+    def has_delta(self):
+        return bool(self.delta() or self.joint.delta())
+
+    def all_pinned(self):
+        return self.pinned() + self.joint.pinned()
+
+    def all_names(self):
+        return dict(self.names(self.library()), **{i: [i] for i in self.joint.active()})
+
+    def all_final(self):
+        return self.final_set() + self.joint.final()
+
     def manifest(self, role):
         with open(self.cfg['manifests'][role]) as f:
-            return [l.strip() for l in f if l.strip()]
+            return list(dict.fromkeys(l.strip() for l in f if l.strip()))
+
+    def validate_manifests(self):
+        """Reject leakage across splits, including copies and path aliases.
+
+        Identical files within one split are allowed; shipped manifests can
+        contain equivalent tests. Missing files cannot establish independence.
+        """
+        seen = {}
+        for role in sorted(self.cfg['manifests']):
+            for path in self.manifest(role):
+                digest = _sha_content(path)
+                if digest is None:
+                    raise SystemExit('mine: cannot read corpus file %s' % path)
+                for key in (('path', os.path.realpath(path)), ('content', digest)):
+                    if key in seen and seen[key][0] != role:
+                        other, source = seen[key]
+                        raise SystemExit('mine: corpus overlap between %s and %s: '
+                                         '%s and %s (%s)' %
+                                         (other, role, source, path, key[0]))
+                    seen[key] = (role, path)
 
     def source_identity(self, group=None):
         roles = self.roles(group) if group else self.cfg['manifests']
@@ -273,8 +313,8 @@ class Run:
         return self.p('baseline', 'llc')
 
     def baseline_off(self):
-        pinned = set(self.pinned())
-        return [n for rid, ns in self.names(self.library()).items()
+        pinned = set(self.all_pinned())
+        return [n for rid, ns in self.all_names().items()
                 if rid not in pinned for n in ns]
 
     def names(self, db):
@@ -354,6 +394,8 @@ class Run:
             'llc': _sha_file(llc), 'target': self.target.name,
             'target_model': _sha_file(targets.__file__),
             'measure': _sha_file(measure.__file__),
+            'joint': getattr(self.target, 'joint', False),
+            'joint_disabled': sorted(getattr(self.target, 'joint_disabled', ())),
             'flags': list(flags), 'synth': bool(synth),
             'disabled': sorted(disabled), 'count_rules': bool(count_rules)},
             sort_keys=True))
@@ -363,7 +405,7 @@ class Run:
     def run(self, until=None, force=()):
         for name in STAGES:
             if name in ('build', 'measure', 'select', 'verify', 'freeze',
-                        'heldout') and not self.delta():
+                        'heldout') and not self.has_delta():
                 self.state['stages'][name] = {
                     'status': 'skipped', 'summary': {'reason': 'no_new_rules'}}
                 _dump(self.state, self.state_path)
@@ -415,11 +457,15 @@ class Run:
                 'catalog': _sha_file(self.cli.DEFAULT_DB),
                 'profiles': {n: _sha_file(t.profile_path) for n, t in
                              targets.TARGETS.items()},
+                'source_files': self.source_identity(),
+                'joint': self.joint.identity(),
                 'manifests': {r: _sha_file(p)
                               for r, p in sorted(c['manifests'].items())}}
 
     def stage_identity(self):
         c, cli = self.cfg, self.cli
+        self.validate_manifests()
+        self.joint.freeze_baseline()
         fdb = known.load(cli.DEFAULT_DB)
         for name, t in targets.TARGETS.items():
             known.validate_profile(fdb, _load(t.profile_path), t)
@@ -430,14 +476,6 @@ class Run:
             files = self.manifest(role)
             man[role] = {'path': os.path.relpath(path, self.root),
                          'files': len(files), 'sha256': _sha_file(path)}
-        seen = {}
-        for role in man:
-            for f in self.manifest(role):
-                seen.setdefault(f, []).append(role)
-        shared = {f: r for f, r in seen.items() if len(r) > 1}
-        if shared:
-            raise SystemExit('mine: %d files are in more than one manifest '
-                             '(e.g. %s)' % (len(shared), sorted(shared)[0]))
         # Also the files that git does not track: a new module of the tool
         # is a change of the source.
         status = cli._git('status', '--porcelain', '--ignore-submodules=dirty',
@@ -486,7 +524,8 @@ class Run:
                          if os.path.exists(c['opt']) else None},
             # Both measurement sides run the same combiner with B enabled.
             'baseline_pipeline': {
-                'flags': self.target.ll_flags + [self.target.enable_flag],
+                'flags': self.target.ll_flags + measure.synth_flags(
+                    self.target, count_rules=False),
                 'synthesized_rules': 'fixed repository baseline',
                 'extraction_point': 'after ' + self.target.synth_pass,
                 'opt-O2': ['opt', '-O2'] + self.target.triple_flags},
@@ -495,6 +534,9 @@ class Run:
                 'semantic_model': fdb.get('semantic_model')},
             'manifests': man,
             'budgets': c['search'], 'seed': c['search']['seed'],
+            'joint': {'enabled': self.joint.enabled(),
+                      'search_enabled': self.joint.search_enabled(),
+                      'budgets': c['joint'], 'identity': self.joint.identity()},
         }
         _dump(ident, self.p('identity.json'))
         return {'commit': ident['source']['llvm_commit'][:12],
@@ -548,13 +590,15 @@ class Run:
 
     def inputs_baseline(self):
         return {'catalog': _sha_file(self.p('frozen-baseline', 'rules.json')),
+                'joint': self.joint.build_files(True),
                 'profiles': {n: _sha_file(self.p('frozen-baseline', n + '.json'))
                              for n in targets.TARGETS},
                 'compiler_sources': self.build_identity()}
 
     def build_identity(self):
         # No search budget or training-corpus identity in a compiler cache.
-        files = [paths.GEN_TD, paths.GEN_INC]
+        files = [paths.GEN_TD, paths.GEN_INC] + (
+            list(mine_joint.generated_paths()) if self.joint.enabled() else [])
         sources = {}
         for folder in ('lib', 'include', 'td'):
             for root, _, names in os.walk(os.path.join(paths.REPO, folder)):
@@ -586,6 +630,7 @@ class Run:
         return {'baseline': self._done('baseline'),
                 'prepare': self._done('prepare'),
                 'extract': c['extract'], 'mode': c['mode'],
+                'joint': self.joint.search_enabled(),
                 'hybrid': c['hybrid'] if c['mode'] == 'hybrid' else None,
                 'pipelines': c['discovery_pipelines'],
                 'source_files': self.source_identity('discovery')}
@@ -629,6 +674,8 @@ class Run:
         out['legality'] = bool(units and self.cli._legality(
             self.baseline_llc(), self.target, units[0].path,
             self.p('corpus', 'legality.json')))
+        if self.joint.search_enabled():
+            out['joint'] = self._extract(self.joint.p('corpus'), units, self.joint.extract)
         if c['mode'] == 'hybrid':
             h = c['hybrid']
             out['deep_corpus'] = self._extract(
@@ -644,6 +691,7 @@ class Run:
     def inputs_discover(self):
         c = self.cfg
         return {'extract': self._done('extract'), 'search': c['search'],
+                'joint': c['joint'],
                 'refresh_search': c['refresh_search'],
                 'mode': c['mode'], 'model': self.cli._model_sha(),
                 'generator': self.cli._generator_sha()}
@@ -680,14 +728,14 @@ class Run:
                         compose_axioms=h['compose_axioms'])
         self.cli.cmd_synth(self.cli.default_args('synth', **over))
         db = self.library()
-        if c['mode'] == 'semantics-only':
-            other = [r['id'] for r in db['rules'] if r['id'] in self.delta()
-                     and r['provenance']['sources'] != ['enumerative']]
-            assert not other, 'semantics-only run with other sources'
+        # mode restricts this invocation's candidate generators (cmd_synth),
+        # not the ancestry of verified knowledge reused from a shared cache.
+        # Keep that provenance, including hybrid ancestors of region seeds.
         st = _load(self.p('library', 'rules.stats.json'))
+        joint_stats = self.joint.discover()
         incomplete = bool(st['queue']['left'] or
                           st['disjuncts'].get('final_guard_unknown'))
-        return {'rules': len(db['rules']), 'delta': len(self.delta()),
+        return {'rules': len(db['rules']), 'delta': len(self.delta()), 'joint': joint_stats,
                 'incomplete': incomplete, 'queue': st['queue'],
                 'by_class': st['rules_by_class'],
                 'instances': st['discovery']['instances'],
@@ -700,6 +748,7 @@ class Run:
     def inputs_build(self):
         db = self.library()
         return {'library': {r['id']: known.revision(r) for r in db['rules']},
+                'joint': self.joint.build_files(False),
                 'active': self.active_ids(),
                 'emitter': _sha_file(emit.__file__),
                 'compiler_sources': self.build_identity()}
@@ -720,14 +769,15 @@ class Run:
         c, cli = self.cfg, self.cli
         os.makedirs(self.p(directory), exist_ok=True)
         td, inc, info = emit.emit(db, profiles)
-        build_key = known.digest([td, inc, self.build_identity()])
+        gen = {cli.DEFAULT_TD: td, cli.DEFAULT_INC: inc}
+        gen.update(self.joint.build_files(directory == 'baseline'))
+        build_key = known.digest([gen, self.build_identity()])
         cached = os.path.join(c['cache_dir'], 'builds', build_key)
         output = self.p(directory, 'llc')
         if os.path.exists(cached):
             shutil.copy2(cached, output)
             return {'cached': True, 'llc_sha256': _sha_file(output),
                     'rules': info['rules'], 'records': info['records']}
-        gen = {cli.DEFAULT_TD: td, cli.DEFAULT_INC: inc}
         for path, text in gen.items():
             with open(self.p(directory, os.path.basename(path)), 'w') as f:
                 f.write(text)
@@ -823,13 +873,16 @@ class Run:
                            self.p('corpus', v['out'])))
         insts, _ = corpus.load(files)
         compare = _load(self.p('measure', 'compare.json'))
+        selection_target, ordinary_compare = self.joint.ordinary_selection(compare)
         prof = select.select(
-            db, self.target, insts, self.candidate_llc(), compare,
+            db, selection_target, insts, self.candidate_llc(), ordinary_compare,
             c['jobs'], log=self.log,
             keep_unmeasured=c['select']['keep_unmeasured'],
             no_regressions=c['select']['no_regressions'],
             baseline=self.baseline_profile(), active_ids=self.active_ids())
         os.makedirs(self.p('profile'), exist_ok=True)
+        if self.joint.enabled():
+            prof = self.joint.select(prof, compare)
         _dump(prof, self.p('profile', self.target.name + '.selected.json'))
         return {'summary': prof['summary'],
                 'selected_set': {k: v for k, v in
@@ -847,30 +900,33 @@ class Run:
         do not compile with every candidate."""
         c = self.cfg
         db = self.library()
-        names = self.names(db)
+        names = self.all_names()
         prof = _load(self.p('profile', self.target.name + '.selected.json'))
-        sel = {rid for rid, p in prof['rules'].items()
+        jp = _load(self.joint.p(self.target.name + '.selected.json')) \
+            if self.joint.enabled() else {'rules': {}}
+        combined_rules = dict(prof['rules'], **jp['rules'])
+        sel = {rid for rid, p in combined_rules.items()
                if p['selection'] == 'emitted'}
         base = _load(self.p('measure', 'base.json'))
         paths = sorted(p for p in base if base[p]['rc'] == 0)
         llc = self.candidate_llc()
-        if c['select']['no_regressions']:
+        if c['select']['no_regressions'] or self.joint.enabled():
             final, dropped, cur, unexplained = select.enforce(
                 llc, self.target, paths, base, names, sel, c['jobs'],
-                self.log, pinned=self.pinned())
+                self.log, pinned=self.all_pinned())
         else:
             final, dropped, unexplained = sel, {}, {}
             cur, _, _ = select.check_set(llc, self.target, paths, base,
                                          names, sel, c['jobs'])
         viol = select._violations(cur, base)
         for rid, why in dropped.items():
-            prof['rules'][rid]['selection'] = why['reason']
-            prof['rules'][rid]['final_set'] = why
+            combined_rules[rid]['selection'] = why['reason']
+            combined_rules[rid]['final_set'] = why
         summary = {}
         for p in prof['rules'].values():
             summary[p['selection']] = summary.get(p['selection'], 0) + 1
         prof['summary'] = dict(sorted(summary.items()))
-        prof['emitted_records'] = sum(len(names[r]) for r in final)
+        prof['emitted_records'] = sum(len(names[r]) for r in final if r in prof['rules'])
         prof['final_check'] = {
             'files': len(paths), 'violations': viol,
             'unexplained': unexplained,
@@ -878,6 +934,12 @@ class Run:
         prof['baseline'] = {'order': [i for i in self.active_ids() if i in final]}
         prof = known.pin(db, prof, self.target)
         _dump(prof, self.p('profile', self.target.name + '.json'))
+        if self.joint.enabled():
+            jp['summary'] = mine_joint.counts(jp)
+            jp['final_check'] = prof['final_check']
+            jp['baseline'] = {'order': [i for i in self.joint.active() if i in final]}
+            _dump(mine_joint.pin(self.joint.library(), jp),
+                  self.joint.p(self.target.name + '.json'))
         _dump(cur, self.p('measure', 'final.json'))
         res = {'rules': len(final), 'removed': len(dropped),
                'files': len(paths), 'violations': len(viol),
@@ -909,11 +971,12 @@ class Run:
             'compiler_sha256': _sha_file(self.candidate_llc()),
             'manifests': self.inputs_identity()['manifests'],
             'source_files': self.source_identity(),
-            'rules': self.final_set(),
+            'rules': self.all_final(),
             'statement': 'The held-out files were not compiled with a '
                          'candidate and were not read by a search, a '
                          'precondition synthesis or a selection before '
                          'this record.'}
+        frozen.update(self.joint.artifacts())
         # A second freeze of the same run directory: the held-out files
         # were already seen with an earlier rule set.
         prev = _load(self.p('frozen.json'))
@@ -944,8 +1007,8 @@ class Run:
         c = self.cfg
         os.makedirs(self.p('eval'), exist_ok=True)
         db = self.library()
-        names = self.names(db)
-        final = set(self.final_set())
+        names = self.all_names()
+        final = set(self.all_final())
         off = [n for rid in sorted(names) if rid not in final
                for n in names[rid]]
         units = self.units('selection') + self.units('heldout')
@@ -996,7 +1059,7 @@ class Run:
 
     def stage_report(self):
         from . import report
-        if not self.delta():
+        if not self.has_delta():
             profile = self.baseline_profile()
             for p in profile['rules'].values():
                 p['pinned'] = True
@@ -1004,9 +1067,16 @@ class Run:
             _dump(profile, self.p('profile', self.target.name + '.json'))
         rep = report.build(self)
         rep['incremental'] = self.library()['incremental']
-        rep['status'] = 'evaluated' if self.delta() else 'no_new_rules'
-        rep['evaluated'] = bool(self.delta())
-        if not self.delta():
+        rep['status'] = 'evaluated' if self.has_delta() else 'no_new_rules'
+        rep['evaluated'] = self.has_delta()
+        rep['joint'] = {'enabled': self.joint.enabled(),
+                        'candidates': self.joint.delta(), 'pinned': self.joint.pinned(),
+                        'selected': self.joint.final(),
+                        'profile': _load(self.joint.p(self.target.name + '.json'))
+                                   if self.joint.enabled() else None,
+                        'search': self.state['stages'].get('discover', {}).get(
+                            'summary', {}).get('joint')}
+        if not self.has_delta():
             rep['evaluation'] = {}
             rep['frozen'] = None
         _dump(rep, self.p('report.json'))
@@ -1061,7 +1131,7 @@ def export(run, cli, log=print):
     are then stale until `gi-rule-synth.py emit`."""
     if run.state['stages'].get('report', {}).get('status') != 'done':
         raise SystemExit('mine --export: the run is not finished')
-    if not run.delta():
+    if not run.has_delta():
         log('mine --export: no new rules; baseline unchanged')
         return
     known.require_current(run.library())
@@ -1072,6 +1142,7 @@ def export(run, cli, log=print):
                 'compiler_sha256': _sha_file(run.candidate_llc()),
                 'config_sha256': _sha_file(run.p('config.json')),
                 'source_files': run.source_identity()}
+    expected.update(run.joint.artifacts())
     if any(frozen.get(k) != v for k, v in expected.items()):
         raise SystemExit('mine --export: frozen evaluation artifacts changed')
     profile = _load(run.p('profile', run.target.name + '.json'))
@@ -1093,6 +1164,26 @@ def export(run, cli, log=print):
         if live != run.baseline_profile():
             raise SystemExit('mine --export: target baseline changed; rerun '
                              'measurement against the new baseline')
+        joint_export = None
+        if not run.joint.enabled():
+            jp = _load(mine_joint.profile_path(run.target.name), {})
+            if any(p['selection'] == 'emitted' for p in jp.get('rules', {}).values()):
+                raise SystemExit('mine --export: joint baseline was disabled; '
+                                 'remeasure with joint enabled before promotion')
+        if run.joint.enabled():
+            jdb = mine_joint.validate(_load(mine_joint.catalog_path()))
+            jlive = mine_joint.profile(jdb, run.target.name)
+            if jlive != run.joint.baseline_profiles()[run.target.name]:
+                raise SystemExit('mine --export: joint target baseline changed; '
+                                 'rerun measurement against the new baseline')
+            jmerged = mine_joint.merge(jdb, run.joint.library()['rules'])
+            jp = _load(run.joint.p(run.target.name + '.json'))
+            if mine_joint.pin(jmerged, jp)['baseline'] != jp['baseline']:
+                raise SystemExit('mine --export: joint rule revisions changed')
+            for n in targets.TARGETS:
+                if n != run.target.name:
+                    mine_joint.profile(jmerged, n)
+            joint_export = (jmerged, jp)
         merged, _ = known.merge(current, run.library()['rules'])
         known.validate_profile(merged, profile, run.target)
         for name, t in targets.TARGETS.items():
@@ -1100,6 +1191,14 @@ def export(run, cli, log=print):
                 known.validate_profile(merged, _load(t.profile_path), t)
         known.copy_proofs(merged, cli.DEFAULT_PROOFS,
                          [run.p('library', 'proofs')])
+        if joint_export:
+            jmerged, jp = joint_export
+            mine_joint.copy_proofs(jmerged,
+                os.path.join(os.path.dirname(mine_joint.catalog_path()), 'proofs'),
+                [run.joint.p('library', 'proofs')])
+            os.makedirs(os.path.dirname(mine_joint.profile_path(run.target.name)), exist_ok=True)
+            known.write(jmerged, mine_joint.catalog_path())
+            known.write(jp, mine_joint.profile_path(run.target.name))
         known.write(merged, cli.DEFAULT_DB)
         known.write(profile, run.target.profile_path)
     log('mine --export: wrote %s, its proofs and %s; run `gi-rule-synth.py '

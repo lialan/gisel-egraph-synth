@@ -415,6 +415,16 @@ def markdown(rep):
             lines[2:2] = ['No new rules in this run. Candidate build and '
                           'evaluation were skipped. The search space is '
                           'not claimed to be exhausted.', '']
+    if rep.get('joint', {}).get('enabled'):
+        j = rep['joint']
+        lines += ['## Joint DAG rules', '',
+                  '%d candidate additions, %d pinned baseline rules, %d selected. '
+                  'Evaluation below includes ordinary and joint rules together. '
+                  'New joint rules require a marginal instruction-count gain.' %
+                  (len(j['candidates']), len(j['pinned']), len(j['selected'])), '',
+                  _table(['Rule', 'Selection', 'Marginal instruction delta'],
+                         [[i, p['selection'], p.get('in_set', {}).get('insns', '')]
+                          for i, p in (j.get('profile') or {}).get('rules', {}).items()]), '']
     for name, ev in rep['evaluation'].items():
         if not isinstance(ev, dict):
             lines += ['Baseline of `%s` differs from the baseline of the '

@@ -16,10 +16,31 @@ SGPR = re.compile(r'^\s+\.sgpr_count:\s+(\d+)', re.M)
 VGPR = re.compile(r'^\s+\.vgpr_count:\s+(\d+)', re.M)
 MATCHED = re.compile(r'gisel-synth: matched: (\w+)')
 PASSED = re.compile(r'gisel-synth: guard passed: (\w+)')
+JOINT_MATCHED = re.compile(r'gisel-synth-joint: anchor: (\w+)')
+JOINT_PASSED = re.compile(r'gisel-synth-joint: applied: (\w+)')
+ALL_PASSED = re.compile(r'(?:gisel-synth: guard passed: |gisel-synth-joint: applied: )(\w+)')
 FALLBACK = re.compile(r'Instruction selection used fallback path for (\S+)')
 
 
 TIMEOUT = 120  # seconds per compilation
+
+
+def synth_flags(target, disabled=(), count_rules=True):
+    """Enable the measured pipelines and route each rule to its combiner."""
+    flags = [target.enable_flag]
+    joint = getattr(target, 'joint', False)
+    if joint:
+        flags.append('-gisel-synth-joint-combines')
+    if count_rules:
+        flags.append('-debug-only=gisel-synth' + (',gisel-synth-joint' if joint else ''))
+    ordinary = [r for r in disabled if not r.startswith('joint_')]
+    groups = [r for r in disabled if r.startswith('joint_')]
+    groups += list(getattr(target, 'joint_disabled', ()))
+    if ordinary:
+        flags.append(target.disable_rule_flag + ','.join(sorted(set(ordinary))))
+    if joint and groups:
+        flags.append('--gisynthjointcombiner-disable-rule=' + ','.join(sorted(set(groups))))
+    return flags
 
 
 def run_timed(cmd, timeout=TIMEOUT, cwd=None):
@@ -52,11 +73,7 @@ def compile_ll(llc, target, path, flags=(), synth=False, disabled=(),
         out = tf.name
     cmd = [llc] + target.ll_flags + ['-verify-machineinstrs'] + list(flags)
     if synth:
-        cmd.append(target.enable_flag)
-        if count_rules:
-            cmd.append('-debug-only=gisel-synth')
-        if disabled:
-            cmd.append(target.disable_rule_flag + ','.join(disabled))
+        cmd += synth_flags(target, disabled, count_rules)
     cmd += [path, '-o', out]
     timeout = timeout or TIMEOUT
     rc, stderr, cpu = run_timed(cmd, timeout, cwd)
@@ -71,7 +88,8 @@ def compile_ll(llc, target, path, flags=(), synth=False, disabled=(),
     res = {'rc': rc, 'fallback': sorted(set(FALLBACK.findall(stderr)))}
     if synth and count_rules:
         m = collections.Counter(MATCHED.findall(stderr))
-        g = collections.Counter(PASSED.findall(stderr))
+        m.update(JOINT_MATCHED.findall(stderr))
+        g = collections.Counter(ALL_PASSED.findall(stderr))
         if m:
             res['matched'] = dict(sorted(m.items()))
         if g:
@@ -99,11 +117,8 @@ def failing_rules(llc, target, path, seconds=20, loop_passes=50,
     again and again when the compilation does not end (a loop with other
     combines), or the last rule whose guard passed before a crash. With
     ``every``: each rule whose guard passed in the compilation."""
-    cmd = [llc] + target.ll_flags + ['-verify-machineinstrs',
-                                     target.enable_flag,
-                                     '-debug-only=gisel-synth']
-    if disabled:
-        cmd.append(target.disable_rule_flag + ','.join(disabled))
+    cmd = [llc] + target.ll_flags + ['-verify-machineinstrs'] + \
+        synth_flags(target, disabled)
     cmd += [path, '-o', os.devnull]
     with tempfile.TemporaryFile() as err:
         p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err,
@@ -118,7 +133,7 @@ def failing_rules(llc, target, path, seconds=20, loop_passes=50,
         # The end of the output is enough to see a loop.
         err.seek(max(0, os.fstat(err.fileno()).st_size - (1 << 22)))
         text = err.read().decode(errors='replace')
-    passed = PASSED.findall(text)
+    passed = ALL_PASSED.findall(text)
     if every:
         return sorted(set(passed))
     if looped:

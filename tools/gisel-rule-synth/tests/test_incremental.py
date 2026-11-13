@@ -361,6 +361,7 @@ class PipelineTest(unittest.TestCase):
     def test_empty_delta_skips_build_and_evaluation(self):
         with tempfile.TemporaryDirectory() as d:
             r = mine.Run.__new__(mine.Run)
+            r.cfg = {'joint': {'enabled': False}}
             r.dir = d
             r.state_path = str(Path(d) / 'state.json')
             r.state = {'stages': {}}
@@ -402,6 +403,7 @@ class ExportTest(unittest.TestCase):
         self.addCleanup(patch.stop)
         self.run = mine.Run.__new__(mine.Run)
         r = self.run
+        r.cfg = {'joint': {'enabled': False}}
         r.dir = str(Path(self.tmp) / 'run')
         r.target = targets.get('AMDGPU')
         r.state = {'stages': {'report': {'status': 'done'}}}

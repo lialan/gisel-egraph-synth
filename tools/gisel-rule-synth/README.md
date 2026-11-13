@@ -197,7 +197,10 @@ protocol for deleted/corrupt files.
 Known rules also seed multi-output discovery. `--multi-share` (default `0.3`,
 or `search.multi_share` in `mine`) reserves the first part of a timed run for
 multi-output tasks from earlier roots; unused time returns to single-root
-search. Workers obey these stage deadlines and share the existing slow-proof
+search. On a cold run it reserves the last part instead, for final proofs
+and multi-output tasks on roots discovered in that run. When both regions
+and siblings are enabled, regions cannot consume the siblings' whole share.
+Workers obey these stage deadlines and share the existing slow-proof
 queue. Statistics expose `queue`, `candidate_fate`, and `cost_seconds`; worker
 enumeration/proof time can overlap and is not a wall-time breakdown.
 
@@ -321,13 +324,14 @@ manual step between the stages:
 |---|---|
 | `identity` | what the run is made from: source commit and dirty state, hashes of the tool, of the semantic model and of the registry, the compiler, the frozen library and profiles, the manifests, the budgets and the seed |
 | `prepare` | the `opt -O2` form of every file (the second pipeline) |
-| `extract` | the corpus of the discovery files, written by the baseline pipeline (the synthesized rules are off), and the legality table of the target |
-| `discover` | candidates, preconditions and proofs: the rule library of the run |
-| `build` | a compiler with every candidate of the library |
-| `measure` | the selection files with and without every candidate |
+| `baseline` | a compiler with the pinned ordinary and joint rules B |
+| `extract` | residual trees and joint DAGs after B, plus the target legality table |
+| `discover` | ordinary and joint candidates, preconditions and proofs, in separate catalogs |
+| `build` | a compiler with B and both kinds of candidate additions |
+| `measure` | the selection files with B and with B plus the additions |
 | `select` | the target profile |
 | `verify` | the selected set on every selection file: compile failures, machine verifier errors, changed SelectionDAG fallbacks, files with more instructions. A rule that makes a file worse is removed, and the check runs again |
-| `freeze` | hashes of everything that decides the result. The held-out files are not read before this stage |
+| `freeze` | hashes of both catalogs and profiles, compiler, configuration and source files; held-out files have not been used by search or selection |
 | `heldout` | the frozen set and the reference sets on every role and pipeline |
 | `report` | the counts, the relation to the frozen library, the search record and the evaluation |
 
@@ -339,23 +343,47 @@ manual step between the stages:
   `--until STAGE` stops after a stage; `--force STAGE...` runs stages again.
 - **Configuration.** `configs/*.json`: `mode`, `target`, `manifests` (role ->
   file with one `.ll` path per line), `search` (grammar, budgets, seed,
-  `regions`, `siblings`, `views`), `select`. `girs/mine.py` (`DEFAULTS`) has every key. `--local
+  `regions`, `siblings`, `views`), `joint`, `select`. `girs/mine.py` (`DEFAULTS`) has every key. `--local
   FILE` gives the values of one machine (compiler paths, reference
   compilers, jobs).
 - **Roles.** `discovery` files give the corpus. `discovery` and `validation`
   files select the rules. `heldout` files are compiled only after the set is
   frozen; `frozen.json` counts the held-out evaluations of a run directory.
-  A file must not be in two manifests. `eval/make_manifest.py` writes a
+  Cross-role overlap is rejected by real path and file-content hash, including
+  copies under different names. Content changes invalidate resumed identity checks.
+  `eval/make_manifest.py` writes a
   manifest from directories with the baseline compiler alone.
-- **Modes.** `semantics-only`: the candidates come from the enumerative
-  search alone (operator semantics, types, costs, budgets). The rewrites of
-  the e-graph combiner, the composition of rules and the frozen library are
-  not inputs, and the run fails if a rule has another source. `hybrid` adds
-  the e-graph candidates and the composition; each rule records its sources.
+- **Modes.** `semantics-only` restricts this invocation's candidate generators
+  to semantic search, including multi-output and joint DAG search. Verified
+  knowledge from a previous hybrid run remains reusable with its original
+  provenance (`incremental.reused_from_cache` identifies reused additions).
+  `hybrid` also enables e-graph candidates and composition.
+- **Multi-output defaults.** Regions and siblings are on in `synth` and `mine`.
+  Use `--no-regions --no-siblings`, or set the corresponding `search` keys
+  to false for an ablation. `only_vectors` also filters sibling sources.
+- **Joint DAG integration.** `joint.enabled` defaults to true. Its budgets
+  are separate from `search.time_budget_s`: by default 16 jobs, 5 seconds per
+  window, at most 5 instructions and 3 outputs, with no total window-count
+  cap (`max_windows: 0`). Other limits are in `girs/mine_joint.py`. Budgets
+  bound the search; a budget-truncated result does not claim exhaustion.
+  Completed joint search artifacts resume with the same inputs; failed
+  shards fail the stage and are retried. The existing standalone joint
+  catalog starts as candidate knowledge, with no automatic target promotion.
+  Joint rules need marginal measured instruction-count gain in the combined
+  selected set, with no per-file regression, crash or fallback change.
+  Vector-only runs retain pinned joint baseline rules but do not search or
+  select new scalar joint rules. The current scalar, single-block, definedness,
+  placement and fanout guards remain in force.
 - **Pipelines.** Every measurement is made for `.ll -> llc` (`direct`) and
   for `.ll -> opt -O2 -> llc` (`opt-O2`), and reported separately.
-- **Export.** A run does not write `rules.json` or `targets/`. `mine
-  --export` copies the library and the profile of a finished run there.
+- **Export.** A run does not write the maintained catalogs or target profiles.
+  `mine --export` merges both catalogs and promotes this target's ordinary
+  and joint profiles after checking the frozen artifacts and held-out results.
+  Joint profiles live in `joint/targets/`; target guards keep one target's
+  choices from enabling rules on another. Standard `emit` includes joint
+  profiles after the first promotion. Runtime compiler pass flags remain
+  opt-in outside mine. `report.json` and `report.md` include joint selection
+  results and the combined evaluation.
   `compare-runs RUN...` compares finished runs.
 
 ## Commands

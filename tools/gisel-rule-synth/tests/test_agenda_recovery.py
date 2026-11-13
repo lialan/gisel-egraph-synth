@@ -96,7 +96,8 @@ class RecoveryTest(unittest.TestCase):
         d = self.path / directory
         d.mkdir(exist_ok=True)
         args = ['synth', str(source), '--known', '', '--cache', str(d/'cache'),
-                '--proofs', str(d/'proofs'), '-o', str(d/'rules.json'), *options]
+                '--proofs', str(d/'proofs'), '-o', str(d/'rules.json'),
+                '--no-regions', '--no-siblings', *options]
         marker = d / 'paused'
         cmd = [sys.executable, str(self.driver), str(ROOT), boundary or '',
                str(marker), *args]
@@ -231,7 +232,8 @@ class RecoveryTest(unittest.TestCase):
             return {'final_guard_unknown': count}
         args = cli.default_args('synth', corpus=[str(source)], known='',
                                 cache=str(d/'cache'), proofs=str(d/'proofs'),
-                                o=str(d/'rules.json'), timeout_ms=1000)
+                                o=str(d/'rules.json'), timeout_ms=1000,
+                                regions=False, siblings=False)
         with mock.patch.object(parallel.Session, 'finalize', unfinished):
             cli.cmd_synth(args)
         st = json.loads((d/'rules.stats.json').read_text())

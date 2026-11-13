@@ -134,7 +134,7 @@ def _array(typ, name, items):
     return lines, name
 
 
-def cpp_rule(rule):
+def cpp_rule(rule, targets=None):
     rid = rule['id']
     src = rule['source']
     plan = rule['plan']
@@ -198,6 +198,11 @@ def cpp_rule(rule):
         distinct, len(cls), names['WidthMaps']))
     out.append('inline bool match_%s(MachineInstr &Root, '
                'const MachineRegisterInfo &MRI, JointPlan &Plan) {' % rid)
+    if targets is not None:
+        checks = {'AMDGPU': 'TT.isAMDGPU()', 'AArch64': 'TT.isAArch64()'}
+        out.append('  const Triple &TT = Root.getMF()->getTarget().getTargetTriple();')
+        out.append('  if (!(%s)) return false;' %
+                   (' || '.join(checks[t] for t in sorted(targets)) or 'false'))
     out.append('  return match(%s_Rule, Root, MRI, Plan);' % rid)
     out.append('}')
     out.append('inline void apply_%s(MachineIRBuilder &B, '
@@ -232,7 +237,7 @@ def td_rule(rule):
         '']
 
 
-def emit(rules):
+def emit(rules, targets_by_rule=None):
     """(td text, inc text, info) of the emittable rules, in their order."""
     ok, skipped = [], {}
     for r in rules:
@@ -257,7 +262,8 @@ def emit(rules):
         inc += ['namespace llvm {', 'namespace gisynth {', 'namespace joint {',
                 'namespace rules {', '']
         for r in ok:
-            inc += cpp_rule(r)
+            inc += cpp_rule(r, None if targets_by_rule is None else
+                            targets_by_rule.get(r['id'], ()))
             inc.append('')
         inc += ['} // end namespace rules', '} // end namespace joint',
                 '} // end namespace gisynth', '} // end namespace llvm', '']

@@ -55,7 +55,8 @@ def _extract_one(llc, path, out_dir, kind, target, extra=(), baseline=False,
     out = os.path.join(out_dir, '%s.%s.jsonl' % (os.path.basename(path), h))
     tail = ['-gisel-synth-corpus-out=' + out] + target.corpus_flags() + \
         list(extra)
-    pipeline = ([target.enable_flag] if baseline else []) + ([
+    pipeline = ([target.enable_flag] + (['-gisel-synth-joint-combines']
+                if getattr(target, 'joint', False) else []) if baseline else []) + ([
         target.disable_rule_flag + ','.join(disabled)] if disabled else [])
     passes = ((target.synth_pass + ',') if baseline else '') + \
         'gisel-synth-corpus'
@@ -152,7 +153,8 @@ def _egraph_export_one(llc, path, out_dir, kind, target, stages, baseline=False)
             '-gisel-egraph-stages=' + stages]
     run_pass = [llc] + target.triple_flags + \
         ['-run-pass=gisel-egraph-combiner']
-    pipeline = [target.enable_flag] if baseline else []
+    pipeline = ([target.enable_flag] + (['-gisel-synth-joint-combines']
+                if getattr(target, 'joint', False) else [])) if baseline else []
     quiet = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                  timeout=EXTRACT_TIMEOUT)
     try:
@@ -885,6 +887,11 @@ def _cmd_synth(args, session=None, resources=None):
             return
         with timed('pair_load'):
             for p in sibling.load_pairs(files, pair_stats):
+                if args.only_vectors and not (p.inst.lifted or
+                        vector.has_vector(p.inst.vw, p.inst.expr, *p.sibs)):
+                    pair_stats['outside_vector_scope'] = pair_stats.get(
+                        'outside_vector_scope', 0) + 1
+                    continue
                 # The search and the proof of a group are for scalar
                 # values (vector.py has the model of a vector operator,
                 # by lanes).
@@ -960,7 +967,9 @@ def _cmd_synth(args, session=None, resources=None):
         return agenda.task_key('sibling', p.key())
 
     start = time.monotonic()
-    if (args.regions or args.siblings) and ag.rows:
+    multi_enabled = args.regions or args.siblings
+    warm_multi = multi_enabled and bool(ag.rows)
+    if warm_multi:
         # First the tasks on the rules of the earlier runs, with a part
         # of the time of this run: a search for one output that takes all
         # of the time does not leave them out. What they do not use goes
@@ -977,6 +986,13 @@ def _cmd_synth(args, session=None, resources=None):
             with timed('siblings'):
                 sibling_stage(sy_multi)
         set_deadline(deadline)
+
+    # A cold run has no previous roots to extend. Leave the last part of
+    # its budget for the roots found now, including their final guard proof.
+    # Warm runs already spent their reserved share above.
+    cold_reserve = multi_enabled and not warm_multi and deadline is not None
+    if cold_reserve:
+        set_deadline(start + max(0, deadline - start) * (1 - args.multi_share))
 
     # The search for one output: the instances that were not searched, by
     # value and with a share for the rare operators, then the instances
@@ -1109,6 +1125,8 @@ def _cmd_synth(args, session=None, resources=None):
         pstats['macro_rules'] = len(set(sy.rules) - before)
         seconds['composition'] = round(time.monotonic() - t, 2)
 
+    if cold_reserve:
+        set_deadline(deadline)
     if args.regions:
         alts = [i for i in insts if region.interior_outputs(i)
                 and not vector.has_vector(i.vw, i.expr)
@@ -1142,6 +1160,9 @@ def _cmd_synth(args, session=None, resources=None):
     for rid, r in sy_multi.rules.items():
         sy.rules.setdefault(rid, r)
     if args.regions and not late():
+        if cold_reserve and args.siblings:
+            now = time.monotonic()
+            set_deadline(now + max(0, deadline - now) / 2)
         with timed('regions'):
             region_stage(sy, True)
             # Imported tuple candidates are not corpus queue tasks. Retain
@@ -1150,6 +1171,8 @@ def _cmd_synth(args, session=None, resources=None):
                 st = session.regions(sy, joint) if session else \
                     region.extend(sy, joint, backend, dlim, ctx)
                 total(rstats, st)
+        if cold_reserve:
+            set_deadline(deadline)
     if args.siblings and not late():
         with timed('siblings'):
             sibling_stage(sy)
@@ -1227,12 +1250,16 @@ def _cmd_synth(args, session=None, resources=None):
     }
     combined, _ = known.merge(knowledge, rules)
     base_revs = {known.revision(r) for r in baseline['rules']}
+    cached_revs = {known.revision(r) for r in knowledge['rules']}
     db['rules'] = combined['rules']
     db['incremental'] = {
         'known_rules': len(baseline['rules']),
         'known_candidates': known_index.hits,
         'delta': [r['id'] for r in combined['rules']
                   if known.revision(r) not in base_revs],
+        'reused_from_cache': [r['id'] for r in combined['rules']
+                  if known.revision(r) not in base_revs and
+                  known.revision(r) in cached_revs],
         'search_sha256': known.search_sha(),
         'deadline_reached': backend.deadline is not None and
                             time.monotonic() >= backend.deadline}
@@ -1361,8 +1388,19 @@ def cmd_emit(args):
         for name, p in profiles.items():
             known.validate_profile(db, p, targets.get(name))
     td, inc, info = emit.emit(db, profiles, args.all_candidates)
+    generated = [(args.td, td), (args.inc, inc)]
+    # After mine has promoted a joint target profile, the standard emitter
+    # covers both catalogs. Standalone joint-emit remains available before
+    # that first promotion and for independent experiments.
+    from girs import mine_joint
+    if args.db == DEFAULT_DB and any(os.path.exists(mine_joint.profile_path(n))
+                                     for n in targets.TARGETS):
+        jdb = mine_joint.validate(mine_joint.load(mine_joint.catalog_path()))
+        jprofiles = {n: mine_joint.profile(jdb, n) for n in targets.TARGETS}
+        generated += list(zip(mine_joint.generated_paths(),
+                              mine_joint.generated(jdb, jprofiles)))
     stale = []
-    for path, text in ((args.td, td), (args.inc, inc)):
+    for path, text in generated:
         if args.check:
             cur = open(path).read() if os.path.exists(path) else None
             if cur != text:
@@ -1670,7 +1708,7 @@ def default_args(cmd, **over):
 
 # -------------------------------------------------------- joint regions ---
 
-def _joint_extract_one(llc, path, out_dir, target):
+def _joint_extract_one(llc, path, out_dir, target, baseline=False):
     h = hashlib.sha256(os.path.abspath(path).encode()).hexdigest()[:10]
     out = os.path.join(out_dir, '%s.%s.regions.jsonl' % (
         os.path.basename(path), h))
@@ -1679,9 +1717,26 @@ def _joint_extract_one(llc, path, out_dir, target):
                                      '-gisel-synth-region-out=' + out, path,
                                      '-o', os.devnull]
     try:
-        rc = subprocess.run(cmd, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            timeout=EXTRACT_TIMEOUT).returncode
+        if baseline:
+            # The normal pipeline extracts joint regions before the ordinary
+            # synth pass. Mine needs the residual after the entire pinned B.
+            from girs import measure
+            p = subprocess.run([llc] + target.ll_flags +
+                               measure.synth_flags(target, count_rules=False) +
+                               ['-stop-after=' + target.synth_pass, path, '-o', '-'],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               timeout=EXTRACT_TIMEOUT)
+            rc = p.returncode
+            if rc == 0:
+                rc = subprocess.run([llc] + target.triple_flags +
+                    ['-run-pass=gisel-synth-regions', '-gisel-synth-region-out=' + out,
+                     '-x', 'mir', '-', '-o', os.devnull], input=p.stdout,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=EXTRACT_TIMEOUT).returncode
+        else:
+            rc = subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                timeout=EXTRACT_TIMEOUT).returncode
     except subprocess.TimeoutExpired:
         rc = -1
     if rc != 0:
@@ -1984,11 +2039,11 @@ def build_parser():
     p.add_argument('--time-budget-s', type=float, default=0,
                    help='overall search and proof deadline (0: no limit); '
                         'checkpoints and final output are saved afterward')
-    p.add_argument('--regions', action='store_true',
+    p.add_argument('--regions', action=argparse.BooleanOptionalAction, default=True,
                    help='also search rules with several outputs: the root '
                         'and the values below it that have other users '
                         '(girs/region.py)')
-    p.add_argument('--siblings', action='store_true',
+    p.add_argument('--siblings', action=argparse.BooleanOptionalAction, default=True,
                    help='also search rules for several roots: the root of '
                         'a tree and one or two other instructions of the '
                         'straight-line scope that read values of the region '

@@ -323,6 +323,7 @@ class RunsTest(unittest.TestCase):
     def synth(self, corpus_file, cache='cache', known_db='', **over):
         self.n += 1
         out = self.path('run%d.json' % self.n)
+        over = dict(dict(regions=False, siblings=False), **over)
         cli.cmd_synth(cli.default_args(
             'synth', corpus=[corpus_file], o=out,
             proofs=self.path('proofs%d' % self.n), known=known_db,
