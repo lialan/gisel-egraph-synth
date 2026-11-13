@@ -43,9 +43,14 @@ using namespace llvm;
 static cl::opt<bool> JointScreen(
     "gisel-synth-joint-screen",
     cl::desc("Report each match of the joint rules (-debug-only="
-             "gisel-synth-joint) and apply none of them, so that every rule "
-             "is tried on every instruction (measurement only)"),
+             "gisel-synth-joint); only rules in screen-apply may rewrite "
+             "(measurement only)"),
     cl::init(false), cl::Hidden);
+
+static cl::list<std::string> JointScreenApply(
+    "gisel-synth-joint-screen-apply",
+    cl::desc("Baseline joint rules allowed to apply during screening"),
+    cl::CommaSeparated, cl::Hidden);
 
 namespace {
 
@@ -97,6 +102,7 @@ GISynthJointCombinerImpl::GISynthJointCombinerImpl(
 {
   JointEnv.FirstNewVReg = MF.getRegInfo().getNumVirtRegs();
   JointEnv.ScreenOnly = JointScreen;
+  JointEnv.ScreenApply = JointScreenApply;
 }
 
 class GISynthJointCombinerLegacy : public MachineFunctionPass {
