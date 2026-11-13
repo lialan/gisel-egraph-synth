@@ -72,8 +72,14 @@ class ChainTest(unittest.TestCase):
                     recs += [json.loads(line) for line in f if line.strip()]
         adds = [r for r in recs if r['fn'].startswith('add_one') and
                 r['expr']['op'] == 'G_ADD']
-        self.assertEqual(len(adds), 2)
-        for r in adds:
+        # Each function also has a straight-line record that looks through
+        # the block boundary (the definition of the value is part of the
+        # tree, so it has more inputs); the facts are on the records of the
+        # block itself.
+        single = [r for r in adds if len(r['inputs']) == 2]
+        self.assertEqual(len(single), 2)
+        self.assertEqual(len(adds) - len(single), 2)
+        for r in single:
             # The value is an input (defined in another block) with its
             # low bit known zero; the other input is the constant 1.
             self.assertEqual([i['zero'] for i in r['inputs']],
