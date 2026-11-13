@@ -1054,6 +1054,19 @@ std::vector<RewriteRule> llvm::egraph::getDefaultIntegerRules() {
 
   addFoldingRulesFromProperties(Props, R);
 
+  // The negation rules (not the factoring ones, which reach products of
+  // sums that the canonical linear form does not have, nor add-negconst,
+  // which gives a sum with a negative constant its form with a
+  // subtraction): at a class in its canonical linear form they only add
+  // other forms of the same combination
+  // (SaturationLimits::LinearSkipsNegation).
+  for (RewriteRule &Rule : R)
+    if (is_contained({"sub-to-add-neg", "add-neg-to-sub", "neg-neg",
+                      "neg-sub", "neg-add", "add-negs", "neg-mul", "mul-neg",
+                      "mul-negconst"},
+                     Rule.getName()))
+      Rule.setSkipsLinearForms();
+
   // Rule names must be unique: statistics, reports and tests refer to them.
   for (unsigned I = 0, E = R.size(); I != E; ++I)
     for (unsigned J = 0; J != I; ++J)

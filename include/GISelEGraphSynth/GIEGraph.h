@@ -185,6 +185,11 @@ struct EClass {
   /// The facts of a class hold for each value it can have that is not
   /// poison; they say nothing about the classes it refines to.
   KnownBits Known, KnownLocal;
+  /// The linear view related the class to its canonical implementation
+  /// (applyLinearViews): its sums, differences and products by constants
+  /// are in that form already. Rules marked RewriteRule::skipsLinearForms
+  /// do not apply at it (SaturationLimits::LinearSkipsNegation).
+  bool LinearForm = false;
 };
 
 /// A term of an associative and commutative (AC) operator, represented by
@@ -252,6 +257,9 @@ public:
   bool isClean() const { return !Dirty; }
 
   const EClass &getClass(EClassId Id) const { return Classes[find(Id)]; }
+  /// Mark the class of \p Id as having its canonical linear form
+  /// (EClass::LinearForm); merged classes keep the mark.
+  void markLinearForm(EClassId Id) { Classes[find(Id)].LinearForm = true; }
   LLT getType(EClassId Id) const { return getClass(Id).Ty; }
   std::optional<APInt> getConstant(EClassId Id) const {
     return getClass(Id).Const;
@@ -554,6 +562,15 @@ public:
   /// same conditions. Only such a rule creates a node of an operator with
   /// OpProperties::MayBePoison.
   bool isPoisonExact() const { return PoisonExact; }
+  /// The rule rewrites the signs of sums, differences and products (the
+  /// negation rules): saturate does not apply it at a class that the linear
+  /// view put in its canonical form (EClass::LinearForm), where it only
+  /// adds the other forms of the same linear combination.
+  bool skipsLinearForms() const { return SkipsLinearForms; }
+  RewriteRule &setSkipsLinearForms(bool V = true) {
+    SkipsLinearForms = V;
+    return *this;
+  }
 
   /// True if, for this binding, LHS and RHS denote exactly the same value
   /// (including undef and poison behaviour), so the classes may be merged.
@@ -584,6 +601,7 @@ private:
   /// is). They differ for the arms of a select.
   uint32_t MentionL = 0, StrictL = 0, MentionR = 0, StrictR = 0;
   bool PoisonExact = false;
+  bool SkipsLinearForms = false;
   ApplyFn Fn;
   FactFn Facts;
   VarFilterFn VarFilter;
@@ -1135,6 +1153,9 @@ struct SaturationLimits {
   ///   Tuples: results of operators with several results (applyTupleRules).
   bool EnableFacts = true;
   bool EnableLinear = true;
+  /// With the linear view: the rules that RewriteRule::skipsLinearForms do
+  /// not apply at a class in its canonical linear form.
+  bool LinearSkipsNegation = true;
   bool EnableSlice = true;
   bool EnableTuples = true;
   /// Budgets of one view of one class: the number of terms (leaves) of the

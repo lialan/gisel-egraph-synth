@@ -417,16 +417,31 @@ TEST_F(GIEGraphTest, LongSumSaturatesImmediately) {
 }
 
 TEST_F(GIEGraphTest, SaturationTerminatesWithNodeLimit) {
+  // The negation rules at the classes in a canonical linear form make this
+  // grow (without SaturationLimits::LinearSkipsNegation).
   sumOfDifferences(3);
   SaturationLimits L;
   L.MaxNodes = 200;
   L.MaxIterations = 50;
+  L.LinearSkipsNegation = false;
   SaturationStats S = runAll(L);
   EXPECT_TRUE(S.HitNodeLimit);
   EXPECT_FALSE(S.Saturated);
   // Each iteration may overshoot by at most the nodes of a single RHS (an
   // AC term is built with at most MaxACLeaves nodes).
   EXPECT_LT(G.getNumNodes(), 220u);
+}
+
+TEST_F(GIEGraphTest, LinearFormsDoNotGrowByNegations) {
+  // The same sum of differences saturates below the node limit when the
+  // negation rules do not apply at the classes in a canonical linear form.
+  sumOfDifferences(3);
+  SaturationLimits L;
+  L.MaxNodes = 200;
+  L.MaxIterations = 50;
+  SaturationStats S = runAll(L);
+  EXPECT_TRUE(S.Saturated);
+  EXPECT_FALSE(S.HitNodeLimit);
 }
 
 TEST_F(GIEGraphTest, AdditiveIdentitySaturates) {

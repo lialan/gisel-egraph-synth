@@ -602,6 +602,8 @@ unsigned llvm::egraph::applyLinearViews(EGraph &G,
     }
     if (T.Found) {
       Relate(F.Class, *T.Found, K);
+      G.markLinearForm(F.Class);
+      G.markLinearForm(*T.Found);
       continue;
     }
     if (!MayAdd())
@@ -612,6 +614,8 @@ unsigned llvm::egraph::applyLinearViews(EGraph &G,
     if (!Impl)
       continue;
     Relate(F.Class, *Impl, K);
+    G.markLinearForm(F.Class);
+    G.markLinearForm(*Impl);
     // The shift-add form of each product with a suitable coefficient, in
     // the class of the product: (t << Hi) +/- (t << Lo) reads t twice, so it
     // needs a t that is not undef (classifyLeafReads).

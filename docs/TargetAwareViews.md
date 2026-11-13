@@ -339,17 +339,31 @@ the rules alone stop at the iteration limit with 222 (195) nodes
 `test/AMDGPU/egraph-combiner-linear.mir` has a cancellation over three
 values that the rules do not finish within the default iteration limit.
 
-* Saturation is still bounded by the rules: the negation and factoring
-  rules with AC extension keep producing new combinations `k * x + m * y`,
-  and the view's nodes and merges are more material for them. Of twelve
-  measured runs (six expressions, inputs that may be undef or defined), six
-  end with fewer nodes than without the view (five of them saturate where
-  the rules alone do not, e.g. 304 instead of 2598 nodes), three with the
-  same, and three with more: two cancellations with inputs that may be
-  undef (1625 instead of 998 and 2232 instead of 1504 nodes, both at the
-  iteration limit either way), and `(x * 3) * 5 - x * 15 + y` with defined
-  inputs, which no longer saturates (229 nodes instead of 59). In the ten
-  runs with a cheaper result, the view finds it in the first iteration.
+* The negation rules (`sub-to-add-neg`, `add-neg-to-sub`, `neg-mul`,
+  `neg-sub`, ...) with AC extension keep producing new forms of the same
+  combination `k * x + m * y`, and the view's nodes and merges were more
+  material for them: the graph ended larger with the view than without it
+  on some cancellations. They therefore do not apply at a class that the
+  view related to its canonical implementation (`EClass::LinearForm`,
+  `RewriteRule::skipsLinearForms`, `SaturationLimits::LinearSkipsNegation`,
+  `-gisel-egraph-linear-guard`); there the canonical form already is the
+  combination. The factoring rules still apply: they reach products of
+  sums (`(a + b) * 3` for `3a + 3b`) that the canonical form does not
+  have. On 24 runs (12 linear expressions, defined inputs and inputs that
+  may be undef, full saturation with the default budget), the graph has
+  fewer or as many nodes with the guard as without it in all 24, with the
+  same extracted cost: `7x - 6x` 24 nodes instead of 164, `(a + b) +
+  (a - b)` 183 instead of 590, `3x + 2y - (x + x + x)` with inputs that
+  may be undef 26 instead of 221. Against the rules without the view it
+  has fewer nodes in 15 runs, as many in 4 and more in 5: twice
+  `(2x + 1) * 3 - 6x` (34 and 24 instead of 22, where the view finds the
+  constant 3 and the rules do not), `(x << 1) + (x << 2) + x` (33 instead
+  of 29), and twice `(x - 1) + (y + 1)` (155 instead of 103, at the
+  iteration limit either way: `add-negconst`, which gives a sum with a
+  negative constant its subtraction form, is not guarded). On the
+  validation corpus the guard changes one file (`srem64.ll`, 2
+  instructions fewer), with 1.2% fewer nodes after saturation, 2.3% fewer
+  iterations and 9.4% fewer rule matches.
 * One decomposition per class (its first linear node); another node of the
   class is only used through the classes that contain it.
 * A shift amount of an implementation has the type of the value; after the
@@ -1031,6 +1045,7 @@ final assembly):
 | `or-disjoint-to-add` | -1301 | -495 | 103 / 29 |
 | the fact preconditions tested before the AC pairs | -1301 (the same code in every file) | -495 | 103 / 29 |
 | AMDGPU costs of register tuples and 64-bit SALU forms | -1368 | -495 | 105 / 14 |
+| the negation rules do not apply at canonical linear forms | -1370 | -495 | 105 / 14 |
 
 Against the previous main, all features now save 477 instructions and
 1856 bytes more, and 14 files are worse than stock instead of 32. With all
@@ -1055,6 +1070,12 @@ measured directly before the costs of register tuples,
 | all but patterns | 295651 | -913 | -4796 | 89 / 31 |
 | all but banks | 295198 | -1366 | -6692 | 103 / 18 |
 | all but dag | 295481 | -1083 | -5904 | 90 / 11 |
+
+Without the scheduling and wait hints (`s_delay_alu`, `s_waitcnt`,
+`s_nop`, `s_clause`, which the instruction count includes and which come
+from the scheduler, not from the selected code), all features save 1204
+instructions against stock and 11 files are worse (`bfm.ll`,
+`integer-mad-patterns.ll` and `GlobalISel/and.ll` differ only in hints).
 
 The files that stay worse than stock: 9 of the 14 are as worse with `none`
 (the engine before these features: `uaddsat.ll` +7, where the e-graph

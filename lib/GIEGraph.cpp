@@ -3057,6 +3057,7 @@ bool EGraph::merge(EClassId A, EClassId B) {
   }
   W.NotUndef |= L.NotUndef;
   W.NotPoison |= L.NotPoison;
+  W.LinearForm |= L.LinearForm;
   for (ENode &N : L.Nodes)
     W.Nodes.push_back(std::move(N));
   for (EClassId R : L.RefinesTo)
@@ -4770,6 +4771,13 @@ SaturationStats llvm::egraph::saturate(EGraph &G, ArrayRef<RewriteRule> Rules,
         AnyBanned = true;
         continue;
       }
+      // A negation rule at a class in its canonical linear form only adds
+      // other forms of the same combination.
+      if (Limits.EnableLinear && Limits.LinearSkipsNegation &&
+          Rules[RI].skipsLinearForms())
+        llvm::erase_if(Ms, [&](const RuleMatch &M) {
+          return G.getClass(M.Root).LinearForm;
+        });
       Budget -= Ms.size();
       for (RuleMatch &M : Ms)
         All.push_back({RI, std::move(M)});

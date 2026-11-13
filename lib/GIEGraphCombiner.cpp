@@ -153,6 +153,10 @@ static cl::opt<bool> PreferOriginal(
     "gisel-egraph-prefer-original", cl::Hidden, cl::init(true),
     cl::desc("On a tie of the cost, let extraction keep the instructions of "
              "the region (CostModel::isPreferred)"));
+static cl::opt<bool> LinearGuard(
+    "gisel-egraph-linear-guard", cl::Hidden, cl::init(true),
+    cl::desc("Do not apply the negation rules at a class that the linear "
+             "view put in its canonical form"));
 static cl::opt<bool> SkipRedundant(
     "gisel-egraph-skip-redundant", cl::Hidden, cl::init(true),
     cl::desc("Leave out of a region an instruction that an instruction of a "
@@ -1534,6 +1538,7 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
   Limits.MaxACViews = MaxACViews;
   Limits.EnableFacts = Features.Facts;
   Limits.EnableLinear = Features.Linear;
+  Limits.LinearSkipsNegation = LinearGuard;
   Limits.EnableSlice = Features.Slice;
   Limits.EnableTuples = Features.Tuples;
   SaturationStats S;
