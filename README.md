@@ -232,8 +232,8 @@ can be turned off with `-gisel-egraph-features=` for comparisons:
   instruction.
 
 On 1405 LLVM AMDGPU tests for gfx1100 the pass with these features gives
-883 fewer instructions than the stock GlobalISel pipeline, against 493 for
-the pass without them (static instruction count; 92 files smaller, 30
+891 fewer instructions than the stock GlobalISel pipeline, against 493 for
+the pass without them (static instruction count; 93 files smaller, 32
 larger).
 
 ## Target-aware search and selection

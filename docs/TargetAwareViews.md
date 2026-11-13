@@ -898,26 +898,39 @@ fallbacks; none fails in one configuration only):
 |---|---|---|---|---|
 | stock | 296564 | | | |
 | none | 296071 | -493 | -2548 | 68 / 16 |
-| all | 295681 | -883 | -5120 | 92 / 30 |
+| all | 295673 | -891 | -5148 | 93 / 32 |
 | all but facts | 295690 | -874 | -5036 | 88 / 29 |
-| all but linear | 295680 | -884 | -5140 | 92 / 30 |
-| all but slice | 296057 | -507 | -3052 | 75 / 26 |
-| all but tuples | 295681 | -883 | -5120 | 92 / 30 |
-| all but patterns | 295692 | -872 | -4716 | 87 / 31 |
-| all but banks | 295691 | -873 | -5740 | 90 / 32 |
-| all but dag | 295710 | -854 | -4592 | 86 / 26 |
+| all but linear | 295672 | -892 | -5168 | 93 / 32 |
+| all but slice | 296046 | -518 | -3092 | 77 / 26 |
+| all but tuples | 295673 | -891 | -5148 | 93 / 32 |
+| all but patterns | 295684 | -880 | -4744 | 89 / 33 |
+| all but banks | 295683 | -881 | -5768 | 91 / 34 |
+| all but dag | 295702 | -862 | -4620 | 88 / 28 |
 
-Against `none`, all features make 49 files smaller and 23 larger (the
+Against `none`, all features make 51 files smaller and 25 larger (the
 largest: `load-local-i8.ll` +27, `load-constant-i8.ll` +13,
-`urem-constant-i128.ll` +12, `addsub64_carry.ll` +9; the largest gains:
-`cvt_f32_ubyte.ll` -89, `fptoi.i128.ll` -73, `load-global-i8.ll` -68,
-`load-global-i1.ll` -49). The slice view gives most of the gain (376 of
-390 instructions over `none`); the linear view and the tuple rules change
-nothing on this corpus (the existing rules already reach the linear
-cancellations in it, and CodeGenPrepare already forms `uadd.with.overflow`
-from an add and a comparison). The sum of the CPU time of llc and its peak
-memory (105 MiB) are within noise of `none`; the e-graph rule matches grow
-by about 60% with the fact rules.
+`urem-constant-i128.ll` +12, `shl64_reduce.ll` +11, `addsub64_carry.ll` +9;
+the largest gains: `cvt_f32_ubyte.ll` -89, `fptoi.i128.ll` -73,
+`load-global-i8.ll` -68, `load-global-i1.ll` -49, `permute_i8.ll` -28). The
+slice view gives most of the gain (373 of 398 instructions over `none`;
+then the sharing-aware extraction 29, the facts 17, the pattern costs 11,
+the banks 10 and 620 bytes of code); the linear view and the tuple rules
+change nothing on this corpus (the existing rules already reach the linear
+cancellations in it, and CodeGenPrepare already forms
+`uadd.with.overflow` from an add and a comparison). The sum of the CPU time
+of llc and its peak memory (104 MiB) are within noise of `none`.
+
+The `-stats` counters of the pass over the 99011 regions of these files
+(all features against `none`): 603830 e-nodes after saturation against
+580019 (+4%), 903318 rule matches against 514557 (+76%, mostly the fact
+rules), 2% more iterations, 5 regions stopped by a budget against 10, and
+2876 regions rewritten against 2057. With all features, 5520 rewrites were
+justified by known bits (1358 of them needed facts of the inputs of the
+region), the linear view made 5276 rewrites, the slice view 7347 and the
+tuple rules none; 842 views were abandoned at a budget (752 of them are AC
+flattenings, also counted without the features), the definedness policy
+rejected 86 view rewrites, and the pattern costs found 2833 covers in the
+candidates and 2811 in the original regions.
 
 **Feature corpus** (`eval/views-corpus/`, 17 kernels, not used by any test
 or by discovery): stock 190, none 184, all 182 instructions. The stock
