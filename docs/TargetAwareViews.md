@@ -76,9 +76,11 @@ the class (of each lane of a fixed integer vector), computed in
 * the facts of the nodes of one class are joined (`unionWith`); a class
   whose facts conflict has no value that is not poison and gets none;
 * `KnownLocal` uses nothing about the inputs: its facts follow from the
-  expression itself (`FactSource::Structure`). `Known` also uses the
-  *context facts* of the inputs (`InputInfo::Known`), which the pass takes
-  from `GISelValueTracking` (`FactSource::Context`).
+  expression itself (`FactSource::Structure`). `Known` also uses *context
+  facts*: the known bits of the inputs (`InputInfo::Known`) and the seeds
+  of classes (`EClass::Seed`, `EGraph::setKnownBits`), which the pass sets
+  from `GISelValueTracking` for every register of the region, input or
+  not (`FactSource::Context`). The seeds of merged classes are joined.
 
 Facts hold for each value of the class that is not poison, in every block
 where the value is used (they are properties of SSA values, not of a

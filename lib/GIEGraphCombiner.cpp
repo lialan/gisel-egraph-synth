@@ -1187,15 +1187,9 @@ bool EGraphCombinerImpl::processRegion(MachineBasicBlock &MBB, Region &R) {
         OrigDefs.push_back({Id, Def, 0});
       CM.addOriginal(G, ENode::makeConstant(Ty, *C));
     } else {
-      InputInfo Info = getInputInfo(Reg, MRI);
-      // Context facts: the known bits of the value outside of the region
-      // (of each lane of a fixed vector).
-      if (Features.Facts && !Ty.isPointer() &&
-          (Ty.isScalar() ||
-           (Ty.isFixedVector() && Ty.getElementType().isScalar())) &&
-          !Ty.getScalarType().isFloat())
-        Info.Known = getValueTracking().getKnownBits(Reg);
-      Id = G.addInput(Info);
+      // The known bits of the input are recorded below (setKnownBits) as
+      // context facts of its class.
+      Id = G.addInput(getInputInfo(Reg, MRI));
       if (!Carried)
         InputIndex[Reg] = InputRegs.size();
       InputRegs.push_back(Reg);

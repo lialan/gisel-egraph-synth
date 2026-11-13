@@ -2698,6 +2698,9 @@ void EGraph::recomputeKnownBits(ArrayRef<EClassId> Ids) {
     EClass &C = Classes[Id];
     unsigned W = getKnownBitsWidth(C.Ty);
     C.Known = C.KnownLocal = W ? KnownBits(W) : KnownBits();
+    // Context facts from outside of the e-graph (setKnownBits).
+    if (W && C.Seed && C.Seed->getBitWidth() == W && !C.Seed->hasConflict())
+      C.Known = *C.Seed;
   }
   for (FactSource Src : {FactSource::Structure, FactSource::Context}) {
     bool Changed = true;
@@ -3044,8 +3047,14 @@ bool EGraph::merge(EClassId A, EClassId B) {
     W.Const = L.Const;
   if (!W.SplatConst)
     W.SplatConst = L.SplatConst;
-  if (!W.Known)
-    W.Known = L.Known;
+  // Both seeds are facts of the one value of the merged class.
+  if (W.Seed && L.Seed && W.Seed->getBitWidth() == L.Seed->getBitWidth()) {
+    KnownBits U = W.Seed->unionWith(*L.Seed);
+    if (!U.hasConflict())
+      W.Seed = std::move(U);
+  } else if (!W.Seed) {
+    W.Seed = L.Seed;
+  }
   W.NotUndef |= L.NotUndef;
   W.NotPoison |= L.NotPoison;
   for (ENode &N : L.Nodes)

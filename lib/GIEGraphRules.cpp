@@ -188,9 +188,9 @@ unsigned varWidth(const EGraph &G, const RuleMatch &M, unsigned V) {
 bool exactIntClass(const EGraph &G, EClassId Id, bool Signed, LLT FPTy) {
   if (isExactIntToFP(Signed, G.getType(Id).getScalarSizeInBits(), FPTy))
     return true;
-  const auto &K = G.getClass(Id).Known;
-  return K && (FPTy.isAnyScalar() || FPTy.isFloatIEEE()) &&
-         gisynth::knownIntFitsFP(*K, Signed, FPTy.getScalarSizeInBits());
+  const KnownBits &K = G.getKnownBits(Id);
+  return K.getBitWidth() && (FPTy.isAnyScalar() || FPTy.isFloatIEEE()) &&
+         gisynth::knownIntFitsFP(K, Signed, FPTy.getScalarSizeInBits());
 }
 
 /// Fold two constants (#a, #b) each with a third (#d) through a select:

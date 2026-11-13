@@ -164,7 +164,10 @@ struct EClass {
   /// Analysis: known scalar constant value of the class. Vector constants
   /// remain G_BUILD_VECTOR nodes; see EGraph::getScalarOrSplatConstant.
   std::optional<APInt> Const;
-  std::optional<KnownBits> Known;
+  /// Known bits of the value from outside of the e-graph, e.g.
+  /// GISelValueTracking for a register of the region (setKnownBits). They
+  /// are context facts: the analysis starts Known from them.
+  std::optional<KnownBits> Seed;
   /// Analysis: for a fixed vector, the constant of each lane if the class
   /// has a G_BUILD_VECTOR of one constant class (a splat). A pattern literal
   /// matches it in the width of a lane; the class has no Const, so no fold
@@ -287,8 +290,17 @@ public:
 
   const InputInfo &getInputInfo(unsigned Idx) const { return Inputs[Idx]; }
   unsigned getNumInputs() const { return Inputs.size(); }
+  /// Record known bits of the value of \p Id from outside of the e-graph
+  /// (EClass::Seed, context facts). They take effect at the next rebuild.
   void setKnownBits(EClassId Id, KnownBits K) {
-    Classes[find(Id)].Known = std::move(K);
+    EClass &C = Classes[find(Id)];
+    if (C.Seed && C.Seed->getBitWidth() == K.getBitWidth()) {
+      KnownBits U = C.Seed->unionWith(K);
+      if (!U.hasConflict())
+        C.Seed = std::move(U);
+    } else {
+      C.Seed = std::move(K);
+    }
   }
 
   /// Canonical class ids in increasing order.

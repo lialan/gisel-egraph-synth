@@ -431,8 +431,10 @@ body: |
     SI_RETURN implicit $vgpr0
 ...
 ---
-# Shifts by an out-of-range amount are poison and are never rewritten or
-# folded.
+# Shifts by an out-of-range amount are poison. The operator table never folds
+# them; GISelValueTracking reports the poison result as zero (any fact holds
+# for poison), so the class only refines to 0 (known-constants): a merge would
+# need the value to be not poison. The stock combiner makes it undef.
 name: shift_out_of_range
 tracksRegLiveness: true
 body: |
@@ -442,9 +444,8 @@ body: |
     ; CHECK: liveins: $vgpr0
     ; CHECK-NEXT: {{  $}}
     ; CHECK-NEXT: %a:_(s32) = COPY $vgpr0
-    ; CHECK-NEXT: %c40:_(s32) = G_CONSTANT i32 40
-    ; CHECK-NEXT: %x:_(s32) = G_SHL %a, %c40(s32)
-    ; CHECK-NEXT: $vgpr0 = COPY %x(s32)
+    ; CHECK-NEXT: %c0:_(s32) = G_CONSTANT i32 0
+    ; CHECK-NEXT: $vgpr0 = COPY %c0(s32)
     ; CHECK-NEXT: SI_RETURN implicit $vgpr0
     ;
     ; BASELINE-LABEL: name: shift_out_of_range
