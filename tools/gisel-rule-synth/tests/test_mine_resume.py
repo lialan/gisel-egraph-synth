@@ -92,6 +92,37 @@ class CompileManyResumeTest(unittest.TestCase):
 
 
 class CacheIdentityTest(unittest.TestCase):
+    def test_single_run_rechecks_decisions_after_measurement_or_policy_change(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = mine.Run.__new__(mine.Run)
+            r.dir, r.state_path = d, os.path.join(d, 'state.json')
+            r.state, r.log = {'stages': {}}, lambda _: None
+            r.cfg = {'select': {}, 'roles': {'selection': []}, 'pipelines': [],
+                     'references': {}}
+            r.has_delta = lambda: True
+            r.candidate_llc = lambda: '/unchanged/llc'
+            r.inputs_identity = lambda: {'manifests': {}}
+            r.source_identity = lambda *args: {}
+            stages = ('measure', 'select', 'verify', 'freeze', 'heldout', 'report')
+            calls = {s: mock.Mock(return_value={}) for s in stages}
+            for stage, call in calls.items():
+                setattr(r, 'stage_' + stage, call)
+            versions = {}
+            def source_hash(path):
+                name = os.path.basename(path)
+                return (name, versions.get(name, 0))
+            with mock.patch.object(mine, '_sha_file', side_effect=source_hash):
+                r.run(stages=stages)
+                r.run(stages=stages)
+                self.assertEqual([c.call_count for c in calls.values()], [1] * 6)
+                for module, first_changed in (('measure.py', 0), ('portfolio.py', 1),
+                                               ('objective.py', 1), ('report.py', 5)):
+                    before = [c.call_count for c in calls.values()]
+                    versions[module] = 1
+                    r.run(stages=stages)
+                    self.assertEqual([c.call_count for c in calls.values()],
+                        [n + (i >= first_changed) for i, n in enumerate(before)], module)
+
     def test_model_hash_has_every_module(self):
         import importlib.util
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

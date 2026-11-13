@@ -336,7 +336,7 @@ real-program corpus and fixed-allowance comparisons, see
 | `select` | each candidate alone over B, then profitable additions inside the growing set; configured objective and per-file guardrails determine the profile |
 | `verify` | recompile the final set on every supported selection file; reject failures, changed SelectionDAG fallbacks, objective regressions or guardrail violations |
 | `freeze` | hashes of both catalogs and profiles, compiler, configuration and source files; held-out files have not been used by search or selection |
-| `heldout` | the frozen set and the reference sets on every role and pipeline |
+| `heldout` | the frozen set and reference sets on the selection and held-out roles, for each configured pipeline |
 | `report` | the counts, the relation to the frozen library, the search record and the evaluation |
 
 - **Resume.** Each run has a directory. A stage writes a record in

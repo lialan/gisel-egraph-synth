@@ -907,6 +907,7 @@ class Run:
 
     def inputs_measure(self):
         return {'compiler': _sha_file(self.candidate_llc()),
+                'measurement': _sha_file(measure.__file__),
                 'prepare': self._done('prepare'),
                 'roles': self.cfg['roles']['selection'],
                 'pipelines': self.cfg['pipelines'],
@@ -933,9 +934,12 @@ class Run:
     # -- select --
 
     def inputs_select(self):
+        from . import objective, portfolio
         return {'measure': self._done('measure'),
                 'select': self.cfg['select'],
-                'selector': _sha_file(select.__file__)}
+                'selector': _sha_file(select.__file__),
+                'portfolio': _sha_file(portfolio.__file__),
+                'objective': _sha_file(objective.__file__)}
 
     def stage_select(self):
         if self.cfg['select']['strategy'] == 'measured':
@@ -1143,9 +1147,10 @@ class Run:
     # -- report --
 
     def inputs_report(self):
+        from . import report
         return {'discover': self._done('discover'), 'heldout': self._done('heldout'),
                 'statistics': _sha_file(self.p('library', 'rules.stats.json')),
-                'reporter': _sha_file(__file__)}
+                'reporter': [_sha_file(__file__), _sha_file(report.__file__)]}
 
     def stage_report(self):
         from . import report
