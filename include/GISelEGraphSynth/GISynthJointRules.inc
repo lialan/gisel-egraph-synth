@@ -49,9 +49,9 @@ static const uint16_t joint_b421acca3c_WidthMaps[] = {
     64,
 };
 static const RuleDesc joint_b421acca3c_Rule = {
-    "joint_b421acca3c", joint_b421acca3c_Src, joint_b421acca3c_Steps, joint_b421acca3c_Actions, joint_b421acca3c_Tgt, joint_b421acca3c_Outputs, 2, joint_b421acca3c_InputClass, 0x3, 0x0, 1, joint_b421acca3c_WidthMaps};
-inline bool match_joint_b421acca3c(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan) {
-  return match(joint_b421acca3c_Rule, Root, MRI, Plan);
+    "joint_b421acca3c", joint_b421acca3c_Src, joint_b421acca3c_Steps, joint_b421acca3c_Actions, joint_b421acca3c_Tgt, joint_b421acca3c_Outputs, 2, joint_b421acca3c_InputClass, 0x3, 0x0, 1, joint_b421acca3c_WidthMaps, false};
+inline bool match_joint_b421acca3c(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan, const MatchEnv &Env) {
+  return match(joint_b421acca3c_Rule, Root, MRI, Plan, Env);
 }
 inline void apply_joint_b421acca3c(MachineIRBuilder &B, const JointPlan &Plan) {
   apply(joint_b421acca3c_Rule, B, Plan);
@@ -94,9 +94,9 @@ static const uint16_t joint_f5cef5f7f4_WidthMaps[] = {
     1, 32, 64,
 };
 static const RuleDesc joint_f5cef5f7f4_Rule = {
-    "joint_f5cef5f7f4", joint_f5cef5f7f4_Src, joint_f5cef5f7f4_Steps, joint_f5cef5f7f4_Actions, joint_f5cef5f7f4_Tgt, joint_f5cef5f7f4_Outputs, 2, joint_f5cef5f7f4_InputClass, 0x0, 0x3, 3, joint_f5cef5f7f4_WidthMaps};
-inline bool match_joint_f5cef5f7f4(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan) {
-  return match(joint_f5cef5f7f4_Rule, Root, MRI, Plan);
+    "joint_f5cef5f7f4", joint_f5cef5f7f4_Src, joint_f5cef5f7f4_Steps, joint_f5cef5f7f4_Actions, joint_f5cef5f7f4_Tgt, joint_f5cef5f7f4_Outputs, 2, joint_f5cef5f7f4_InputClass, 0x0, 0x3, 3, joint_f5cef5f7f4_WidthMaps, false};
+inline bool match_joint_f5cef5f7f4(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan, const MatchEnv &Env) {
+  return match(joint_f5cef5f7f4_Rule, Root, MRI, Plan, Env);
 }
 inline void apply_joint_f5cef5f7f4(MachineIRBuilder &B, const JointPlan &Plan) {
   apply(joint_f5cef5f7f4_Rule, B, Plan);
@@ -141,9 +141,9 @@ static const uint16_t joint_743e08a976_WidthMaps[] = {
     64,
 };
 static const RuleDesc joint_743e08a976_Rule = {
-    "joint_743e08a976", joint_743e08a976_Src, joint_743e08a976_Steps, joint_743e08a976_Actions, joint_743e08a976_Tgt, joint_743e08a976_Outputs, 2, joint_743e08a976_InputClass, 0x3, 0x0, 1, joint_743e08a976_WidthMaps};
-inline bool match_joint_743e08a976(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan) {
-  return match(joint_743e08a976_Rule, Root, MRI, Plan);
+    "joint_743e08a976", joint_743e08a976_Src, joint_743e08a976_Steps, joint_743e08a976_Actions, joint_743e08a976_Tgt, joint_743e08a976_Outputs, 2, joint_743e08a976_InputClass, 0x3, 0x0, 1, joint_743e08a976_WidthMaps, false};
+inline bool match_joint_743e08a976(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan, const MatchEnv &Env) {
+  return match(joint_743e08a976_Rule, Root, MRI, Plan, Env);
 }
 inline void apply_joint_743e08a976(MachineIRBuilder &B, const JointPlan &Plan) {
   apply(joint_743e08a976_Rule, B, Plan);
@@ -182,9 +182,9 @@ static const uint16_t joint_a27cbc14a2_WidthMaps[] = {
     16, 32,
 };
 static const RuleDesc joint_a27cbc14a2_Rule = {
-    "joint_a27cbc14a2", joint_a27cbc14a2_Src, joint_a27cbc14a2_Steps, joint_a27cbc14a2_Actions, joint_a27cbc14a2_Tgt, joint_a27cbc14a2_Outputs, 2, joint_a27cbc14a2_InputClass, 0x0, 0x3, 2, joint_a27cbc14a2_WidthMaps};
-inline bool match_joint_a27cbc14a2(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan) {
-  return match(joint_a27cbc14a2_Rule, Root, MRI, Plan);
+    "joint_a27cbc14a2", joint_a27cbc14a2_Src, joint_a27cbc14a2_Steps, joint_a27cbc14a2_Actions, joint_a27cbc14a2_Tgt, joint_a27cbc14a2_Outputs, 2, joint_a27cbc14a2_InputClass, 0x0, 0x3, 2, joint_a27cbc14a2_WidthMaps, false};
+inline bool match_joint_a27cbc14a2(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan, const MatchEnv &Env) {
+  return match(joint_a27cbc14a2_Rule, Root, MRI, Plan, Env);
 }
 inline void apply_joint_a27cbc14a2(MachineIRBuilder &B, const JointPlan &Plan) {
   apply(joint_a27cbc14a2_Rule, B, Plan);
@@ -224,9 +224,9 @@ static const uint16_t joint_66f36e5034_WidthMaps[] = {
     1, 64,
 };
 static const RuleDesc joint_66f36e5034_Rule = {
-    "joint_66f36e5034", joint_66f36e5034_Src, joint_66f36e5034_Steps, joint_66f36e5034_Actions, joint_66f36e5034_Tgt, joint_66f36e5034_Outputs, 1, joint_66f36e5034_InputClass, 0x0, 0x1, 2, joint_66f36e5034_WidthMaps};
-inline bool match_joint_66f36e5034(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan) {
-  return match(joint_66f36e5034_Rule, Root, MRI, Plan);
+    "joint_66f36e5034", joint_66f36e5034_Src, joint_66f36e5034_Steps, joint_66f36e5034_Actions, joint_66f36e5034_Tgt, joint_66f36e5034_Outputs, 1, joint_66f36e5034_InputClass, 0x0, 0x1, 2, joint_66f36e5034_WidthMaps, false};
+inline bool match_joint_66f36e5034(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan, const MatchEnv &Env) {
+  return match(joint_66f36e5034_Rule, Root, MRI, Plan, Env);
 }
 inline void apply_joint_66f36e5034(MachineIRBuilder &B, const JointPlan &Plan) {
   apply(joint_66f36e5034_Rule, B, Plan);
@@ -263,9 +263,9 @@ static const uint16_t joint_315c4a0ef9_WidthMaps[] = {
     1, 64,
 };
 static const RuleDesc joint_315c4a0ef9_Rule = {
-    "joint_315c4a0ef9", joint_315c4a0ef9_Src, joint_315c4a0ef9_Steps, joint_315c4a0ef9_Actions, joint_315c4a0ef9_Tgt, joint_315c4a0ef9_Outputs, 1, joint_315c4a0ef9_InputClass, 0x0, 0x1, 2, joint_315c4a0ef9_WidthMaps};
-inline bool match_joint_315c4a0ef9(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan) {
-  return match(joint_315c4a0ef9_Rule, Root, MRI, Plan);
+    "joint_315c4a0ef9", joint_315c4a0ef9_Src, joint_315c4a0ef9_Steps, joint_315c4a0ef9_Actions, joint_315c4a0ef9_Tgt, joint_315c4a0ef9_Outputs, 1, joint_315c4a0ef9_InputClass, 0x0, 0x1, 2, joint_315c4a0ef9_WidthMaps, false};
+inline bool match_joint_315c4a0ef9(MachineInstr &Root, const MachineRegisterInfo &MRI, JointPlan &Plan, const MatchEnv &Env) {
+  return match(joint_315c4a0ef9_Rule, Root, MRI, Plan, Env);
 }
 inline void apply_joint_315c4a0ef9(MachineIRBuilder &B, const JointPlan &Plan) {
   apply(joint_315c4a0ef9_Rule, B, Plan);

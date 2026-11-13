@@ -546,14 +546,35 @@ def evaluate(win, env):
 # ------------------------------------------------------------ search ---
 
 class Limits:
-    """The budgets of the joint search."""
+    """The budgets of the joint search.
+
+    ``cost_slack`` and ``semantic_variants`` have the meaning of the
+    options of the single-output search (discover.Limits):
+
+      cost_slack         None: a candidate DAG must be cheaper than the
+                         window (the historical policy). k >= -1: its
+                         generic cost may be up to the cost of the window
+                         plus k (0: equal cost). This is what the search
+                         may look at, never a claim that the candidate is
+                         profitable: the target measurement decides that.
+      semantic_variants  how many proved implementations of different
+                         shapes one window keeps (1: the first proved one,
+                         the historical policy).
+    """
 
     def __init__(self, max_window=5, max_outputs=3, max_cost=3,
                  samples=48, max_reuse=4, max_helpers=256, helper_cost=2,
                  max_cands=12, max_combos=50000, max_proofs=6,
                  time_s=60.0, widths=(8, 16, 32, 64), max_terms=200000,
                  max_evals=20000000, seed=0, timeout_ms=10000,
-                 grammar=None, max_banks=8):
+                 grammar=None, max_banks=8, cost_slack=None,
+                 semantic_variants=1):
+        if cost_slack is not None and cost_slack < -1:
+            raise ValueError('cost_slack must be -1 or greater')
+        if semantic_variants < 1:
+            raise ValueError('semantic_variants must be at least 1')
+        self.cost_slack = cost_slack
+        self.semantic_variants = semantic_variants
         self.max_window = max_window
         self.max_outputs = max_outputs
         self.max_cost = max_cost
@@ -580,9 +601,31 @@ class Limits:
     def identity(self):
         return dict(vars(self))
 
+    def max_after(self, before):
+        """The largest generic cost of a candidate DAG for a window of the
+        cost ``before``."""
+        return max_after_of(self.policy(), before)
+
+    def policy(self):
+        """The cost policy of a rule record (check_rule reads it)."""
+        return {'cost_slack': self.cost_slack,
+                'semantic_variants': self.semantic_variants}
+
+
+def max_after_of(policy, before):
+    """Limits.max_after of a stored cost policy (None: a rule of the
+    historical policy, which must be cheaper than its window)."""
+    slack = (policy or {}).get('cost_slack')
+    return before - 1 if slack is None else before + slack
+
 
 class Budget(Exception):
     """A budget of the search of one window ended."""
+
+
+class NoRoom(Exception):
+    """The cost policy leaves no room for a candidate (with this
+    helper)."""
 
 
 class Candidate:
@@ -673,6 +716,8 @@ class Search:
         # Constants and the special values first.
         self.vals = [evaluate(win, env) for env in self.envs]
         self.cost_before = win.cost()
+        # The largest cost of a candidate DAG that the cost policy admits.
+        self.max_after = limits.max_after(self.cost_before)
         self.deps = {k: win.closure(k) for k in range(len(win.instrs))}
 
     def vw(self, leaves):
@@ -713,14 +758,14 @@ class Search:
         mask = sum(1 << i for i in range(self.n, len(vtypes)))
         names = grammar_names(win, self.limits)
         keys = discover.grammar_keys(names, None)
-        cost = min(self.limits.max_cost, self.cost_before - 1)
+        # A term of one output costs at most what the whole DAG may cost.
+        cost = min(self.limits.max_cost, self.max_after)
         if helper is not None:
             # Two outputs read the helper: each has an instruction of its
-            # own next to it, and all of them cost less than the window.
-            cost = min(cost, self.cost_before - 2 -
-                       ir.dag_cost(helper))
+            # own next to it, and together they cost at most max_after.
+            cost = min(cost, self.max_after - 1 - ir.dag_cost(helper))
         if cost < 1:
-            raise Budget('cost')
+            raise NoRoom()
         # A bank is shared by the windows of a run: its budget is its own
         # (max_terms, max_evals), not the time of one window.
         self.ctx.limits.deadline = None
@@ -787,6 +832,10 @@ class Search:
                 local = ir.dag_cost(e) + win.cost(kept)
                 res.append((local, ir.to_sexpr(e), e))
             res.sort()
+            if len(res) > self.limits.max_cands:
+                # The cheapest max_cands terms of the output take part in
+                # the selection; the others are work that is not done.
+                self.stats['cands_truncated'] = True
             out[o] = res[:self.limits.max_cands]
         self._sibling_results(out, leaves, helper)
         return out
@@ -941,9 +990,12 @@ class Search:
         return Candidate(win, kept, outputs, new,
                          {o: e for o, e in choice.items()})
 
-    def select(self, cands, leaves, helper=None, need_helper=False):
+    def select(self, cands, leaves, helper=None, need_helper=False,
+               sink=None):
         """The choices of a candidate (or 'keep') per output whose union
-        is cheaper than the window, cheapest first."""
+        the cost policy admits (cost <= max_after), cheapest first. Each
+        candidate is also appended to ``sink`` when it is made, so that a
+        budget that ends the selection keeps the candidates made before."""
         win = self.win
         outs = list(win.outputs)
         lists = [[('keep', None)] + [(e, c) for c, _, e in cands.get(o, [])]
@@ -970,13 +1022,20 @@ class Search:
             if cand is None:
                 continue
             after = cand.cost_after()
-            if after >= self.cost_before:
+            if after > self.max_after:
                 continue
             k = cand.text()
             if k in seen:
                 continue
             seen.add(k)
+            if after >= self.cost_before and is_identity(cand):
+                # The window again (operands commuted, flags dropped): no
+                # implementation of its own. Only possible with a slack.
+                self.stats['identity'] = self.stats.get('identity', 0) + 1
+                continue
             out.append((after, len(guards(cand)['defined']), k, cand))
+            if sink is not None:
+                sink.append(cand)
         out.sort(key=lambda x: x[:3])
         return [c for _, _, _, c in out]
 
@@ -998,30 +1057,49 @@ class Search:
 
     # -- the whole search --
 
+    # The flags of self.stats that say a budget cut the search short, in
+    # the order of the status text.
+    BUDGET_FLAGS = ('bank_truncated', 'helper_budget_exhausted',
+                    'combo_budget_exhausted', 'cands_truncated')
+
     def run(self):
         """Returns (status, [Candidate], independent Candidate or None).
-        status: 'complete' or 'budget: <what>'."""
+        status: 'complete', 'budget: <what>' or 'skipped: <why>'.
+
+        A budget never discards what was found before it ended: the
+        candidates that were made are returned (unproved), and
+        self.stats['incomplete'] / ['stop'] say that, and why, the search
+        of this window did not end. 'complete' with no candidate means
+        that the searched range has no candidate; 'budget: ...' never
+        means that."""
         win = self.win
         if len(win.outputs) > self.limits.max_outputs:
             return 'skipped: outputs', [], None
-        if self.cost_before < 2:
+        if self.max_after < 1:
             return 'skipped: cost', [], None
+        found, indep, stop = [], None, None
         try:
             leaves = self.reuse_leaves()
             cands = self._cands(leaves)
             indep = self.independent(cands, leaves)
-            found = self.select(cands, leaves)
-            status = 'complete'
-            if self.cost_before - 2 - self.limits.helper_cost >= 1 and \
+            self.select(cands, leaves, sink=found)
+            if self.max_after - 1 - self.limits.helper_cost >= 1 and \
                     len(win.outputs) >= 2:
                 for h in self.helpers(leaves):
                     self._check_time()
-                    hc = self._cands(leaves, h)
-                    found += self.select(hc, leaves, h, need_helper=True)
-            found.sort(key=lambda c: (c.cost_after(),
-                                      len(guards(c)['defined']), c.text()))
+                    try:
+                        hc = self._cands(leaves, h)
+                    except NoRoom:
+                        # The helpers come cheapest first: no other one
+                        # leaves room either.
+                        break
+                    self.select(hc, leaves, h, need_helper=True, sink=found)
+        except NoRoom:
+            return 'skipped: cost', [], None
         except Budget as b:
-            return 'budget: %s' % b.args[0], [], None
+            stop = b.args[0]
+        found.sort(key=lambda c: (c.cost_after(), len(guards(c)['defined']),
+                                  c.text()))
         # A rule must apply to its own instance: a guard defined(x) on an
         # input that is not defined there rejects the candidate.
         ok = []
@@ -1032,12 +1110,16 @@ class Search:
                 self.stats['guard_fails_on_instance'] = \
                     self.stats.get('guard_fails_on_instance', 0) + 1
         found = ok
-        if self.stats.get('bank_truncated') or \
-                self.stats.get('helper_budget_exhausted') or \
-                self.stats.get('combo_budget_exhausted'):
-            status = 'budget: ' + ','.join(
-                k for k in ('bank_truncated', 'helper_budget_exhausted',
-                            'combo_budget_exhausted') if self.stats.get(k))
+        flags = [k for k in self.BUDGET_FLAGS if self.stats.get(k)]
+        if stop is not None:
+            status = 'budget: %s' % stop
+            self.stats['incomplete'] = True
+            self.stats['stop'] = stop
+        elif flags:
+            status = 'budget: ' + ','.join(flags)
+            self.stats['incomplete'] = True
+        else:
+            status = 'complete'
         uniq, seen = [], set()
         for c in found:
             if c.text() not in seen:
@@ -1127,6 +1209,58 @@ def relaxed(cand):
         if v != ('n',) + o:
             visit(v)
     return out & cand.kept
+
+
+# --------------------------------------------------------------- shapes ---
+
+def value_expr(cand, v, memo=None):
+    """The expression of the value ``v`` of the candidate (or of its
+    window) as a tree: operators with their attribute and result widths,
+    commutative operands in a fixed order, no flags. Two values with equal
+    expressions compute the same thing the same way."""
+    memo = {} if memo is None else memo
+    if v in memo:
+        return memo[v]
+    win = cand.win
+    if v[0] == 'in':
+        e = ('in', v[1])
+    elif v[0] == 'lit':
+        e = tuple(v)
+    else:
+        if v[0] == 'n':
+            ins = win.instrs[v[1]]
+            name, attr, ws, args = ins.name, ins.attr, ins.ws, ins.args
+        else:
+            name, attr, ws, args = cand.new[v[1]]
+        a = [value_expr(cand, x, memo) for x in args]
+        if ops.REGISTRY[name].commutative:
+            a[:2] = sorted(a[:2], key=repr)
+        e = (name, attr, tuple(ws), v[2]) + tuple(a)
+    memo[v] = e
+    return e
+
+
+def is_identity(cand):
+    """True if every output of the candidate has the expression that it
+    has in the window: the candidate is the window again (with operands
+    commuted or flags dropped), not another implementation."""
+    memo = {}
+    return all(value_expr(cand, v, memo) == value_expr(cand, ('n',) + o, memo)
+               for o, v in cand.outputs.items())
+
+
+def shape(cand):
+    """The shape of a candidate: the instructions that it keeps, the
+    multiset of its new operators (with attributes and widths) and the
+    kind of value of each output. Candidates of one shape differ in the
+    order of their operands or operations (x+(y+z) and (x+y)+z): the
+    search keeps one proved candidate of each shape, so that such
+    permutations do not fill the quota of a window."""
+    new = sorted((name, repr(attr), tuple(ws)) for name, attr, ws, _ in
+                 cand.new)
+    outs = sorted((o, v[0]) for o, v in cand.outputs.items())
+    return hashlib.sha256(repr((sorted(cand.kept), new, outs)).encode()
+                          ).hexdigest()[:12]
 
 
 # --------------------------------------------------------------- proofs ---
@@ -1426,7 +1560,17 @@ def plan(cand):
             'relax': sorted(rel), 'kept': sorted(cand.kept),
             'erase': [k for k, a in enumerate(actions)
                       if a in ('erase', 'replace')],
-            'replaced': sorted(replaced), 'guards': g}
+            'replaced': sorted(replaced), 'guards': g,
+            'original_only': non_decreasing(cand)}
+
+
+def non_decreasing(cand):
+    """True if the candidate does not make the generic cost smaller. Such
+    a rule only replaces instructions that were there when the combiner
+    started (MatchEnv::FirstNewVReg of GISynthJoint.h): each application
+    removes one of those, so the rules end. The other rules make the
+    generic cost of the function smaller at each application."""
+    return cand.cost_after() >= cand.win.cost()
 
 
 def plan_json(cand, p, maps):
@@ -1460,6 +1604,9 @@ def plan_json(cand, p, maps):
                                 for i in p['guards']['constant']],
                    'width_maps': [sorted(m.items()) for m in maps],
                    'same_block': True},
+        # Termination: a rule that does not make the generic cost smaller
+        # replaces only instructions that the combiner did not create.
+        'original_only': p['original_only'],
     }
 
 
@@ -1489,111 +1636,349 @@ def rule_id(key, cand):
                                      ).hexdigest()[:10]
 
 
-def search_windows(instances, limits, backend, log=None, max_windows=None):
-    """Searches each instance (key -> (window, provenance)). Returns
-    (rules, records, stats)."""
-    dl = discover.Limits(max_terms=limits.max_terms,
-                         max_evals=limits.max_evals, seed=limits.seed)
-    ctx = discover.Context(dl, max_banks=limits.max_banks)
-    stats = {'windows': 0, 'status': {}, 'candidates': 0, 'proved': 0,
-             'refuted': 0, 'unknown': 0, 'smt_checks': 0, 'rules': 0,
-             'with_helper': 0, 'joint_better_than_independent': 0,
-             'seconds': 0.0}
+# Why the work of a window is not done -> the budgets (Limits) that take
+# it further when they are higher than they were (the reasons of the
+# agenda of the joint tasks, girs/joint_tasks.py; () is "the same budgets
+# are enough").
+REASONS = {
+    'time': (),                          # the run ended (its deadline)
+    'window_time': ('time_s',),          # the time of the window ended
+    'terms': ('max_terms', 'max_evals'),  # a term bank was truncated
+    'helpers': ('max_helpers',),
+    'combos': ('max_combos',),
+    'candidates': ('max_cands',),        # candidate lists were truncated
+    'proofs': (),                        # max_proofs proofs were made
+    'unknown': ('timeout_ms',),          # the solver did not decide
+    'variants': ('semantic_variants',),  # the quota of proved shapes
+}
+# The reasons that need the search of the window again (the others only
+# need more proofs of the candidates that it has).
+SEARCH_REASONS = ('time', 'window_time', 'terms', 'helpers', 'combos',
+                  'candidates')
+_FLAG_REASON = {'bank_truncated': 'terms',
+                'helper_budget_exhausted': 'helpers',
+                'combo_budget_exhausted': 'combos',
+                'cands_truncated': 'candidates'}
+# The states of a candidate of a window. 'verified' and 'refuted' are
+# decided: a later run does not prove them again. 'unknown' and
+# 'not_tried' are pending. 'same_shape' (a candidate of a shape that has a
+# verified one), 'no_plan' and 'error' are not proved.
+DECIDED = ('verified', 'refuted')
+
+
+def window_key(key):
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def candidate_record(cand):
+    """What a later run needs to prove a pending candidate."""
+    return {'reused_source_instructions': sorted(cand.kept),
+            'new_instruction_dag': [{'op': name, 'attr': attr, 'ws': list(ws),
+                                     'args': [list(a) for a in args]}
+                                    for name, attr, ws, args in cand.new],
+            'output_mapping': [{'output': list(o), 'value': list(v)}
+                               for o, v in sorted(cand.outputs.items())]}
+
+
+def candidate_of_record(win, c):
+    """The Candidate of a candidate_record of the window ``win``."""
+    outs = {tuple(m['output']): tuple(m['value']) for m in
+            c['output_mapping']}
+    new = [(n['op'], n.get('attr'), tuple(n['ws']),
+            tuple(tuple(a) for a in n['args']))
+           for n in c['new_instruction_dag']]
+    return Candidate(win, c['reused_source_instructions'], outs, new, {})
+
+
+def make_rule(key, win, prov, cand, p, proofs, refuted, indep, before,
+              status, st, limits, backend, rank):
+    """The rule record of a verified candidate."""
+    proved_maps = [dict(pr['width_map']) for pr in proofs]
+    rid = rule_id(key, cand)
+    rule = {
+        'schema': SCHEMA, 'id': rid, 'kind': 'joint_region',
+        # Rules of one window have one source pattern (one LHS).
+        'window': window_key(key),
+        'source': win.to_json(), 'source_text': win.text(),
+        'candidate': candidate_json(cand, indep, before),
+        'cost_policy': dict(limits.policy(),
+                            max_after=limits.max_after(before)),
+        'shape': shape(cand),
+        # 0: the first verified candidate of the window (the cheapest).
+        'rank': rank,
+        'plan': plan_json(cand, p, proved_maps),
+        'proofs': [{k: v for k, v in pr.items()} for pr in proofs],
+        'not_proved': refuted,
+        'search': {'status': status, **{k: v for k, v in st.items()}},
+        'semantic_status': {
+            'kind': 'verified_refinement', 'model': 'girs ops',
+            'solver': '%s %s' % (backend.name, backend.version),
+            'joint_outputs': len(win.outputs),
+            'flags': 'proved without the flags of the source; '
+                     'relaxed instructions lose theirs'},
+        # eval/joint_measure.py measures it.
+        'profitability_status': 'unmeasured',
+        'provenance': {'discovery': 'joint-region+smt',
+                       'occurrences': len(prov),
+                       'examples': [list(map(str, x))
+                                    for x in prov[:5]]},
+    }
+    rule['_key'] = key
+    return rule
+
+
+def search_window(key, win, prov, limits, ctx, backend, prior=None,
+                  mode='full', deadline=None, released=()):
+    """Searches, proves and plans one window (a task of the joint search).
+
+    ``prior`` is what an earlier run left for this window (the 'result' of
+    its task, see below): its decided candidates are not proved again and
+    do not use the proof budget, and its pending candidates are proved
+    with the new ones. ``mode`` 'prove' only proves those pending
+    candidates (the search of the window is complete for these budgets).
+    ``deadline`` (time.monotonic) is the end of the run. A verified
+    candidate in ``released`` (measured without a gain) does not count
+    towards the quota semantic_variants, so that other shapes get proved.
+
+    Proofs: the candidates in the order of the search (cheapest first),
+    one verified candidate of each shape, until semantic_variants are
+    verified or max_proofs proofs were made. Returns a dict:
+      record    the record of the window (search.jsonl)
+      rules     the rules of the candidates verified by this call
+      result    what a later run reads: the search status, the decided
+                candidates {id: state} and the pending candidates
+      reasons   why the window is not done (keys of REASONS)
+      progress  the number of candidates decided by this call
+    """
+    t0 = time.monotonic()
+    calls0 = backend.calls
+    prior = prior or {}
+    decided = dict(prior.get('decided', {}))
+    st = {}
+    s = Search(win, limits, ctx, backend, st)
+    if deadline is not None and deadline < s.deadline:
+        s.deadline = deadline
+    reasons = set()
+    indep = None
+    pending = [candidate_of_record(win, c['candidate'])
+               for c in prior.get('pending', [])]
+    if mode == 'prove':
+        status = prior.get('search_status', 'complete')
+        cands = pending
+        reasons |= set(prior.get('search_reasons', ()))
+    else:
+        try:
+            status, cands, indep = s.run()
+        except Exception as e:   # a model gap of one window
+            status = 'error: %s' % type(e).__name__
+            rec = {'key': window_key(key), '_key': key,
+                   'window': win.text(), 'occurrences': len(prov),
+                   'status': status, 'error': repr(e)[:300],
+                   'reasons': [], 'incomplete': False}
+            return {'record': rec, 'rules': [], 'reasons': set(),
+                    'progress': 0, 'indep': None, 'cost_before': None,
+                    'result': {'search_status': status, 'decided': decided,
+                               'pending': [], 'search_reasons': [],
+                               'verified_shapes':
+                               prior.get('verified_shapes', {})}}
+        if st.get('stop') == 'time':
+            run_ended = deadline is not None and time.monotonic() >= deadline
+            reasons.add('time' if run_ended else 'window_time')
+        for f, r in _FLAG_REASON.items():
+            if st.get(f):
+                reasons.add(r)
+        # The pending candidates of an earlier run that this search did
+        # not make again (it may have ended earlier) stay candidates.
+        have = {c.text() for c in cands}
+        cands = cands + [c for c in pending if c.text() not in have]
+        cands.sort(key=lambda c: (c.cost_after(), len(guards(c)['defined']),
+                                  c.text()))
+    search_reasons = sorted(reasons & set(SEARCH_REASONS))
+    before = s.cost_before
+    vshapes = dict(prior.get('verified_shapes', {}))
+    verified = [cid for cid, x in decided.items()
+                if x == 'verified' and cid not in released]
+    # A released rule leaves the quota, but its shape stays taken: another
+    # order of the same operations is not another implementation.
+    shapes = {vshapes.get(cid) for cid, x in decided.items()
+              if x == 'verified'}
+    states, rules, pend = {}, [], []
+    attempts = progress = smt_checks = 0
+    counts = {}
+    stops = set()
+    for cand in cands:
+        cid = rule_id(key, cand)
+        if cid in states:
+            continue
+        sh = shape(cand)
+        if decided.get(cid) in DECIDED:
+            states[cid] = decided[cid]
+            continue
+        if len(verified) >= limits.semantic_variants:
+            state = 'not_tried'
+            stops.add('variants')
+        elif sh in shapes:
+            state = 'same_shape'
+        elif attempts >= limits.max_proofs:
+            state = 'not_tried'
+            stops.add('proofs')
+        elif deadline is not None and time.monotonic() >= deadline:
+            state = 'not_tried'
+            stops.add('time')
+        else:
+            state = None
+        if state is not None:
+            states[cid] = state
+            if state == 'not_tried':
+                pend.append(cand)
+            continue
+        try:
+            p = plan(cand)
+            if p is None:
+                states[cid] = 'no_plan'
+                continue
+            maps = width_maps(cand, limits)
+            attempts += 1
+            st2, proofs, refuted = prove(cand, limits, backend, maps)
+        except Exception as e:   # a model gap of one candidate
+            states[cid] = 'error'
+            st.setdefault('errors', []).append(repr(e)[:300])
+            continue
+        smt_checks += len(proofs) + len(refuted)
+        if st2 == 'invalid':
+            states[cid] = 'refuted'
+            progress += 1
+            continue
+        if st2 != 'valid':
+            states[cid] = 'unknown'
+            pend.append(cand)
+            run_ended = deadline is not None and time.monotonic() >= deadline
+            stops.add('time' if run_ended else 'unknown')
+            continue
+        states[cid] = 'verified'
+        progress += 1
+        shapes.add(sh)
+        vshapes[cid] = sh
+        verified.append(cid)
+        rules.append(make_rule(key, win, prov, cand, p, proofs, refuted,
+                               indep, before, status, st, limits, backend,
+                               len(verified) - 1))
+    reasons |= stops
+    for x in states.values():
+        counts[x] = counts.get(x, 0) + 1
+    new_decided = dict(decided)
+    new_decided.update({cid: x for cid, x in states.items()
+                        if x in DECIDED})
+    rec = {'key': window_key(key), '_key': key, 'window': win.text(),
+           'occurrences': len(prov), 'status': status, 'mode': mode,
+           'cost_before': before, 'max_after': s.max_after,
+           'candidates': len(cands), 'candidate_states': counts,
+           'proof_attempts': attempts, 'smt_checks': smt_checks,
+           'independent_after': indep.cost_after() if indep else None,
+           'verified': [r['id'] for r in rules],
+           'pending': len(pend), 'reasons': sorted(reasons),
+           'incomplete': bool(reasons),
+           # 'searched': no budget ended the work of the window, so the
+           # searched range has no other candidate. 'budget' never means
+           # "no optimization".
+           'scope': 'searched' if not reasons else 'budget',
+           'solver_calls': backend.calls - calls0,
+           'seconds': round(time.monotonic() - t0, 3)}
+    if rules:
+        # The first verified candidate of this call (the cheapest).
+        rec['rule'] = rules[0]['id']
+        rec['after'] = rules[0]['candidate']['estimated_cost']['after']
+    result = {'search_status': status, 'search_reasons': search_reasons,
+              'decided': new_decided, 'verified_shapes': vshapes,
+              'pending': [{'id': rule_id(key, c), 'text': c.text(),
+                           'candidate': candidate_record(c)} for c in pend]}
+    return {'record': rec, 'rules': rules, 'result': result,
+            'reasons': reasons, 'progress': progress, 'indep': indep,
+            'cost_before': before}
+
+
+def search_windows(instances, limits, backend, log=None, max_windows=None,
+                   ctx=None):
+    """Searches each instance (key -> (window, provenance)) in this
+    process, without a cache (girs/joint_tasks.py has the cache, the
+    agenda and the processes). Returns (rules, records, stats)."""
+    if ctx is None:
+        ctx = new_context(limits)
+    stats = new_stats()
     rules, records = [], []
     t0 = time.monotonic()
     items = list(instances.items())
     if max_windows:
         items = items[:max_windows]
     for key, (win, prov) in items:
-        stats['windows'] += 1
-        st = {}
-        try:
-            s = Search(win, limits, ctx, backend, st)
-            status, cands, indep = s.run()
-        except Exception as e:   # a model gap of one window
-            status = 'error: %s' % type(e).__name__
-            stats['status'][status] = stats['status'].get(status, 0) + 1
-            records.append({'key': hashlib.sha256(key.encode()).hexdigest()[
-                :16], '_key': key, 'window': win.text(),
-                'occurrences': len(prov), 'status': status,
-                'error': repr(e)[:300]})
-            continue
-        stats['status'][status] = stats['status'].get(status, 0) + 1
-        rec = {'key': hashlib.sha256(key.encode()).hexdigest()[:16],
-               '_key': key,
-               'window': win.text(), 'occurrences': len(prov),
-               'status': status, 'cost_before': s.cost_before,
-               'candidates': len(cands),
-               'independent_after': indep.cost_after() if indep else None}
-        stats['candidates'] += len(cands)
-        best = None
-        for cand in cands[:limits.max_proofs]:
-            try:
-                p = plan(cand)
-                if p is None:
-                    continue
-                maps = width_maps(cand, limits)
-                st2, proofs, refuted = prove(cand, limits, backend, maps)
-            except Exception as e:   # a model gap of one candidate
-                stats['candidate_errors'] = \
-                    stats.get('candidate_errors', 0) + 1
-                rec.setdefault('errors', []).append(repr(e)[:300])
-                continue
-            stats['smt_checks'] += len(proofs) + len(refuted)
-            if st2 == 'invalid':
-                stats['refuted'] += 1
-                continue
-            if st2 != 'valid':
-                stats['unknown'] += 1
-                continue
-            stats['proved'] += 1
-            best = (cand, p, proofs, refuted)
-            break
-        if best is not None:
-            cand, p, proofs, refuted = best
-            proved_maps = [dict(pr['width_map']) for pr in proofs]
-            ind_after = indep.cost_after() if indep else s.cost_before
-            if cand.cost_after() < ind_after:
-                stats['joint_better_than_independent'] += 1
-            if shared_new(cand):
-                stats['with_helper'] += 1
-            rid = rule_id(key, cand)
-            rule = {
-                'schema': SCHEMA, 'id': rid, 'kind': 'joint_region',
-                'source': win.to_json(), 'source_text': win.text(),
-                'candidate': candidate_json(cand, indep, s.cost_before),
-                'plan': plan_json(cand, p, proved_maps),
-                'proofs': [{k: v for k, v in pr.items()} for pr in proofs],
-                'not_proved': refuted,
-                'search': {'status': status, **{k: v for k, v in st.items()}},
-                'semantic_status': {
-                    'kind': 'verified_refinement', 'model': 'girs ops',
-                    'solver': '%s %s' % (backend.name, backend.version),
-                    'joint_outputs': len(win.outputs),
-                    'flags': 'proved without the flags of the source; '
-                             'relaxed instructions lose theirs'},
-                'provenance': {'discovery': 'joint-region+smt',
-                               'occurrences': len(prov),
-                               'examples': [list(map(str, x))
-                                            for x in prov[:5]]},
-            }
-            rule['_key'] = key
-            rules.append(rule)
-            rec['rule'] = rid
-            rec['after'] = cand.cost_after()
-            stats['rules'] += 1
-        records.append(rec)
+        out = search_window(key, win, prov, limits, ctx, backend)
+        add_window_stats(stats, out)
+        rules += out['rules']
+        records.append(out['record'])
         if log:
-            log('%s %s -> %s' % (status, win.text(),
-                                 rec.get('rule', '-')))
+            log('%s %s -> %s' % (out['record']['status'], win.text(),
+                                 ','.join(out['record'].get('verified', []))
+                                 or '-'))
     stats['seconds'] = round(time.monotonic() - t0, 2)
-    stats['bank'] = {'banks': len(ctx.banks), 'reuses': ctx.bank_hits,
-                     'evicted': getattr(ctx, 'evicted', 0),
-                     'terms': sum(len(b.op) for b in ctx.banks.values()),
-                     'truncated': sum(b.truncated
-                                      for b in ctx.banks.values())}
+    stats['bank'] = bank_stats(ctx)
     stats['solver_seconds'] = round(backend.seconds, 2)
     return rules, records, stats
+
+
+def new_context(limits):
+    """The term banks of a search process."""
+    dl = discover.Limits(max_terms=limits.max_terms,
+                         max_evals=limits.max_evals, seed=limits.seed)
+    return discover.Context(dl, max_banks=limits.max_banks)
+
+
+def new_stats():
+    return {'windows': 0, 'status': {}, 'candidates': 0, 'proved': 0,
+            'refuted': 0, 'unknown': 0, 'smt_checks': 0, 'rules': 0,
+            'with_helper': 0, 'joint_better_than_independent': 0,
+            'candidate_states': {}, 'reasons': {}, 'incomplete': 0,
+            'windows_with_rules': 0, 'non_decreasing_rules': 0,
+            'multi_output_rules': 0, 'seconds': 0.0}
+
+
+def add_window_stats(stats, out):
+    """Adds the result of search_window to the statistics of a run."""
+    rec = out['record']
+    stats['windows'] += 1
+    stats['status'][rec['status']] = stats['status'].get(rec['status'], 0) + 1
+    stats['candidates'] += rec.get('candidates', 0)
+    cs = rec.get('candidate_states', {})
+    for k, v in cs.items():
+        stats['candidate_states'][k] = stats['candidate_states'].get(k, 0) + v
+    stats['proved'] += len(out['rules'])
+    stats['refuted'] += cs.get('refuted', 0)
+    stats['unknown'] += cs.get('unknown', 0)
+    stats['smt_checks'] += rec.get('smt_checks', 0)
+    for r in out['reasons']:
+        stats['reasons'][r] = stats['reasons'].get(r, 0) + 1
+    stats['incomplete'] += bool(out['reasons'])
+    stats['windows_with_rules'] += bool(out['rules'])
+    before = rec.get('cost_before')
+    ind = rec.get('independent_after')
+    for i, r in enumerate(out['rules']):
+        stats['rules'] += 1
+        cand = candidate_from_json(r)
+        if r['plan'].get('original_only'):
+            stats['non_decreasing_rules'] += 1
+        if len(cand.win.outputs) > 1:
+            stats['multi_output_rules'] += 1
+        if shared_new(cand):
+            stats['with_helper'] += 1
+        if i == 0 and before is not None and \
+                cand.cost_after() < (ind if ind is not None else before):
+            stats['joint_better_than_independent'] += 1
+
+
+def bank_stats(ctx):
+    return {'banks': len(ctx.banks), 'reuses': ctx.bank_hits,
+            'evicted': getattr(ctx, 'evicted', 0),
+            'terms': sum(len(b.op) for b in ctx.banks.values()),
+            'truncated': sum(b.truncated for b in ctx.banks.values())}
 
 
 def shared_new(cand):
@@ -1612,6 +1997,136 @@ def _reads_new(cand, v, j, seen=None):
     if v[1] == j:
         return True
     return any(_reads_new(cand, a, j) for a in cand.new[v[1]][3])
+
+
+# ------------------------------------------------------- rule interplay ---
+#
+# A rule whose result contains the source pattern of another rule (or of
+# itself) enables it. In a combiner, a chain of such rules that does not
+# make the generic cost smaller can rewrite A -> B -> A until the matcher's
+# guard (RuleDesc::OriginalOnly) stops it; such a set of rules is useless
+# at best. The check is structural and over-approximates: the pattern of a
+# rule is compared without its flags, its facts and its outside users, and
+# only inside the result of the other rule (the instructions around a
+# match can complete a pattern too, which no static check of two rules
+# sees; the runtime guard covers that).
+
+def _structure(win):
+    """The key of a window without the facts of its inputs (except
+    constants), its flags and the users of its results: every result is an
+    output."""
+    inputs = [Input(x.w, const=x.const) for x in win.inputs]
+    inside = win.internal_uses()
+    instrs = [Instr(ins.name, ins.attr, (), ins.ws, ins.args,
+                    [inside.get((k, r), 0) + 1 for r in range(len(ins.ws))])
+              for k, ins in enumerate(win.instrs)]
+    reg = Region(inputs, instrs)
+    return canonical(reg)[0]
+
+
+def result_region(cand):
+    """The DAG that the rewrite of the candidate leaves: the window's
+    inputs (and its literals as constant inputs), the kept instructions,
+    then the new ones. Each output is read by an instruction outside.
+    Returns (region, the indices of the new instructions in it)."""
+    win = cand.win
+    inputs = list(win.inputs)
+    lits = {}
+    kept = sorted(cand.kept)
+    pos = {('n', k): i for i, k in enumerate(kept)}
+    for j in range(len(cand.new)):
+        pos[('t', j)] = len(kept) + j
+
+    def ref(v):
+        if v[0] == 'in':
+            return v
+        if v[0] == 'lit':
+            if v not in lits:
+                lits[v] = len(inputs)
+                inputs.append(Input(v[2], const=ir.lit_value(v[2], v[1]),
+                                    defined=True))
+            return ('in', lits[v])
+        return ('n', pos[(v[0], v[1])], v[2])
+    rows = [(win.instrs[k].name, win.instrs[k].attr, win.instrs[k].ws,
+             [ref(a) for a in win.instrs[k].args]) for k in kept]
+    rows += [(name, attr, ws, [ref(a) for a in args])
+             for name, attr, ws, args in cand.new]
+    outs = {ref(v) for v in cand.outputs.values() if v[0] in ('n', 't')}
+    reads = {}
+    for _, _, _, args in rows:
+        for a in args:
+            if a[0] == 'n':
+                reads[a[1:]] = reads.get(a[1:], 0) + 1
+    instrs = [Instr(name, attr, (), ws, args,
+                    [reads.get((i, r), 0) + (('n', i, r) in outs)
+                     for r in range(len(ws))])
+              for i, (name, attr, ws, args) in enumerate(rows)]
+    return Region(inputs, instrs), set(range(len(kept), len(rows)))
+
+
+def enabled_patterns(cand, max_window=5):
+    """The structure keys (_structure) of the windows of the result of the
+    candidate that contain one of its new instructions."""
+    reg, new = result_region(cand)
+    out = set()
+    for members in windows(reg, max_window, 2000):
+        if new.isdisjoint(members):
+            continue
+        out.add(_structure(window(reg, members)))
+    return out
+
+
+def rewrite_graph(rules, max_window=5):
+    """Rule id -> the ids of the rules (also itself) whose source pattern
+    is in its result (see above)."""
+    lhs = {}
+    for r in rules:
+        lhs.setdefault(_structure(from_json(r['source'])), []).append(r['id'])
+    out = {}
+    for r in rules:
+        keys = enabled_patterns(candidate_from_json(r), max_window)
+        out[r['id']] = sorted({i for k in keys for i in lhs.get(k, ())})
+    return out
+
+
+def rewrite_cycles(rules, graph=None):
+    """The cycles of rewrite_graph that contain a rule which does not make
+    the generic cost smaller (plan 'original_only'): each is a list of rule
+    ids. A cycle of rules that all make the cost smaller cannot repeat."""
+    graph = rewrite_graph(rules) if graph is None else graph
+    flat = {r['id'] for r in rules if r['plan'].get('original_only')}
+    out = []
+    # Strongly connected components (Tarjan), iteratively small: the
+    # graphs have a few hundred rules.
+    index, low, stack, on, comps = {}, {}, [], set(), []
+
+    def visit(v):
+        index[v] = low[v] = len(index)
+        stack.append(v)
+        on.add(v)
+        for w in graph.get(v, ()):
+            if w not in index:
+                visit(w)
+                low[v] = min(low[v], low[w])
+            elif w in on:
+                low[v] = min(low[v], index[w])
+        if low[v] == index[v]:
+            comp = []
+            while True:
+                w = stack.pop()
+                on.discard(w)
+                comp.append(w)
+                if w == v:
+                    break
+            comps.append(sorted(comp))
+    for v in sorted(graph):
+        if v not in index:
+            visit(v)
+    for comp in comps:
+        cyclic = len(comp) > 1 or comp[0] in graph.get(comp[0], ())
+        if cyclic and flat & set(comp):
+            out.append(comp)
+    return out
 
 
 def collect(blocks, limits, stats=None, max_windows_per_block=2000):
@@ -1700,9 +2215,14 @@ def check_rule(rule):
                                      for s in rule['plan']['match_order']]:
         out.append('match order')
     est = rule['candidate']['estimated_cost']
+    # The cost policy of the search that found the rule (a rule without
+    # one is of the historical policy: cheaper than its window).
+    policy = rule.get('cost_policy')
     if est['before'] != win.cost() or est['after'] != cand.cost_after() or \
-            cand.cost_after() >= win.cost():
+            cand.cost_after() > max_after_of(policy, win.cost()):
         out.append('cost')
+    if rule['plan'].get('original_only', False) != non_decreasing(cand):
+        out.append('termination')
     proved = [sorted(map(tuple, pr['width_map'])) for pr in rule['proofs']
               if pr['result'] == 'unsat']
     emitted = [sorted(map(tuple, m)) for m in pg['width_maps']]
@@ -1712,21 +2232,3 @@ def check_rule(rule):
     if any(m not in proved for m in emitted):
         out.append('a width map without a proof')
     return out
-
-
-def merge_results(parts):
-    """The rules, records and statistics of search_windows of shards."""
-    rules, records, stats = [], [], {}
-    for r, rec, st in parts:
-        rules += r
-        records += rec
-        for k, v in st.items():
-            if isinstance(v, (int, float)) and not isinstance(v, bool):
-                stats[k] = stats.get(k, 0) + v
-            elif isinstance(v, dict):
-                d = stats.setdefault(k, {})
-                for kk, vv in v.items():
-                    if isinstance(vv, (int, float)):
-                        d[kk] = d.get(kk, 0) + vv
-    stats['shards'] = len(parts)
-    return rules, records, stats

@@ -261,6 +261,13 @@ struct RuleDesc {
   unsigned NumClasses;
   /// The width of each class, NumClasses entries per proved width map.
   ArrayRef<uint16_t> WidthMaps;
+  /// The rule does not make the generic cost smaller (a search with a cost
+  /// slack found it). It erases and replaces only instructions that were in
+  /// the function when the combiner started (MatchEnv::FirstNewVReg): each
+  /// application removes one of those, so such rules cannot rewrite each
+  /// other's results forever (A -> B -> A). Every other rule makes the
+  /// generic cost of the function smaller, so the rules of a combiner end.
+  bool OriginalOnly = false;
 };
 
 /// What the matcher found and the applier uses.
@@ -270,6 +277,17 @@ struct JointPlan {
   std::array<Register, MaxInputs> In{};
   std::array<LLT, MaxClasses> ClassTy;
   MachineInstr *InsertPt = nullptr;
+};
+
+/// The state of the combiner that the matcher reads.
+struct MatchEnv {
+  /// The virtual registers with an index from this one on were created
+  /// while the combiner ran (by a rule): their instructions are new.
+  unsigned FirstNewVReg = ~0u;
+  /// Screening (-gisel-synth-joint-screen): a match is reported ("matched")
+  /// and then rejected, so that every rule is tried on every instruction and
+  /// nothing changes. For measurements only.
+  bool ScreenOnly = false;
 };
 
 //===--- Matching ---------------------------------------------------------===//
@@ -331,6 +349,15 @@ inline APInt litValue(unsigned W, int64_t Lit) {
 inline bool isLit(Register Reg, int64_t Lit, const MachineRegisterInfo &MRI) {
   std::optional<APInt> C = getIConstantVRegVal(Reg, MRI);
   return C && *C == litValue(C->getBitWidth(), Lit);
+}
+
+/// True if \p MI defines a register that was created while the combiner ran.
+inline bool createdInPass(const MachineInstr &MI, const MatchEnv &Env) {
+  for (const MachineOperand &MO : MI.defs())
+    if (MO.isReg() && MO.getReg().isVirtual() &&
+        MO.getReg().virtRegIndex() >= Env.FirstNewVReg)
+      return true;
+  return false;
 }
 
 /// True if \p MI can be the source instruction \p N.
@@ -623,7 +650,7 @@ inline bool finish(const RuleDesc &R, const MachineRegisterInfo &MRI,
 
 inline bool search(const RuleDesc &R, const MachineRegisterInfo &MRI,
                    MachineInstr &Root, const JointPlan &S, unsigned Step,
-                   JointPlan &Out, unsigned &Trials) {
+                   JointPlan &Out, unsigned &Trials, const MatchEnv &Env) {
   if (Step == R.Steps.size()) {
     JointPlan T = S;
     if (!finish(R, MRI, Root, T))
@@ -636,6 +663,13 @@ inline bool search(const RuleDesc &R, const MachineRegisterInfo &MRI,
   auto Try = [&](MachineInstr &MI) {
     if (!nodeOK(R, S, M.Node, MI, Root))
       return false;
+    if (R.OriginalOnly &&
+        (R.Actions[M.Node] == Action::Erase ||
+         R.Actions[M.Node] == Action::Replace) &&
+        createdInPass(MI, Env)) {
+      note(R, "reject created");
+      return false;
+    }
     for (unsigned O = 0; O != (D.Commutative ? 2u : 1u); ++O) {
       if (++Trials > MaxTrials)
         return false;
@@ -643,7 +677,7 @@ inline bool search(const RuleDesc &R, const MachineRegisterInfo &MRI,
       T.Src[M.Node] = &MI;
       T.Swapped[M.Node] = O;
       if (bindOperands(R, MRI, T, M.Node) &&
-          search(R, MRI, Root, T, Step + 1, Out, Trials))
+          search(R, MRI, Root, T, Step + 1, Out, Trials, Env))
         return true;
     }
     return false;
@@ -681,14 +715,16 @@ inline bool search(const RuleDesc &R, const MachineRegisterInfo &MRI,
 } // end namespace detail
 
 /// Matches the rule \p R with the anchor \p Root. Fills \p Plan and returns
-/// true if every check holds; changes nothing.
+/// true if every check holds; changes nothing. With Env.ScreenOnly the match
+/// is reported and false is returned.
 inline bool match(const RuleDesc &R, MachineInstr &Root,
-                  const MachineRegisterInfo &MRI, JointPlan &Plan) {
+                  const MachineRegisterInfo &MRI, JointPlan &Plan,
+                  const MatchEnv &Env = MatchEnv()) {
   detail::note(R, "anchor");
   detail::lastReject() = nullptr;
   JointPlan S;
   unsigned Trials = 0;
-  if (!detail::search(R, MRI, Root, S, 0, Plan, Trials)) {
+  if (!detail::search(R, MRI, Root, S, 0, Plan, Trials, Env)) {
     // A rejection at a later stage was printed when it happened.
     if (Trials > MaxTrials)
       detail::note(R, "reject trials");
@@ -697,7 +733,7 @@ inline bool match(const RuleDesc &R, MachineInstr &Root,
     return false;
   }
   detail::note(R, "matched");
-  return true;
+  return !Env.ScreenOnly;
 }
 
 //===--- Applying ---------------------------------------------------------===//

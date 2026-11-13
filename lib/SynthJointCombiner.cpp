@@ -26,6 +26,7 @@
 #include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Target/TargetMachine.h"
 
 #define DEBUG_TYPE "gisynth-joint-combiner"
@@ -38,6 +39,13 @@
 #undef GET_GICOMBINER_DEPS
 
 using namespace llvm;
+
+static cl::opt<bool> JointScreen(
+    "gisel-synth-joint-screen",
+    cl::desc("Report each match of the joint rules (-debug-only="
+             "gisel-synth-joint) and apply none of them, so that every rule "
+             "is tried on every instruction (measurement only)"),
+    cl::init(false), cl::Hidden);
 
 namespace {
 
@@ -52,6 +60,9 @@ protected:
   const GISynthJointCombinerImplRuleConfig &RuleConfig;
   const TargetSubtargetInfo &STI;
   const CombinerHelper Helper;
+  /// What the matchers of the rules read (GISynthJoint.h): the first virtual
+  /// register that this run of the combiner creates, and screening.
+  gisynth::joint::MatchEnv JointEnv;
 
 public:
   GISynthJointCombinerImpl(MachineFunction &MF, CombinerInfo &CInfo,
@@ -84,6 +95,8 @@ GISynthJointCombinerImpl::GISynthJointCombinerImpl(
 #include "GISynthJointCombiner.inc"
 #undef GET_GICOMBINER_CONSTRUCTOR_INITS
 {
+  JointEnv.FirstNewVReg = MF.getRegInfo().getNumVirtRegs();
+  JointEnv.ScreenOnly = JointScreen;
 }
 
 class GISynthJointCombinerLegacy : public MachineFunctionPass {

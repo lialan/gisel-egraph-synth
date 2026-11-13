@@ -21,6 +21,7 @@ add_executable(GISelEGraphSynthTests
   GIEGraphSliceTest.cpp
   GIEGraphTest.cpp
   GIEGraphViewsTest.cpp
+  GISynthJointTest.cpp
   GISynthPredicatesTest.cpp
   Main.cpp
   ${LLVM_UNITTEST_DIR}/GISelMITest.cpp
