@@ -117,8 +117,10 @@ class Input:
         # and whether the value is defined (a guard of a rule must hold on
         # its own instance). Known bits and constants are not used: a joint
         # rule has no known-bits precondition, and its proof is for every
-        # value of each input.
-        return (self.w, bool(self.defined))
+        # value of each input that is not a constant. A constant is a value
+        # of the rule (the matcher checks it).
+        return (self.w, bool(self.defined) or self.const is not None,
+                self.const)
 
 
 class Instr:
@@ -541,7 +543,7 @@ class Limits:
     """The budgets of the joint search."""
 
     def __init__(self, max_window=5, max_outputs=3, max_cost=3,
-                 samples=48, max_reuse=4, max_helpers=256, helper_cost=1,
+                 samples=48, max_reuse=4, max_helpers=256, helper_cost=2,
                  max_cands=12, max_combos=50000, max_proofs=6,
                  time_s=60.0, widths=(8, 16, 32, 64), max_terms=200000,
                  max_evals=20000000, seed=0, timeout_ms=10000,
@@ -613,6 +615,14 @@ class Candidate:
         return '; '.join(parts)
 
 
+def _results_of(nd, vw):
+    """The nodes of each result of the instruction of the node ``nd``."""
+    info, attr, _ = ops.parse(nd[0])
+    main = ir.width(nd[2], vw)
+    return [(ops.make_key(info.name, attr, r), main if k == 'main' else 1) +
+            nd[2:] for r, k in enumerate(info.meta['result_kinds'])]
+
+
 def _types(win):
     ws = {x.w for x in win.inputs}
     for ins in win.instrs:
@@ -647,7 +657,11 @@ class Search:
         self.n = len(win.inputs)
         rng = random.Random('joint:%d:%s' % (limits.seed, win.text()))
         types = [(x.w, 'i') for x in win.inputs]
-        self.envs = discover.draw_envs(types, limits.samples, rng)
+        # A constant input has its value in every sample.
+        self.envs = [tuple(x.const if x.const is not None else v
+                           for x, v in zip(win.inputs, env))
+                     for env in discover.draw_envs(types, limits.samples,
+                                                   rng)]
         # Constants and the special values first.
         self.vals = [evaluate(win, env) for env in self.envs]
         self.cost_before = win.cost()
@@ -766,19 +780,61 @@ class Search:
                 res.append((local, ir.to_sexpr(e), e))
             res.sort()
             out[o] = res[:self.limits.max_cands]
+        self._sibling_results(out, leaves, helper)
         return out
 
-    def helpers(self, leaves):
-        """Candidate helpers: terms of cost <= helper_cost of a bank over
-        the inputs and the leaves that are not a value of the window."""
+    def _sibling_results(self, out, leaves, helper):
+        """Adds, for each output, the other results of an instruction with
+        several results of a candidate of another output that agree with
+        it on the samples (the term bank has one term per value: G_ADD
+        stands for the sum of G_UADDO). The instruction then counts once
+        (region.computed_values does the same for a tree)."""
         win = self.win
-        bank, types, cost, V, OK, lok = self._bank_rows(leaves)
+        vw = self.vw(leaves) + ((helper[1],) if helper is not None else ())
+        envs = [list(env) + [v[l] for l in leaves] for env, v in
+                zip(self.envs, self.vals)]
+        if helper is not None:
+            for e in envs:
+                h = ir.evaluate(helper, vw[:-1], e)
+                e.append(None if h is ir.UB else h)
+        multi = []
+        for res in out.values():
+            for _, _, e in res:
+                for nd in ir.nodes(e):
+                    info, attr, r = ops.parse(nd[0])
+                    if (info.results or 1) > 1 and nd not in multi:
+                        multi.append(nd)
+        for nd in multi:
+            for x in _results_of(nd, vw):
+                if x == nd:
+                    continue
+                got = [ir.evaluate(x, vw, e) for e in envs]
+                for o in win.outputs:
+                    w = win.width(('n',) + o)
+                    if x[1] != w:
+                        continue
+                    want = [v[o] for v in self.vals]
+                    if all(t is None or (g is not None and g is not ir.UB
+                                         and g == t)
+                           for t, g in zip(want, got)):
+                        cand = (ir.dag_cost(x), ir.to_sexpr(x), x)
+                        if cand not in out.setdefault(o, []):
+                            out[o].append(cand)
+
+    def helpers(self, leaves):
+        """Candidate helpers: terms of cost <= helper_cost over the inputs
+        and the literals (a bank without the values of the window: a
+        helper does not keep a value that an output may replace) whose
+        value is not a value of the window, cheapest first."""
+        win = self.win
+        bank, types, cost, V, OK, lok = self._bank_rows([])
         vals_of = {}
         for k, ins in enumerate(win.instrs):
             for r in range(len(ins.ws)):
                 vals_of[(k, r)] = tuple(v[(k, r)] for v in self.vals)
         known = set(vals_of.values())
         out = []
+        known |= {tuple(env[i] for env in self.envs) for i in range(self.n)}
         end = bank.size(min(cost, self.limits.helper_cost))
         for i in range(bank.n_leaves, end):
             if not OK[i].all():
@@ -807,10 +863,16 @@ class Search:
         for o, e in choice.items():
             if e == 'keep':
                 kept |= self.deps[o[0]]
+        # The values of the window that a candidate reads, also through
+        # the helper, stay: their instructions are kept.
+        hvars = ir.variables(helper) if helper is not None else []
         for o, e in choice.items():
             if e == 'keep':
                 continue
-            for v in ir.variables(e):
+            vs = ir.variables(e)
+            if nl in vs:
+                vs = vs + hvars
+            for v in vs:
                 if self.n <= v < nl:
                     kept |= self.deps[leaves[v - self.n][0]]
         # A replaced output whose instruction stays: keep it instead.
@@ -818,6 +880,7 @@ class Search:
             if e != 'keep' and o[0] in kept:
                 return None
         new, index = [], {}
+        vw = self.vw(leaves) + ((helper[1],) if helper is not None else ())
         # A new instruction equal to a kept instruction is that
         # instruction (each kept G_FREEZE is its own value).
         def sig(name, attr, ws, args):
@@ -847,7 +910,10 @@ class Search:
             info, attr, res = ops.parse(e[0])
             args = [value(a) for a in e[2:]]
             if info.results and info.results > 1:
-                ws = tuple(e[1] if kk == 'main' else 1
+                # The main result has the width of the first operand (the
+                # node of another result has the width of that result).
+                main = ir.width(e[2], vw)
+                ws = tuple(main if kk == 'main' else 1
                            for kk in info.meta['result_kinds'])
             else:
                 ws = (e[1],)
@@ -1026,9 +1092,12 @@ def guards(cand):
     for v, c in cnt.items():
         if c > 1:
             defined |= support(cand, v)
+    # A constant is defined, and the matcher checks its value.
+    consts = {i for i, x in enumerate(cand.win.inputs) if x.const is not None}
     n = len(cand.win.inputs)
-    return {'defined': sorted(defined),
-            'distinct': sorted(set(range(n)) - defined)}
+    return {'defined': sorted(defined - consts),
+            'distinct': sorted(set(range(n)) - defined - consts),
+            'constant': sorted(consts)}
 
 
 def relaxed(cand):
@@ -1063,13 +1132,24 @@ def classes(cand):
     return sorted(ws)
 
 
+def literal(c, w):
+    """The literal ('0', '1', '-1') that the constant ``c`` of the width
+    ``w`` is, or None."""
+    return {0: '0', 1: '1', ir.mask(w): '-1'}.get(c) if w > 1 else \
+        {0: '0', 1: '1'}.get(c)
+
+
 def width_maps(cand, limits):
     """The width maps to prove: the widths of the window first; with one
-    class of more than one bit, each width of limits.widths."""
+    class of more than one bit, each width of limits.widths, unless an
+    input is a constant that is not a literal (its value has one width)."""
     cls = classes(cand)
     first = {w: w for w in cls}
     out = [first]
     wide = [w for w in cls if w > 1]
+    if any(x.const is not None and literal(x.const, x.w) is None
+           for x in cand.win.inputs):
+        return out
     if len(wide) == 1:
         for w in limits.widths:
             if w != wide[0]:
@@ -1128,8 +1208,14 @@ def formula(cand, wmap, flags=False, relax=True):
     pairs = [(('var', vidx[o]), tval(cand.outputs[o]))
              for o in sorted(cand.outputs)]
     g = guards(cand)
-    guard = z3.And([z3.Not(enc.xp[i]) for i in g['defined']] or
-                   [z3.BoolVal(True)])
+    conds = [z3.Not(enc.xp[i]) for i in g['defined']]
+    for i in g['constant']:
+        x = win.inputs[i]
+        lit = literal(x.const, x.w)
+        w = wmap[x.w]
+        val = ir.lit_value(w, lit) if lit is not None else x.const
+        conds += [enc.x[i] == z3.BitVecVal(val, w), z3.Not(enc.xp[i])]
+    guard = z3.And(conds or [z3.BoolVal(True)])
     if flags and rel:
         # The relaxed instructions of the target: the same operation
         # without flags. Replace the variable of each one in the targets.
@@ -1206,7 +1292,9 @@ def plan(cand):
     anchor = max(reps)
     steps = [(anchor, 'anchor', None)]
     done = {anchor}
-    bound_in = {a[1] for a in win.instrs[anchor].args if a[0] == 'in'}
+    consts = {i for i, x in enumerate(win.inputs) if x.const is not None}
+    bound_in = {a[1] for a in win.instrs[anchor].args if a[0] == 'in'} - \
+        consts
     while len(done) < len(win.instrs):
         step = None
         for p in sorted(done):
@@ -1231,7 +1319,8 @@ def plan(cand):
             return None
         steps.append(step)
         done.add(step[0])
-        bound_in |= {a[1] for a in win.instrs[step[0]].args if a[0] == 'in'}
+        bound_in |= {a[1] for a in win.instrs[step[0]].args
+                     if a[0] == 'in'} - consts
     g = guards(cand)
     return {'actions': actions, 'anchor': anchor, 'steps': steps,
             'relax': sorted(rel), 'kept': sorted(cand.kept),
@@ -1267,6 +1356,8 @@ def plan_json(cand, p, maps):
         'erase_candidates': p['erase'],
         'guards': {'defined': p['guards']['defined'],
                    'distinct': p['guards']['distinct'],
+                   'constant': [[i, hex(win.inputs[i].const)]
+                                for i in p['guards']['constant']],
                    'width_maps': [sorted(m.items()) for m in maps],
                    'same_block': True},
     }
@@ -1432,4 +1523,74 @@ def collect(blocks, limits, stats=None, max_windows_per_block=2000):
                 out[key] = (c, list(w.prov))
                 stats['distinct'] = stats.get('distinct', 0) + 1
             stats['windows'] = stats.get('windows', 0) + 1
+    return out
+
+
+# ------------------------------------------------------------ checking ---
+
+def candidate_from_json(rule):
+    """The Candidate of a stored rule: its source window and its
+    candidate record."""
+    win = from_json(rule['source'])
+    c = rule['candidate']
+    outs = {tuple(m['output']): tuple(m['value']) for m in
+            c['output_mapping']}
+    new = [(n['op'], n.get('attr'), tuple(n['ws']),
+            tuple(tuple(a) for a in n['args']))
+           for n in c['new_instruction_dag']]
+    return Candidate(win, c['reused_source_instructions'], outs, new, {})
+
+
+def check_rule(rule):
+    """The reasons why a stored joint rule is not consistent; empty if it
+    is. The guards, the instructions that lose their flags, the actions,
+    the anchor, the match order and the costs are derived again from the
+    source and the candidate, and must be the stored ones; the first width
+    map must have a proof, and every emitted width map a proof. A rule
+    whose guards were weakened by hand (a guard defined(x) removed) is
+    refused here, before emission."""
+    out = []
+    try:
+        cand = candidate_from_json(rule)
+    except (KeyError, TypeError, ValueError) as e:
+        return ['malformed: %s' % e]
+    win = cand.win
+    # The outputs are the values with a user outside of the window.
+    if sorted(win.external_outputs()) != sorted(win.outputs):
+        out.append('outputs')
+    if set(cand.outputs) != set(win.outputs):
+        out.append('output mapping')
+    g = guards(cand)
+    pg = rule['plan']['guards']
+    if g['defined'] != pg['defined']:
+        out.append('guard defined: %s, stored %s' % (g['defined'],
+                                                      pg['defined']))
+    if g['distinct'] != pg['distinct']:
+        out.append('guard distinct')
+    if sorted(relaxed(cand)) != sorted(rule['candidate']['relax_flags']):
+        out.append('relax_flags')
+    p = plan(cand)
+    if p is None:
+        return out + ['no plan']
+    acts = [m['action'] for m in rule['plan']['matched_instructions']]
+    if acts != p['actions']:
+        out.append('actions')
+    if p['anchor'] != rule['plan']['anchor']:
+        out.append('anchor')
+    if [[s[0], s[1], None if s[2] is None else list(s[2])]
+            for s in p['steps']] != [[s['node'], s['how'], s['via']]
+                                     for s in rule['plan']['match_order']]:
+        out.append('match order')
+    est = rule['candidate']['estimated_cost']
+    if est['before'] != win.cost() or est['after'] != cand.cost_after() or \
+            cand.cost_after() >= win.cost():
+        out.append('cost')
+    proved = [sorted(map(tuple, pr['width_map'])) for pr in rule['proofs']
+              if pr['result'] == 'unsat']
+    emitted = [sorted(map(tuple, m)) for m in pg['width_maps']]
+    first = sorted({w: w for w in classes(cand)}.items())
+    if first not in proved:
+        out.append('no proof at the widths of the window')
+    if any(m not in proved for m in emitted):
+        out.append('a width map without a proof')
     return out

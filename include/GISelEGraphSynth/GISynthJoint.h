@@ -190,14 +190,15 @@ constexpr unsigned MaxTrials = 256;
 constexpr unsigned MaxDistance = 128;
 
 /// A value of a rule: an input of the region, a result of a source
-/// instruction, a result of a new instruction, or an integer literal (0, 1
-/// or -1, which is all ones) of a width class.
+/// instruction, a result of a new instruction, or an integer constant of a
+/// width class: -1 is all ones at every width, 0 and 1 are themselves, and
+/// another value is a constant of the width of the only proved width map.
 struct Ref {
   enum KindTy : uint8_t { None, Input, Src, Tgt, Lit };
   KindTy Kind = None;
   uint8_t Idx = 0;
   uint8_t Res = 0;
-  int8_t LitVal = 0;
+  int64_t LitVal = 0;
 };
 
 constexpr Ref in(unsigned I) { return {Ref::Input, uint8_t(I), 0, 0}; }
@@ -207,7 +208,7 @@ constexpr Ref src(unsigned N, unsigned R = 0) {
 constexpr Ref tgt(unsigned N, unsigned R = 0) {
   return {Ref::Tgt, uint8_t(N), uint8_t(R), 0};
 }
-constexpr Ref lit(int V) { return {Ref::Lit, 0, 0, int8_t(V)}; }
+constexpr Ref lit(int64_t V) { return {Ref::Lit, 0, 0, V}; }
 
 /// One instruction of a rule. Attr is the predicate of a G_ICMP, the
 /// trailing immediate of an operator that has one, or -1.
@@ -313,11 +314,15 @@ inline Register valueReg(const JointPlan &S, const Ref &X) {
   }
 }
 
-inline bool isLit(Register Reg, int Lit, const MachineRegisterInfo &MRI) {
+inline APInt litValue(unsigned W, int64_t Lit) {
+  return Lit == -1 ? APInt::getAllOnes(W)
+                   : APInt(W, uint64_t(Lit), /*isSigned=*/false,
+                           /*implicitTrunc=*/true);
+}
+
+inline bool isLit(Register Reg, int64_t Lit, const MachineRegisterInfo &MRI) {
   std::optional<APInt> C = getIConstantVRegVal(Reg, MRI);
-  if (!C)
-    return false;
-  return Lit == -1 ? C->isAllOnes() : C->getZExtValue() == uint64_t(Lit);
+  return C && *C == litValue(C->getBitWidth(), Lit);
 }
 
 /// True if \p MI can be the source instruction \p N.
@@ -700,9 +705,9 @@ inline void apply(const RuleDesc &R, MachineIRBuilder &B,
       return New[X.Idx][X.Res];
     case Ref::Lit: {
       LLT Ty = Plan.ClassTy[C];
-      unsigned W = Ty.getSizeInBits();
-      APInt V = X.LitVal == -1 ? APInt::getAllOnes(W) : APInt(W, X.LitVal);
-      return B.buildConstant(Ty, V).getReg(0);
+      return B.buildConstant(Ty,
+                             detail::litValue(Ty.getSizeInBits(), X.LitVal))
+          .getReg(0);
     }
     default:
       llvm_unreachable("no value");

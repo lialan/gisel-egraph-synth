@@ -26,10 +26,14 @@ class EmitError(ValueError):
 
 def why_not_emittable(rule):
     """The reason why the rule cannot be emitted, or None."""
+    from . import joint
     src = rule['source']
     plan = rule['plan']
     if not rule.get('proofs'):
         return 'no proof'
+    bad = joint.check_rule(rule)
+    if bad:
+        return 'inconsistent: ' + '; '.join(bad)
     if len(src['instrs']) > 12 or len(src['inputs']) > 8:
         return 'too many instructions or inputs for GISynthJoint.h'
     cls = _classes(rule)
@@ -64,10 +68,19 @@ def _width(rule, ref):
     return ref[2]
 
 
-def _ref(ref):
+def _ref(ref, rule=None):
+    """The C++ Ref of a value. An input that is a constant is a literal of
+    the rule; the other inputs are numbered without the constants."""
     if ref is None:
         return 'Ref()'
     if ref[0] == 'in':
+        if rule is not None:
+            x = rule['source']['inputs'][ref[1]]
+            if 'const' in x:
+                c = int(x['const'], 16)
+                return 'lit(%d)' % (-1 if c == (1 << x['w']) - 1 and
+                                    x['w'] > 1 else c)
+            return 'in(%d)' % _input_index(rule)[ref[1]]
         return 'in(%d)' % ref[1]
     if ref[0] == 'n':
         return 'src(%d, %d)' % (ref[1], ref[2])
@@ -76,6 +89,17 @@ def _ref(ref):
     if ref[0] == 'lit':
         return 'lit(%d)' % {'0': 0, '1': 1, '-1': -1}[ref[1]]
     raise EmitError('no value %r' % (ref,))
+
+
+def _input_index(rule):
+    """Input of the source -> input of the C++ rule (constants are
+    literals)."""
+    out, n = {}, 0
+    for i, x in enumerate(rule['source']['inputs']):
+        if 'const' not in x:
+            out[i] = n
+            n += 1
+    return out
 
 
 def _attr(name, attr):
@@ -88,7 +112,7 @@ def _attr(name, attr):
 
 def _node(rule, name, attr, ws, args, cls):
     info = ops.REGISTRY[name]
-    ops3 = [_ref(a) for a in args] + ['Ref()'] * (3 - len(args))
+    ops3 = [_ref(a, rule) for a in args] + ['Ref()'] * (3 - len(args))
     defc = [str(cls.index(w)) for w in ws] + ['0'] * (2 - len(ws))
     opc = [str(cls.index(_width(rule, a))) for a in args] + \
         ['0'] * (3 - len(args))
@@ -131,8 +155,8 @@ def cpp_rule(rule):
             steps.append('{%d, Find::DefOf, src(%d, %d)}' % (
                 s['node'], s['via'][0], s['via'][1]))
         else:
-            steps.append('{%d, Find::UserOf, %s}' % (s['node'],
-                                                      _ref(tuple(s['via']))))
+            steps.append('{%d, Find::UserOf, %s}' % (
+                s['node'], _ref(tuple(s['via']), rule)))
     act = {'erase': 'Action::Erase', 'replace': 'Action::Replace',
            'keep': 'Action::Keep', 'relax': 'Action::Relax'}
     actions = [act[m['action']] for m in plan['matched_instructions']]
@@ -140,11 +164,13 @@ def cpp_rule(rule):
                   [tuple(a) for a in n['args']], cls)
             for n in plan['new_instruction_dag']]
     outs = ['{%d, %d, %s, %d}' % (r['output'][0], r['output'][1],
-                                  _ref(tuple(r['value'])),
+                                  _ref(tuple(r['value']), rule),
                                   cls.index(_width(rule, ('n',) +
                                                    tuple(r['output']))))
             for r in plan['output_replacements']]
-    incls = [str(cls.index(i['w'])) for i in src['inputs']]
+    incls = [str(cls.index(i['w'])) for i in src['inputs']
+             if 'const' not in i]
+    index = _input_index(rule)
     maps = []
     for m in plan['guards']['width_maps']:
         d = dict(m)
@@ -160,12 +186,12 @@ def cpp_rule(rule):
         lines, ref = _array(typ, '%s_%s' % (rid, suffix), items)
         out += lines
         names[suffix] = ref
-    defined = sum(1 << i for i in plan['guards']['defined'])
-    distinct = sum(1 << i for i in plan['guards']['distinct'])
+    defined = sum(1 << index[i] for i in plan['guards']['defined'])
+    distinct = sum(1 << index[i] for i in plan['guards']['distinct'])
     out.append('static const RuleDesc %s_Rule = {' % rid)
     out.append('    "%s", %s, %s, %s, %s, %s, %d, %s, 0x%x, 0x%x, %d, %s};' % (
         rid, names['Src'], names['Steps'], names['Actions'], names['Tgt'],
-        names['Outputs'], len(src['inputs']), names['InputClass'], defined,
+        names['Outputs'], len(index), names['InputClass'], defined,
         distinct, len(cls), names['WidthMaps']))
     out.append('inline bool match_%s(MachineInstr &Root, '
                'const MachineRegisterInfo &MRI, JointPlan &Plan) {' % rid)
