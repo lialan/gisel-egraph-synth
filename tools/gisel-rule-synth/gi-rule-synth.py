@@ -487,7 +487,7 @@ def _schedule(insts, share):
 
 
 def cmd_synth(args):
-    from girs import compose, corpus, discover, egraph, ir, region, \
+    from girs import compose, corpus, discover, egraph, ir, ops, region, \
         sibling, smt, synth, vector, vector_search, known, history
 
     if args.mode == 'semantics-only' and (args.egraph or args.compose_corpus
@@ -780,7 +780,23 @@ def cmd_synth(args):
         t = time.monotonic()
         pair_stats = {}
         pairs = sibling.load_pairs(files, pair_stats)
-        sstats = sibling.extend(sy, pairs, found, backend, dlim, ctx,
+        # The sibling search uses scalar samples and joint proofs. A
+        # lifted root can hide the vector width of a sibling operand,
+        # so check its operators and the remapped types as well.
+        scalar_pairs = []
+        pair_stats['unsupported_vector_groups'] = 0
+        pair_stats['ill_typed_groups'] = 0
+        for pair in pairs:
+            exprs = (pair.inst.expr,) + pair.sibs
+            if vector.has_vector(pair.inst.vw, *exprs) or any(
+                    ops.parse(n[0])[0].vector
+                    for e in exprs for n in ir.nodes(e)):
+                pair_stats['unsupported_vector_groups'] += 1
+            elif not all(ir.well_typed(e, pair.inst.vw) for e in exprs):
+                pair_stats['ill_typed_groups'] += 1
+            else:
+                scalar_pairs.append(pair)
+        sstats = sibling.extend(sy, scalar_pairs, found, backend, dlim, ctx,
                                 args.max_pairs)
         sstats['corpus'] = pair_stats
         seconds['siblings'] = round(time.monotonic() - t, 2)
