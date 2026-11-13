@@ -520,7 +520,11 @@ profitability compare instructions, then size. After the tree-cost choice, a
 bounded local search over the classes of the DAG accepts a different node or
 refinement target of a class when the DAG cost becomes strictly smaller
 (`Extractor::extract`; `-gisel-egraph-features=no-dag` keeps the tree-cost
-choice). It is not a global optimum. See docs/TargetAwareViews.md
+choice). It is not a global optimum. On a tie both keep the instructions of
+the region (`CostModel::isPreferred`), and a last move restores an original
+instruction together with the original instructions below it where that
+costs no more (`-gisel-egraph-prefer-original`, see "Sharing-aware
+extraction" in docs/TargetAwareViews.md). See docs/TargetAwareViews.md
 ("Target pattern costs", "Register banks", "Sharing-aware extraction").
 
 `DefaultCostModel` (configurable, virtual `CostModel` base for targets):
@@ -646,6 +650,19 @@ conditional branch are candidates too. A region is a connected
 component (through def-use edges between candidates of the same block) grown
 by worklist up to the size cap. Operand registers defined by `G_CONSTANT`
 become constant nodes; all other non-region operands become inputs.
+
+An instruction that computes a value that an instruction of a block that
+properly dominates its block computes too is not a candidate
+(`-gisel-egraph-skip-redundant`, on by default): equal value numbers of the
+pure instructions (not PHIs, terminators or `G_FREEZE`), i.e. the same
+operator, flags, attributes and types with operands of equal value numbers,
+a constant by its value. Such copies come from the IR translator and the
+legalizer (the store loop and the residual stores of a memset each build the
+splat of the byte). MachineCSE removes them after instruction selection, so
+a region would count an instruction that does not remain, and a rewrite of
+one into another form would keep it from being removed. Its users read it
+as an input. The value numbers are computed on first use and again after a
+rewrite (timer `Value numbering`).
 
 A region instruction is a **root** if it has any non-debug use outside the
 region (other instructions, other blocks, PHIs). All values needed outside the

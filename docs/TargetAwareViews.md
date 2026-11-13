@@ -99,16 +99,25 @@ precondition as a property of the values:
 
 | Rule | Precondition |
 |---|---|
-| `add-disjoint-to-or`, `xor-disjoint-to-or` | no bit is one in both operands |
+| `add-disjoint-to-or`, `or-disjoint-to-add`, `xor-disjoint-to-or` | no bit is one in both operands |
 | `and-mask-of-known-zeros` (`a & c -> a`) | every bit of `a` outside of `c` is zero |
 | `or-mask-of-known-ones` (`a \| c -> a`) | every bit of `c` is one in `a` |
 
-There is no `or-disjoint-to-add`: it fed bit operations into the arithmetic
-rules, which replaced the shifts and ors that the AMDGPU selector fuses
-(`v_lshl_or_b32`, `v_or3_b32`) by a multiplication (on a memset of a
-variable byte, 14 more instructions per function for gfx1100; on the
-validation corpus for the default AMDGPU CPU, 45 more instructions than
-without the facts).
+`or-disjoint-to-add` lets an or of packed fields reach the arithmetic
+rules and the fused adds of the target (`v_lshl_add_u32`, `v_add3_u32`):
+on `amdgcn.bitcast.512bit.ll` 164 instructions fewer, and only with the
+facts, the pattern costs and the DAG extraction together (removing any one
+of them cancels it). It was left out at first because on a memset of a
+variable byte it cost up to 16 instructions per function. That was not the
+multiplication that the rules can make of a splat (`b * 0x10101`) but two
+losses of a CSE: equal-cost forms of the splat in neighbouring regions, and
+a dominated block whose copy of the splat was rewritten (cheaper inside its
+region, but no longer equal to the copy that MachineCSE removes). The
+extraction now keeps the original instructions on a tie ("The original
+instructions on a tie") and regions leave out instructions that a
+dominating block computes already (docs/GIEGraphCombiner-Design.md,
+"Region discovery"); with both, the memset file is 6 instructions smaller
+with the rule than without it.
 
 A class whose bits are all known is related to that constant
 (`known-constants`): merged if it is never poison, refined otherwise.
@@ -776,6 +785,44 @@ the original region under the same model. With
 `-gisel-egraph-features=no-dag` the choices are the tree-cost ones, as
 before.
 
+### The original instructions on a tie
+
+A region is rewritten when its candidate is cheaper as a whole, but most of
+its values usually cost the same in several forms. Which of them extraction
+took used to be an accident of the search: the tree cost takes the first of
+equal nodes, and the local search stops at the first strictly cheaper DAG.
+The form of such a value matters outside of the model: another region (a
+region ends at `-gisel-egraph-max-region-instrs`, and a dominated block
+recomputes values of the legalizer) computes it in the original form, and
+after instruction selection MachineCSE merges two equal instructions, not
+two equal values. On `memset-param-combinations.ll` with
+`or-disjoint-to-add`, one region took `v_add3_u32` for the byte splat
+`b | b<<8 | b<<16 | b<<24` where the next regions computed the same value
+with the original `v_or3_b32`: the lanes of a store were then two values
+(+9 to +16 instructions of moves per function).
+
+So the instructions of the region are preferred (`CostModel::isPreferred`;
+the pass gives the instructions of the region, as nodes of the saturated
+graph, `-gisel-egraph-prefer-original`):
+
+* the tree-cost fixpoint takes a preferred node on a tie, never the other
+  way (the choices stay acyclic: a chosen node costs as much as its class,
+  so its operands cost less);
+* the local search compares instructions, then bytes, then the number of
+  operations of the DAG that are not preferred;
+* a last move (`ExtractionOptions::RestoreOriginal`), for each class of the
+  DAG whose choice is not preferred, chooses its preferred node and, below
+  it, the preferred node of each operand class whose choice is not
+  preferred, and keeps the change if the DAG costs no more and keeps more
+  original instructions. The local search changes one class at a time and
+  cannot reach an original form whose operand classes are not in the DAG
+  (in the splat: the tree cost took a multiplication, the search found
+  `v_add3_u32`, and the `v_or3_b32` needs its inner or as well).
+
+A preferred node never wins against a cheaper one. The report prints
+`original=P/N kept=K/M`: the instructions of the region that are nodes of
+the saturated graph, and the operations of the candidate that are one.
+
 ## Tuples (operators with several results)
 
 An instruction with several results is one e-node per result; extraction
@@ -947,6 +994,69 @@ after the pass (the post-legalizer combiner, the selector's multi-node
 patterns), so a rewrite that the pipeline would have done anyway is not
 counted.
 
+### Second round: ties, redundant instructions and `or-disjoint-to-add`
+
+The same corpus and flags after the changes of the second round, each
+measured on its own commit (1405 comparable files; instructions of the
+final assembly):
+
+| Commit | `all` vs stock | `none` vs stock | `all`: files better / worse |
+|---|---|---|---|
+| previous main (`2ae17ea`) | -891 | -493 | 93 / 32 |
+| extraction keeps the original instructions on a tie | -998 | -489 | 91 / 31 |
+| regions leave out instructions that a dominating block computes | -1015 | -495 | 92 / 30 |
+| `or-disjoint-to-add` | -1301 | -495 | 103 / 29 |
+| the fact preconditions tested before the AC pairs | -1301 (the same code in every file) | -495 | 103 / 29 |
+
+Against the previous main, all features now save 410 instructions and 800
+bytes more (28 files better, 4 worse by one instruction each). With all
+features (`all` minus `no-<f>`): slice 484, patterns 388, facts 300, dag
+288, banks 162, tuples 0, linear -1 (the previous round: 373, 11, 17, 29,
+10, 0, 0). The facts, the pattern costs and the DAG extraction now pay off
+mostly together, as the add form of an or meets the fused adds of the
+target; measured directly, `f:facts+patterns+dag` alone saves 765
+instructions against stock (`none` 495).
+
+| Configuration | Instructions | vs stock | Code bytes vs stock | Files better / worse than stock |
+|---|---|---|---|---|
+| stock | 296564 | | | |
+| none | 296069 | -495 | -2528 | 67 / 18 |
+| all | 295263 | -1301 | -5948 | 103 / 29 |
+| all but facts | 295563 | -1001 | -5852 | 89 / 26 |
+| all but linear | 295262 | -1302 | -5968 | 103 / 29 |
+| all but slice | 295747 | -817 | -3156 | 86 / 22 |
+| all but tuples | 295263 | -1301 | -5948 | 103 / 29 |
+| all but patterns | 295651 | -913 | -4796 | 89 / 31 |
+| all but banks | 295425 | -1139 | -5572 | 99 / 33 |
+| all but dag | 295551 | -1013 | -5484 | 89 / 26 |
+| facts, patterns and dag only | 295799 | -765 | -3520 | 83 / 24 |
+
+`memset-param-combinations.ll` is 551 instructions (557 before, 501
+stock); `amdgcn.bitcast.512bit.ll` 15485 (15649 before and stock), with
+349 more `v_lshl_add_u32` and 634 fewer `v_lshlrev_b32` over the corpus.
+
+The fact rules with both directions of the disjoint or matched 1.93M
+times over the corpus; testing the necessary condition of the
+precondition on each variable before the AC pairs (`RewriteRule::
+setVarFilter`) leaves 1.38M with the same code in every file. With
+`or-disjoint-to-add`, 47 regions stop at a budget (5 without it).
+
+Compile time, in CPU seconds of the pass over the corpus (`--time-passes`;
+the commits measured one after the other with `-j 32`; these runs vary by
+several percent, the stock compilation of the corpus by up to 10%): 11.9 s
+without `or-disjoint-to-add` (saturation 5.6 s), 14.7 s with it (8.2 s),
+and 15.2 s with the variable filter (8.6 s). The filter removes matches but
+not time: the graphs grow by the rewrites that now fit the budget of an
+iteration. The value numbering takes 0.25 s and the uniformity analysis
+0.1 s; llc takes 215 to 250 s over the corpus.
+
+The evaluation driver now measures any set of features (`f:facts+dag`),
+names configurations with extra flags (`--define 'x=all -flag'`), and
+records the timers of the pass (`--time-passes`: build, saturate, extract
+and rewrite, and the uniformity analysis and the value numbering that it
+computes again after a rewrite); `eval/views_diff.py` compares two
+configurations of one or two runs file by file.
+
 ## Limitations
 
 * The views and the facts are bounded and conservative: one decomposition
@@ -954,6 +1064,15 @@ counted.
   per-lane linear coefficients, no products of non-constants, no
   `G_SPLAT_VECTOR`, no floating point. Over budget a view is abandoned and
   counted; the class keeps its node-by-node form.
+* Extraction keeps an original instruction only on an exact tie of the
+  model. A rewrite that the model finds strictly cheaper still changes the
+  form of a value that another region of the same block (beyond
+  `-gisel-egraph-max-region-instrs`) or a sibling block computes too, and
+  then MachineCSE cannot merge them. Only copies in a dominating block are
+  left out of regions (value numbers of the pure instructions).
+* `or-disjoint-to-add` costs about a quarter of the time of the pass
+  (saturation +50%): every or with disjoint operands gets an add form that
+  the arithmetic rules then rewrite further.
 * The cost model is a static proxy: instruction count first, encoded size
   second, depth only reported. It does not model latency, register pressure
   or scheduling, SALU fusions (`s_lshl{1-4}_add_u32`), `v_readfirstlane` for
