@@ -54,6 +54,9 @@ and a reproducible corpus of real C programs, see
 [Corpus mining campaigns](docs/Corpus-Mining.md). The experiment harness
 compares single-round and iterative search with equal search allowances,
 then evaluates their frozen selections on held-out programs.
+See the [recorded MiBench comparison](docs/Corpus-Mining-Validation.md)
+for its protocol, validation and results, including the absence of an
+additional profitable combine in that experiment.
 
 In `semantics-only` mode, discovery enumerates replacements from operator
 semantics without using the e-graph rewrites. `hybrid` mode also accepts

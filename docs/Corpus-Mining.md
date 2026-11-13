@@ -168,3 +168,7 @@ actual search time, total selection wall time, and final corpus deltas.
 Keep null results and per-file regressions visible. Once held-out results
 have influenced development, use a new held-out set for the next independent
 acceptance claim. The tool does not make previously inspected tests unseen.
+
+The first two-seed MiBench run and its negative result are recorded in
+[Corpus-Mining-Validation.md](Corpus-Mining-Validation.md), with per-round
+measurements and provenance in the accompanying JSON evidence.

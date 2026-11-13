@@ -339,12 +339,14 @@ real-program corpus and fixed-allowance comparisons, see
 | `heldout` | the frozen set and reference sets on the selection and held-out roles, for each configured pipeline |
 | `report` | the counts, the relation to the frozen library, the search record and the evaluation |
 
-- **Resume.** Each run has a directory. A stage writes a record in
+- **Resume.** Each single run has a directory. A stage writes a record in
   `state.json` with a hash of its inputs; `mine` skips a stage whose record
   has the hash of the current inputs. An interrupted run continues, and a
   changed input (a manifest, a budget, the tool) runs the stages after it
   again. The stages with many compiler runs keep their results per file.
   `--until STAGE` stops after a stage; `--force STAGE...` runs stages again.
+  Campaigns additionally freeze their inputs and completed-round artifact
+  hashes; changed campaign inputs require a new directory.
 - **Configuration.** `configs/*.json`: `mode`, `target`, `manifests` (role ->
   file with one `.ll` path per line), `search` (grammar, budgets, seed,
   `regions`, `siblings`, `views`), `joint`, `select`, `loop`. `girs/mine.py` (`DEFAULTS`) has every key. `--local
