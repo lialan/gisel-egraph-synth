@@ -22,9 +22,12 @@ checked rule set and its report, without a manual step between the stages:
 
 Each run has its own directory. A stage writes its result there and a
 record in state.json with a hash of its inputs; `mine` skips a stage whose
-record has the hash of the current inputs, so an interrupted run continues
-and a changed input runs the stages after it again. The stages with many
-compiler runs also keep their results per file.
+record has the hash of the current inputs, so an interrupted run continues.
+Extraction depends on the compiler; discovery depends on the extracted
+content. A different compiler must recapture MIR but need not repeat a
+completed search of identical residuals. Codegen measurements still depend
+on the actual compiler. The stages with many compiler runs also keep their
+results per file.
 
 The rule library and the profiles that the repository maintains
 (rules.json, targets/) are not written. `mine --export` copies the result
@@ -486,9 +489,11 @@ class Run:
                 break
 
     def _done(self, name):
-        """The input hash of a finished stage: a stage that reads the
-        output of ``name`` runs again when ``name`` ran with other
-        inputs."""
+        """The producer identity of a stage, for compiler-sensitive work.
+
+        Discovery uses residual content instead; changing the producer
+        alone does not change a semantic search problem.
+        """
         return self.state['stages'].get(name, {}).get('inputs')
 
     # -- identity --
@@ -703,6 +708,7 @@ class Run:
     def inputs_extract(self):
         c = self.cfg
         return {'baseline': self._done('baseline'),
+                'compiler': _sha_content(self.baseline_llc()),
                 'prepare': self._done('prepare'),
                 'extract': c['extract'], 'mode': c['mode'],
                 'joint': self.joint.search_enabled(),
@@ -763,11 +769,80 @@ class Run:
 
     # -- discover --
 
+    def residual_identity(self, directory):
+        """What the extractor produced, independently of compiler bytes.
+
+        Keep capture failures and their source-to-output mapping visible.
+        The semantic fingerprint preserves context; the separate capture
+        identity refreshes provenance when LLVM renames locations. The
+        shared agenda still reuses identical semantic instance tasks.
+        """
+        from . import residual
+        index = _load(os.path.join(directory, 'index.json'))
+        # Match cmd_synth's directory enumeration, including any additional
+        # JSONL inputs. Also read every published output: a missing artifact
+        # must fail instead of looking like an empty or unchanged corpus.
+        files = {os.path.join(directory, f) for f in os.listdir(directory)
+                 if f.endswith('.jsonl')} if os.path.isdir(directory) else set()
+        coverage = None
+        if index is not None:
+            files.update(os.path.join(directory, v['out']) for v in index.values()
+                         if v.get('out'))
+            coverage = sorted((p, v.get('source'), v.get('pipeline'), v.get('out'))
+                              for p, v in index.items())
+        files = sorted(files)
+        return {'content': residual.fingerprint(files), 'coverage': coverage,
+                'provenance': {os.path.relpath(p, directory): _sha_file(p)
+                               for p in files}}
+
+    def knowledge_identity(self):
+        """Stable rule content from shared knowledge, without run metadata.
+
+        Newly learned rules can free candidate/proof slots in a task which
+        the preceding invocation closed at its budget. Let the stage driver
+        reach that task's agenda even if the residual itself did not change.
+        """
+        directory = self.cfg.get('cache_dir')
+        path = os.path.join(directory, 'learned.json') if directory else None
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            db = known.load(path)
+        except ValueError:
+            return None  # cmd_synth also ignores a stale local catalog.
+        return known.digest(sorted((r['id'], known.revision(r),
+                                    r['semantic_status']['kind'])
+                                   for r in db['rules']))
+
     def inputs_discover(self):
         c = self.cfg
-        return {'extract': self._done('extract'), 'search': c['search'],
+        content = {'corpus': self.residual_identity(self.p('corpus')),
+                   # Legality can change even when the residual is identical.
+                   # Its full content is part of the search domain, not merely
+                   # the compiler version which happened to produce it.
+                   'legality': _sha_content(self.p('corpus', 'legality.json'))}
+        if self.joint.search_enabled():
+            content['joint'] = self.residual_identity(self.joint.p('corpus'))
+        if c['mode'] == 'hybrid':
+            content['deep'] = self.residual_identity(self.p('corpus-deep'))
+            content['egraph'] = self.residual_identity(self.p('egraph'))
+        baseline = {'ordinary': _sha_content(self.p('frozen-baseline', 'rules.json')),
+                    'profiles': {n: _sha_content(self.p('frozen-baseline', n + '.json'))
+                                 for n in targets.TARGETS}}
+        if self.joint.enabled():
+            baseline['joint'] = _sha_content(self.joint.p('baseline', 'rules.json'))
+            baseline['joint_profiles'] = {
+                n: _sha_content(self.joint.p('baseline', n + '.json'))
+                for n in targets.TARGETS}
+        return {'residual': content, 'baseline': baseline,
+                'knowledge': self.knowledge_identity(),
+                'target': c['target'], 'search': c['search'],
+                'hybrid': c['hybrid'] if c['mode'] == 'hybrid' else None,
                 'joint': c['joint'], 'joint_feedback': self.joint.feedback_identity(),
                 'refresh_search': c['refresh_search'],
+                # Refresh corpus metadata/provenance when source files change. The
+                # shared agenda can still reuse unchanged semantic instances.
+                'source_files': self.source_identity('discovery'),
                 'mode': c['mode'], 'model': self.cli._model_sha(),
                 'generator': self.cli._generator_sha()}
 

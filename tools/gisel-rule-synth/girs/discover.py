@@ -87,7 +87,11 @@ class Limits:
         # Candidate terms that a bank evaluates on its samples, per cost
         # level (a term without a kernel counts Bank.GENERIC_WEIGHT).
         self.max_evals = max_evals
-        self.max_candidates = max_candidates  # proved candidates per instance
+        # Newly proved candidates per instance. Exact known replacements
+        # remain available as composition / multi-output seeds, but do not
+        # spend this quota. Terms, evaluations, proofs and time still bound
+        # the work; a larger knowledge catalog is not a completed search.
+        self.max_candidates = max_candidates
         self.max_proofs = max_proofs  # concrete SMT checks per instance
         # Also search replacements of *equal* cost when cost(S) <= this
         # (canonicalization candidates such as add -> or).
@@ -1011,66 +1015,72 @@ def max_search_cost(inst, limits):
     return min(bound, limits.max_rhs_cost) if limits.max_rhs_cost else bound
 
 
+def _known_lookup(inst, ctx):
+    """Memoized exact coverage for one instance and one frozen catalog.
+
+    This is deliberately outside Bank: coverage also depends on the actual
+    widths, guards, constant inputs and interior uses of this instance.
+    The lookup only avoids rediscovering this LHS/RHS pair. It neither
+    discards the LHS's other replacements nor removes a known result that
+    later composition or multi-output search can use.
+    """
+    index = getattr(ctx, 'known', None)
+    cache = {}
+
+    def lookup(tgt, const_vars=None, count=False):
+        if index is None:
+            return None
+        cv = tuple(inst.const_vars if const_vars is None else const_vars)
+        key = (tgt, cv)
+        if key not in cache:
+            cache[key] = index.covers(inst, tgt, const_vars, count=False)
+        if count and cache[key] is not None:
+            index.hits += 1
+        return cache[key]
+
+    return lookup
+
+
 def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
-                     log=None, const_vars=None):
+                     log=None, const_vars=None, known_lookup=None):
     """Proves candidate replacements (cheapest first) under the instance's
     concrete facts. A refuting model becomes a sample: it filters the
     remaining candidates and is kept for later instances. ``const_vars``
     gives, for a candidate with computed constants, the inputs that they
     read. A candidate that a known rule of ``ctx.known`` covers is in the
-    result with the id of that rule ('known') and without a proof."""
+    result with the id of that rule ('known') and without a proof. Only new
+    proofs spend ``max_candidates``. Once a proof/candidate quota is used,
+    the bounded remaining list is still checked for known seeds, until the
+    deadline. ``known_lookup`` is the instance-local lookup made by
+    discover before its per-sample exception checks.
+    """
     out = []
+    newly_proved = 0
+    seen = set()
     const_vars = const_vars or {}
+    known_lookup = known_lookup or _known_lookup(inst, ctx)
     cex = []
-    envs = envs or []
-    vals = {}
-
-    def values(e):
-        if e not in vals:
-            vals[e] = [ir.evaluate(e, inst.vw, env) for env in envs]
-        return vals[e]
-
-    def dominated(tgt):
-        if limits.semantic_variants > 1 or \
-                (limits.cost_slack is not None and limits.cost_slack >= 0):
-            # These runs explicitly seek alternative implementations for
-            # target measurement. Sample agreement and Generic cost do
-            # not establish that one implementation is unprofitable.
-            return False
-        # A proved candidate that is no more expensive and refines this one
-        # on the samples makes it pointless (x for x & 1, 0 for 0 << x).
-        # Two candidates that are equal on the samples are both kept.
-        tv = values(tgt)
-        for c in out:
-            cv = values(c['tgt'])
-            if cv != tv and all(t is None or t == v
-                                for t, v in zip(tv, cv)):
-                return True
-            if cv == tv and c['cost'] < ir.rule_cost(
-                    tgt, const_vars.get(tgt, ())):
-                return True
-        return False
+    # Sample agreement and generic cost do not establish target dominance.
+    # Use exact duplicate edges and real refuting counterexamples below.
+    # Treating a newly proved edge differently from the same known edge
+    # would also make completed tasks depend on catalog growth.
 
     def note(tgt, status):
         ctx.count_ops(tgt, status)
         if log is not None:
             log.append({'tgt': ir.to_sexpr(tgt), 'status': status})
 
-    def full(n):
-        """The limit of candidates, after candidate ``n``."""
-        if len(out) < limits.max_candidates:
-            return False
-        if n + 1 < len(cands):
-            stats['stop'] = 'candidate_limit'
-            stats['not_tried'] = len(cands) - n - 1
-        return True
-
     stats['stop'] = 'complete'
     for n, tgt in enumerate(cands):
         if limits.deadline is not None and time.monotonic() >= limits.deadline:
             stats['stop'] = 'time_budget'
-            stats['not_tried'] = len(cands) - n
+            stats['not_tried'] += len(cands) - n
             break
+        key = (tgt, tuple(const_vars.get(tgt, ())))
+        if key in seen:
+            stats['duplicate_candidates'] += 1
+            continue
+        seen.add(key)
         ctx.count_ops(tgt, 'fingerprint_matches')
         if limits.capability is not None:
             old = set(ir.nodes(inst.expr))
@@ -1081,36 +1091,36 @@ def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
                 stats['legality_rejected'] = stats.get('legality_rejected', 0) + 1
                 note(tgt, 'legality_unknown' if None in actions else 'illegal_rhs')
                 continue
-        known = getattr(ctx, 'known', None)
-        rid = None if known is None else \
-            known.covers(inst, tgt, const_vars.get(tgt))
+        rid = known_lookup(tgt, const_vars.get(tgt), count=True)
         if rid is not None:
             # A known rule applies to the instance: a result without a
             # proof and without a new rule ('known' is the id of the
-            # rule). Like a proved candidate it makes a worse candidate
-            # pointless and it counts for the limit of candidates, so the
-            # result of a search does not depend on what is known. It is
-            # also the seed of a rule with several outputs.
+            # rule). Keep it as a composition / multi-output seed, but
+            # spend neither a new-candidate slot nor a solver call.
             stats['known_candidates'] = stats.get('known_candidates', 0) + 1
             note(tgt, 'known_rule')
             out.append({'tgt': tgt, 'known': rid,
                         'cost': ir.rule_cost(tgt, const_vars.get(tgt, ())),
                         'const_vars': tuple(const_vars.get(tgt, ()))})
-            if full(n):
-                break
             continue
         if any(not refines_on(inst, tgt, e) for e in cex):
             stats['cex_filtered'] += 1
             note(tgt, 'refuted_by_counterexample')
             continue
-        if envs and dominated(tgt):
-            stats['dominated'] += 1
-            note(tgt, 'dominated')
+        if newly_proved >= limits.max_candidates:
+            if stats['stop'] == 'complete':
+                stats['stop'] = 'candidate_limit'
+            stats['candidate_deferred'] += 1
+            stats['not_tried'] += 1
+            note(tgt, 'candidate_budget')
             continue
         if stats['smt_checks'] >= limits.max_proofs:
-            stats['stop'] = 'proof_budget'
-            stats['not_tried'] = len(cands) - n
-            break
+            if stats['stop'] == 'complete':
+                stats['stop'] = 'proof_budget'
+            stats['proof_deferred'] += 1
+            stats['not_tried'] += 1
+            note(tgt, 'proof_budget')
+            continue
         before = getattr(backend, 'calls', 0)
         t0 = time.monotonic()
         r = prove_concrete(inst, tgt, backend, const_vars.get(tgt))
@@ -1129,11 +1139,11 @@ def prove_candidates(inst, cands, backend, limits, ctx, stats, envs=None,
             note(tgt, 'smt_unknown')
             continue
         note(tgt, 'proved')
+        newly_proved += 1
+        stats['new_candidates'] += 1
         out.append({'tgt': tgt, 'proof': r,
                     'cost': ir.rule_cost(tgt, const_vars.get(tgt, ())),
                     'const_vars': tuple(const_vars.get(tgt, ()))})
-        if full(n):
-            break
     return out
 
 
@@ -1167,7 +1177,10 @@ def literal_spellings(inst):
 def new_stats():
     return {'terms': 0, 'fingerprint_matches': 0, 'smt_checks': 0,
             'smt_refuted': 0, 'smt_unknown': 0, 'cex_filtered': 0,
-            'dominated': 0, 'not_tried': 0, 'known_candidates': 0}
+            'dominated': 0, 'not_tried': 0, 'known_candidates': 0,
+            'new_candidates': 0, 'known_prechecked': 0,
+            'duplicate_candidates': 0, 'candidate_deferred': 0,
+            'proof_deferred': 0}
 
 
 # Why the search of one instance ended. 'complete': every term of the
@@ -1244,9 +1257,15 @@ def discover(inst, backend, limits=None, ctx=None, log=None):
     edge = ir.edge_vars(inst.expr)
     found = {}
     cvs = {}
+    known_lookup = _known_lookup(orig, ctx)
+    prechecked = set()
     stages = []
     truncated = None
+    scan_timed_out = False
     for label, names in grammar_stages(inst, limits, types):
+        if limits.deadline is not None and time.monotonic() >= limits.deadline:
+            scan_timed_out = True
+            break
         bank = ctx.bank(var_cls, canon, max_cost, grammar_keys(names, inst))
         t0 = time.monotonic()
         V, OK = bank.evaluate(types, cols, max_cost, ctx.counters)
@@ -1260,6 +1279,9 @@ def discover(inst, backend, limits=None, ctx=None, log=None):
         ctx.seconds['bank_eval'] += time.monotonic() - t0
         new = 0
         for i in rows[agree].tolist():
+            if limits.deadline is not None and time.monotonic() >= limits.deadline:
+                scan_timed_out = True
+                break
             e = bank.expr(i, types)
             # A bank has type classes, not types: an operator can have a
             # type rule that the widths of this instance do not meet.
@@ -1272,15 +1294,26 @@ def discover(inst, backend, limits=None, ctx=None, log=None):
                 cv = tuple(sorted({x for v in used for x in ir.variables(
                     unrecipe[('var', v)])}))
                 e = ir.substitute(e, unrecipe)
-            if e not in src_variants and \
-                    (e not in found or bank.cost[i] < found[e][0]) and \
-                    not (edge and edge & set(ir.variables(e))) and \
-                    ir.env_error(orig.expr, e, cv) is None and \
-                    all(flags_refine_on(orig, e, env[:nreal])
-                        for env in envs):
-                new += e not in found
-                found[e] = (bank.cost[i], ir.to_sexpr(e), e)
-                cvs[e] = cv
+            if e in src_variants or \
+                    (e in found and bank.cost[i] >= found[e][0]) or \
+                    (edge and edge & set(ir.variables(e))) or \
+                    ir.env_error(orig.expr, e, cv) is not None:
+                continue
+            # This candidate is now instantiated with concrete types and
+            # constant recipes. Reuse exact knowledge before expensive
+            # per-sample exception evaluation; do not specialize the shared
+            # bank to this instance's facts or remove its intermediate terms.
+            rid = known_lookup(e, cv or None)
+            if rid is not None:
+                if (e, cv) not in prechecked:
+                    prechecked.add((e, cv))
+                    stats['known_prechecked'] += 1
+            elif not all(flags_refine_on(orig, e, env[:nreal])
+                         for env in envs):
+                continue
+            new += e not in found
+            found[e] = (bank.cost[i], ir.to_sexpr(e), e)
+            cvs[e] = cv
         cut = bank.truncated and bank.truncated_at[0] <= max_cost
         if cut and truncated is None:
             truncated = label
@@ -1290,25 +1323,36 @@ def discover(inst, backend, limits=None, ctx=None, log=None):
             'stop': 'bank_truncated: %s at cost %d, operator %s' % (
                 bank.truncated_at[2], bank.truncated_at[0],
                 bank.truncated_at[1]) if cut else 'complete'})
+        if scan_timed_out:
+            stages[-1]['stop'] = 'candidate_scan: time'
+            break
     cands = sorted(found.values())
     stats['fingerprint_matches'] = len(cands)
     clog = [] if log is not None else None
     out = prove_candidates(orig, [e for _, _, e in cands], backend, limits,
                            ctx, stats, [env[:nreal] for env in envs], clog,
-                           {e: cv for e, cv in cvs.items() if cv})
+                           {e: cv for e, cv in cvs.items() if cv}, known_lookup)
     # Every limit that ended a part of the search, in the words of
     # agenda.REASONS: what a later search needs to go further.
     ended = {'time_budget': ['time'], 'proof_budget': ['proofs'],
              'candidate_limit': ['candidates']}.get(stats['stop'], [])
+    if stats['candidate_deferred']:
+        ended.append('candidates')
+    if stats['proof_deferred']:
+        ended.append('proofs')
+    if scan_timed_out:
+        ended.append('time')
     for st in stages:
         if st['stop'] != 'complete':
             ended.append('time' if st['stop'].startswith(
-                'bank_truncated: time') else 'terms')
+                ('bank_truncated: time', 'candidate_scan: time')) else 'terms')
     if stats['smt_unknown']:
         ended.append('unknown')
     stats['limits'] = sorted(set(ended))
     # The first limit that was reached, in the order of the search.
-    if truncated is not None:
+    if scan_timed_out:
+        stats['stop'] = 'time_budget'
+    elif truncated is not None:
         stats['stop'] = 'bank_truncated'
     elif stats['stop'] == 'complete' and stats['smt_unknown']:
         stats['stop'] = 'smt_unknown'

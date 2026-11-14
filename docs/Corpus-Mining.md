@@ -49,6 +49,72 @@ still greedy: this does not search arbitrary combinations of individually
 unprofitable rules, or prove global optimality. The legacy selector remains
 available as `strategy: "legacy"` for instruction-count-only comparisons.
 
+## Cache identity and residual reuse
+
+Mining retains three different kinds of evidence. Their reuse has different
+requirements:
+
+| Evidence | Reuse requirement |
+|---|---|
+| Exact SMT conclusion | The same complete query, declarations and requested model values in the same proof trust namespace. SAT/UNSAT may be reused independently of search budgets and ordinary compiler-tool source edits. |
+| Verified rule | Current semantic, typing, precondition and runtime matcher/emitter contracts, with the rule's proved guards and width schedules. The catalog and selected profile remain subject to `refresh-known` and reselection checks. |
+| Codegen result | The actual compiler, target, flags, input bytes, selected rules and measurement implementation. It must be remeasured when that identity changes. |
+
+An exact-query hit establishes a result about its encoded formula. Runtime
+applicability, legality and profitability still need their own current
+checks. A corrected encoding normally creates a different query. If a
+model or solver/backend bug invalidates trust in an unchanged query,
+maintainers must bump `PROOF_MODEL_EPOCH` or `PROOF_SOLVER_EPOCH` in
+`girs/known.py` before revalidation. Catalog trust changes with those epochs
+as well. Old catalog-keyed proof-cache entries conservatively miss under
+the new namespace and are not automatically migrated. UNKNOWN is never
+published as a decided proof.
+
+A changed LLVM/compiler build triggers a fresh extraction. The discovery
+stage then compares residual content rather than inheriting the compiler's
+producer hash as its search identity. The fingerprint for current tree and
+joint-region JSON retains types, flags, known bits, definedness, constants,
+use counts, sharing, multi-result identity and region boundaries. Register
+and block numbers are normalized within their function scope, including
+relationships across records. Unknown/older schemas, new unrecognized fields
+and e-graph exports use a full-content hash. The fingerprint only describes
+the context recorded by the extractor.
+
+Residual identities also retain the binding between source/pipeline and
+captured file, successful and failed captures, target legality and the
+pinned baseline. Source and raw capture provenance are tracked separately
+from the semantic task key. If those records change, the discovery wrapper
+refreshes current corpus metadata and source-to-capture mappings; the agenda
+can still reuse unchanged semantic tasks. Previously learned rule examples
+remain historical evidence, and original proof provenance stays with its
+proof. Current applicability comes from compiler checks. A matching residual
+fingerprint never substitutes for measurements made with the new compiler.
+
+### Known candidates and bounded continuation
+
+An exact catalog match skips repeated proof work only if the source/RHS,
+proved widths, constants, vector domain, guard and use requirements cover
+the current instance. Such a result remains a seed for composition and
+multi-output discovery, and does not consume `search.max_candidates` /
+`--max-candidates` slots for new candidates, including whole-vector searches.
+The shared term bank keeps its intermediate expressions. Other RHS forms
+and uncovered domains remain eligible.
+
+After sample matching, a different RHS is no longer discarded solely
+because another candidate agrees on samples or has a lower generic cost.
+Exact duplicate and counterexample filters remain. Existing bank heuristics,
+grammar and term/evaluation/time limits still bound which forms are reached;
+the counters do not establish an exhaustive search of equivalent programs.
+View proposal and joint-window limits retain their separate meanings.
+
+When usable catalog coverage grows, partial ordinary tasks blocked by
+candidate, proof or UNKNOWN limits can reopen at the same numerical budget.
+Completed tasks and tasks blocked only by term limits retain their state.
+The discovery stage keeps continuation available when newly learned rules
+can release candidate slots. Increasing a recorded limiting budget remains
+another way to continue. A cached search result is reusable work, not a
+claim that the current compiler applies its candidate or benefits from it.
+
 ## Feedback rounds and budgets
 
 ```json

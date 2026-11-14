@@ -288,7 +288,7 @@ class Session:
         a = self.args
         cache = a.cache or os.path.join(self.temp.name, 'proofs')
         attempts = os.path.join(self.temp.name, 'attempts')
-        semantics = known.semantics_sha()
+        semantics = known.proof_namespace()
         # Initialize WAL before workers open connections concurrently.
         for path in (cache, attempts):
             h = history.Proofs(path, semantics)

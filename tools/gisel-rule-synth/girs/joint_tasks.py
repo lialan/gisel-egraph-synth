@@ -27,14 +27,15 @@ the agenda is committed at checkpoints and at the end. A run that stops
 (an interrupt, a failed worker) commits what it published; a task without
 a committed row is searched again, and its proofs come from the history.
 
-Identity. The domain of the rows is the semantic model of the joint proofs
-(semantics_sha: the operator model of known.semantics_sha, the record
-schema and the functions of joint.py that make formulas, guards and plans),
+Identity. The domain of the rows is the joint catalog/runtime contract
+(semantics_sha: known.semantics_sha, the record schema and the functions of
+joint.py that make formulas, guards and plans),
 the search code (known.search_sha and JOINT_SEARCH_VERSION) and the limits
 that decide which candidates exist (window size, outputs, costs, grammar,
 samples, seed, the cost policy). The budgets (BUDGETS) are the depth of a
 search inside one domain. A new domain has no rows: every window is new,
-and proofs whose query did not change come from the history.
+and proofs whose full query did not change come from the history, which has
+its own trust namespace (known.proof_namespace).
 
 Time budgets (time_s per window, the deadline of a run) depend on the
 load of the machine: a run with them is not reproducible bit for bit.
@@ -70,9 +71,11 @@ STALLED = ('max_proofs', 'timeout_ms')
 
 
 def semantics_sha():
-    """The proof model of the joint rules: if it changes, no row and no
-    stored rule of the old model is reused (the history keeps the queries
-    that did not change)."""
+    """The joint catalog contract, not the namespace of exact SMT results.
+
+    Changes invalidate tasks and stored rules; the history still keeps the
+    decided queries that did not change under the same proof trust policy.
+    """
     fns = (joint.evaluate, joint.guards, joint.support, joint.target_reads,
            joint.relaxed, joint.classes, joint.literal, joint.width_maps,
            joint.formula, joint.prove, joint.flag_poison,
@@ -233,12 +236,12 @@ def _execute(task):
         backend.close()
 
 
-def _prepare_history(cache, attempts, semantics):
+def _prepare_history(cache, attempts, proof_namespace):
     """The proof history and the attempts of this run (as
     parallel.Session.configure): the proofs before this run are free."""
     for path in (cache, attempts):
-        history.Proofs(path, semantics).close()
-    h = history.Proofs(attempts, semantics)
+        history.Proofs(path, proof_namespace).close()
+    h = history.Proofs(attempts, proof_namespace)
     h.db.execute('CREATE TABLE IF NOT EXISTS prior_proofs '
                  '(key TEXT PRIMARY KEY)')
     h.db.execute('ATTACH DATABASE ? AS previous',
@@ -311,10 +314,11 @@ def run(instances, limits, cache=None, jobs=1, time_budget_s=None,
     cache = cache or os.path.join(tmp.name, 'cache')
     dom = domain(limits)
     sem = semantics_sha()
+    proof_namespace = known.proof_namespace()
     ag = JointAgenda(cache, dom, depth(limits), reopen=reopen)
     store = Store(os.path.join(cache, 'joint', dom[:16]))
     attempts = os.path.join(tmp.name, 'attempts')
-    _prepare_history(cache, attempts, sem)
+    _prepare_history(cache, attempts, proof_namespace)
     deadline = t0 + time_budget_s if time_budget_s else None
     status_of, gain = load_feedback(feedback)
     released_ids = {rid for rid, s in status_of.items() if s in RELEASED}
@@ -386,7 +390,7 @@ def run(instances, limits, cache=None, jobs=1, time_budget_s=None,
 
     config = {'limits': limits, 'deadline': deadline,
               'timeout_ms': limits.timeout_ms, 'cache': cache,
-              'attempts': attempts, 'semantics': sem}
+              'attempts': attempts, 'semantics': proof_namespace}
     failed = []
     interrupted = False
     try:
@@ -496,7 +500,8 @@ def run(instances, limits, cache=None, jobs=1, time_budget_s=None,
         deadline_reached=bool(deadline and time.monotonic() >= deadline),
         queue=summary, metrics=metrics, rules_published=store.written,
         rules_total=len(rules), missing_rules=missing,
-        domain=dom, semantics_sha=sem, depth=depth(limits),
+        domain=dom, semantics_sha=sem, proof_namespace=proof_namespace,
+        depth=depth(limits),
         wall_seconds=round(time.monotonic() - t0, 2),
         peak_rss_mb_children=resource.getrusage(
             resource.RUSAGE_CHILDREN).ru_maxrss // 1024,

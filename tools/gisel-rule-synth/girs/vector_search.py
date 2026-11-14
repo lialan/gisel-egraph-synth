@@ -3,7 +3,7 @@
 vector.py gives the meaning of a vector expression (the scalar expression
 of each lane), its definedness and the joint proof of the lanes. This
 module only *proposes* replacements; it decides nothing about their
-correctness. Each candidate goes through ``synth.Synthesizer.add``: the
+correctness. Each new candidate goes through ``synth.Synthesizer.add``: the
 joint proof of the lanes for every width schedule and precondition of the
 rule. A change of this module changes the search, not a proof
 (known.search_sha).
@@ -33,9 +33,13 @@ composition, in ``revectorize``) or from the lanes of a template column,
 never from an enumeration of all masks.
 
 Every family is bounded: a candidate must have at most the cost that the
-limits allow (``Limits.cost_bound``), and at most ``max_candidates``
-candidates are proposed, the cheapest first.
+limits allow (``Limits.cost_bound``), and at most ``max_candidates`` new
+candidates are proposed, the cheapest first. Exact known replacements are
+returned as reusable seeds without consuming that quota.
 """
+
+import copy
+import time
 
 from . import discover
 from . import ir
@@ -64,13 +68,14 @@ class Limits:
     """The budgets of the search of one vector instance. ``cost_slack``,
     ``max_rhs_cost`` and ``semantic_variants`` have the meaning of the
     same options of discover.Limits; ``max_candidates`` bounds the
-    candidates that are proposed (each costs a proof), ``template`` enables
-    the template family (it runs the search for scalars), and
+    new candidates that are proposed (each costs a proof), ``template``
+    enables the template family (it runs the search for scalars), and
     ``max_lanes`` the number of lanes of a source that is searched."""
 
     def __init__(self, max_candidates=6, cost_slack=None, max_rhs_cost=0,
                  semantic_variants=1, template=True, max_lanes=16,
-                 capability=None, stage='pre-legalizer', idx_bits=32):
+                 capability=None, stage='pre-legalizer', idx_bits=32,
+                 deadline=None):
         # The legality table of the target (targets.Capability), or None:
         # a candidate does not create an instruction with vectors that the
         # legalizer of the target has no rule for at the ``stage``.
@@ -83,10 +88,13 @@ class Limits:
         self.semantic_variants = semantic_variants
         self.template = template
         self.max_lanes = max_lanes
+        self.deadline = deadline
 
     @classmethod
     def of(cls, dlim, **kw):
         """The vector limits that follow the discovery limits ``dlim``."""
+        kw.setdefault('stage', dlim.legalizer_stage)
+        kw.setdefault('deadline', dlim.deadline)
         return cls(max_candidates=dlim.max_candidates,
                    cost_slack=dlim.cost_slack,
                    max_rhs_cost=dlim.max_rhs_cost,
@@ -96,6 +104,7 @@ class Limits:
 
     def identity(self):
         d = dict(vars(self))
+        d.pop('deadline', None)
         cap = d.pop('capability')
         d['capability'] = None if cap is None else cap.digest
         return d
@@ -132,6 +141,12 @@ class Limits:
 
 def _creatable(e):
     return all(ops.creatable(n[0]) for n in ir.nodes(e))
+
+
+def _deadline(*owners):
+    ends = [getattr(o, 'deadline', None) for o in owners if o is not None]
+    return min(e for e in ends if e is not None) if any(
+        e is not None for e in ends) else None
 
 
 def _scalar_expr(L, s):
@@ -453,17 +468,25 @@ def _template_candidates(inst, L, S, t, limits, ctx, backend, dlim, stats):
     scalars = [T.expr]
     if limits.template and ctx is not None and backend is not None:
         sinst = template_instance(inst, L, T)
-        # A known rule for scalars does not cover the vector form: the
-        # template search sees every proved template.
-        known = getattr(ctx, 'known', None)
-        ctx.known = None
+        # Reuse a proved scalar template as a proposal seed. Its known id
+        # does not cover the vector form: only the outer full-vector
+        # lookup (or Synthesizer's vector proof) can establish that.
+        # The scalar search and its shared banks must observe the same
+        # remaining deadline as the outer vector search. A worker can
+        # have a tighter deadline than the original discovery settings.
+        search_limits = copy.copy(dlim)
+        search_limits.deadline = _deadline(limits, dlim, backend, ctx.limits)
+        old_deadline = ctx.limits.deadline
+        ctx.limits.deadline = search_limits.deadline
         try:
-            found, sst = discover.discover(sinst, backend, dlim, ctx)
+            found, sst = discover.discover(sinst, backend, search_limits, ctx)
         finally:
-            ctx.known = known
+            ctx.limits.deadline = old_deadline
         stats['template_searches'] = stats.get('template_searches', 0) + 1
         stats['template_stop'] = sst.get('stop')
-        for k in ('terms', 'smt_checks', 'smt_refuted', 'smt_unknown'):
+        stats['template_limits'] = sst.get('limits', [])
+        for k in ('terms', 'smt_checks', 'smt_refuted', 'smt_unknown',
+                  'known_candidates'):
             stats['template_' + k] = stats.get('template_' + k, 0) + \
                 sst.get(k, 0)
         for c in found:
@@ -502,14 +525,31 @@ def _admissible(src, tgt, vw, const_vars):
 
 
 def candidates(src, vw, const_vars=(), limits=None, inst=None, ctx=None,
-               backend=None, dlim=None, stats=None):
+               backend=None, dlim=None, stats=None, known_matches=None):
     """The replacements of the vector expression ``src`` as a list of
     (expression, family), the cheapest first, at most
-    ``limits.max_candidates``. With ``inst``, ``ctx``, ``backend`` and
+    ``limits.max_candidates`` new proposals plus exact known seeds. With
+    ``inst``, ``ctx``, ``backend`` and
     ``dlim`` the template family also runs the search for scalars
-    (discover.discover) under the facts of the instance."""
+    (discover.discover) under the facts of the instance. ``known_matches``
+    receives expression -> known rule id for this instance only; the
+    caller can carry those seeds forward without reproving them.
+    """
     limits = limits or Limits()
     stats = {} if stats is None else stats
+    known_matches = {} if known_matches is None else known_matches
+    known_matches.clear()
+    deadline = _deadline(limits, dlim, backend,
+                         ctx.limits if ctx is not None else None)
+
+    def expired():
+        if deadline is not None and time.monotonic() >= deadline:
+            stats['time_budget'] = 1
+            return True
+        return False
+
+    if expired():
+        return []
     L = Lanes(vw)
     root = src[1] if not ir.is_var(src) else vw[src[1]]
     if max([lanes(w) for w in vw] + [lanes(n[1]) for n in ir.nodes(src)]) \
@@ -518,6 +558,9 @@ def candidates(src, vw, const_vars=(), limits=None, inst=None, ctx=None,
         return []
     S = L.of(src)
     found = [(t, 'lanes') for t in revectorize(L, S, root)]
+    if expired():
+        stats['unscanned_proposals'] = len(found)
+        return []
     if lanes(root) and inst is not None:
         if ir.constrained_nodes(src):
             # The lanes of a vector have one environment, and the
@@ -534,10 +577,18 @@ def candidates(src, vw, const_vars=(), limits=None, inst=None, ctx=None,
                                       None, stats)
     bound = limits.cost_bound(src)
     out, seen = [], set()
-    for t, fam in sorted(found, key=lambda x: (ir.rule_cost(x[0], const_vars),
-                                               FAMILIES.index(x[1]),
-                                               ir.to_sexpr(x[0]))):
+    lookup = discover._known_lookup(inst, ctx) if inst is not None and \
+        ctx is not None else lambda *args, **kwargs: None
+    new_count = 0
+    ordered = sorted(found, key=lambda x: (ir.rule_cost(x[0], const_vars),
+                                          FAMILIES.index(x[1]),
+                                          ir.to_sexpr(x[0])))
+    for n, (t, fam) in enumerate(ordered):
+        if expired():
+            stats['unscanned_proposals'] = len(ordered) - n
+            break
         if t in seen:
+            stats['duplicate_candidates'] = stats.get('duplicate_candidates', 0) + 1
             continue
         seen.add(t)
         if ir.rule_cost(t, const_vars) > bound:
@@ -549,10 +600,20 @@ def candidates(src, vw, const_vars=(), limits=None, inst=None, ctx=None,
         if limits.legal_error(src, t, vw) is not None:
             stats['not_legalizable'] = stats.get('not_legalizable', 0) + 1
             continue
+        stats['eligible_candidates'] = stats.get('eligible_candidates', 0) + 1
+        rid = lookup(t, const_vars, count=True)
+        if rid is not None:
+            # Only this exact, currently applicable edge is known. Keep
+            # other RHSs in the search, and keep this result as a seed.
+            known_matches[t] = rid
+            stats['known_candidates'] = stats.get('known_candidates', 0) + 1
+        elif new_count >= limits.max_candidates:
+            stats['candidate_limit'] = stats.get('candidate_limit', 0) + 1
+            continue
+        else:
+            new_count += 1
+            stats['new_candidates'] = new_count
         out.append((t, fam))
-    if len(out) > limits.max_candidates:
-        stats['candidate_limit'] = len(out) - limits.max_candidates
-        out = out[:limits.max_candidates]
     return out
 
 
@@ -564,28 +625,51 @@ def search(inst, backend, limits, dlim, ctx, log=None):
     the statistics with the prefix 'vector_'."""
     stats = discover.new_stats()
     vst = {}
+    known_matches = {}
     cands = candidates(inst.expr, inst.vw, inst.const_vars, limits, inst,
-                       ctx, backend, dlim, vst)
+                       ctx, backend, dlim, vst, known_matches)
     stop = 'candidate_limit' if vst.get('candidate_limit') else 'complete'
     tstop = vst.pop('template_stop', None)
+    template_reasons = set(vst.pop('template_limits', []))
+    reasons = set(template_reasons)
+    if vst.get('candidate_limit'):
+        reasons.add('candidates')
     if tstop not in (None, 'complete', 'no_signature',
                      'source_always_poison'):
         # The search of a template ended at a budget: the families are
         # not complete.
         stop = tstop
+        reason = {'time_budget': 'time', 'proof_budget': 'proofs',
+                  'candidate_limit': 'candidates', 'bank_truncated': 'terms',
+                  'smt_unknown': 'unknown'}.get(tstop)
+        if reason and not template_reasons:
+            reasons.add(reason)
+    if vst.get('time_budget'):
+        stop = 'time_budget'
+        reasons.add('time')
     stats['smt_checks'] = vst.get('template_smt_checks', 0)
     stats['smt_unknown'] = vst.get('template_smt_unknown', 0)
+    if stats['smt_unknown']:
+        reasons.add('unknown')
     stats['terms'] = vst.get('template_terms', 0)
-    stats['fingerprint_matches'] = len(cands)
+    stats['fingerprint_matches'] = vst.get('eligible_candidates', 0)
+    stats['known_candidates'] = len(known_matches)
+    stats['candidate_deferred'] = vst.get('candidate_limit', 0)
+    stats['not_tried'] = stats['candidate_deferred']
+    stats['duplicate_candidates'] = vst.get('duplicate_candidates', 0)
     for k, v in vst.items():
         stats['vector_' + k] = v
     for t, f in cands:
         stats['vector_family_' + f] = stats.get('vector_family_' + f, 0) + 1
     stats['stop'] = stop
+    stats['limits'] = sorted(reasons)
+    records = [dict({'tgt': t, 'family': f,
+                     'const_vars': tuple(inst.const_vars)},
+                    **({'known': known_matches[t]} if t in known_matches else {}))
+               for t, f in cands]
     if log is not None:
         log.update({'vector_search': dict(vst, template_stop=tstop),
                     'stop': stop,
-                    'candidates': [{'tgt': ir.to_sexpr(t), 'family': f}
-                                   for t, f in cands]})
-    return [{'tgt': t, 'family': f, 'const_vars': ()} for t, f in cands], \
-        stats
+                    'candidates': [dict(c, tgt=ir.to_sexpr(c['tgt']))
+                                   for c in records]})
+    return records, stats

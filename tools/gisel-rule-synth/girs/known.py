@@ -18,6 +18,15 @@ from . import ir, paths, precond, synth
 
 SCHEMA = 1
 
+# A decided SMT obligation is not a certificate for the matcher, emitter or
+# corpus extractor. Its full query is the key in history.Proofs; these epochs
+# revoke trust in previously decided queries even when their text is unchanged
+# (for example after a model/solver correctness fix). Ordinary source edits
+# must not bump them. A corrected encoding normally produces a different query.
+PROOF_CACHE_SCHEMA = 1
+PROOF_MODEL_EPOCH = 1
+PROOF_SOLVER_EPOCH = 1
+
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True,
@@ -30,9 +39,24 @@ def _files(names):
                     .hexdigest()) for n in names])
 
 
+def proof_namespace():
+    """Trust domain for exact SAT/UNSAT queries, not reusable compiler rules.
+
+    Query declarations, assumptions and requested model values belong to the
+    query key. Search order, budgets, extraction and runtime contracts do not.
+    Bump the relevant epoch to discard conclusions affected by a model or
+    solver/backend bug; semantics_sha also invalidates catalogs on that bump.
+    """
+    return digest(['girs-exact-obligation', PROOF_CACHE_SCHEMA,
+                   synth.SEMANTIC_MODEL, PROOF_MODEL_EPOCH,
+                   'z3', PROOF_SOLVER_EPOCH])
+
+
 def semantics_sha():
-    # Include typing, vector/target semantics and matcher/emission contracts.
-    # Enumeration order and quotas cannot invalidate a completed proof.
+    # Catalog validity includes typing, vector/target semantics and runtime
+    # matcher/emission contracts. Do not use this hash for exact proof history:
+    # changing an emitter must revalidate its rules without re-solving the
+    # unchanged SMT obligations (proof_namespace).
     model = _files(('gmir_ops.json', 'ops.py', 'ir.py', 'fp.py', 'smt.py',
                    'vector.py', 'amdgcn.py', 'precond.py', 'valuefacts.py', 'synth.py',
                    'region.py', 'sibling.py', 'corpus.py', 'emit.py',
@@ -41,8 +65,15 @@ def semantics_sha():
                  'include/GISelEGraphSynth/GISynthPredicates.h',
                  'include/GISelEGraphSynth/GISynthValueFacts.inc',
                  'include/GISelEGraphSynth/GISynthRegion.h')
-    return digest([model, [(p, hashlib.sha256((Path(paths.REPO) / p)
-                    .read_bytes()).hexdigest()) for p in contracts]])
+    contract = digest([model, [(p, hashlib.sha256((Path(paths.REPO) / p)
+                       .read_bytes()).hexdigest()) for p in contracts]])
+    # Preserve existing catalog stamps under the initial trust policy. Revoking
+    # that policy must invalidate catalogs as well as history: known.Index can
+    # reuse a catalog rule without issuing another solver query.
+    if (PROOF_MODEL_EPOCH, PROOF_SOLVER_EPOCH) == (1, 1):
+        return contract
+    return digest([contract, 'proof-trust', PROOF_MODEL_EPOCH,
+                   PROOF_SOLVER_EPOCH])
 
 
 def search_sha():

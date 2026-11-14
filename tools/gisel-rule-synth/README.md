@@ -117,9 +117,18 @@ The extraction stage runs after native combines and B, so it searches the
 remaining MIR. Before concrete SMT checks and generalization, a known-rule
 index skips an identical source/replacement pair only when its proved widths,
 constant requirements, vector applicability, guard, and one-use requirements
-cover the instance.
-It does not blacklist a source opcode, root, or rule family. Multi-output
-and sibling searches retain their single-root seeds, even if already known.
+cover the instance. These exact known replacements do not consume the
+`--max-candidates` allowance for new candidates, including in the whole-vector
+search. They remain available as multi-output, sibling and composition seeds.
+A different RHS, uncovered width or unsatisfied guard remains eligible.
+
+Coverage is checked after a term has concrete types and constant recipes;
+it does not remove intermediate terms from the shared bank. At the candidate
+stage, sample agreement or a lower generic cost of one RHS no longer discards
+a different RHS as dominated. Exact duplicate filtering and counterexample
+filtering remain, as do the bank's existing observational-equivalence
+heuristics, grammar and budgets. This is bounded discovery, not mathematical
+exhaustion of equivalent implementations.
 
 ```sh
 # Normal run: use committed K/B and shared local progress.
@@ -166,17 +175,59 @@ directories. It contains a persistent task queue (`agenda.sqlite3`), newly
 verified local rules and their proofs, a SQLite proof-obligation cache, and
 compiler builds. The queue covers single-root search, alternate root forms,
 joint regions and siblings, in both serial and default 16-process mode.
-Proof keys include complete SMT declarations, requested model values and
-semantic identity, independent of execution quotas. Increasing time, term
-or proof budgets reuses decided SAT/UNSAT obligations; UNKNOWN is retried.
+
+### What each cache establishes
+
+| Reused object | Identity and validity |
+|---|---|
+| Decided SMT obligation | Complete SMT query, declarations, requested model values and an explicit proof trust namespace. Only SAT/UNSAT conclusions are stored. |
+| Verified rule catalog | The stricter semantic, typing, precondition, extractor and matcher/emitter contracts in `known.semantics_sha()`, plus each rule's guards and proved widths. A stale catalog requires `refresh-known`. |
+| Search task | Its semantic instance context, search domain, progress and limiting budgets. Reusable inputs include types, facts, definedness, use constraints and constant recipes. |
+| Compiler measurement | Actual compiler bytes, source bytes, target, flags, enabled/disabled rules and the measurement implementation. An earlier proof or search hit supplies no codegen measurement. |
+
+The exact-query namespace in `known.proof_namespace()` is independent of
+ordinary search, extractor and emitter source changes. An unchanged formula
+can therefore reuse its conclusion while a changed runtime contract still
+forces rule revalidation. An encoding change normally changes the query and
+misses automatically. After a model or solver/backend correctness bug,
+maintainers must bump `PROOF_MODEL_EPOCH` or `PROOF_SOLVER_EPOCH` in `known.py`
+before revalidation to revoke affected conclusions even if their query text
+is unchanged. These epochs also invalidate catalog trust. Rows from the old
+catalog-keyed proof namespace are retained but conservatively miss; they are
+not migrated into the new namespace. UNKNOWN remains an undecided attempt.
+
+### Residual content and continuation
+
+A different LLVM/compiler build must extract the corpus again. Discovery
+uses the resulting content and source-to-capture bindings rather than the
+extraction stage's producer hash. `girs/residual.py` fingerprints the current
+tree and joint JSON schemas while preserving LLTs, flags, known bits,
+definedness, uses, sharing, multi-result identity and region boundaries.
+Function-scoped alpha-renaming removes incidental register and block numbers.
+Unknown fields or schemas, including e-graph exports, use a conservative
+full-content hash; omitted machine-function context is not inferred.
+
+The discovery wrapper retains source/file associations, capture failures,
+legality, baseline identity and raw capture provenance. Changed associations
+or provenance refresh current corpus metadata and source-to-capture mappings,
+while identical semantic tasks can reuse their agenda state. Previously
+learned rule examples remain historical evidence, and proof-origin provenance
+remains attached to the original proof. Current applicability is established
+by compiler checks; measurements also use the current compiler regardless of
+a residual-content hit.
+
+Increasing time, term or proof budgets reuses decided SAT/UNSAT obligations.
 Completed tasks are reused within the same search domain. The queue visits
 new tasks first, then unfinished tasks in least-searched order. `max_instances`
 and `max_pairs` count pending work, so repeated capped runs advance. A deadline
 leaves work open; a term/candidate/solver limit reopens when its budget grows.
 A proof quota can advance with the same budget using previous-run proofs,
-until no further progress is made. Truncated searches are never marked
-exhausted. Measurement checkpoints also
-bind compiler bytes, input bytes, target, flags and disabled rule records.
+until no further progress is made. New known coverage can also reopen partial
+tasks stopped by candidate, proof or UNKNOWN limits at the same numerical
+budgets: already covered pairs can release work for other candidates.
+Completed tasks and tasks limited only by terms retain their state when
+knowledge grows. A completed task records completion under the configured
+search domain and heuristics; truncated searches remain partial.
 
 No new verified rules means no candidate rebuild, selection, or held-out
 evaluation. The report records `no_new_rules`, not an exhaustive-search claim.
@@ -533,7 +584,8 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
    *Budgets.* `--max-terms` (terms of a bank), `--max-evals` (candidate
    terms that a bank evaluates per cost level; inside a level each operator
    gets a share, so the operators at the end of a grammar are also tried),
-   `--max-proofs`, `--max-candidates`, `--time-budget-s`, `--timeout-ms`.
+   `--max-proofs`, `--max-candidates` (new candidates; exact known replacements
+   remain seeds without using these slots), `--time-budget-s`, `--timeout-ms`.
    The search of each instance ends with a reason (`discover.STOPS`):
    `complete`, or the budget that ended it. A budget is not "no result in
    the grammar"; `rules.stats.json` counts the reasons and `--search-log`
@@ -551,7 +603,8 @@ llc ... -debug-only=gisel-synth     # each guard that is evaluated / passes
    than one number) is searched by its lanes, with the same cache, budgets,
    statistics and search log. The candidates of an instance are bounded
    (`--max-candidates`, the cost bound of `--cost-slack` and
-   `--max-rhs-cost`) and come in three families, recorded in the
+   `--max-rhs-cost`); exact known replacements are retained without using
+   the new-candidate slots. Candidates come in three families, recorded in the
    provenance of a rule (`vector-search-<family>+smt`):
 
    | Family | Candidates |

@@ -85,6 +85,29 @@ class AgendaTest(unittest.TestCase):
         self.publish(b, 'single', 'k')
         self.assertIsNone(self.open().pending('single', 'k'))
 
+    def test_new_knowledge_reopens_only_coverage_sensitive_partial_tasks(self):
+        a = self.open(knowledge_sha='catalog-a')
+        self.publish(a, 'single', 'capped', ['candidates'])
+        self.publish(a, 'single', 'unknown', ['unknown'])
+        self.publish(a, 'single', 'proofs', ['proofs'], progress=0)
+        self.publish(self.open(knowledge_sha='catalog-a'),
+                     'single', 'proofs', ['proofs'], progress=0)
+        self.publish(a, 'single', 'complete')
+        self.publish(a, 'single', 'terms', ['terms'])
+        self.assertIsNone(self.open(knowledge_sha='catalog-a').pending(
+            'single', 'capped'))
+        b = self.open(knowledge_sha='catalog-b')
+        self.assertEqual(b.pending('single', 'capped'), agenda.RETRY)
+        self.assertEqual(b.pending('single', 'unknown'), agenda.RETRY)
+        self.assertEqual(b.pending('single', 'proofs'), agenda.RETRY)
+        self.assertIsNone(b.pending('single', 'complete'))
+        self.assertIsNone(b.pending('single', 'terms'))
+        # Publish the new boundary: an unchanged catalog does not cause
+        # this same quota-limited task to be retried indefinitely.
+        self.publish(b, 'single', 'capped', ['candidates'])
+        self.assertIsNone(self.open(knowledge_sha='catalog-b').pending(
+            'single', 'capped'))
+
     def test_the_proof_budget_continues_until_it_makes_no_progress(self):
         # A decided proof is in the proof history: the next search of the
         # task decides other candidates with the same budget.
@@ -228,24 +251,36 @@ class KnownCandidateTest(unittest.TestCase):
                          rid)
         self.assertEqual(idx.hits, 1)
 
-    def test_it_counts_for_the_limit_of_candidates(self):
+    def test_it_does_not_spend_the_new_candidate_quota(self):
         lim, ctx = self.ctx(max_candidates=1)
         st = discover.new_stats()
         out = discover.prove_candidates(
             self.i, [V(0), ('G_OR', 32, V(0), V(0))], self.be, lim, ctx, st)
-        self.assertEqual([c['tgt'] for c in out], [V(0)])
+        self.assertEqual([c['tgt'] for c in out],
+                         [V(0), ('G_OR', 32, V(0), V(0))])
         self.assertEqual((st['stop'], st['not_tried'], st['smt_checks']),
-                         ('candidate_limit', 1, 0))
+                         ('complete', 0, 1))
+        self.assertEqual((st['known_candidates'], st['new_candidates']),
+                         (1, 1))
 
-    def test_it_makes_a_worse_candidate_pointless(self):
+    def test_it_does_not_dominate_another_replacement(self):
         lim, ctx = self.ctx()
         st = discover.new_stats()
         envs = discover.instance_envs(self.i, lim, ctx)
         out = discover.prove_candidates(
             self.i, [V(0), ('G_OR', 32, V(0), V(0))], self.be, lim, ctx, st,
             envs)
-        self.assertEqual([c['tgt'] for c in out], [V(0)])
-        self.assertEqual((st['dominated'], st['smt_checks']), (1, 0))
+        self.assertEqual([c['tgt'] for c in out],
+                         [V(0), ('G_OR', 32, V(0), V(0))])
+        self.assertEqual((st['dominated'], st['smt_checks']), (0, 1))
+        # The same alternatives survive on a cold search. Otherwise a
+        # complete checkpoint would depend on whether the first was known.
+        fresh = discover.new_stats()
+        cold = discover.prove_candidates(
+            self.i, [V(0), ('G_OR', 32, V(0), V(0))], self.be, lim,
+            discover.Context(lim), fresh, envs)
+        self.assertEqual([c['tgt'] for c in cold], [c['tgt'] for c in out])
+        self.assertEqual((fresh['dominated'], fresh['new_candidates']), (0, 2))
 
     def test_every_limit_of_a_search_is_recorded(self):
         class Unknown:
@@ -366,6 +401,32 @@ class RunsTest(unittest.TestCase):
         _, st = self.synth(c)
         self.assertEqual(st['discovery']['instances'], opened)
         self.assertEqual(st['queue']['left'], 0)
+
+    def test_new_knowledge_releases_the_same_candidate_quota_next_run(self):
+        c = self.corpus([SIMPLE[0]])
+
+        def bounded_search(inst, backend, limits, ctx, log=None):
+            st = discover.new_stats()
+            st['fingerprint_matches'] = 2
+            out = discover.prove_candidates(
+                inst, [V(0), ('G_OR', 32, V(0), ('lit', 32, '0'))],
+                backend, limits, ctx, st)
+            st['limits'] = ['candidates'] if st['candidate_deferred'] else []
+            return out, st
+
+        with mock.patch.object(discover, 'discover', side_effect=bounded_search) as search:
+            first, st = self.synth(c, max_candidates=1, cost_slack=0, views=False)
+            self.assertEqual(len(first['rules']), 1)
+            self.assertEqual(st['queue']['single']['open'], 1)
+            self.assertEqual(st['queue']['left'], 1)
+            second, st = self.synth(c, max_candidates=1, cost_slack=0, views=False)
+            self.assertEqual(len(second['rules']), 2)
+            self.assertEqual(st['discovery']['known_candidates'], 1)
+            self.assertEqual(st['discovery']['new_candidates'], 1)
+            self.assertEqual(st['queue']['left'], 0)
+            _, st = self.synth(c, max_candidates=1, cost_slack=0, views=False)
+            self.assertEqual(search.call_count, 2)
+            self.assertEqual(st['solver_calls'], 0)
 
     def test_a_known_rule_is_the_seed_of_a_rule_with_several_outputs(self):
         c = self.corpus([ADD_CMP])

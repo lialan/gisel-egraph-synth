@@ -423,9 +423,13 @@ def _backend(timeout_ms):
 def _instance_task(inst):
     """The key of the search of an instance in the agenda (every value of
     the instance that a search reads)."""
-    from girs import agenda
+    from girs import agenda, ir
     return agenda.task_key(inst.key(), getattr(inst, 'lifted', False),
-                           inst.interior_uses, inst.const_vars, inst.flags)
+                           inst.interior_uses, inst.const_vars, inst.flags,
+                           inst.consts, getattr(inst, 'lift_scalars', ()),
+                           sorted((ir.to_sexpr(e), facts) for e, facts in
+                                  getattr(inst, 'sub_facts', {}).items()),
+                           getattr(inst, 'input_types', None))
 
 
 def _schedule(insts, share):
@@ -561,7 +565,7 @@ def _cmd_synth(args, session=None, resources=None):
                               ir.to_sexpr(i.expr), i.vw, i.facts))
     backend = _backend(args.timeout_ms)
     if args.cache:
-        backend.history = history.Proofs(args.cache, known.semantics_sha())
+        backend.history = history.Proofs(args.cache, known.proof_namespace())
     if args.time_budget_s:
         backend.deadline = t0 + args.time_budget_s
     from girs import targets
@@ -609,12 +613,22 @@ def _cmd_synth(args, session=None, resources=None):
                'by_kind': {}}
     joint = []  # Additional multi-output seeds from e-graph imports.
     # The tasks of the search and their state from the earlier runs.
+    task_depth = agenda.depth(dlim.identity(), args.timeout_ms)
+    # Known results do not consume the new-candidate quota. A changed
+    # coverage index can therefore reopen limited or undecided tasks at
+    # the same numerical depth, without reopening completed tasks.
+    def knowledge_sha(index):
+        return known.digest(sorted((rid, known.revision(rule))
+                                   for rid, rule in index.rules.items())) \
+            if ctx.known is not None else None
+
+    task_depth['knowledge_sha'] = knowledge_sha(known_index)
     ag = agenda.Agenda(args.cache or None,
                        agenda.domain(dlim.identity(), vars(slim),
                                      {'process_tasks': bool(session),
                                       'batch': args.search_batch if session else None,
                                       'views': view_lim.identity() if view_lim else None}),
-                       agenda.depth(dlim.identity(), args.timeout_ms),
+                       task_depth,
                        reopen=args.refresh_search)
     resources.callback(ag.close)
     if backend.history:
@@ -1182,23 +1196,21 @@ def _cmd_synth(args, session=None, resources=None):
         sstats['corpus'] = pair_stats
     else:
         sstats = {}
-    # The state of the tasks after this run: what a later run searches.
-    queue_stats = {'single': ag.summary('single', tkey.values())}
-    if args.regions:
-        with_outputs = [i for i in insts if region.interior_outputs(i)]
-        queue_stats['alts'] = ag.summary(
-            'alts', [tkey[id(i)] for i in with_outputs])
-        queue_stats['region'] = ag.summary('region', [
-            region_task(i, sd) for i in with_outputs
-            for sd in [seeds(i)] if sd])
-    if args.siblings:
-        # A run that ended before the search of the groups: they are
-        # tasks that are left, like the instances.
-        load_groups()
-        queue_stats['sibling'] = ag.summary(
-            'sibling', [pair_task(p) for p in pairs])
-    queue_stats['left'] = sum(q['not_searched'] + q['open']
-                              for q in queue_stats.values())
+    def summarize_queue():
+        # Describe the next invocation, after publishing this run's rules.
+        # Newly known edges can free quotas at the same numerical depth.
+        out = {'single': ag.summary('single', tkey.values())}
+        if args.regions:
+            with_outputs = [i for i in insts if region.interior_outputs(i)]
+            out['alts'] = ag.summary('alts', [tkey[id(i)] for i in with_outputs])
+            out['region'] = ag.summary('region', [
+                region_task(i, sd) for i in with_outputs
+                for sd in [seeds(i)] if sd])
+        if args.siblings:
+            load_groups()
+            out['sibling'] = ag.summary('sibling', [pair_task(p) for p in pairs])
+        out['left'] = sum(q['not_searched'] + q['open'] for q in out.values())
+        return out
     for name in ('regions', 'siblings', 'pair_load', 'corpus_load'):
         if clock[name]:
             seconds[name] = round(clock[name], 2)
@@ -1249,6 +1261,9 @@ def _cmd_synth(args, session=None, resources=None):
         'rejected': rejected,
     }
     combined, _ = known.merge(knowledge, rules)
+    if learned_path:
+        ag.depth['knowledge_sha'] = knowledge_sha(known.Index(combined))
+    queue_stats = summarize_queue()
     base_revs = {known.revision(r) for r in baseline['rules']}
     cached_revs = {known.revision(r) for r in knowledge['rules']}
     db['rules'] = combined['rules']
@@ -1304,6 +1319,10 @@ def _cmd_synth(args, session=None, resources=None):
     # What became of the candidates of the search for one output.
     fate = {'matched_samples': dstats['fingerprint_matches'],
             'known_rule': dstats['known_candidates'],
+            'known_prechecked': dstats['known_prechecked'],
+            'duplicate_candidate': dstats['duplicate_candidates'],
+            'candidate_budget': dstats['candidate_deferred'],
+            'proof_budget': dstats['proof_deferred'],
             'refuted_by_counterexample': dstats['cex_filtered'],
             'worse_than_a_proved_one': dstats['dominated'],
             'refuted_by_solver': dstats['smt_refuted'],
@@ -1997,7 +2016,8 @@ def build_parser():
                    help='budget: SMT checks of the candidates of one '
                         'instance')
     p.add_argument('--max-candidates', type=int, default=6,
-                   help='budget: proved candidates of one instance')
+                   help='budget: new candidates of one instance; exact '
+                        'known rules remain reusable seeds')
     p.add_argument('--time-budget-s', type=float, default=0,
                    help='overall search and proof deadline (0: no limit); '
                         'checkpoints and final output are saved afterward')

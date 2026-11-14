@@ -259,7 +259,8 @@ class Joint:
             copy_proofs(db, self.p('library', 'proofs'), [self.p('baseline', 'proofs')])
             _dump(db, self.p('library', 'rules.json'))
             return {'skipped': 'vector-only scope; joint baseline retained'}
-        identity = {'extract': r._done('extract'), 'config': r.cfg['joint'],
+        identity = {'residual': r.residual_identity(self.p('corpus')),
+                    'config': r.cfg['joint'],
                     'model': r.cli._model_sha(),
                     'feedback': load(r.cfg['joint'].get('priority'))
                     if r.cfg['joint'].get('priority') else None}

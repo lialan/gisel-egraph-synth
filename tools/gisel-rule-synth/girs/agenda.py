@@ -125,6 +125,14 @@ class Agenda:
             return RETRY
         if row['state'] == 'complete':
             return None
+        # A known replacement is a reusable seed, not a newly proved
+        # candidate. New coverage can free slots or cover a previously
+        # undecided proof even at the same quota and solver timeout.
+        # Do not put knowledge in the domain: that would discard completed
+        # searches and unrelated term/solver checkpoints as it grows.
+        if set(row['reasons']) & {'candidates', 'proofs', 'unknown'} and \
+                row['depth'].get('knowledge_sha') != self.depth.get('knowledge_sha'):
+            return RETRY
         for r in row['reasons']:
             if r == 'proofs' and row['stalled']:
                 if self._higher(row, STALLED):
